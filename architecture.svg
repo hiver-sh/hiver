@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1110" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3a3a3a"/>
+    </marker>
+    <marker id="arr-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+    <marker id="arr-bidi-start" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 10 0 L 0 5 L 10 10 z" fill="#3a3a3a"/>
+    </marker>
+  </defs>
+  <style><![CDATA[
+    rect.box { stroke-width: 1.5; }
+    .svc      { fill: #E3EDF7; stroke: #4A6FA5; }
+    .storage  { fill: #FCEBD3; stroke: #C0782F; }
+    .audit    { fill: #DEF2E0; stroke: #3D8C50; }
+    .external { fill: #ECECEC; stroke: #777; }
+    .pod      { fill: #FFFBE6; stroke: #C9A227; stroke-dasharray: 7,4; }
+    .arrow    { stroke: #3a3a3a; stroke-width: 1.5; fill: none; }
+    .arrow-d  { stroke: #888;    stroke-width: 1.3; fill: none; stroke-dasharray: 5,3; }
+    .sub      { fill: #555; font-size: 11px; }
+    .edge     { fill: #2b2b2b; font-size: 10.5px; }
+    .edge-d   { fill: #666;    font-size: 10.5px; }
+    .section  { fill: #888; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; }
+    .title    { fill: #111; font-size: 18px; font-weight: 700; }
+  ]]></style>
+
+  <text x="700" y="22" text-anchor="middle" class="title">Agent Sandbox — Architecture</text>
+
+  <!-- ===================== CONTROL PLANE ===================== -->
+  <text x="60" y="44" class="section">CONTROL PLANE</text>
+
+  <rect class="box external" x="60"  y="50" width="140" height="50" rx="4"/>
+  <text x="130" y="73" text-anchor="middle" font-weight="600">Client</text>
+  <text x="130" y="90" text-anchor="middle" class="sub">SDK / CLI</text>
+
+  <rect class="box external" x="220" y="50" width="130" height="50" rx="4"/>
+  <text x="285" y="73" text-anchor="middle" font-weight="600">OIDC IdP</text>
+  <text x="285" y="90" text-anchor="middle" class="sub">tokens / verify</text>
+
+  <rect class="box svc" x="60" y="140" width="620" height="75" rx="6"/>
+  <text x="370" y="163" text-anchor="middle" font-weight="700">Control-Plane API (Go)</text>
+  <text x="370" y="183" text-anchor="middle" class="sub">authn │ RBAC (OPA-as-lib) │ validation │ idempotency │ spec resolver │ rate limits</text>
+  <text x="370" y="201" text-anchor="middle" class="sub">REST + gRPC over mTLS / OIDC / API key</text>
+
+  <rect class="box storage" x="60"  y="250" width="140" height="75" rx="6"/>
+  <text x="130" y="273" text-anchor="middle" font-weight="700">PostgreSQL</text>
+  <text x="130" y="293" text-anchor="middle" class="sub">state of record</text>
+  <text x="130" y="310" text-anchor="middle" class="sub">RLS per tenant</text>
+
+  <rect class="box svc" x="220" y="250" width="170" height="75" rx="6"/>
+  <text x="305" y="273" text-anchor="middle" font-weight="700">policysvc</text>
+  <text x="305" y="293" text-anchor="middle" class="sub">profiles, RBAC, quotas,</text>
+  <text x="305" y="310" text-anchor="middle" class="sub">credential refs (vault://, kms://)</text>
+
+  <rect class="box svc" x="60" y="360" width="620" height="55" rx="6"/>
+  <text x="370" y="383" text-anchor="middle" font-weight="700">Scheduler / Orchestrator</text>
+  <text x="370" y="401" text-anchor="middle" class="sub">reconciles sandboxes ⇄ runtime nodes (PG advisory lock for HA)</text>
+
+  <rect class="box svc" x="60" y="450" width="620" height="45" rx="6"/>
+  <text x="370" y="478" text-anchor="middle" font-weight="700">sandboxd — Runtime Agent (one per node)</text>
+
+  <!-- ===================== DATA PLANE ===================== -->
+  <text x="60" y="585" class="section">DATA PLANE (per sandbox)</text>
+
+  <rect class="box pod" x="60" y="595" width="620" height="455" rx="8"/>
+  <text x="370" y="617" text-anchor="middle" font-weight="600" fill="#7A5C00">Sandbox pod (shared netns + workspace mount)</text>
+
+  <rect class="box svc" x="80" y="635" width="580" height="60" rx="4"/>
+  <text x="370" y="658" text-anchor="middle" font-weight="700">Agent container</text>
+  <text x="370" y="676" text-anchor="middle" class="sub">unprivileged, no CAP_*, seccomp on; netns has no default route except → MITM proxy</text>
+
+  <rect class="box svc" x="80" y="735" width="280" height="295" rx="4"/>
+  <text x="220" y="758" text-anchor="middle" font-weight="700">MITM Proxy</text>
+  <text x="220" y="775" text-anchor="middle" class="sub">(sidecar)</text>
+  <text x="100" y="803" class="sub">• TLS intercept (per-sandbox CA)</text>
+  <text x="100" y="822" class="sub">• OPA decide (egress allowlist)</text>
+  <text x="100" y="841" class="sub">• Inject creds (broker, in-mem)</text>
+  <text x="100" y="860" class="sub">• Body inspectors (secrets/PII/AV)</text>
+  <text x="100" y="879" class="sub">• Strip inbound auth headers</text>
+  <text x="100" y="898" class="sub">• Per-(sandbox,dest) rate limits</text>
+  <text x="100" y="917" class="sub">• Audit on every decision</text>
+
+  <rect class="box svc" x="380" y="735" width="280" height="295" rx="4"/>
+  <text x="520" y="758" text-anchor="middle" font-weight="700">FUSE Daemon</text>
+  <text x="520" y="775" text-anchor="middle" class="sub">(sidecar)</text>
+  <text x="400" y="803" class="sub">• ACLs (deny → ENOENT)</text>
+  <text x="400" y="822" class="sub">• COW upper layer (tmpfs)</text>
+  <text x="400" y="841" class="sub">• Quotas (bytes, inodes, file)</text>
+  <text x="400" y="860" class="sub">• Inline scanning on writes</text>
+  <text x="400" y="879" class="sub">• Pluggable backend</text>
+  <text x="400" y="917" class="sub">• Audit on writes &amp; sampled reads</text>
+
+  <!-- agent → MITM / FUSE -->
+  <line class="arrow" x1="220" y1="695" x2="220" y2="735" marker-end="url(#arr)"/>
+  <text x="226" y="720" class="edge">HTTP(S)</text>
+  <line class="arrow" x1="520" y1="695" x2="520" y2="735" marker-end="url(#arr)"/>
+  <text x="526" y="720" class="edge">fs syscalls</text>
+
+  <!-- ===================== AUDIT PIPELINE ===================== -->
+  <text x="770" y="44" class="section">AUDIT PIPELINE</text>
+
+  <rect class="box audit" x="770" y="50" width="620" height="80" rx="6"/>
+  <text x="1080" y="74" text-anchor="middle" font-weight="700">Audit Bus (Kafka)</text>
+  <text x="1080" y="94" text-anchor="middle" class="sub">topics: audit.api (API) │ audit.process (sandboxd) │ audit.network (MITM) │ audit.filesystem (FUSE) │ audit.policy</text>
+  <text x="1080" y="112" text-anchor="middle" class="sub">tamper-evident: per-sandbox prev_hash chain; daily root signed (Ed25519)</text>
+
+  <rect class="box svc" x="850" y="160" width="220" height="100" rx="4"/>
+  <text x="960" y="184" text-anchor="middle" font-weight="700">persister</text>
+  <text x="960" y="212" text-anchor="middle" class="sub">→ S3 / GCS object store</text>
+  <text x="960" y="230" text-anchor="middle" class="sub">(Parquet, daily roll-up)</text>
+
+  <rect class="box svc" x="1100" y="160" width="220" height="100" rx="4"/>
+  <text x="1210" y="184" text-anchor="middle" font-weight="700">replay UI</text>
+  <text x="1210" y="210" text-anchor="middle" class="sub">read-only timeline</text>
+  <text x="1210" y="228" text-anchor="middle" class="sub">reconstruction</text>
+
+  <line class="arrow" x1="960"  y1="130" x2="960"  y2="160" marker-end="url(#arr)"/>
+  <line class="arrow" x1="1210" y1="130" x2="1210" y2="160" marker-end="url(#arr)"/>
+
+  <!-- ===================== DATA-PLANE DESTINATIONS ===================== -->
+  <text x="770" y="700" class="section">DATA-PLANE DESTINATIONS</text>
+
+  <rect class="box external" x="770" y="720" width="290" height="100" rx="6"/>
+  <text x="915" y="745" text-anchor="middle" font-weight="700">upstream HTTPS</text>
+  <text x="915" y="770" text-anchor="middle" class="sub">allowlisted destinations</text>
+  <text x="915" y="789" text-anchor="middle" class="sub">(api.github.com, *.pypi.org, …)</text>
+
+  <rect class="box storage" x="1090" y="720" width="300" height="100" rx="6"/>
+  <text x="1240" y="745" text-anchor="middle" font-weight="700">FS backend</text>
+  <text x="1240" y="770" text-anchor="middle" class="sub">local │ S3 │ GCS │ encrypted</text>
+  <text x="1240" y="789" text-anchor="middle" class="sub">(snapshots / persisted artifacts on teardown)</text>
+
+  <!-- ===================== CONTROL-PLANE ARROWS ===================== -->
+  <line class="arrow" x1="130" y1="100" x2="130" y2="140" marker-end="url(#arr)"/>
+  <text x="135" y="125" class="edge">REST/gRPC</text>
+
+  <line class="arrow" x1="285" y1="100" x2="285" y2="140" marker-end="url(#arr)"/>
+  <text x="290" y="125" class="edge">verify</text>
+
+  <line class="arrow" x1="130" y1="215" x2="130" y2="250" marker-end="url(#arr)"/>
+  <text x="135" y="237" class="edge">writes/reads</text>
+
+  <line class="arrow" x1="305" y1="215" x2="305" y2="250" marker-end="url(#arr)"/>
+  <text x="310" y="237" class="edge">resolve refs</text>
+
+  <line class="arrow" x1="200" y1="287" x2="220" y2="287" marker-end="url(#arr)" marker-start="url(#arr-bidi-start)"/>
+
+  <line class="arrow" x1="130" y1="325" x2="130" y2="360" marker-end="url(#arr)"/>
+  <text x="55"  y="347" class="edge" text-anchor="end">reconcile</text>
+
+  <line class="arrow-d" x1="305" y1="325" x2="305" y2="360" marker-end="url(#arr-d)"/>
+  <text x="310" y="347" class="edge-d">ResolveBindings</text>
+
+  <line class="arrow" x1="370" y1="415" x2="370" y2="450" marker-end="url(#arr)"/>
+  <text x="375" y="437" class="edge">gRPC</text>
+
+  <line class="arrow" x1="370" y1="495" x2="370" y2="595" marker-end="url(#arr)"/>
+  <text x="375" y="555" class="edge">spawns + manages</text>
+
+  <!-- API → Audit Bus (publish audit.api) -->
+  <path class="arrow" d="M 680 178 L 700 178 L 700 75 L 770 75" marker-end="url(#arr)"/>
+  <text x="755" y="155" class="edge">publish</text>
+
+  <!-- sandboxd → Audit Bus (publishes) -->
+  <path class="arrow" d="M 680 472 L 715 472 L 715 95 L 770 95" marker-end="url(#arr)"/>
+
+  <!-- ===================== DATA-PLANE EGRESS ARROWS ===================== -->
+  <!-- MITM data → upstream HTTPS -->
+  <path class="arrow" d="M 180 1030 L 180 1075 L 760 1075 L 760 770 L 770 770" marker-end="url(#arr)"/>
+  <text x="270" y="1070" class="edge">data (HTTPS)</text>
+
+  <!-- MITM audit → Audit Bus -->
+  <path class="arrow" d="M 250 1030 L 250 1090 L 730 1090 L 730 110 L 770 110" marker-end="url(#arr)"/>
+
+  <!-- FUSE audit → Audit Bus -->
+  <path class="arrow" d="M 450 1030 L 450 1095 L 745 1095 L 745 125 L 770 125" marker-end="url(#arr)"/>
+
+  <!-- FUSE data → FS backend -->
+  <path class="arrow" d="M 560 1030 L 560 1080 L 1090 1080 L 1090 770" marker-end="url(#arr)"/>
+  <text x="800" y="1075" class="edge">data (fs ops)</text>
+
+  <!-- ===================== LEGEND ===================== -->
+  <g transform="translate(60, 1100)">
+    <line x1="0"   y1="0" x2="36"  y2="0" class="arrow"   marker-end="url(#arr)"/>
+    <text x="44"  y="4" class="sub">request / data flow</text>
+    <line x1="200" y1="0" x2="236" y2="0" class="arrow-d" marker-end="url(#arr-d)"/>
+    <text x="244" y="4" class="sub">deferred / out-of-band</text>
+  </g>
+</svg>
