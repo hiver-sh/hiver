@@ -1,8 +1,8 @@
 # Agent Sandbox Design Document
 
-This document describes the implementation design for the Agent Sandbox platform whose functional requirements are specified in [README.md](README.md). It is the blueprint for building the system in Go, persisting state in PostgreSQL, and deploying identically on developer laptops (macOS, Linux), on-premise hardware, and cloud Kubernetes clusters.
+This document describes the implementation design for the Agent Sandbox platform whose functional requirements are specified in [PRD.md](PRD.md). It is the blueprint for building the system in Go, persisting state in PostgreSQL, and deploying identically on developer laptops (macOS, Linux), on-premise hardware, and cloud Kubernetes clusters.
 
-> **Traceability.** Each requirement in [README.md](README.md) carries a stable `REQ-N` identifier. Individual statements in this document that implement a requirement end with an inline `(REQ-N)` tag (or `(REQ-N, REQ-M)` when a single statement covers multiple). To find every place the design satisfies a given requirement, `grep "REQ-N\b" DESIGN.md`.
+> **Traceability.** Each requirement in [PRD.md](PRD.md) carries a stable `REQ-N` identifier. Individual statements in this document that implement a requirement end with an inline `(REQ-N)` tag (or `(REQ-N, REQ-M)` when a single statement covers multiple). To find every place the design satisfies a given requirement, `grep "REQ-N\b" DESIGN.md`.
 
 ## 1. Goals & Non-Goals
 
@@ -16,7 +16,7 @@ This document describes the implementation design for the Agent Sandbox platform
 
 ### Non-Goals
 
-- Running untrusted agent _binaries_ with kernel-level guarantees on shared hosts. We rely on the chosen isolation backend (gVisor, Kata, microVM) for that and document its trade-offs.
+- Running untrusted agent _binaries_ with kernel-level guarantees on shared hosts. v1 ships `runc` only; the host kernel is in scope for the threat model. Kernel-level isolation against hostile workloads requires a different runtime (gVisor / Kata / Firecracker), which we treat as future work (§3.3, §18). Customers needing those today should run on a single-tenant cluster or a hosted VM-grade offering.
 - Replacing existing IAM/secrets systems. The platform integrates with HashiCorp Vault, AWS KMS, GCP KMS, and OIDC IdPs rather than reimplementing them.
 - Real-time GPU multi-tenancy. v1 supports CPU/memory limits; GPU support is scoped for a follow-up.
 
@@ -83,12 +83,123 @@ The node-local daemon that performs the actual sandbox lifecycle work. One per n
       Destroy(ctx context.Context, h Handle) error
   }
   ```
-  This abstracts the runtime so any backend with comparable isolation semantics is swappable. (REQ-17, REQ-61)
-- Implementations: `runtime/runc` (OCI-compatible, default), `runtime/gvisor`, `runtime/kata`, `runtime/firecracker`. Selection comes from `spec.isolation`. (REQ-2, REQ-22)
+  This abstracts the runtime so additional backends can be added later without an architectural change. (REQ-17, REQ-61)
+- Implementation in v1: `runtime/runc` (OCI-compatible). The interface is in place for future backends (`gvisor` is the most likely second pick); see "Isolation backend" below and §18. (REQ-2, REQ-22)
 - Spawns the per-sandbox MITM proxy and FUSE daemon as siblings _before_ starting the agent container, so by the time the agent runs the egress path and workspace are already mediated. (REQ-23, REQ-48)
 - Applies per-spec resource limits via cgroups v2 (CPU, memory, pids, IO) and a wall-clock killer goroutine for `resources.timeout`. (REQ-18)
 - Drops privileges on the agent container per `security`: non-root user, empty capability set, `readOnlyRoot`, mounted seccomp profile. (REQ-20, REQ-21)
 - Exposes a thin gRPC API to the scheduler for create/start/exec/stop/destroy and to stream stdout/stderr to the audit bus. (REQ-10)
+- **Preflight gates at startup**: cgroup v2 (refuse v1 or hybrid) and active LSM matches the shipped profile (AppArmor on Debian/Ubuntu lineage, SELinux on RHEL/Fedora lineage). One-line error and exit on mismatch — no degraded-mode start. The same checks back `bin/sandbox doctor` for laptop installs.
+- **LXCFS** is bundled into the sandbox base image and bind-mounted into agent containers, so language runtimes (Java/Go/Python) size thread pools and buffers to the sandbox's cgroup limits rather than the host's `/proc`.
+
+#### Isolation backend
+
+`spec.isolation` is the low-level OCI runtime that executes the prepared rootfs. **v1 ships `runc` only**; the spec validator rejects any other value.
+
+`runc` is a low-level OCI runtime — it sets up Linux namespaces and executes the bundle. The layer above (image pull, layer unpack via overlayfs snapshotter, rootfs preparation) is owned by **containerd** in production (K8s, on-prem; §11.2, §11.3) or **Docker** locally (§11.1, laptop-only). The platform's per-sandbox `/workspace` is *separate* from the image rootfs — it's a FUSE mount (§3.5) that `sandboxd` bind-mounts into the rootfs after preparation but before the agent process starts (§8.1).
+
+**Why `runc` is sufficient for v1.** The platform's value is the *boundaries we own* — MITM proxy for egress (§3.4), FUSE daemon for filesystem (§3.5), tamper-evident audit chain (§9), and userns / dropped capabilities / seccomp / AppArmor or SELinux on the agent process (§3.3, §14). The runtime layer's job is just to set up the namespaces and execute the bundle. `runc` does this with the smallest memory floor (~10 MB), the fastest cold start (10–50 ms), and no exotic host requirements — cgroup v2 is the only one, and it's available on every supported Linux host and inside the Linux VM on macOS.
+
+**The trade-off.** `runc` shares the host kernel: a CVE the agent can reach through the seccomp-narrowed syscall surface gives host access. We accept this in v1 because (a) the platform's other boundaries do not depend on the runtime layer for their enforcement, (b) the reference threat model treats the host kernel as in-scope-trusted, and (c) shipping VM-grade alternatives (`gvisor`, `kata`, `firecracker`) would multiply the host-environment matrix (nested-virt SKUs, `/dev/kvm` exposure, per-backend shims, per-backend incompatibility lists) for marginal gain in most deployments. Customers with stricter threat models should run on a single-tenant cluster or use a hosted offering with VM-grade isolation (GKE Sandbox, AWS Fargate).
+
+The `Runtime` interface in `cmd/sandboxd` is preserved so a second backend can be added later without an architectural change. `gvisor` is the most likely candidate (process-level, no nested-virt requirement, drops in via a containerd shim). See §18 for the evaluation of alternatives.
+
+#### From image to rootfs: a worked example
+
+Both layers — image pull/unpack and OCI execution — are reachable from the command line, which is the easiest way to understand what `sandboxd` does on your behalf.
+
+The example below needs a **Linux kernel**: `runc`, overlayfs, namespaces, and cgroups don't exist on Darwin. On macOS every command runs *inside* the Linux VM that Docker / OrbStack provides — `docker pull` reaches a Linux daemon in the VM, `runc run` executes on the VM's kernel, not on the Mac host. From a terminal it looks transparent; mentally, swap *host* for *VM* whenever you read it. To run `runc` directly on a Mac (step 5), you'll need to `orb shell` or `docker run --privileged --rm -it debian` first to get a Linux process to execute it.
+
+On Linux (or inside that VM):
+
+```bash
+# 1. Pull. Docker (or containerd) fetches the manifest, verifies each
+#    layer digest, pulls the gzipped layer blobs, and pulls the image config.
+docker pull alpine:3.20
+
+# 2. Unpack. Layers are extracted into an overlayfs stack; the merged view
+#    is a complete Linux rootfs that any OCI runtime can execute.
+docker image inspect alpine:3.20 --format '{{json .GraphDriver.Data}}' | jq
+# { "LowerDir":  "...",                                  ← read-only image layers
+#   "MergedDir": "/var/lib/docker/overlay2/abc/merged",  ← this is a rootfs
+#   "UpperDir":  "/var/lib/docker/overlay2/abc/diff",    ← per-container writable
+#   "WorkDir":   "..." }
+
+# 3. Get a flat rootfs you can hand to a runtime directly.
+cid=$(docker create alpine:3.20 sh)
+docker export "$cid" -o alpine-rootfs.tar
+docker rm "$cid"
+mkdir -p bundle/rootfs
+tar -xf alpine-rootfs.tar -C bundle/rootfs
+
+# 4. Build the OCI bundle. config.json describes namespaces, uid, args, mounts.
+cd bundle
+runc spec    # generates a default config.json next to rootfs/
+
+# 5. Execute — no Docker in the loop. This is the layer §3.3's backends own.
+sudo runc run my-sandbox
+```
+
+The `bundle/` directory is OCI-spec compliant. v1 ships `runc` only; the bundle format is what would let a future `gvisor` (or `kata`/`firecracker`) backend reuse the same preparation pipeline (§18).
+
+In production, `sandboxd` doesn't shell out to `docker` or `tar`. It calls containerd's CRI API, which keeps layer blobs deduplicated across sandboxes (the read-only lower dirs are shared; only each sandbox's upper dir is unique — a major disk and page-cache win at density). The platform's per-sandbox `/workspace` (§3.5) is bind-mounted into the rootfs **after** step 4 and **before** step 5, so the FUSE-mediated workspace is in place by the time the agent process starts.
+
+Caveats if you reproduce this:
+
+- The example assumes the `overlay2` storage driver. Rootless Docker on `vfs` doesn't expose `MergedDir`, and each container is a full copy rather than an overlay.
+- `docker export` flattens layers — fine for the demo, but defeats containerd's deduplication. Don't do this in production paths.
+
+#### Same flow on Kubernetes (containerd)
+
+In production the user-facing entry point is `kubectl apply`, and the platform's `Sandbox` CRD controller emits the Pod manifest. Steps 1–4 of the pipeline above are done by containerd in response to a CRI request from kubelet; step 5 is done by `runc` (containerd's default — no `RuntimeClass` needed for the supported configuration).
+
+```bash
+# 1. Apply a Pod. The CRD controller does this for real sandboxes; this
+#    hand-rolled version exists for poking around. With no runtimeClassName
+#    set, containerd uses runc — the v1 supported runtime.
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata: { name: alpine-sandbox }
+spec:
+  containers:
+  - { name: agent, image: alpine:3.20, command: ["sleep","3600"] }
+EOF
+```
+
+To inspect what containerd produced, drop to the node where the Pod landed and use `crictl` (the CRI client kubelet would use) and `ctr` (containerd's namespace-scoped CLI):
+
+```bash
+# 2. Image pulled and unpacked. Snapshots are namespaced under "k8s.io"
+#    when the request comes from kubelet.
+sudo ctr -n k8s.io image ls | grep alpine
+sudo ctr -n k8s.io snapshot ls
+# KEY                 PARENT                 KIND
+# alpine-sandbox      sha256:layer-N         Active     ← per-container upper
+# sha256:layer-N      sha256:layer-N-1       Committed  ← shared image layer
+
+# 3. The merged rootfs the shim handed to runc — same shape as Docker's
+#    MergedDir, different path.
+sudo crictl ps --name alpine-sandbox
+# CONTAINER     IMAGE         RUNTIME    ID
+# abc123def     alpine:3.20   runc       ...
+
+ls /run/containerd/io.containerd.runtime.v2.task/k8s.io/abc123def/rootfs/
+# bin  dev  etc  lib  usr  var  ...
+
+# 4. The OCI runtime spec containerd built (equivalent of `runc spec` output).
+sudo crictl inspect abc123def | jq '.info.runtimeSpec | {process, root}'
+
+# 5. Layer dedup is visible across sandboxes from the same image:
+kubectl run alpine-sandbox-2 --image=alpine:3.20 -- sleep 3600
+sudo ctr -n k8s.io snapshot ls
+# alpine-sandbox     sha256:layer-N    Active   ← parent shared
+# alpine-sandbox-2   sha256:layer-N    Active   ← parent shared
+# Read-only image layers exist once on disk; only the per-container Active
+# layer is unique. This is the win `docker export` throws away.
+```
+
+The platform's per-sandbox `/workspace` is then bind-mounted into the agent container by `sandboxd` via the FUSE CSI driver (§3.5, §11.2), the same way it does on the laptop — Docker socket replaced by CRI. Because the bundle is OCI-spec compliant, adding a second isolation runtime later (e.g. `gvisor` via `containerd-shim-runsc-v1`) is a `RuntimeClass` change and a spec-validator allow-listing, not a code change to `sandboxd` (§18).
 
 #### Multiplexing: one sandboxd, many sandbox Pods
 
@@ -113,7 +224,7 @@ A node hosts many sandbox Pods, and the single sandboxd on that node manages all
 ### 3.5 FUSE Daemon (`cmd/sbxfuse`)
 
 - The agent's `/workspace` is a userspace FUSE mount; every read/write/stat/unlink goes through this daemon, never the kernel directly. (REQ-48)
-- Uses `bazil.org/fuse` on Linux and `bazil.org/fuse` against macFUSE on macOS, behind a thin abstraction (`fs.Mounter`); behavior and audit format are identical on both. (REQ-55)
+- Uses `bazil.org/fuse` on Linux behind a thin abstraction (`fs.Mounter`). There is no host-side macOS path: on developer Macs the daemon runs *inside* the Linux dev VM (OrbStack) and uses the same Linux mounter, so behavior and audit format match production exactly. macFUSE (kext + Reduced Security) and FUSE-T (NFSv4-loopback semantics) are both rejected — see §11.4 and the macOS limits in §17.x. (REQ-55)
 - The daemon runs out-of-process and unprivileged; if it crashes the kernel returns `EIO` for every workspace op and `sandboxd` pauses the agent until the daemon restarts. (REQ-52)
 - Pluggable **backend** interface:
   ```go
@@ -261,7 +372,7 @@ Specs are versioned (`apiVersion: sandbox.platform/v1`) — the canonical declar
   "apiVersion": "sandbox.platform/v1",
   "profile": "code-review-strict",
   "image": "registry.local/agents/coderev:1.4",
-  "isolation": "gvisor",
+  "isolation": "runc",
   "resources": {
     "cpu": "1",
     "memory": "2Gi",
@@ -325,7 +436,7 @@ type Spec struct {
 	APIVersion string    `json:"apiVersion"`        // e.g. "sandbox.platform/v1"
 	Profile    string    `json:"profile,omitempty"` // Named profile to merge under inline overrides.
 	Image      string    `json:"image"`             // OCI image reference for the agent container.
-	Isolation  Isolation `json:"isolation"`         // Backend selector: gvisor|runc|kata|firecracker.
+	Isolation  Isolation `json:"isolation"`         // Backend selector. v1 accepts only "runc"; reserved for future backends (§18).
 
 	Resources  Resources  `json:"resources"`
 	Security   Security   `json:"security"`
@@ -345,10 +456,8 @@ type EnvVar struct {
 type Isolation string
 
 const (
-	IsolationRunc        Isolation = "runc"
-	IsolationGVisor      Isolation = "gvisor"
-	IsolationKata        Isolation = "kata"
-	IsolationFirecracker Isolation = "firecracker"
+	IsolationRunc Isolation = "runc"
+	// gvisor / kata / firecracker are reserved values; not implemented in v1 (§18).
 )
 
 // Resources are k8s-style quantity strings ("1", "2Gi", "30m"); validated server-side
@@ -538,17 +647,16 @@ The "decide" step uses the per-sandbox egress allowlist. (REQ-31) "Inject creds"
 
 - Spec ACLs compile to a longest-prefix-match trie. Lookups are O(path-depth). Sensitive host paths (`~/.ssh`, `~/.aws`, etc.) are deny-listed and return `ENOENT`. (REQ-46, REQ-49)
 - Decision cache keyed by `(path, op)` with a small LRU; invalidated on PATCH.
-- Audit emission: every `read`, `write`, `unlink`, `rename`, `chmod`, `setxattr` op produces an event (sampled for high-frequency reads to avoid drowning the bus — sampling preserves all denies and all writes). (REQ-50)
+- Audit emission: every `read`, `write`, `unlink`, `rename`, `chmod`, `setxattr` op produces an event. **Sampling is off by default** — every op is recorded and contributes to the per-sandbox `prev_hash` chain, so the replay UI is always complete. Tenants who need to cap audit volume can opt into per-sandbox sampling of high-frequency reads; sampled events skip the chain and the replay UI marks the affected windows as gappy. Denies and writes are never sampled. (REQ-50)
 
 ### 8.3 Cross-platform abstraction
 
-A single `fs.Mounter` interface has implementations:
+A single `fs.Mounter` interface has two implementations:
 
 - `mounter/linux_fuse3.go` (libfuse3 via cgo or pure-Go bazil/fuse)
-- `mounter/darwin_macfuse.go` (macFUSE via the same bazil/fuse import — bazil supports both)
 - `mounter/k8s_csi.go` (talks to the platform's CSI driver and asks for a `bidirectional` propagated mount, so the agent container sees the mediated mount without needing `SYS_ADMIN`) (REQ-56)
 
-Build tags select the implementation; the rest of the daemon (ACL, COW, audit, scanning) is platform-agnostic. (REQ-55)
+There is no macOS-host mounter. On developer Macs the FUSE daemon runs inside the Linux dev VM and uses `linux_fuse3.go`; the macOS host never sees a kernel mount. We don't ship macFUSE because installing the kext requires Recovery-mode "Reduced Security" (too much developer friction); we don't ship FUSE-T because NFSv4-loopback's silly-rename, partial xattrs, and weaker mmap semantics would skew audit and break common tools. Build tags select the implementation; the rest of the daemon (ACL, COW, audit, scanning) is platform-agnostic. (REQ-55)
 
 ## 9. Audit & Replay
 
@@ -613,15 +721,22 @@ Credentials never reach the API server response, the agent container, or Postgre
 
 Outbound bodies pass through the proxy's `secrets` inspector before forwarding (and FUSE writes through the same chain before persistence) — flagged content is quarantined rather than leaked. (REQ-44)
 
+### 10.1 Workload identity
+
+mTLS between the API server, scheduler, `sandboxd`, and the per-sandbox proxy uses **SPIFFE/SPIRE** for short-lived workload identities (1-hour TTL, automatic rotation). The Helm chart ships a SPIRE bundle (server + agent DaemonSet); operators with an existing SPIFFE issuer can swap the bundle out, but SPIRE is the documented default and the only configuration we test against. Revocation is by removing the workload registration in SPIRE — there is no per-cert CRL to maintain.
+
 ## 11. Deployment Topologies
 
-The same images, the same policies, and the same audit format apply across every mode below — laptop and production are feature-equal except for scale. (REQ-57)
+The same images, the same policies, and the same audit format apply across every supported mode below. The laptop tier is intentionally narrower (one isolation backend, workspace-inside-VM only) so the developer setup stays predictable and the audit/policy surface is identical to production. (REQ-57)
 
 ### 11.1 Local (laptop)
 
-- `docker compose up` brings up: PostgreSQL, Kafka (single-broker KRaft mode), apiserver, scheduler, one `sandboxd` (Docker-in-Docker), and an ingress (Caddy) for TLS. (REQ-58)
+**Supported configuration (the only one):** Apple Silicon (M1 or newer) on macOS 14+ with OrbStack, **or** Linux 5.15+ with cgroup v2. Isolation backend is `runc` — the only one shipped in v1 (§3.3, §18).
+
+- **First step is `bin/sandbox doctor`.** It probes chip / OS version / VM tooling (OrbStack on Mac; KVM + cgroup v2 + LSM on Linux) and prints either `OK: supported` or `unsupported: <reason>`. If it doesn't pass, nothing else starts — there is no degraded-mode path. (REQ-58)
+- `docker compose up` brings up: PostgreSQL, Kafka (single-broker KRaft mode), apiserver, scheduler, one `sandboxd`, and an ingress (Caddy) for TLS. **Docker is the laptop-only runtime** — `sandboxd` runs Docker-in-Docker and starts agent containers via the host's Docker socket. Production never uses Docker as the container runtime; it's containerd (§11.2) or CRI-O on OpenShift.
 - A `sandbox` CLI (`go install ./cmd/sandbox`) calls the local API.
-- macOS uses an OrbStack/Lima VM behind the scenes so Linux namespaces are available.
+- On macOS the whole stack runs inside the OrbStack VM. Workspaces live *inside* the VM; bind-mounting host paths (e.g., `~/code`) into a sandbox is unsupported (cross-VM 9p/virtiofs throughput is poor and `inotify` is unreliable). Editor integration uses SSH-Remote / JetBrains Gateway / `code tunnel` against the VM.
 
 ### 11.2 Kubernetes
 
@@ -629,7 +744,7 @@ The same images, the same policies, and the same audit format apply across every
 - `sandboxd` runs as a privileged DaemonSet; sandboxes themselves are unprivileged Pods materialized by a `Sandbox` CRD controller. (REQ-22)
 - FUSE on K8s: a CSI driver (`csi.sandbox.platform`) installed via DaemonSet; the FUSE daemon runs as a sidecar with `mountPropagation: Bidirectional` so the mount is visible to the agent container without needing `SYS_ADMIN` on the agent. (REQ-56)
 - Distributions: tested on EKS, GKE, AKS, OpenShift, vanilla `kind`. Air-gapped clusters are supported by mirroring all images to a private registry and pinning charts by digest. (REQ-60)
-- Container runtime works against containerd, CRI-O, and Docker; gVisor or Kata is selectable per spec for stronger isolation. (REQ-61)
+- Kubernetes container runtime is **containerd** (the default since k8s 1.24, when `dockershim` was removed) or **CRI-O** on OpenShift. Docker is **not** a supported k8s CRI runtime — it's laptop-only (§11.1). The agent Pod uses containerd's default `runc` runtime; no `RuntimeClass` is required for the supported configuration. (REQ-61)
 
 ### 11.3 On-prem / cloud non-K8s
 
@@ -637,6 +752,30 @@ The same images, the same policies, and the same audit format apply across every
 - Terraform modules under `deploy/terraform/{aws,gcp,azure}` for VPC/IAM/buckets/KMS. (REQ-62)
 - All persistent state (audit object storage, snapshots, profiles, secrets refs) lives behind pluggable interfaces — no hard dependency on a specific cloud provider's proprietary services. (REQ-63)
 - A CI matrix exercises macOS, Linux (amd64 + arm64), and a `kind` Kubernetes cluster end-to-end on every release. (REQ-64)
+
+### 11.4 Supported host environments
+
+One matrix; configurations outside it are unsupported (we don't engage on bug reports for them):
+
+| Concern              | Supported                                                                                                 | Not supported                                                                              |
+|----------------------|-----------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
+| Linux kernel         | 5.15+                                                                                                     | < 5.15                                                                                     |
+| Cgroups              | v2 unified                                                                                                | v1, hybrid v1+v2                                                                           |
+| LSM                  | AppArmor (Debian/Ubuntu lineage) **or** SELinux (RHEL/Fedora lineage), auto-detected by `sandboxd`        | Hosts with neither, or with custom unprofiled LSMs                                         |
+| CNI                  | iptables-mode (kube-proxy) or eBPF (Cilium) with the documented chain-precedence policy applied           | Other CNIs without operator-validated precedence                                           |
+| Container runtime    | `runc` (the only v1 isolation backend; §3.3, §18)                                                         | Other OCI low-level runtimes (gvisor, kata, firecracker — future)                          |
+| K8s Pod Security     | Baseline cluster-wide; Privileged on `sandboxd` nodes via documented exemption                            | Restricted PSS without an exemption for `sandboxd`                                         |
+| macOS local-dev      | Apple Silicon (M1+), macOS 14+, OrbStack, `runc` only                                                     | Intel Macs, macOS < 14, Lima/Colima/Docker Desktop, non-`runc` backends                    |
+| Air-gap supply chain | Sigstore Bundle attestations verified offline                                                             | Public Rekor lookup at verify time                                                         |
+
+`sandboxd` preflights every applicable row at startup and refuses to run on a host that fails. `bin/sandbox doctor` runs the same checks for laptop installs.
+
+**Hard limits we don't try to support** (see §17.x for the rationale):
+
+- HTTP/3 / QUIC — UDP is dropped in the sandbox netns; apps that don't fall back to H/2 fail.
+- WebSocket per-frame inspection — WS upgrades are allow/deny only.
+- Pinned-root TLS clients combined with ECH — no host signal to police.
+- Restricted Pod Security Standard for `sandboxd` nodes — operators grant the exemption or scope `sandboxd` to a labeled node pool.
 
 ## 12. Observability
 
@@ -664,11 +803,11 @@ A user-initiated `DELETE /sandboxes/{id}` is the kill switch — it guarantees p
 
 ## 14. Security Considerations
 
-- **Container escape**: defense in depth — userns + seccomp + AppArmor on Linux, gVisor or Kata for hostile workloads. Privileges are dropped (non-root user, empty capability set, read-only system dirs) before the agent runs. (REQ-20, REQ-21, REQ-22)
+- **Container escape**: defense in depth on Linux — userns + seccomp + AppArmor or SELinux + dropped capabilities + non-root user + read-only system dirs before the agent runs. The runtime layer in v1 is `runc`, which shares the host kernel; kernel-CVE-grade isolation against hostile workloads requires a future VM-grade backend (§3.3, §18) or a single-tenant deployment. (REQ-20, REQ-21, REQ-22)
 - **Proxy bypass**: the only egress path is the proxy, and the agent has no `CAP_NET_RAW`, no `/dev/tcp`, no raw sockets. DNS goes through the proxy. We routinely fuzz with TLS bypass, SNI smuggling, HTTP smuggling, and DNS rebinding payloads. (REQ-23, REQ-24, REQ-28, REQ-30)
 - **FUSE bypass**: agent has no path under `/proc` or `/dev` other than what the spec allows; `/proc` is masked with read-only overlays and `/proc/<pid>` from outside the sandbox is filtered. (REQ-46)
 - **Side channels**: per-tenant cgroups; we accept the residual risk on shared CPUs and document it. (REQ-69)
-- **Supply chain**: all images built reproducibly with SLSA-3 provenance, scanned in CI, signed with `cosign`; the `apiVersion`-pinned spec records the image digest. (REQ-72)
+- **Supply chain**: all images built reproducibly with SLSA-3 provenance, scanned in CI, signed with `cosign`; the `apiVersion`-pinned spec records the image digest. Verification uses **Sigstore Bundle attestations** embedded in the image — the bundle carries certificate, signature, and inclusion proof, so verifiers don't need to reach Rekor at verify time. Air-gapped clusters get supply-chain verification without standing up an internal Sigstore mirror. (REQ-60, REQ-72)
 - **Authn/z fuzzing**: dedicated `cmd/securitytest` exercises the API with malformed tokens, expired certs, role escalation attempts. (REQ-11)
 
 ## 15. Cross-Cutting Engineering Conventions
@@ -751,7 +890,7 @@ The placeholder `ANTHROPIC_API_KEY` keeps the SDK from short-circuiting at start
 {
   "apiVersion": "sandbox.platform/v1",
   "image": "registry.local/agents/fixbug:1.0",
-  "isolation": "gvisor",
+  "isolation": "runc",
   "resources": { "cpu": "1", "memory": "1Gi", "disk": "2Gi", "timeout": "15m" },
   "security": {
     "user": "10001:10001",
@@ -839,24 +978,52 @@ sandbox run --spec spec.json --follow
 - End-to-end data-residency knobs (per-tenant region pinning for object storage and PG) — partially supported today via per-tenant retention but not full residency. (REQ-70)
 - Built-in human-in-the-loop approval queue for `Per-action approval mode`; today this is a webhook that defers to an external system. (REQ-67)
 
+### Evaluated alternatives: VM-grade isolation backends
+
+v1 ships `runc` only (§3.3). The `Runtime` interface in `cmd/sandboxd` is preserved so additional backends can be added without an architectural change. Summary of the alternatives we considered and why they're future work:
+
+| Backend       | Boundary                              | Cold start  | Memory floor | Host requirement                  | Why not in v1                                                                                  |
+|---------------|---------------------------------------|-------------|--------------|-----------------------------------|------------------------------------------------------------------------------------------------|
+| `gvisor`      | Userspace kernel (Sentry)             | 100–300 ms  | ~30 MB       | cgroup v2 (KVM optional, faster)  | Most likely second backend. Curated syscall surface (gaps in `io_uring`, BPF, exotic `ioctl`s) needs a known-incompatible workload list and per-image validation we don't want to own in v1. |
+| `kata`        | Hardware VM (real Linux guest)        | 1–3 s       | ~80–120 MB   | `/dev/kvm`                        | Strongest isolation but needs nested virt; most managed K8s nodes (default EKS/GKE/AKS) don't expose `/dev/kvm`, so the matrix complication is large for a small audience.                |
+| `firecracker` | Hardware microVM (minimal device set) | 125–500 ms  | ~5–20 MB     | `/dev/kvm`                        | Same nested-virt constraint as `kata`, plus a stripped device model that requires per-image compatibility validation.                                                                     |
+
+**When to revisit:** customer demand for "VM-grade isolation against hostile workload code" (compliance scopes, multi-tenant untrusted code on shared nodes). `gvisor` is the most likely first add — process-level, drops in via `containerd-shim-runsc-v1`, no nested-virt needed. `kata`/`firecracker` would follow only if a single-tenant + bare-metal customer paid for them.
+
+**What needs to happen to add `gvisor`** (illustrative, not committed):
+
+1. Allow-list `"gvisor"` in the `spec.isolation` validator and the `Isolation` Go enum (§3.3, §5).
+2. Ship a `RuntimeClass: gvisor` in the Helm chart with the `runsc` handler, gated on a node label.
+3. Preflight in `sandboxd`: detect the `runsc` shim binary on the node when the spec asks for `gvisor`.
+4. Maintain a "known-incompatible workloads" list (`io_uring`, BPF syscalls, exotic `ioctl`s) and a CI suite that exercises the published agent images against `runsc` on every release.
+5. Update §11.4 to add a "Container runtime" supported value of `gvisor` and §3.3's Isolation backend section to make the trade-off explicit.
+
+For customers who need VM-grade isolation today: run on a single-tenant cluster, or use a hosted offering with VM-grade isolation built in (GKE Sandbox, AWS Fargate, Azure Container Apps with isolated SKUs).
+
 ### macOS local-dev limitations
 
 §11.1 currently claims "feature parity with the production deployment except for scale." That overstates the macOS story. Concrete gaps for someone running the stack on a Mac via OrbStack/Lima:
 
-- **Isolation backends gated on host OS + chip.** Only `runc` is reliable on every Mac. `gvisor` falls back to the slow `ptrace` platform without nested virt; `kata` and `firecracker` need nested KVM, which Apple's `Hypervisor.framework` only exposes on **M3 or later** silicon running **macOS 15 (Sequoia) or later**. Pre-M3 Macs and older OS versions cannot exercise these backends locally — they are effectively CI-only for those developers. (REQ-17, REQ-57, REQ-61, REQ-64)
-- **VM tooling has to opt into nested virt.** Even on M3+/macOS 15+, OrbStack / Lima / Docker Desktop each surface (or don't surface) the capability independently. The Helm chart and `compose.yaml` need a documented "minimum local toolchain" matrix.
+- **Isolation backend reliability on Mac was a major input to v1 scoping.** Only `runc` is reliable on every Mac. `gvisor` falls back to slow `ptrace` mode without nested virt; `kata` and `firecracker` need nested KVM, which Apple's `Hypervisor.framework` only exposes on M3+ silicon on macOS 15+. Rather than ship a backend matrix the laptop can't actually exercise, v1 ships `runc` only (§3.3). (REQ-17, REQ-57, REQ-61, REQ-64)
 - **arm64 image coverage.** On Apple Silicon, amd64 agent images run under `qemu-user-static` at 5–10× slowdown and break subtle syscall semantics — which matters because the platform fuzzes seccomp, TLS bypass, SNI smuggling, and DNS rebinding (§14). Either the CI matrix publishes arm64 variants of every shipped image, or local fuzz results diverge from CI. (REQ-64)
 - **macFUSE on the host is a nonstarter.** The `mounter/darwin_macfuse.go` path requires a kernel extension whose installation on Apple Silicon needs Recovery-mode "reduced security" — too much friction to mandate. Practically, FUSE on macOS only works *inside* the Linux VM, making the macOS-host mounter dead code. We should either delete it or replace with FUSE-T (NFSv4-loopback) and accept the behavior delta.
 - **Cross-boundary workspace I/O.** Bind-mounting a macOS source tree into the sandbox workspace traverses macOS → virtio-fs/9p → Linux VM → FUSE → backend. Throughput is poor and `inotify` across the boundary is unreliable. The recommended pattern (workspace lives inside the VM) hurts editor integration on the host.
 - **Resource floor in real units.** macOS (~7 GB) + Linux VM (~4–6 GB) + Postgres + Kafka JVM (~1.5 GB) + per-sandbox overhead (~200 MB each) puts the comfortable minimum at **32 GB**. 16 GB Macs can run the stack but only 1–2 concurrent sandboxes before swap. Doc should state this explicitly rather than implying parity.
 - **Audit timing oddities.** macOS suspends the VM on lid-close; the sandbox's monotonic-vs-wall clock pairing in audit events (§9.1) drifts until resync. Not security-relevant — `prev_hash` chain still verifies — but reordered events in the replay UI confuse reviewers.
 
-**Action items to resolve these:**
+**Action items — favor simplicity; if a configuration is hard to support, refuse it and document the limit:**
 
-1. Replace §11.1's parity claim with an explicit support matrix (chip × macOS version × backend).
-2. Decide whether `mounter/darwin_macfuse.go` is supported, deprecated, or deleted.
-3. Add an arm64 row to the published-image matrix for every agent base image we ship (REQ-64).
-4. Ship a `bin/preflight` tool that the local-dev quickstart runs first to detect chip / macOS version / VM tooling and refuse to start with a clear message instead of failing partway.
+1. **One supported local-dev configuration.** Replace §11.1's parity claim with a single supported path: Apple Silicon (M1 or newer), macOS 14+, OrbStack, `isolation: runc` (the only v1 backend, §3.3). Everything outside this is unsupported — no "best effort" tier.
+2. **Delete `mounter/darwin_macfuse.go`.** macFUSE requires Recovery-mode "Reduced Security," which is not something we can ask developers to enable. The macOS-host mounter is dead code; on macOS the workspace lives *inside* the Linux VM, period. (Re-evaluate FUSE-T only if a future feature genuinely requires a host-side mount, and accept the silly-rename / xattr / mmap deltas if we do.)
+3. **Ship arm64 images for local use; amd64 only in CI.** Don't publish amd64 variants for the laptop quickstart. Running amd64 under QEMU is too slow and diverges on the syscall surfaces we fuzz (§14).
+4. **`sandbox doctor` as the first quickstart step.** Single command: detects chip / macOS version / OrbStack and prints either "supported" or "not supported: <reason>." It does not suggest workarounds and does not start anything on an unsupported host.
+
+**Limits we won't try to paper over on macOS:**
+
+- `gvisor`, `kata`, `firecracker` are **out of scope for v1** (§3.3, §18). The spec validator rejects them; they're a documented future-work item, not a preflight failure on a per-host basis.
+- **Host-bind-mounted workspaces are unsupported.** Workspace data lives inside the VM; editor integration is via SSH-Remote / JetBrains Gateway / `code tunnel` — not by mounting `/Users/...` into the sandbox.
+- **macOS-only filesystem semantics don't survive the boundary.** `com.apple.quarantine`, Spotlight metadata, FSEvents, resource forks: assume gone.
+- **Lid-close clock skew** can reorder audit events in the replay UI. The `prev_hash` chain still verifies, but the timeline view will look out of order until the next resync. Documented behavior, not a bug to chase.
 
 ### Linux production gotchas
 
@@ -864,7 +1031,6 @@ Linux is the primary target so most of the design works as written, but several 
 
 **Gated by host capability**
 
-- **KVM nesting still gates `kata` / `firecracker`.** The §3.3 backend matrix is theoretical for most managed K8s offerings: AWS only exposes `/dev/kvm` on `*.metal` instances; GCE requires the `enable-nested-virtualization` license bit on the node image; Azure restricts it to D/E v3+ "v2" SKUs. The spec validator should reject `isolation: kata|firecracker` on nodes that lack KVM and surface a clear error rather than failing at sandbox start. (REQ-2, REQ-17)
 - **cgroup v2 is required but not stated.** §3.3 says "cgroups v2"; many enterprise distros still default to v1 (RHEL 8.x, older Ubuntu LTS), and hybrid v1+v2 mode silently splits controllers so resource limits look enforced but aren't. State a minimum kernel + cgroup-version requirement and have sandboxd refuse to start on non-v2 hosts. (REQ-18)
 - **PSS Restricted profile blocks the design.** sandboxd needs `privileged: true`, `mountPropagation: Bidirectional`, and `hostPath` mounts for cgroupfs — all forbidden by Kubernetes' Restricted Pod Security Standard, which is increasingly the default in enterprise clusters. Helm chart needs to ship a documented PSS exemption (or matching OPA Gatekeeper / Kyverno policy) for sandboxd-eligible nodes. (REQ-22, REQ-59)
 
@@ -883,17 +1049,25 @@ Linux is the primary target so most of the design works as written, but several 
   - **Encrypted Client Hello (ECH):** strips SNI-based hostname filtering. Adoption small but growing; the proxy's host matching needs to look at intercepted plaintext, not SNI.
   - **WebSockets / streaming bidi:** inspectors in §3.4 are designed for request/response. Per-frame WS scanning isn't in the design. (REQ-25, REQ-31, REQ-44)
 - **Audit event volume can flood Kafka and create replay gaps.** A `find /workspace` or `pip install` produces tens of thousands of FS events per second. §8.2's "sampled to avoid drowning the bus" creates **forensic replay gaps** — exactly the noisy operations a reviewer would want to see. The design should specify which event classes are sampling-eligible vs always-recorded, and how sampled events interact with the per-sandbox `prev_hash` chain (sampled events can't be in the chain or chain integrity breaks). (REQ-39, REQ-41, REQ-50)
-- **gVisor's syscall coverage is incomplete.** Real workloads hit gaps: `io_uring`, exotic `ioctl`s, BPF syscalls, certain `madvise` flags. Some Python ML libs (faiss, certain torch ops) and Go programs using `runtime/trace` have known issues. The design treats gVisor as a drop-in; in practice some agent images need a backend-specific shim or fall back to `runc` with weaker isolation. Need a "known-incompatible workloads" doc. (REQ-17)
-
 **Supply chain**
 
 - **Air-gapped clusters can't reach public Sigstore/Rekor.** REQ-60 says air-gapped is supported by mirroring images, but §14 also requires `cosign`-signed images with SLSA-3 provenance. By definition, air-gapped clusters can't reach the public transparency log; verification fails unless the operator stands up an internal Sigstore + Rekor stack. Today this is aspirational — needs an explicit "internal Sigstore mirror required" requirement or a documented bundled-attestation alternative. (REQ-60, REQ-72)
 
-**Action items to resolve these:**
+**Action items — favor simplicity; if a configuration is hard to support, refuse it and document the limit:**
 
-1. Add a "Supported host environment" subsection to §11 listing minimum kernel version, cgroup version, LSM (AppArmor or SELinux), and CNI compatibility.
-2. Make sandboxd preflight-check cgroup v2, KVM availability (when `kata`/`firecracker` selected), and active LSM at startup; refuse to run on incompatible hosts.
-3. Ship LXCFS (or equivalent) as part of the sandbox base image and bind-mount it into agent containers (§3.3).
-4. Pick an identity issuance backend (likely SPIRE) and write it into §10.
-5. Document the audit-sampling policy in §8.2 / §9.1, including which event classes participate in the `prev_hash` chain.
-6. Stand up an internal Sigstore/Rekor reference deployment for air-gapped customers, or pivot to Sigstore Bundle attestations that don't require log lookup at verify time.
+1. **Single "Supported host" matrix in §11.** Linux 5.15+, cgroup v2 only, one of {AppArmor on Debian/Ubuntu lineage, SELinux on RHEL/Fedora lineage}, iptables-mode or eBPF CNI with the chain precedence we document. Outside this matrix is unsupported — not "may work."
+2. **`sandboxd` refuses to start on unsupported hosts.** Hard preflight: cgroup v2 (fail on v1 or hybrid, no opt-out) and active LSM matches the shipped profile. One-line error and exit; no degraded-mode start.
+3. **Bundle LXCFS in the sandbox base image and bind-mount by default.** No "or equivalent." Resource visibility is mandatory so runtimes size pools to sandbox limits, not host.
+4. **SPIRE is *the* identity backend.** Write it into §10, ship a SPIRE bundle in the Helm chart, drop the hedging language. Operators who already run a different SPIFFE issuer can swap; that's their integration to own.
+5. **Audit sampling is opt-in, off by default.** All filesystem and network events go on the per-sandbox `prev_hash` chain. Sampling is a per-tenant tunable for cost-sensitive deployments who explicitly accept replay gaps; the replay UI marks sampled windows. Document the opt-in in §8.2 and §9.1.
+6. **Air-gap uses Sigstore Bundle attestations only.** Verifier reads the bundle from the image; no Rekor lookup at verify time. Drop the "mirror public Sigstore internally" plan — too much surface area for too little gain.
+
+**Limits we won't try to support on Linux:**
+
+- **HTTP/3 / QUIC**: UDP is dropped in the sandbox netns. Apps that don't fall back to H/2 fail. We are not adding a UDP-aware proxy path.
+- **Pinned-root TLS clients** (Go `MinVersion`-style truststores, custom Java keystores, some SDK retry paths): TLS intercept fails closed. Operators can opt destinations out via `tlsIntercept: false` per host, but that's a deliberate inspection regression they sign for — not a feature to expand.
+- **WebSocket per-frame inspection**: not supported. WS upgrades are allow/deny only; the inspector chain (§3.4) does not see frames.
+- **VM-grade isolation backends** (`gvisor`, `kata`, `firecracker`): not shipped in v1 (§3.3, §18). The interface in `cmd/sandboxd` is preserved so they can be added later, but the spec validator rejects them today.
+- **Kubernetes Restricted PSS**: `sandboxd` requires `privileged: true` + `mountPropagation: Bidirectional` + cgroupfs `hostPath`. Operators grant a PSS exemption (or scope `sandboxd` to a labeled node pool); there is no Restricted-mode variant.
+- **CNIs we haven't validated chain precedence against**: explicitly unsupported. The Helm chart documents the required chain order and a Cilium policy snippet; anything else needs operator validation before we'll engage on bug reports.
+- **ECH-encrypted SNI**: when ECH is in use, host-allowlist matching falls back to the intercepted plaintext Host header. Pinned + ECH together can't be policed and are unsupported in combination.
