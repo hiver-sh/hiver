@@ -19,10 +19,10 @@ import (
 
 // startProxy boots a proxy on a random port and returns the HTTP client
 // configured to use it, plus the audit buffer for assertions.
-func startProxy(t *testing.T, allow []string) (*http.Client, *bytes.Buffer, func()) {
+func startProxy(t *testing.T, rules []proxy.EgressRule) (*http.Client, *bytes.Buffer, func()) {
 	t.Helper()
 	audit := &bytes.Buffer{}
-	p, err := proxy.New(proxy.Config{Addr: "127.0.0.1:0", Allow: allow, Audit: audit})
+	p, err := proxy.New(proxy.Config{Addr: "127.0.0.1:0", Allow: rules, Audit: audit})
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
-	client, audit, stop := startProxy(t, []string{upstreamHost})
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{Host: upstreamHost}})
 	defer stop()
 
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
@@ -135,28 +135,43 @@ func TestHTTPDeniedReturns403(t *testing.T) {
 	}
 }
 
-func TestMatchAllowlist(t *testing.T) {
+func TestMatchEgress(t *testing.T) {
+	rules := []proxy.EgressRule{
+		{Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/repos/*"}},
+		{Host: "*.pypi.org"}, // any method, any path
+		{Host: "files.example.com", Headers: map[string]string{"X-Auth": "tok"}},
+	}
 	cases := []struct {
-		name    string
-		host    string
-		allow   []string
-		want    bool
+		name             string
+		method, host, p  string
+		wantMatch        bool
+		wantHeaderInject string
 	}{
-		{"exact match", "api.github.com", []string{"api.github.com"}, true},
-		{"exact mismatch", "evil.com", []string{"api.github.com"}, false},
-		{"wildcard subdomain", "files.pypi.org", []string{"*.pypi.org"}, true},
-		{"wildcard apex excluded", "pypi.org", []string{"*.pypi.org"}, false},
-		{"wildcard mismatched suffix", "evil.org", []string{"*.pypi.org"}, false},
-		{"empty host", "", []string{"anything.com"}, false},
-		{"empty allowlist denies all", "anything.com", nil, false},
-		{"multiple patterns, second matches", "files.pypi.org", []string{"api.github.com", "*.pypi.org"}, true},
-		{"empty pattern strings ignored", "api.github.com", []string{"", "api.github.com", " "}, true},
-		{"deep subdomain on exact", "evil.api.github.com", []string{"api.github.com"}, false},
+		{"http: full match on rule 1", "GET", "api.github.com", "/repos/foo", true, ""},
+		{"http: method denied", "POST", "api.github.com", "/repos/foo", false, ""},
+		{"http: path denied", "GET", "api.github.com", "/users/foo", false, ""},
+		{"http: wildcard host any method/path", "POST", "files.pypi.org", "/anything", true, ""},
+		{"http: wildcard apex excluded", "GET", "pypi.org", "/", false, ""},
+		{"http: header rule injects", "GET", "files.example.com", "/x", true, "tok"},
+		{"tls: host-only match (path empty)", "TLS", "files.pypi.org", "", true, ""},
+		{"tls: host miss", "TLS", "evil.com", "", false, ""},
+		{"empty host always denied", "GET", "", "/", false, ""},
+		{"empty rules deny everything", "GET", "anywhere.com", "/", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := proxy.MatchAllowlist(tc.host, tc.allow); got != tc.want {
-				t.Errorf("MatchAllowlist(%q, %v) = %v, want %v", tc.host, tc.allow, got, tc.want)
+			r := rules
+			if tc.name == "empty rules deny everything" {
+				r = nil
+			}
+			got := proxy.MatchEgress(r, tc.method, tc.host, tc.p)
+			if (got != nil) != tc.wantMatch {
+				t.Fatalf("MatchEgress(%q,%q,%q) match=%v, want %v", tc.method, tc.host, tc.p, got != nil, tc.wantMatch)
+			}
+			if tc.wantHeaderInject != "" {
+				if got == nil || got.Headers["X-Auth"] != tc.wantHeaderInject {
+					t.Errorf("expected header X-Auth=%q on matched rule, got %+v", tc.wantHeaderInject, got)
+				}
 			}
 		})
 	}
@@ -171,7 +186,7 @@ func TestStripDefaultAuthHeaders(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
-	client, _, stop := startProxy(t, []string{upstreamHost})
+	client, _, stop := startProxy(t, []proxy.EgressRule{{Host: upstreamHost}})
 	defer stop()
 
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)

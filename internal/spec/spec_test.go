@@ -26,7 +26,7 @@ func TestLoadValid(t *testing.T) {
 		"agent":     {"env": ["FOO=bar"]},
 		"workspace": {"backend": "/back", "mount": "/work",
 		              "acls": [{"path": "/", "access": "rw"}]},
-		"egress":    {"allow": ["api.github.com"]},
+		"egress":    {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]},
 		"audit_dir": "/audit"
 	}`)
 	s, err := spec.Load(p)
@@ -39,7 +39,7 @@ func TestLoadValid(t *testing.T) {
 	if s.Workspace.Mount != "/work" || len(s.Workspace.ACLs) != 1 {
 		t.Errorf("workspace: %+v", s.Workspace)
 	}
-	if got := s.Egress.Allow; len(got) != 1 || got[0] != "api.github.com" {
+	if got := s.Egress.Allow; len(got) != 1 || got[0].Host != "api.github.com" || len(got[0].Methods) != 1 || got[0].Methods[0] != "GET" {
 		t.Errorf("egress: %+v", got)
 	}
 	if s.AuditDir != "/audit" {

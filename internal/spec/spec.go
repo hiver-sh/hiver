@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/sandbox-platform/agent-sandbox/internal/fusefs"
+	"github.com/sandbox-platform/agent-sandbox/internal/proxy"
 )
 
 // Spec is the root document. Loaded by sandboxd via [Load].
@@ -30,7 +31,7 @@ type Spec struct {
 
 // Agent describes the workload sandboxd will launch once the sidecars are up.
 //
-// Path is the host-side directory containing the agent's Dockerfile.
+// image is the host-side directory containing the agent's Dockerfile.
 // It's the orchestrator's hint for where to build the agent image from
 // — sandboxd itself doesn't read it, since by the time sandboxd starts
 // the orchestrator has already built + saved the image to the fixed
@@ -40,8 +41,8 @@ type Spec struct {
 // Env are extra KEY=VAL entries appended to the env that comes from the
 // agent image's own config (image entrypoint + image env are honored).
 type Agent struct {
-	Path string   `json:"path,omitempty"`
-	Env  []string `json:"env,omitempty"`
+	Image string   `json:"image,omitempty"`
+	Env   []string `json:"env,omitempty"`
 }
 
 // AgentImageTar is the in-container path sandboxd reads the agent's
@@ -66,10 +67,11 @@ type Workspace struct {
 	AuditReads bool          `json:"audit_reads,omitempty"`
 }
 
-// Egress controls the MITM proxy allowlist. Patterns are exact hosts or
-// "*.suffix" wildcards.
+// Egress controls the MITM proxy allowlist. Rules are evaluated
+// top-to-bottom; the first match wins. The canonical [proxy.EgressRule]
+// definition lives in the proxy package since it's the consumer.
 type Egress struct {
-	Allow []string `json:"allow"`
+	Allow []proxy.EgressRule `json:"allow"`
 }
 
 // Load reads and validates a spec file.

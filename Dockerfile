@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         runc \
         iptables \
         ca-certificates \
+        procps \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/sandboxd  /usr/local/bin/sandboxd

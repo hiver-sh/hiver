@@ -27,11 +27,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/sandbox-platform/agent-sandbox/internal/proxy"
 	"github.com/sandbox-platform/agent-sandbox/internal/runc"
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
 )
@@ -96,12 +96,39 @@ func main() {
 	// recovers the original destination via SO_ORIGINAL_DST and
 	// dispatches by protocol sniff. The agent itself is unaware of
 	// the proxy — no HTTP_PROXY env, no opt-in cooperation required.
+	rulesTmp := filepath.Join(sp.AuditDir, "egress-rules.json")
+	if err := writeJSON(rulesTmp, sp.Egress.Allow); err != nil {
+		log.Fatalf("write rules: %v", err)
+	}
+	// Generate a per-pod CA. sbxproxy uses it to mint leaf certs for
+	// TLS interception (any rule with paths/methods/headers triggers
+	// termination). The cert PEM is also spliced into the agent rootfs
+	// trust store below so the agent's TLS handshake validates the
+	// proxy-presented leaf.
+	caCert, caKey, err := proxy.GenerateCA()
+	if err != nil {
+		log.Fatalf("generate CA: %v", err)
+	}
+	caCertPath := filepath.Join(sp.AuditDir, "sandbox-ca.crt")
+	caKeyPath := filepath.Join(sp.AuditDir, "sandbox-ca.key")
+	if err := os.WriteFile(caCertPath, proxy.EncodeCertPEM(caCert), 0o644); err != nil {
+		log.Fatalf("write ca cert: %v", err)
+	}
+	caKeyPEM, err := proxy.EncodeKeyPEM(caKey)
+	if err != nil {
+		log.Fatalf("encode ca key: %v", err)
+	}
+	if err := os.WriteFile(caKeyPath, caKeyPEM, 0o600); err != nil {
+		log.Fatalf("write ca key: %v", err)
+	}
 	proxyArgs := []string{
 		"-transparent",
 		"-addr", proxyAddr,
-		"-allow", strings.Join(sp.Egress.Allow, ","),
+		"-rules", rulesTmp,
 		"-audit", proxyAuditPath,
 		"-mark", fmt.Sprintf("%d", soMark),
+		"-ca-cert", caCertPath,
+		"-ca-key", caKeyPath,
 	}
 	proxyCmd, err := startChild(ctx, &children, "sbxproxy", *proxyBin, proxyArgs, nil)
 	if err != nil {
@@ -169,6 +196,24 @@ func main() {
 		log.Fatalf("unpack agent image %s: %v", spec.AgentImageTar, err)
 	}
 	log.Printf("sandboxd: agent image unpacked to %s (entrypoint=%v)", rootfsDir, imgCfg.Entrypoint)
+
+	// Splice the per-pod CA into the agent rootfs trust store so the
+	// agent's TLS handshakes validate the leaf certs sbxproxy mints
+	// during interception. We append (not replace) so the agent keeps
+	// trust for unintercepted TLS to public hosts. Best effort: an
+	// image without ca-certificates installed gets a warning — its TLS
+	// requests will fail anyway, with or without our addition.
+	caBundle := filepath.Join(rootfsDir, "etc/ssl/certs/ca-certificates.crt")
+	if existing, err := os.ReadFile(caBundle); err == nil {
+		merged := append(existing, '\n')
+		merged = append(merged, proxy.EncodeCertPEM(caCert)...)
+		if err := os.WriteFile(caBundle, merged, 0o644); err != nil {
+			log.Fatalf("install sandbox CA into agent rootfs: %v", err)
+		}
+		log.Printf("sandboxd: installed sandbox CA into %s", caBundle)
+	} else {
+		log.Printf("sandboxd: agent rootfs has no %s — TLS interception will fail; install ca-certificates in the agent image", caBundle)
+	}
 
 	extraEnv := append([]string{
 		"WORKSPACE=" + sp.Workspace.Mount,
@@ -304,12 +349,17 @@ func freePort() (int, error) {
 
 // writeACLs serializes the ACL list to a file sbxfuse can load.
 func writeACLs(path string, acls any) error {
+	return writeJSON(path, acls)
+}
+
+// writeJSON encodes v to path as a single JSON document.
+func writeJSON(path string, v any) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return json.NewEncoder(f).Encode(acls)
+	return json.NewEncoder(f).Encode(v)
 }
 
 // installIptables sets up the OUTPUT-chain nat REDIRECT rules that make

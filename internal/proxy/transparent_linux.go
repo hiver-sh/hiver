@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -78,11 +79,7 @@ func (p *Proxy) handleTransparent(c *net.TCPConn) {
 	case protoHTTP:
 		p.handleTransparentHTTP(c, br, origDst)
 	case protoTLS:
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "TLS",
-			Host: origDst, Verdict: "deny",
-			Reason: "TLS not yet supported in transparent mode",
-		})
+		p.handleTransparentTLS(c, br, origDst)
 	default:
 		p.audit(AuditEvent{
 			At: time.Now(), Type: "network", Method: "?",
@@ -91,6 +88,172 @@ func (p *Proxy) handleTransparent(c *net.TCPConn) {
 		})
 	}
 }
+
+// handleTransparentTLS reads enough of the TLS ClientHello to extract
+// the SNI hostname and matches it host-only against the allowlist.
+// What happens next depends on the matched rule:
+//
+//   - If the rule has no method/path/header criteria (host-only intent),
+//     the proxy raw-forwards the byte stream both ways. The agent's TLS
+//     handshake goes end-to-end with the real upstream — no MITM.
+//
+//   - If the rule has any inspection criteria AND the proxy was started
+//     with a CA, the proxy terminates TLS: presents a leaf cert minted
+//     by the sandbox CA, reads the inner HTTP request, applies
+//     method/path/header rules, and proxies a separate TLS connection
+//     to the upstream. The agent must trust the sandbox CA (sandboxd
+//     installs it into the agent rootfs at bundle prep time).
+func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst string) {
+	hello, _ := br.Peek(1024)
+	host := parseSNI(hello)
+	if host == "" {
+		host = origDst
+	}
+	rule := MatchEgress(p.cfg.Allow, "TLS", host, "")
+	if rule == nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: "TLS",
+			Host: host, Verdict: "deny", Reason: "no matching rule",
+		})
+		return
+	}
+	if needsInspection(rule) && p.minter != nil {
+		p.interceptTLS(c, br, host, origDst)
+		return
+	}
+	p.rawForwardTLS(c, br, host, origDst)
+}
+
+// needsInspection reports whether a rule's criteria can only be enforced
+// after TLS termination (i.e. requires reading the plaintext request).
+func needsInspection(r *EgressRule) bool {
+	return len(r.Methods) > 0 || len(r.Paths) > 0 || len(r.Headers) > 0
+}
+
+func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string) {
+	upstream, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
+	if err != nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: "TLS",
+			Host: host, Verdict: "error", Reason: err.Error(),
+		})
+		return
+	}
+	defer upstream.Close()
+	p.audit(AuditEvent{
+		At: time.Now(), Type: "network", Method: "TLS",
+		Host: host, Verdict: "allow",
+	})
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(upstream, br); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(c, upstream); done <- struct{}{} }()
+	<-done
+}
+
+// interceptTLS terminates TLS, applies HTTP-level rules to the inner
+// request, and proxies it to the upstream over a separate TLS
+// connection. One request per connection (Connection: close) — the
+// HTTP/1.1 keep-alive loop is a follow-up.
+func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string) {
+	innerCfg := &tls.Config{
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return p.minter.Mint(host)
+		},
+		// Force HTTP/1.1 — our inspection loop reads request lines,
+		// not HPACK frames. Modern hosts negotiate h2 via ALPN; pinning
+		// http/1.1 keeps the agent's stack on the version we can read.
+		NextProtos: []string{"http/1.1"},
+	}
+	clientTLS := tls.Server(&peekedConn{Conn: c, r: br}, innerCfg)
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: "TLS",
+			Host: host, Verdict: "error",
+			Reason: "inner handshake: " + err.Error(),
+		})
+		return
+	}
+	defer clientTLS.Close()
+
+	rawUp, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
+	if err != nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: "TLS",
+			Host: host, Verdict: "error", Reason: err.Error(),
+		})
+		return
+	}
+	upstreamTLS := tls.Client(rawUp, &tls.Config{
+		ServerName: host,
+		NextProtos: []string{"http/1.1"},
+	})
+	if err := upstreamTLS.HandshakeContext(context.Background()); err != nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: "TLS",
+			Host: host, Verdict: "error",
+			Reason: "upstream handshake: " + err.Error(),
+		})
+		_ = rawUp.Close()
+		return
+	}
+	defer upstreamTLS.Close()
+
+	req, err := http.ReadRequest(bufio.NewReader(clientTLS))
+	if err != nil {
+		return
+	}
+	rule := MatchEgress(p.cfg.Allow, req.Method, host, req.URL.Path)
+	if rule == nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: req.Method,
+			Host: host, Path: req.URL.Path, Verdict: "deny",
+			Status: http.StatusForbidden, Reason: "no matching rule",
+		})
+		_, _ = clientTLS.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
+		return
+	}
+	for _, h := range p.stripHeaders {
+		req.Header.Del(h)
+	}
+	for k, v := range rule.Headers {
+		req.Header.Set(k, v)
+	}
+	req.RequestURI = ""
+	req.Header.Set("Connection", "close")
+
+	if err := req.Write(upstreamTLS); err != nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: req.Method,
+			Host: host, Path: req.URL.Path, Verdict: "error", Reason: err.Error(),
+		})
+		return
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(upstreamTLS), req)
+	if err != nil {
+		p.audit(AuditEvent{
+			At: time.Now(), Type: "network", Method: req.Method,
+			Host: host, Path: req.URL.Path, Verdict: "error", Reason: err.Error(),
+		})
+		return
+	}
+	defer resp.Body.Close()
+	p.audit(AuditEvent{
+		At: time.Now(), Type: "network", Method: req.Method,
+		Host: host, Path: req.URL.Path, Verdict: "allow", Status: resp.StatusCode,
+	})
+	_ = resp.Write(clientTLS)
+}
+
+// peekedConn wraps a net.Conn so reads come from a bufio.Reader that
+// still holds the peeked ClientHello bytes. tls.Server reads the
+// handshake from this composite reader; writes go straight to the
+// underlying conn.
+type peekedConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (p *peekedConn) Read(b []byte) (int, error) { return p.r.Read(b) }
 
 // handleTransparentHTTP serves one origin-form HTTP request. The Host
 // header carries the agent's intended hostname (used for allowlist
@@ -108,11 +271,12 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	}
 	hostOnly := hostnameOf("", host)
 
-	if !p.allowed(hostOnly) {
+	rule := MatchEgress(p.cfg.Allow, req.Method, hostOnly, req.URL.Path)
+	if rule == nil {
 		p.audit(AuditEvent{
 			At: time.Now(), Type: "network", Method: req.Method,
 			Host: hostOnly, Path: req.URL.Path, Verdict: "deny",
-			Status: http.StatusForbidden, Reason: "not in allowlist",
+			Status: http.StatusForbidden, Reason: "no matching rule",
 		})
 		_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 		return
@@ -120,6 +284,9 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 
 	for _, h := range p.stripHeaders {
 		req.Header.Del(h)
+	}
+	for k, v := range rule.Headers {
+		req.Header.Set(k, v)
 	}
 	// http.ReadRequest leaves req.RequestURI set; req.Write picks origin
 	// form regardless, but clear it so it doesn't accidentally end up as
@@ -226,6 +393,63 @@ func getOriginalDst(c *net.TCPConn) (string, error) {
 		return "", sockErr
 	}
 	return addr, nil
+}
+
+// parseSNI extracts the server_name extension from a TLS ClientHello.
+// Returns "" if the buffer is too short, malformed, or has no SNI.
+//
+// We only care about the host string for allowlist matching; we don't
+// validate other ClientHello fields, and we tolerate truncation since
+// the caller passes a Peek of the first ~1 KiB.
+func parseSNI(b []byte) string {
+	const recHdr = 5
+	const hsHdr = 4
+	if len(b) < recHdr+hsHdr || b[0] != 0x16 || b[recHdr] != 0x01 {
+		return ""
+	}
+	p := recHdr + hsHdr + 2 + 32 // version(2) + random(32)
+	if len(b) < p+1 {
+		return ""
+	}
+	sidLen := int(b[p])
+	p += 1 + sidLen
+	if len(b) < p+2 {
+		return ""
+	}
+	csLen := int(binary.BigEndian.Uint16(b[p:]))
+	p += 2 + csLen
+	if len(b) < p+1 {
+		return ""
+	}
+	cmLen := int(b[p])
+	p += 1 + cmLen
+	if len(b) < p+2 {
+		return ""
+	}
+	extLen := int(binary.BigEndian.Uint16(b[p:]))
+	p += 2
+	end := p + extLen
+	if end > len(b) {
+		end = len(b)
+	}
+	for p+4 <= end {
+		extType := binary.BigEndian.Uint16(b[p:])
+		extDataLen := int(binary.BigEndian.Uint16(b[p+2:]))
+		p += 4
+		if extType == 0x0000 { // server_name
+			if extDataLen < 5 || p+5 > len(b) {
+				return ""
+			}
+			// server_name_list_length(2) + name_type(1) + name_length(2)
+			nameLen := int(binary.BigEndian.Uint16(b[p+3:]))
+			if p+5+nameLen > len(b) {
+				return ""
+			}
+			return string(b[p+5 : p+5+nameLen])
+		}
+		p += extDataLen
+	}
+	return ""
 }
 
 // suppress unused-import warning on platforms that don't pull in io.

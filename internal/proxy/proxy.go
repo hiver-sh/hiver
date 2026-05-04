@@ -8,6 +8,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,13 +21,13 @@ import (
 	"time"
 )
 
-// Config drives a proxy instance. Allow patterns may be exact hosts
-// ("api.github.com") or wildcard suffixes ("*.pypi.org").
+// Config drives a proxy instance.
 type Config struct {
 	// Listen address (e.g. "127.0.0.1:3128"). Required.
 	Addr string
-	// Allowed host patterns. Empty list = deny everything.
-	Allow []string
+	// Allow lists rules evaluated top-to-bottom; the first match wins.
+	// An empty list denies everything.
+	Allow []EgressRule
 	// Audit sink. Each event is encoded as one JSON line.
 	// Required; tests pass *bytes.Buffer, prod passes os.Stderr.
 	Audit io.Writer
@@ -38,6 +40,30 @@ type Config struct {
 	// rule for proxy-originated traffic, breaking what would otherwise
 	// be a redirect loop. Linux only; ignored on other platforms.
 	OutboundMark int
+	// CACert / CAKey, when both set, enable TLS termination for rules
+	// that carry path/method/header criteria. The proxy mints per-host
+	// leaf certs signed by this CA; the orchestrator must install the
+	// CA into the agent's trust store. If unset, transparent TLS is
+	// always raw-forwarded after SNI host match.
+	CACert *x509.Certificate
+	CAKey  *ecdsa.PrivateKey
+}
+
+// EgressRule is one allow entry for outbound traffic.
+//
+// Host is required (exact, or "*.suffix" wildcard). Methods and Paths
+// are optional HTTP filters — an empty list means "any". Headers, when
+// set, are merged into the forwarded HTTP request via Header.Set
+// (existing values are replaced).
+//
+// For TLS in transparent mode, only Host is consulted (the proxy can
+// read SNI from the ClientHello but not method/path under encryption);
+// Methods/Paths/Headers are ignored on those flows.
+type EgressRule struct {
+	Host    string            `json:"host"`
+	Methods []string          `json:"methods,omitempty"`
+	Paths   []string          `json:"paths,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // DefaultStrippedAuthHeaders is the set the proxy removes when
@@ -65,6 +91,7 @@ type Proxy struct {
 	stripHeaders []string
 	dialer       *net.Dialer
 	transport    *http.Transport
+	minter       *CertMinter // nil unless TLS termination is enabled
 
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
@@ -94,13 +121,17 @@ func New(cfg Config) (*Proxy, error) {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	return &Proxy{
+	p := &Proxy{
 		cfg:          cfg,
 		stripHeaders: strip,
 		dialer:       dialer,
 		transport:    transport,
 		auditEnc:     json.NewEncoder(cfg.Audit),
-	}, nil
+	}
+	if cfg.CACert != nil && cfg.CAKey != nil {
+		p.minter = NewCertMinter(cfg.CACert, cfg.CAKey)
+	}
+	return p, nil
 }
 
 // Listen binds the proxy's listener so callers can read [Addr] before
@@ -154,11 +185,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	host := hostnameOf(r.URL.Host, r.Host)
-	if !p.allowed(host) {
+	rule := MatchEgress(p.cfg.Allow, r.Method, host, r.URL.Path)
+	if rule == nil {
 		p.audit(AuditEvent{
 			At: time.Now(), Type: "network", Method: r.Method,
 			Host: host, Path: r.URL.Path, Verdict: "deny",
-			Status: http.StatusForbidden, Reason: "not in allowlist",
+			Status: http.StatusForbidden, Reason: "no matching rule",
 		})
 		http.Error(w, "egress denied: "+host, http.StatusForbidden)
 		return
@@ -166,6 +198,9 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for _, h := range p.stripHeaders {
 		r.Header.Del(h)
+	}
+	for k, v := range rule.Headers {
+		r.Header.Set(k, v)
 	}
 
 	// Rebuild the request for forwarding. http.DefaultTransport requires
@@ -206,11 +241,12 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host := hostnameOf("", r.Host)
-	if !p.allowed(host) {
+	// CONNECT is host-only — body is opaque under TLS.
+	if MatchEgress(p.cfg.Allow, "CONNECT", host, "") == nil {
 		p.audit(AuditEvent{
 			At: time.Now(), Type: "network", Method: "CONNECT",
 			Host: host, Verdict: "deny", Status: http.StatusForbidden,
-			Reason: "not in allowlist",
+			Reason: "no matching rule",
 		})
 		http.Error(w, "egress denied: "+host, http.StatusForbidden)
 		return
@@ -257,29 +293,73 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	_ = upstream.Close()
 }
 
-// allowed checks host against the proxy's allowlist.
-func (p *Proxy) allowed(host string) bool {
-	return MatchAllowlist(host, p.cfg.Allow)
-}
-
-// MatchAllowlist reports whether host matches any pattern in allow.
-// Patterns are exact hostnames ("api.github.com") or wildcard suffixes
-// ("*.pypi.org" matches "files.pypi.org" but not "pypi.org" itself).
-// Exposed for tests; the proxy uses it internally on every request.
-func MatchAllowlist(host string, allow []string) bool {
+// MatchEgress finds the first rule that matches a request, or nil if
+// none does. method and path may be "" for non-HTTP traffic (TLS,
+// CONNECT) — in that case only Host is matched.
+func MatchEgress(rules []EgressRule, method, host, path string) *EgressRule {
 	if host == "" {
-		return false
+		return nil
 	}
-	for _, pat := range allow {
-		pat = strings.TrimSpace(pat)
-		if pat == "" {
+	for i := range rules {
+		r := &rules[i]
+		if !matchHost(r.Host, host) {
 			continue
 		}
-		if pat == host {
+		if path == "" {
+			return r
+		}
+		if !matchMethod(r.Methods, method) {
+			continue
+		}
+		if !matchPath(r.Paths, path) {
+			continue
+		}
+		return r
+	}
+	return nil
+}
+
+func matchHost(pat, host string) bool {
+	pat = strings.TrimSpace(pat)
+	if pat == "" {
+		return false
+	}
+	if pat == host {
+		return true
+	}
+	if strings.HasPrefix(pat, "*.") && strings.HasSuffix(host, pat[1:]) {
+		return true
+	}
+	return false
+}
+
+func matchMethod(allowed []string, method string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(a, method) {
 			return true
 		}
-		if strings.HasPrefix(pat, "*.") && strings.HasSuffix(host, pat[1:]) {
+	}
+	return false
+}
+
+// matchPath supports exact match and a trailing "/*" wildcard. "/api/*"
+// matches "/api" and anything under it; "/api" matches only itself.
+func matchPath(allowed []string, path string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, a := range allowed {
+		if a == path {
 			return true
+		}
+		if strings.HasSuffix(a, "/*") {
+			prefix := strings.TrimSuffix(a, "/*")
+			if path == prefix || strings.HasPrefix(path, prefix+"/") {
+				return true
+			}
 		}
 	}
 	return false

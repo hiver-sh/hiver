@@ -1,33 +1,19 @@
-# Python agent for the sandbox-pod E2E test.
-#
-# This script intentionally produces no application-level logging and
-# does NOT cooperate with any proxy environment: it makes plain HTTP
-# requests as if there were no sandbox in front of it. iptables in the
-# sandbox-pod's netns transparently REDIRECTs the agent's outbound TCP
-# to sbxproxy, which decides allow/deny by sniffing the request and
-# matching the Host header against the egress allowlist. The operation
-# log lives entirely in sandboxd, which tails the proxy + FUSE audit
-# streams (DESIGN.md §9.1) — the agent's job is just to exercise the
-# boundaries.
-#
-# Required env vars (sandboxd exports WORKSPACE; the host test threads
-# ALLOW_URL / DENY_URL / DENY_PATH through agent.env):
-#   WORKSPACE         - /workspace
-#   ALLOW_URL         - URL the proxy should allow (host: upstream-allowed)
-#   DENY_URL          - URL the proxy should deny  (host: upstream-denied)
-#   DENY_PATH         - path inside the workspace that the FUSE ACL denies
 import contextlib
-import os
 import time
 import urllib.request
 import urllib.error
 
 
 def http_get(url):
-    if not url:
-        return
     with contextlib.suppress(urllib.error.HTTPError, OSError):
         with urllib.request.urlopen(url, timeout=5):
+            pass
+
+
+def http_post(url):
+    with contextlib.suppress(urllib.error.HTTPError, OSError):
+        req = urllib.request.Request(url, data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=5):
             pass
 
 
@@ -43,17 +29,20 @@ def fs_read(path):
             f.read()
 
 
-http_get(os.environ.get("ALLOW_URL", ""))
-http_get(os.environ.get("DENY_URL", ""))
+# Probes are written against the egress rules in spec.yaml: the proxy
+# allows GET / on upstream-allowed (with a header override) and TLS to
+# go.dev (host-only match via SNI). Everything else is denied.
+http_get("http://upstream-allowed:17080/")            # rule match
+http_post("http://upstream-allowed:17080/")           # method denied
+http_get("http://upstream-allowed:17080/forbidden")   # path denied
+http_get("http://upstream-denied:17081/")             # host denied
+http_get("https://go.dev/solutions/case-studies/")    # TLS intercepted, path allowed
+http_get("https://go.dev/doc/devel/release")                           # TLS intercepted, path denied
 
-ws = os.environ.get("WORKSPACE", "")
-if ws:
-    fs_write(os.path.join(ws, "hello.txt"), "hello from python")
-    fs_read(os.path.join(ws, "hello.txt"))
-
-deny_path = os.environ.get("DENY_PATH", "")
-if deny_path:
-    fs_read(deny_path)
+# /workspace is a FUSE mount — sbxfuse mediates per-op via ACLs.
+fs_write("/workspace/hello.txt", "hello from python")
+fs_read("/workspace/hello.txt")
+fs_read("/workspace/secret/keys.txt")                 # ACL deny → ENOENT
 
 # Block forever so the sandbox-pod stays up for inspection
 # (docker exec into it, peek at /workspace, attach a debugger, etc.).
