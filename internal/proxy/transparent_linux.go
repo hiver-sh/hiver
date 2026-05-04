@@ -89,6 +89,30 @@ func (p *Proxy) handleTransparent(c *net.TCPConn) {
 	}
 }
 
+// peekTLSRecord returns the bytes of the next TLS record (header + body)
+// without consuming them. We can't blindly Peek(1024) because a small
+// ClientHello (e.g. curl 7.88 with a tight cipher list) may be only
+// ~500 bytes, and bufio.Reader.Peek blocks waiting for the missing
+// bytes that never arrive. Reading the 5-byte record header first
+// gives us the exact length to ask for.
+func peekTLSRecord(br *bufio.Reader) ([]byte, error) {
+	hdr, err := br.Peek(5)
+	if err != nil || len(hdr) < 5 {
+		return nil, fmt.Errorf("short TLS record header: %w", err)
+	}
+	bodyLen := int(binary.BigEndian.Uint16(hdr[3:5]))
+	const maxRecord = 16384 + 5 // RFC 8446 §5.1 plaintext fragment cap + header
+	total := 5 + bodyLen
+	if total > maxRecord {
+		return nil, fmt.Errorf("TLS record too large: %d", total)
+	}
+	full, err := br.Peek(total)
+	if err != nil && len(full) < total {
+		return nil, err
+	}
+	return full, nil
+}
+
 // handleTransparentTLS reads enough of the TLS ClientHello to extract
 // the SNI hostname and matches it host-only against the allowlist.
 // What happens next depends on the matched rule:
@@ -104,7 +128,7 @@ func (p *Proxy) handleTransparent(c *net.TCPConn) {
 //     to the upstream. The agent must trust the sandbox CA (sandboxd
 //     installs it into the agent rootfs at bundle prep time).
 func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst string) {
-	hello, _ := br.Peek(1024)
+	hello, _ := peekTLSRecord(br)
 	host := parseSNI(hello)
 	if host == "" {
 		host = origDst

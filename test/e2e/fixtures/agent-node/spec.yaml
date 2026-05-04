@@ -1,0 +1,43 @@
+# Sandbox spec for the agent-python E2E fixture.
+#
+# sandboxd reads this file (mounted at /mnt/spec.yaml) and uses it to
+# stand up the proxy + FUSE sidecars and to launch the agent under runc.
+# The agent image is built from `image:` (relative to this file) and
+# bind-mounted into sandboxd as a docker-archive tarball.
+#
+# All probe URLs and paths are hardcoded inside agent.py — the agent
+# doesn't read configuration from env vars. The host-side test binds
+# upstream-allowed:17080 and upstream-denied:17081 to match.
+agent:
+  image: .
+
+workspace:
+  backend: /workspace-backend
+  mount: /workspace
+  audit_reads: true
+  acls:
+    - { path: /,          access: rw   }
+    - { path: /**,        access: rw   }
+    - { path: /secret/**, access: deny }
+
+egress:
+  # Each entry is an EgressRule. host is required; methods, paths, and
+  # headers are optional. An omitted methods/paths list means "any". The
+  # headers map is merged onto the forwarded request via Header.Set —
+  # the agent doesn't see (or get to override) these values.
+  allow:
+    - host: upstream-allowed
+      methods: [GET]
+      paths: [/]
+      headers:
+        X-Sandbox-Agent: agent-python
+    # TLS rule with path criteria: triggers TLS interception. sbxproxy
+    # presents a leaf cert minted by the per-pod CA, decrypts the inner
+    # request, enforces the path filter, then re-establishes TLS to
+    # the real upstream. The agent trusts the CA via the bundle that
+    # sandboxd splices into its rootfs at startup.
+    - host: go.dev
+      methods: [GET]
+      paths: [/solutions/case-studies/*]
+
+audit_dir: /audit-out

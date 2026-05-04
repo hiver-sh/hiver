@@ -7,19 +7,6 @@ import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-
-# Inbound HTTP listener — the host can POST to the sandbox-pod once the
-# agent has emitted "DONE", to verify host→agent ingress works. The
-# sandbox-pod publishes container:18000 to its own host port. Routes:
-#
-#   POST /hello   echo probe; surfaces as
-#                 "[agent:out] INGRESS POST /hello <body!r>".
-#
-#   POST /exec    body is a bash command; the agent runs it under
-#                 /bin/bash -c and returns
-#                 {"exit_code": int, "stdout": str, "stderr": str}.
-#                 Stdout-prints "[agent:out] INGRESS EXEC <cmd!r>
-#                 → exit=<code>" so the host-side test can assert.
 class _IngressHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))

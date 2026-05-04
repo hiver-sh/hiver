@@ -1,0 +1,67 @@
+ops:
+  # ── HTTP rule match: GET / on upstream-allowed ──────────────────────
+  - desc: "agent emits HTTP GET probe to allowed upstream"
+    substring: "[agent:out] GET http://upstream-allowed:17080/"
+  - desc: "proxy allows GET on upstream-allowed/"
+    substring: "sandboxd: agent op | proxy allow GET upstream-allowed/"
+
+  # ── HTTP method denied: POST on upstream-allowed ────────────────────
+  - desc: "agent emits HTTP POST probe (will be method-denied)"
+    substring: "[agent:out] POST http://upstream-allowed:17080/"
+  - desc: "proxy denies POST on upstream-allowed (rule allows GET only)"
+    substring: "sandboxd: agent op | proxy deny  POST upstream-allowed"
+
+  # ── HTTP path denied: GET /forbidden on upstream-allowed ────────────
+  - desc: "agent emits HTTP GET on forbidden path"
+    substring: "[agent:out] GET http://upstream-allowed:17080/forbidden"
+  - desc: "proxy denies GET /forbidden (rule allows / only)"
+    substring: "sandboxd: agent op | proxy deny  GET upstream-allowed/forbidden"
+
+  # ── HTTP host denied: upstream-denied ───────────────────────────────
+  - desc: "agent emits HTTP GET to disallowed host"
+    substring: "[agent:out] GET http://upstream-denied:17081/"
+  - desc: "proxy denies GET on upstream-denied (no matching rule)"
+    substring: "sandboxd: agent op | proxy deny  GET upstream-denied"
+
+  # ── HTTPS allowed via TLS interception + path match ─────────────────
+  # The "CURL " prefix proves the request went through the curl binary
+  # (libcurl + OpenSSL), not Python's urllib — a stronger TLS-MITM test
+  # because curl's cert validation is stricter than urllib's.
+  - desc: "agent emits HTTPS GET on allowed go.dev path via curl"
+    substring: "[agent:out] CURL GET https://go.dev/solutions/case-studies/"
+  - desc: "proxy intercepts TLS, matches path, allows"
+    substring: "sandboxd: agent op | proxy allow GET go.dev/solutions/case-studies"
+
+  # ── HTTPS denied after TLS interception ─────────────────────────────
+  - desc: "agent emits HTTPS GET on denied go.dev path via curl"
+    substring: "[agent:out] CURL GET https://go.dev/doc/devel/release"
+  - desc: "proxy intercepts TLS, denies path"
+    substring: "sandboxd: agent op | proxy deny  GET go.dev/doc/devel/release"
+
+  # ── FUSE write allowed ──────────────────────────────────────────────
+  - desc: "agent emits FS write probe"
+    substring: "[agent:out] WRITE /workspace/hello.txt"
+  - desc: "FUSE allows write to /hello.txt"
+    substring: "sandboxd: agent op | fuse  allow write      /hello.txt"
+
+  # ── FUSE read allowed ───────────────────────────────────────────────
+  - desc: "agent emits FS read probe (allowed)"
+    substring: "[agent:out] READ /workspace/hello.txt"
+  - desc: "FUSE allows read on /hello.txt"
+    substring: "sandboxd: agent op | fuse  allow read       /hello.txt"
+
+  # ── FUSE deny on /secret/... ────────────────────────────────────────
+  - desc: "agent emits FS read probe on /secret (will be ACL-denied)"
+    substring: "[agent:out] READ /workspace/secret/keys.txt"
+  - desc: "FUSE denies lookup under /secret (ACL)"
+    substring: "sandboxd: agent op | fuse  deny  lookup     /secret"
+
+  # ── Agent reaches sleep loop ────────────────────────────────────────
+  - desc: "agent reaches idle"
+    substring: "[agent:out] DONE"
+
+  # ── Host → agent ingress (sent after DONE) ──────────────────────────
+  - desc: "agent receives host-side POST on /hello"
+    substring: "[agent:out] INGRESS POST /hello 'hello-from-host'"
+  - desc: "agent runs a host-driven bash command and returns its exit code"
+    substring: "[agent:out] INGRESS EXEC 'echo hello-from-exec; exit 7' → exit=7"

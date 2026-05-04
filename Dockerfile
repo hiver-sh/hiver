@@ -1,11 +1,3 @@
-# sandbox-runtime — language-agnostic prototype runtime image.
-#
-# Contains: sandboxd + sbxproxy + sbxfuse, plus the Linux bits the FUSE
-# mount needs (fuse3, fusermount). Has *no* agent runtime — Python, Node,
-# Go, etc. are added by per-fixture images that use this as their FROM.
-#
-# Build:  docker build -t sandbox-runtime .
-# Use:    test/e2e/fixtures/<lang>/Dockerfile starts with `FROM sandbox-runtime`.
 FROM golang:1.23-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -37,6 +29,5 @@ COPY --from=build /out/sandboxd  /usr/local/bin/sandboxd
 COPY --from=build /out/sbxproxy  /usr/local/bin/sbxproxy
 COPY --from=build /out/sbxfuse   /usr/local/bin/sbxfuse
 
-# Default entrypoint runs sandboxd; per-fixture images supply --spec.
 ENTRYPOINT ["/usr/local/bin/sandboxd"]
 CMD ["--help"]
