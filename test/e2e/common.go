@@ -68,17 +68,17 @@ func runFixtureE2E(t *testing.T, fixtureName string) {
 
 	output := runSandboxPod(t, agentTar, specPath, auditDir)
 
-	// (1) sandboxd-emitted operation log. The agent itself is silent —
-	// sandboxd reports what it observed via the proxy and FUSE audit
-	// streams. Each "agent op | …" line is one mediated operation.
-	// Expected ops live in the fixture's expectations.yaml so the
+	// (1) Substring assertions against the pod's combined stdout/stderr.
+	// Expected lines live in the fixture's expectations.yaml so the
 	// fixture is self-describing (Dockerfile + agent.py + spec.yaml +
-	// expectations.yaml all in one directory).
-	ops := parseAgentOps(output)
+	// expectations.yaml all in one directory). Most entries assert
+	// agent-printed "[agent:out] …" lines, but any substring of the
+	// container output is fair game (sandboxd lifecycle, audit-tail
+	// "agent op | …", etc.).
 	expectationsPath := filepath.Join(fixtureDir, "expectations.yaml")
 	for _, want := range loadExpectations(t, expectationsPath) {
-		if !containsAny(ops, want.Substring) {
-			t.Errorf("missing %s op: no line containing %q", want.Desc, want.Substring)
+		if !strings.Contains(output, want.Substring) {
+			t.Errorf("missing %s: no substring %q in pod output", want.Desc, want.Substring)
 		}
 	}
 
@@ -250,6 +250,9 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 		"--device", "/dev/fuse",
 		"--add-host", "upstream-allowed:host-gateway",
 		"--add-host", "upstream-denied:host-gateway",
+		// Publish the agent's ingress listener so the host can POST in.
+		// 18000:18000 is matched by agent.py's HTTPServer binding.
+		"-p", "18000:18000",
 		"-v", auditDir + ":/audit-out",
 		"-v", agentTar + ":/mnt/agent.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
@@ -262,8 +265,10 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 	idleSeen := make(chan struct{})
 	w := &lineSentinel{
 		out:      &out,
-		marker:   []byte("sandboxd: agent op |"),
-		minCount: 8, // 4 proxy verdicts (allow/method/path/host) + ≥4 FUSE ops
+		// agent.py prints "DONE" once it has completed every probe (just
+		// before entering its sleep loop). Wait for that one line.
+		marker:   []byte("[agent:out] DONE"),
+		minCount: 1,
 		fired:    idleSeen,
 	}
 	cmd.Stdout, cmd.Stderr = w, w
@@ -277,8 +282,14 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 
 	select {
 	case <-idleSeen:
-		// Agent has emitted everything we want to assert on. Stop the
-		// pod so the test can finish; --rm cleans up the container.
+		// Agent has emitted DONE — its ingress HTTP server has been up
+		// since startup, so the host can probe it now to verify
+		// host→agent traffic flows. Then give sandboxd's audit-tail
+		// goroutine (which polls every 100 ms) a settle window so the
+		// last verdicts and the INGRESS line have made it to stdout.
+		sendIngressProbe(t)
+		sendExecProbe(t)
+		time.Sleep(500 * time.Millisecond)
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stopCancel()
 		_ = exec.CommandContext(stopCtx, "docker", "kill", containerName).Run()
@@ -294,6 +305,72 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 		t.Fatalf("container timed out after 90s\n%s", out.String())
 	}
 	return out.String()
+}
+
+// sendIngressProbe posts a small payload to the agent's ingress
+// listener (published by `docker run -p 18000:18000`). The agent
+// prints "INGRESS POST <path> <body!r>" on receipt, which the test
+// then asserts via expectations.yaml. Failures are logged but
+// non-fatal — fixtures without an HTTP listener simply won't have
+// an INGRESS expectation and the test still passes.
+func sendIngressProbe(t *testing.T) {
+	t.Helper()
+	body := strings.NewReader("hello-from-host")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1:18000/hello", body)
+	if err != nil {
+		t.Logf("ingress probe: build request: %v", err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Logf("ingress probe: %v (the agent may not expose an HTTP listener; ignore for non-python fixtures)", err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// sendExecProbe POSTs a bash command to the agent's /exec endpoint and
+// asserts the returned JSON ({exit_code, stdout, stderr}) matches what
+// running `echo hello-from-exec; exit 7` should produce. This proves
+// host→agent command execution round-trips: the host can drive the
+// agent and read back its results.
+func sendExecProbe(t *testing.T) {
+	t.Helper()
+	const command = "echo hello-from-exec; exit 7"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1:18000/exec", strings.NewReader(command))
+	if err != nil {
+		t.Errorf("exec probe: build request: %v", err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Errorf("exec probe: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("exec probe: status %d, want 200", resp.StatusCode)
+		return
+	}
+	var result struct {
+		ExitCode int    `json:"exit_code"`
+		Stdout   string `json:"stdout"`
+		Stderr   string `json:"stderr"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Errorf("exec probe: decode response: %v", err)
+		return
+	}
+	if result.ExitCode != 7 {
+		t.Errorf("exec probe: exit_code=%d, want 7", result.ExitCode)
+	}
+	if !strings.Contains(result.Stdout, "hello-from-exec") {
+		t.Errorf("exec probe: stdout=%q, want substring %q", result.Stdout, "hello-from-exec")
+	}
 }
 
 // lineSentinel mirrors writes into out and closes fired once it has
@@ -354,33 +431,6 @@ func loadExpectations(t *testing.T, path string) []Expectation {
 		t.Fatalf("parse expectations: %v", err)
 	}
 	return f.Ops
-}
-
-// parseAgentOps extracts the trailing "…" portion of each
-// "sandboxd: agent op | …" line that sandboxd emits as it tails the
-// proxy and FUSE audit streams. The agent itself produces no logs;
-// this is the orchestrator's view of what the agent did.
-func parseAgentOps(stream string) []string {
-	const marker = "sandboxd: agent op | "
-	var out []string
-	for _, line := range strings.Split(stream, "\n") {
-		i := strings.Index(line, marker)
-		if i < 0 {
-			continue
-		}
-		out = append(out, line[i+len(marker):])
-	}
-	return out
-}
-
-// containsAny returns true if any of lines contains substr.
-func containsAny(lines []string, substr string) bool {
-	for _, l := range lines {
-		if strings.Contains(l, substr) {
-			return true
-		}
-	}
-	return false
 }
 
 // readJSONLines reads a file with one JSON object per line. Returns an
