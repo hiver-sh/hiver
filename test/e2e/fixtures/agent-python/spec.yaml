@@ -1,0 +1,31 @@
+# Sandbox spec for the agent-python E2E fixture.
+#
+# sandboxd reads this file (mounted at /mnt/spec.yaml) and uses it to
+# stand up the proxy + FUSE sidecars and to launch the agent under runc.
+# The agent image itself is opaque to this spec — it's referenced by tar
+# path, with extra env appended on top of the image's own ENTRYPOINT/env.
+#
+# The upstream URLs are pinned: the host-side test binds the two upstream
+# HTTP servers to these specific ports (17080 allowed, 17081 denied) so
+# the spec can carry concrete values rather than placeholders.
+agent:
+  image_tar: /mnt/agent.tar
+  env:
+    - ALLOW_URL=http://upstream-allowed:17080/
+    - DENY_URL=http://upstream-denied:17081/
+    - DENY_PATH=/workspace/secret/keys.txt
+
+workspace:
+  backend: /workspace-backend
+  mount: /workspace
+  audit_reads: true
+  acls:
+    - { path: /,          access: rw   }
+    - { path: /**,        access: rw   }
+    - { path: /secret/**, access: deny }
+
+egress:
+  allow:
+    - upstream-allowed
+
+audit_dir: /audit-out

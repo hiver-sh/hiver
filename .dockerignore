@@ -1,0 +1,7 @@
+.git
+.claude
+bin/
+*.svg
+DESIGN.md
+PROTOTYPE.md
+README.md
