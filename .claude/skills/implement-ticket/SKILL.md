@@ -5,7 +5,7 @@ description: Implement a single ticket (T<n>) from DESIGN.md §20. Reads the tic
 
 # implement-ticket
 
-Implement one coding ticket from DESIGN.md §20 — and *only* that ticket.
+Implement one coding ticket from docs/DESIGN.md §20 — and *only* that ticket.
 
 ## Input
 
@@ -15,9 +15,9 @@ The user passes a ticket ID. Accept any of: `T47`, `47`, `ticket 47`, `t47`. If 
 
 ### 1. Load context
 
-- **Find the ticket.** Read DESIGN.md §20 and locate the entry. If the file has no §20 or the ID isn't found, stop and report it.
+- **Find the ticket.** Read docs/DESIGN.md §20 and locate the entry. If the file has no §20 or the ID isn't found, stop and report it.
 - **Read referenced design sections.** Each ticket implicitly belongs to a component — `T47` is in §20.8 (sandboxd), so read §3.3. `T11` is in §20.3 (spec) so read §5. Read sibling tickets in the same `20.x` subsection to understand the seam between this ticket and adjacent work.
-- **Pull in any `(REQ-N)` tags.** Grep PRD.md for the requirement so you know what behavior must hold.
+- **Pull in any `(REQ-N)` tags.** Grep docs/PRD.md for the requirement so you know what behavior must hold.
 
 ### 2. Verify dependencies
 
@@ -44,7 +44,7 @@ For trivial tickets (binary skeletons, type definitions, single-file additions) 
 Code must:
 
 - **Match the deliverable verbatim.** No drive-by additions; no work that belongs to a neighboring ticket "while I'm here."
-- **Follow repo conventions** (DESIGN.md §15): typed sentinel errors, `errors.Is`/`As` at boundaries, `context.Context` as first arg on every IO call, table-driven tests, `errgroup` for fan-out, `slog` with `tenant_id` / `sandbox_id` / `trace_id`.
+- **Follow repo conventions** (docs/DESIGN.md §15): typed sentinel errors, `errors.Is`/`As` at boundaries, `context.Context` as first arg on every IO call, table-driven tests, `errgroup` for fan-out, `slog` with `tenant_id` / `sandbox_id` / `trace_id`.
 - **Inline `(R<N>)` tags** the same way the rest of the codebase does — comments or commit-message-style annotations near the implementing code.
 - **Include at least one test.** Table-driven unit test for pure logic; `testcontainers-go` integration test if the ticket touches PG/Kafka; a smoke test for binary skeletons (`-help` doesn't panic).
 - **Add godoc** on exported types and exported functions.
@@ -65,7 +65,7 @@ If verification fails, fix the code — do not hand off broken work.
 
 ### 6. Mark the ticket complete
 
-After verification passes, edit DESIGN.md §20 to flip the ticket's checkbox from `- [ ] **T<n>.**` to `- [x] **T<n>.**`. This is the single source of truth for which tickets are done; the skill, the user, and any other automation all read it.
+After verification passes, edit docs/DESIGN.md §20 to flip the ticket's checkbox from `- [ ] **T<n>.**` to `- [x] **T<n>.**`. This is the single source of truth for which tickets are done; the skill, the user, and any other automation all read it.
 
 **Do not** mark complete if:
 - Verification failed (don't claim broken work as done).
@@ -78,7 +78,7 @@ Output exactly four things:
 
 1. **Files changed** — paths with `+/-` line counts.
 2. **Test result** — pass/fail summary, plus how many tests ran.
-3. **Suggested commit message** — `T<n>: <title copied from DESIGN.md §20>`. Do **not** commit unless the user explicitly asks; per the global git rules, only commit when asked.
+3. **Suggested commit message** — `T<n>: <title copied from docs/DESIGN.md §20>`. Do **not** commit unless the user explicitly asks; per the global git rules, only commit when asked.
 4. **Newly unblocked tickets** — scan §20 for tickets that listed this one as a dep. List their IDs so the user knows what's now ready to start.
 
 ## Rules
@@ -94,11 +94,11 @@ User: `implement-ticket T47`
 
 You:
 
-1. Read DESIGN.md §20.8 → T47 is "sandboxd binary skeleton: gRPC server for scheduler. *(deps: T1, T2)*".
+1. Read docs/DESIGN.md §20.8 → T47 is "sandboxd binary skeleton: gRPC server for scheduler. *(deps: T1, T2)*".
 2. Verify T1 (`go.mod`, repo layout) and T2 (proto definitions in `pkg/sandboxv1/`) exist.
 3. Read §3.3 to understand sandboxd's role and the Runtime interface (T48, deferred).
 4. Create `cmd/sandboxd/main.go` with a minimal gRPC server, health endpoint, slog setup, and a stub for the Runtime interface T48 will define.
 5. Add a smoke test that the binary boots and `--help` works.
 6. `go build ./cmd/sandboxd && go test ./cmd/sandboxd/...` — both pass.
-7. Edit DESIGN.md §20.8: flip `- [ ] **T47.**` → `- [x] **T47.**`.
-8. Hand off with: 3 files changed (incl. DESIGN.md checkbox flip), 1 test added, suggested commit `T47: sandboxd binary skeleton`, and a note that T48–T55 are now unblocked.
+7. Edit docs/DESIGN.md §20.8: flip `- [ ] **T47.**` → `- [x] **T47.**`.
+8. Hand off with: 3 files changed (incl. docs/DESIGN.md checkbox flip), 1 test added, suggested commit `T47: sandboxd binary skeleton`, and a note that T48–T55 are now unblocked.
