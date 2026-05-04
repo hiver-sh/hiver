@@ -83,6 +83,8 @@ echo
 echo "==> Observed agent ops:"
 cat "${ops_file}"
 
+cat <<EOF
+
 sandbox-pod is still running.
 
   follow logs   docker logs -f ${container_name}

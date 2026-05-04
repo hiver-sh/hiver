@@ -24,14 +24,17 @@ ops:
     substring: "sandboxd: agent op | proxy deny  GET upstream-denied"
 
   # ── HTTPS allowed via TLS interception + path match ─────────────────
-  - desc: "agent emits HTTPS GET on allowed go.dev path"
-    substring: "[agent:out] GET https://go.dev/solutions/case-studies/"
+  # The "CURL " prefix proves the request went through the curl binary
+  # (libcurl + OpenSSL), not Python's urllib — a stronger TLS-MITM test
+  # because curl's cert validation is stricter than urllib's.
+  - desc: "agent emits HTTPS GET on allowed go.dev path via curl"
+    substring: "[agent:out] CURL GET https://go.dev/solutions/case-studies/"
   - desc: "proxy intercepts TLS, matches path, allows"
     substring: "sandboxd: agent op | proxy allow GET go.dev/solutions/case-studies"
 
   # ── HTTPS denied after TLS interception ─────────────────────────────
-  - desc: "agent emits HTTPS GET on denied go.dev path"
-    substring: "[agent:out] GET https://go.dev/doc/devel/release"
+  - desc: "agent emits HTTPS GET on denied go.dev path via curl"
+    substring: "[agent:out] CURL GET https://go.dev/doc/devel/release"
   - desc: "proxy intercepts TLS, denies path"
     substring: "sandboxd: agent op | proxy deny  GET go.dev/doc/devel/release"
 

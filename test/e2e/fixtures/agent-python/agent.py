@@ -108,6 +108,22 @@ def fs_read(path):
             f.read()
 
 
+def curl_get(url):
+    """Fetch with the curl binary instead of urllib.
+
+    Exercises a separate TLS stack — curl uses OpenSSL via libcurl, not
+    Python's ssl module — so the proxy's TLS interception has to satisfy
+    a second client. Both go through the same iptables REDIRECT and
+    sbxproxy code path, but curl's stricter cert validation surfaces
+    issues (untrusted CA, wrong SNI, etc.) that urllib might miss.
+    """
+    print(f"CURL GET {url}", flush=True)
+    subprocess.run(
+        ["curl", "-sS", "-o", "/dev/null", "--max-time", "5", url],
+        check=False,
+    )
+
+
 # Probes are written against the egress rules in spec.yaml: the proxy
 # allows GET / on upstream-allowed (with a header override) and TLS to
 # go.dev/solutions/case-studies (intercepted, path-matched). Everything
@@ -116,8 +132,8 @@ http_get("http://upstream-allowed:17080/")            # rule match
 http_post("http://upstream-allowed:17080/")           # method denied
 http_get("http://upstream-allowed:17080/forbidden")   # path denied
 http_get("http://upstream-denied:17081/")             # host denied
-http_get("https://go.dev/solutions/case-studies/")    # TLS intercepted, path allowed
-http_get("https://go.dev/doc/devel/release")          # TLS intercepted, path denied
+curl_get("https://go.dev/solutions/case-studies/")    # TLS intercepted, path allowed (via curl)
+curl_get("https://go.dev/doc/devel/release")          # TLS intercepted, path denied (via curl)
 
 # /workspace is a FUSE mount — sbxfuse mediates per-op via ACLs.
 fs_write("/workspace/hello.txt", "hello from python")
