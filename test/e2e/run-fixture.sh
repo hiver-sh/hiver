@@ -47,8 +47,14 @@ fi
 echo "==> Starting sandbox-pod (detached): ${container_name}"
 docker run -d --rm \
   --name "${container_name}" \
-  --privileged \
   --device /dev/fuse \
+  --cap-add SYS_ADMIN --cap-add NET_ADMIN --cap-add MKNOD \
+  --cap-add SYS_CHROOT --cap-add SETPCAP --cap-add SETFCAP \
+  --cap-add SETUID --cap-add SETGID \
+  --cap-add DAC_READ_SEARCH --cap-add FOWNER --cap-add CHOWN \
+  --security-opt apparmor=unconfined \
+  --security-opt seccomp=unconfined \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   --add-host upstream-allowed:host-gateway \
   --add-host upstream-denied:host-gateway \
   -p 18000:18000 \

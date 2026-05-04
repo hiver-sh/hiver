@@ -234,8 +234,10 @@ func startUpstreams(t *testing.T) (stop func()) {
 // sequence (2 proxy verdicts + 3 FUSE ops); once we've seen them, we
 // `docker kill` the named container and collect the captured output.
 //
-// --privileged is needed for runc to create namespaces and set up cgroups
-// for the nested agent container; tightening this is a follow-up.
+// Hand the pod the specific capabilities runc/iptables/FUSE need,
+// and disable seccomp and AppArmor (their default filters block syscalls
+// runc uses to create namespaces and pivot_root the inner container).
+// /dev/fuse is the only device exposed.
 func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -246,8 +248,61 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 	args := []string{
 		"run", "--rm",
 		"--name", containerName,
-		"--privileged",
+		// /dev/fuse is the only host device exposed; sbxfuse opens it
+		// to mount the workspace. /dev/* is otherwise hidden.
 		"--device", "/dev/fuse",
+		// Capability set, narrower than the all-caps grant of
+		// --privileged. Each entry is justified by something runc,
+		// iptables, or sbxfuse actually does.
+
+		// CLONE_NEW{PID,NS,IPC,UTS} for runc to spin up the agent's
+		// namespaces; mount(2) for sbxfuse + the runc bundle's
+		// proc/sys/dev/pts/shm mounts; FUSE init.
+		"--cap-add", "SYS_ADMIN",
+		// Netfilter writes — sandboxd installs OUTPUT-chain nat REDIRECT
+		// for transparent egress and uses SO_MARK on proxy upstream
+		// sockets, both of which require CAP_NET_ADMIN.
+		"--cap-add", "NET_ADMIN",
+		// runc populates /dev/{null,zero,full,random,urandom,tty,...}
+		// inside the agent rootfs via mknod(2).
+		"--cap-add", "MKNOD",
+		// runc swaps the process root to the agent rootfs via
+		// pivot_root / chroot during bundle setup.
+		"--cap-add", "SYS_CHROOT",
+		// runc drops the agent process down to the bundle's bounding
+		// capability set (PR_CAP_AMBIENT, capset(2)) before exec.
+		"--cap-add", "SETPCAP",
+		// runc copies file capabilities (xattr security.capability)
+		// into the agent rootfs — needs CAP_SETFCAP.
+		"--cap-add", "SETFCAP",
+		// runc switches the agent process to the spec's user.uid/gid
+		// before exec.
+		"--cap-add", "SETUID",
+		"--cap-add", "SETGID",
+		// Walking the docker-archive tar into the agent rootfs touches
+		// directories owned by other UIDs (the image's user). Without
+		// DAC_READ_SEARCH the bundle prep can't traverse them.
+		"--cap-add", "DAC_READ_SEARCH",
+		// Same prep step needs to chown extracted files to match the
+		// image's owner metadata; FOWNER is also required so chmod /
+		// utime succeed on files we don't own.
+		"--cap-add", "FOWNER",
+		"--cap-add", "CHOWN",
+
+		// AppArmor's docker-default profile blocks several mount(2)
+		// flags runc needs (notably MS_REC + bind on /proc); turn the
+		// LSM off rather than ship a custom profile.
+		"--security-opt", "apparmor=unconfined",
+		// The default seccomp filter denies syscalls runc requires
+		// (clone with new namespace flags, pivot_root, mount, keyctl,
+		// unshare(CLONE_NEWUSER), etc.). A tightened custom profile
+		// is the natural next step; for now keep seccomp off.
+		"--security-opt", "seccomp=unconfined",
+		// runc creates the agent's cgroup under /sys/fs/cgroup; that
+		// tree is read-only in non-privileged containers, so bind it
+		// back rw. Strictly less than --privileged because we still
+		// don't grant access to /dev/* or other host bind paths.
+		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"--add-host", "upstream-allowed:host-gateway",
 		"--add-host", "upstream-denied:host-gateway",
 		// Publish the agent's ingress listener so the host can POST in.
@@ -264,7 +319,7 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 	var out bytes.Buffer
 	idleSeen := make(chan struct{})
 	w := &lineSentinel{
-		out:      &out,
+		out: &out,
 		// agent.py prints "DONE" once it has completed every probe (just
 		// before entering its sleep loop). Wait for that one line.
 		marker:   []byte("[agent:out] DONE"),
