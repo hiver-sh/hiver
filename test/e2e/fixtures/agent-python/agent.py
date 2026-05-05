@@ -127,6 +127,11 @@ fs_write("/workspace/hello.txt", "hello from python")
 fs_read("/workspace/hello.txt")
 fs_read("/workspace/secret/keys.txt")                 # ACL deny → ENOENT
 
+# /workspace/inputs/* is read-only (ACL ro) and pre-seeded by sandboxd.
+# Read succeeds; the write attempt is rejected at FUSE Open.
+fs_read("/workspace/inputs/data.txt")
+fs_write("/workspace/inputs/data.txt", "trying to overwrite")
+
 print("DONE", flush=True)
 
 # Block forever so the sandbox-pod stays up for inspection

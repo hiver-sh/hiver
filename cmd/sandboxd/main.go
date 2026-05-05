@@ -58,11 +58,12 @@ func main() {
 	}
 	log.Printf("sandboxd: audit dir = %s", sp.AuditDir)
 
-	if err := os.MkdirAll(sp.Workspace.Mount, 0o755); err != nil {
-		log.Fatalf("create mount point %s: %v", sp.Workspace.Mount, err)
+	if err := os.MkdirAll(sp.FS.Mount, 0o755); err != nil {
+		log.Fatalf("create mount point %s: %v", sp.FS.Mount, err)
 	}
-	if err := os.MkdirAll(sp.Workspace.Backend, 0o755); err != nil {
-		log.Fatalf("create backend %s: %v", sp.Workspace.Backend, err)
+	backendPath := sp.FS.Backend.HostPath()
+	if err := os.MkdirAll(backendPath, 0o755); err != nil {
+		log.Fatalf("create backend %s: %v", backendPath, err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -151,23 +152,23 @@ func main() {
 
 	// 2. sbxfuse. Pass the ACLs by writing them to a file the daemon reads.
 	aclTmp := filepath.Join(sp.AuditDir, "acls.json")
-	if err := writeACLs(aclTmp, sp.Workspace.ACLs); err != nil {
+	if err := writeACLs(aclTmp, sp.FS.ACLs); err != nil {
 		log.Fatalf("write ACLs: %v", err)
 	}
 	fuseArgs := []string{
-		"-mount", sp.Workspace.Mount,
-		"-backend", sp.Workspace.Backend,
+		"-mount", sp.FS.Mount,
+		"-backend", backendPath,
 		"-audit", fuseAuditPath,
 		"-acls", aclTmp,
 	}
-	if sp.Workspace.AuditReads {
+	if sp.FS.AuditReads {
 		fuseArgs = append(fuseArgs, "-audit-reads")
 	}
 	fuseCmd, err := startChild(ctx, &children, "sbxfuse", *fuseBin, fuseArgs, nil)
 	if err != nil {
 		log.Fatalf("start fuse: %v", err)
 	}
-	if err := waitForMountReady(ctx, sp.Workspace.Mount, 5*time.Second); err != nil {
+	if err := waitForMountReady(ctx, sp.FS.Mount, 5*time.Second); err != nil {
 		_ = fuseCmd.Process.Kill()
 		log.Fatalf("fuse did not mount: %v", err)
 	}
@@ -197,6 +198,27 @@ func main() {
 	}
 	log.Printf("sandboxd: agent image unpacked to %s (entrypoint=%v)", rootfsDir, imgCfg.Entrypoint)
 
+	// Seed the FUSE backend from the agent image's own rootfs: any
+	// content the image carries at fs.mount (e.g. `COPY inputs/
+	// /workspace/inputs/` in the Dockerfile) gets moved into the
+	// backend so the agent sees it through the FUSE mount, with
+	// whatever access the ACLs grant. Move (not copy) so we don't
+	// keep two copies — runc's bind mount over fs.mount will hide
+	// whatever's left at <rootfs><mount> at runtime anyway.
+	if entries, err := os.ReadDir(filepath.Join(rootfsDir, sp.FS.Mount)); err == nil {
+		for _, e := range entries {
+			src := filepath.Join(rootfsDir, sp.FS.Mount, e.Name())
+			dst := filepath.Join(backendPath, e.Name())
+			if err := os.Rename(src, dst); err != nil {
+				log.Fatalf("seed from agent rootfs %s → %s: %v", src, dst, err)
+			}
+		}
+		if len(entries) > 0 {
+			log.Printf("sandboxd: seeded %s from agent rootfs %s (%d entries)",
+				backendPath, filepath.Join(rootfsDir, sp.FS.Mount), len(entries))
+		}
+	}
+
 	// Splice the per-pod CA into the agent rootfs trust store so the
 	// agent's TLS handshakes validate the leaf certs sbxproxy mints
 	// during interception. We append (not replace) so the agent keeps
@@ -216,7 +238,7 @@ func main() {
 	}
 
 	extraEnv := append([]string{
-		"WORKSPACE=" + sp.Workspace.Mount,
+		"WORKSPACE=" + sp.FS.Mount,
 	}, sp.Agent.Env...)
 
 	if err := runc.WriteConfig(runc.BundleParams{
@@ -225,7 +247,7 @@ func main() {
 		ExtraEnv:    extraEnv,
 		Hostname:    "agent",
 		Mounts: []runc.BindMount{
-			{Source: sp.Workspace.Mount, Destination: sp.Workspace.Mount, Options: []string{"rw"}},
+			{Source: sp.FS.Mount, Destination: sp.FS.Mount, Options: []string{"rw"}},
 			// /etc/hosts and /etc/resolv.conf are needed by the agent so
 			// hostnames resolve. With the legacy HTTP_PROXY model the
 			// agent dialed 127.0.0.1 and DNS was the proxy's problem;

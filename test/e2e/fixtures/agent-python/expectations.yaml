@@ -41,20 +41,33 @@ ops:
   # ── FUSE write allowed ──────────────────────────────────────────────
   - desc: "agent emits FS write probe"
     substring: "[agent:out] WRITE /workspace/hello.txt"
-  - desc: "FUSE allows write to /hello.txt"
-    substring: "sandboxd: agent op | fuse  allow write      /hello.txt"
+  - desc: "FUSE allows write to /workspace/hello.txt"
+    substring: "sandboxd: agent op | fuse  allow write      /workspace/hello.txt"
 
   # ── FUSE read allowed ───────────────────────────────────────────────
   - desc: "agent emits FS read probe (allowed)"
     substring: "[agent:out] READ /workspace/hello.txt"
-  - desc: "FUSE allows read on /hello.txt"
-    substring: "sandboxd: agent op | fuse  allow read       /hello.txt"
+  - desc: "FUSE allows read on /workspace/hello.txt"
+    substring: "sandboxd: agent op | fuse  allow read       /workspace/hello.txt"
 
-  # ── FUSE deny on /secret/... ────────────────────────────────────────
-  - desc: "agent emits FS read probe on /secret (will be ACL-denied)"
+  # ── FUSE deny on /workspace/secret/... ──────────────────────────────
+  - desc: "agent emits FS read probe on /workspace/secret (will be ACL-denied)"
     substring: "[agent:out] READ /workspace/secret/keys.txt"
-  - desc: "FUSE denies lookup under /secret (ACL)"
-    substring: "sandboxd: agent op | fuse  deny  lookup     /secret"
+  - desc: "FUSE denies lookup under /workspace/secret (ACL)"
+    substring: "sandboxd: agent op | fuse  deny  lookup     /workspace/secret"
+
+  # ── FUSE read-only on /workspace/inputs/... ─────────────────────────
+  # The seed file is laid down from the agent image's rootfs (Dockerfile
+  # COPY into /workspace/inputs/) before sbxfuse mounts. ACL is ro, so
+  # reading succeeds and any write attempt is rejected at FUSE Open.
+  - desc: "agent emits FS read probe on the read-only seed file"
+    substring: "[agent:out] READ /workspace/inputs/data.txt"
+  - desc: "FUSE allows read on /workspace/inputs/data.txt"
+    substring: "sandboxd: agent op | fuse  allow read       /workspace/inputs/data.txt"
+  - desc: "agent emits FS write probe on the read-only seed file"
+    substring: "[agent:out] WRITE /workspace/inputs/data.txt"
+  - desc: "FUSE denies open-for-write on a read-only path"
+    substring: "sandboxd: agent op | fuse  deny  open-write /workspace/inputs/data.txt"
 
   # ── Agent reaches sleep loop ────────────────────────────────────────
   - desc: "agent reaches idle"

@@ -102,7 +102,7 @@ func runFixtureE2E(t *testing.T, fixtureName string) {
 		if op == "write" && v == "allow" {
 			sawWriteAllow = true
 		}
-		if v == "deny" && strings.HasPrefix(path, "/secret") {
+		if v == "deny" && strings.HasPrefix(path, "/workspace/secret") {
 			sawSecretDeny = true
 		}
 	}

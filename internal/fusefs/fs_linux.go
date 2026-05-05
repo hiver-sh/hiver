@@ -122,23 +122,39 @@ func (n *node) hostPath() string {
 	return filepath.Join(n.s.cfg.Backend, filepath.Clean(string(filepath.Separator)+rel))
 }
 
+// absPath returns the agent-visible absolute path: the mount point
+// prefixed onto virtPath. This is what ACL rules in spec.yaml are
+// expressed against (e.g. "/workspace/secret/**") and what audit
+// events surface so the path matches what the agent itself sees.
+func (n *node) absPath() string {
+	return path.Clean(n.s.cfg.MountPoint + "/" + n.virtPath)
+}
+
 func (n *node) access() Access {
-	return n.s.cfg.ACLs.Eval(n.virtPath)
+	return n.s.cfg.ACLs.Eval(n.absPath())
+}
+
+// childAbs returns the agent-visible absolute path of a child file
+// without materializing a node — used by Lookup, Remove, Mkdir,
+// Create, Rename for ACL evaluation + audit on a path that doesn't
+// have its own node yet.
+func (n *node) childAbs(name string) string {
+	return path.Clean(n.absPath() + "/" + name)
 }
 
 // Attr fills the node's attributes.
 func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 	if n.access() == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "deny"})
 		return syscall.ENOENT
 	}
 	st, err := os.Lstat(n.hostPath())
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.virtPath, Verdict: "error", Err: err.Error()})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	fillAttr(a, st)
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.virtPath, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
 	return nil
 }
 
@@ -146,34 +162,33 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 	child := &node{s: n.s, virtPath: path.Join(n.virtPath, name)}
 	if child.access() == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "deny"})
 		return nil, syscall.ENOENT
 	}
 	if _, err := os.Lstat(child.hostPath()); err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.virtPath, Verdict: "error", Err: err.Error()})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, mapErr(err)
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.virtPath, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
 	return child, nil
 }
 
 // ReadDirAll lists the directory.
 func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	if n.access() == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "deny"})
 		return nil, syscall.ENOENT
 	}
 	entries, err := os.ReadDir(n.hostPath())
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.virtPath, Verdict: "error", Err: err.Error()})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, mapErr(err)
 	}
 	out := make([]fuse.Dirent, 0, len(entries))
 	for _, e := range entries {
 		// Hide entries with deny ACL: per DESIGN.md §8.2, deny → ENOENT,
 		// so they shouldn't appear in directory listings either.
-		childVirt := path.Join(n.virtPath, e.Name())
-		if n.s.cfg.ACLs.Eval(childVirt) == AccessDeny {
+		if n.s.cfg.ACLs.Eval(n.childAbs(e.Name())) == AccessDeny {
 			continue
 		}
 		t := fuse.DT_File
@@ -182,7 +197,7 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		}
 		out = append(out, fuse.Dirent{Name: e.Name(), Type: t})
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.virtPath, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "allow"})
 	return out, nil
 }
 
@@ -191,14 +206,14 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (bazilfs.Handle, error) {
 	verdict := n.access()
 	if verdict == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "deny"})
 		return nil, syscall.ENOENT
 	}
 	if verdict == AccessRO && (req.Flags&fuse.OpenWriteOnly != 0 || req.Flags&fuse.OpenReadWrite != 0) {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open-write", Path: n.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open-write", Path: n.absPath(), Verdict: "deny"})
 		return nil, syscall.EROFS
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.virtPath, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "allow"})
 	return n, nil
 }
 
@@ -210,14 +225,14 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 func (n *node) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
 	if n.access() == AccessDeny {
 		if n.s.cfg.AuditReads {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.virtPath, Verdict: "deny"})
+			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "deny"})
 		}
 		return syscall.ENOENT
 	}
 	f, err := os.Open(n.hostPath())
 	if err != nil {
 		if n.s.cfg.AuditReads {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.virtPath, Verdict: "error", Err: err.Error()})
+			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		}
 		return mapErr(err)
 	}
@@ -226,13 +241,13 @@ func (n *node) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 	nRead, err := f.ReadAt(buf, req.Offset)
 	if err != nil && !errors.Is(err, io.EOF) {
 		if n.s.cfg.AuditReads {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.virtPath, Verdict: "error", Err: err.Error()})
+			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		}
 		return mapErr(err)
 	}
 	resp.Data = buf[:nRead]
 	if n.s.cfg.AuditReads {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.virtPath, Verdict: "allow"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "allow"})
 	}
 	return nil
 }
@@ -240,7 +255,7 @@ func (n *node) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadR
 // Write writes file bytes at the requested offset.
 func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
 	if n.access() != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "deny"})
 		return syscall.EROFS
 	}
 	f, err := os.OpenFile(n.hostPath(), os.O_WRONLY, 0)
@@ -250,11 +265,11 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	defer f.Close()
 	nWritten, err := f.WriteAt(req.Data, req.Offset)
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.virtPath, Verdict: "error", Err: err.Error()})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	resp.Size = nWritten
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.virtPath, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "allow"})
 	return nil
 }
 
@@ -262,38 +277,32 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (bazilfs.Node, bazilfs.Handle, error) {
 	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.Name)}
 	if child.access() != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "deny"})
 		return nil, nil, syscall.EROFS
 	}
 	f, err := os.OpenFile(child.hostPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.virtPath, Verdict: "error", Err: err.Error()})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, nil, mapErr(err)
 	}
 	_ = f.Close()
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.virtPath, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "allow"})
 	return child, child, nil
 }
 
 // Remove unlinks a file or empty directory.
 func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
-	child := path.Join(n.virtPath, req.Name)
-	if n.s.cfg.ACLs.Eval(child) != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: child, Verdict: "deny"})
+	childAbs := n.childAbs(req.Name)
+	if n.s.cfg.ACLs.Eval(childAbs) != AccessRW {
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "deny"})
 		return syscall.EROFS
 	}
 	hostChild := filepath.Join(n.hostPath(), req.Name)
-	var err error
-	if req.Dir {
-		err = os.Remove(hostChild)
-	} else {
-		err = os.Remove(hostChild)
-	}
-	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: child, Verdict: "error", Err: err.Error()})
+	if err := os.Remove(hostChild); err != nil {
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: child, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "allow"})
 	return nil
 }
 
@@ -301,14 +310,14 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node, error) {
 	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.Name)}
 	if child.access() != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.virtPath, Verdict: "deny"})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "deny"})
 		return nil, syscall.EROFS
 	}
 	if err := os.Mkdir(child.hostPath(), 0o755); err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.virtPath, Verdict: "error", Err: err.Error()})
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, mapErr(err)
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.virtPath, Verdict: "allow"})
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "allow"})
 	return child, nil
 }
 
@@ -322,12 +331,12 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	if !ok {
 		return syscall.EXDEV
 	}
-	oldVirt := path.Join(n.virtPath, req.OldName)
-	newVirt := path.Join(dst.virtPath, req.NewName)
-	if n.s.cfg.ACLs.Eval(oldVirt) != AccessRW || n.s.cfg.ACLs.Eval(newVirt) != AccessRW {
+	oldAbs := n.childAbs(req.OldName)
+	newAbs := dst.childAbs(req.NewName)
+	if n.s.cfg.ACLs.Eval(oldAbs) != AccessRW || n.s.cfg.ACLs.Eval(newAbs) != AccessRW {
 		n.s.audit(AuditEvent{
 			At: time.Now(), Type: "filesystem", Op: "rename",
-			Path: oldVirt + " → " + newVirt, Verdict: "deny",
+			Path: oldAbs + " → " + newAbs, Verdict: "deny",
 		})
 		return syscall.EROFS
 	}
@@ -336,13 +345,13 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	if err := os.Rename(oldHost, newHost); err != nil {
 		n.s.audit(AuditEvent{
 			At: time.Now(), Type: "filesystem", Op: "rename",
-			Path: oldVirt + " → " + newVirt, Verdict: "error", Err: err.Error(),
+			Path: oldAbs + " → " + newAbs, Verdict: "error", Err: err.Error(),
 		})
 		return mapErr(err)
 	}
 	n.s.audit(AuditEvent{
 		At: time.Now(), Type: "filesystem", Op: "rename",
-		Path: oldVirt + " → " + newVirt, Verdict: "allow",
+		Path: oldAbs + " → " + newAbs, Verdict: "allow",
 	})
 	return nil
 }

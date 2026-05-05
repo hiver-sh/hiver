@@ -23,10 +23,10 @@ func writeFile(p, body string) error {
 
 func TestLoadValid(t *testing.T) {
 	p := writeSpec(t, `{
-		"agent":     {"env": ["FOO=bar"]},
-		"workspace": {"backend": "/back", "mount": "/work",
-		              "acls": [{"path": "/", "access": "rw"}]},
-		"egress":    {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]},
+		"agent":  {"env": ["FOO=bar"]},
+		"fs":     {"backend": "local", "mount": "/work",
+		           "acls": [{"path": "/work", "access": "rw"}]},
+		"egress": {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]},
 		"audit_dir": "/audit"
 	}`)
 	s, err := spec.Load(p)
@@ -36,8 +36,11 @@ func TestLoadValid(t *testing.T) {
 	if len(s.Agent.Env) != 1 {
 		t.Errorf("agent: %+v", s.Agent)
 	}
-	if s.Workspace.Mount != "/work" || len(s.Workspace.ACLs) != 1 {
-		t.Errorf("workspace: %+v", s.Workspace)
+	if s.FS.Mount != "/work" || len(s.FS.ACLs) != 1 {
+		t.Errorf("fs: %+v", s.FS)
+	}
+	if got := s.FS.Backend.HostPath(); got != spec.LocalBackendPath {
+		t.Errorf("fs.backend HostPath: got %q, want %q", got, spec.LocalBackendPath)
 	}
 	if got := s.Egress.Allow; len(got) != 1 || got[0].Host != "api.github.com" || len(got[0].Methods) != 1 || got[0].Methods[0] != "GET" {
 		t.Errorf("egress: %+v", got)
@@ -53,9 +56,10 @@ func TestLoadMissingRequired(t *testing.T) {
 		body string
 		want string
 	}{
-		{"no backend", `{"workspace":{"mount":"/m"},"audit_dir":"/a"}`, "workspace.backend"},
-		{"no mount", `{"workspace":{"backend":"/b"},"audit_dir":"/a"}`, "workspace.mount"},
-		{"no audit_dir", `{"workspace":{"backend":"/b","mount":"/m"}}`, "audit_dir"},
+		{"no backend", `{"fs":{"mount":"/m"},"audit_dir":"/a"}`, "fs.backend"},
+		{"unknown backend", `{"fs":{"backend":"s3","mount":"/m"},"audit_dir":"/a"}`, "fs.backend"},
+		{"no mount", `{"fs":{"backend":"local"},"audit_dir":"/a"}`, "fs.mount"},
+		{"no audit_dir", `{"fs":{"backend":"local","mount":"/m"}}`, "audit_dir"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

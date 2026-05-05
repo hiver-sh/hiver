@@ -144,6 +144,11 @@ function fsRead(path) {
   fsRead("/workspace/hello.txt");
   fsRead("/workspace/secret/keys.txt");
 
+  // /workspace/inputs/* is read-only (ACL ro) and pre-seeded by sandboxd.
+  // Read succeeds; the write attempt is rejected at FUSE Open.
+  fsRead("/workspace/inputs/data.txt");
+  fsWrite("/workspace/inputs/data.txt", "trying to overwrite");
+
   console.log("DONE");
 })();
 // The HTTP server keeps the event loop alive — no explicit sleep loop.

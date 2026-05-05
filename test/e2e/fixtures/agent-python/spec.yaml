@@ -11,14 +11,15 @@
 agent:
   image: .
 
-workspace:
-  backend: /workspace-backend
+fs:
+  backend: local
   mount: /workspace
   audit_reads: true
   acls:
-    - { path: /,          access: rw   }
-    - { path: /**,        access: rw   }
-    - { path: /secret/**, access: deny }
+    - { path: /workspace,           access: rw   }
+    - { path: /workspace/**,        access: rw   }
+    - { path: /workspace/inputs/**, access: ro   }
+    - { path: /workspace/secret/**, access: deny }
 
 egress:
   # Each entry is an EgressRule. host is required; methods, paths, and

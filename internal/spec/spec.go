@@ -23,10 +23,10 @@ import (
 
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
-	Agent     Agent     `json:"agent"`
-	Workspace Workspace `json:"workspace"`
-	Egress    Egress    `json:"egress"`
-	AuditDir  string    `json:"audit_dir"`
+	Agent    Agent  `json:"agent"`
+	FS       FS     `json:"fs"`
+	Egress   Egress `json:"egress"`
+	AuditDir string `json:"audit_dir"`
 }
 
 // Agent describes the workload sandboxd will launch once the sidecars are up.
@@ -51,20 +51,48 @@ type Agent struct {
 // before launching the sandbox-pod.
 const AgentImageTar = "/mnt/agent.tar"
 
-// Workspace defines the per-sandbox FUSE mount and its ACLs.
+// FS defines the per-sandbox FUSE workspace. Mount is where it appears
+// to the agent; Backend names the storage flavor that backs it; ACLs
+// are evaluated longest-prefix-match, default-deny (DESIGN.md §8.2);
+// AuditReads turns on per-Read auditing (off by default — the kernel
+// chunks user-level reads into many FUSE Reads, so this can be chatty).
 //
-// Backend is the host directory the FUSE daemon overlays.
-// Mount is where it appears to the agent.
-// ACLs are evaluated longest-prefix-match, default-deny (DESIGN.md §8.2).
-//
-// AuditReads turns on per-Read auditing. Off by default — the kernel
-// chunks user-level reads into many FUSE Read calls, so this can be very
-// chatty. Open is always audited regardless.
-type Workspace struct {
-	Backend    string        `json:"backend"`
+// Initial workspace content comes from the agent image itself: any
+// files in the agent rootfs at fs.mount get moved into the FUSE
+// backend at sandboxd startup. Authors set this up with a normal
+// COPY in the agent Dockerfile (e.g. `COPY inputs/ /workspace/inputs/`).
+type FS struct {
 	Mount      string        `json:"mount"`
+	Backend    Backend       `json:"backend"`
 	ACLs       []fusefs.Rule `json:"acls"`
 	AuditReads bool          `json:"audit_reads,omitempty"`
+}
+
+// Backend names a workspace storage type. Today only "local" is
+// supported (a sandboxd-managed host directory the FUSE daemon
+// passthrough-mounts); future values could be "s3", "nfs", etc.
+type Backend string
+
+const (
+	// BackendLocal is a sandboxd-managed directory at LocalBackendPath
+	// inside the sandbox-pod. The agent never sees it directly — it
+	// only sees the FUSE mount.
+	BackendLocal Backend = "local"
+
+	// LocalBackendPath is the in-pod host directory the local backend
+	// uses for storage. Hardcoded since the agent doesn't get to
+	// choose it (and shouldn't know it exists).
+	LocalBackendPath = "/workspace-backend"
+)
+
+// HostPath resolves a Backend to the in-pod path the FUSE daemon
+// overlays. Returns "" for unknown backends — Validate catches that.
+func (b Backend) HostPath() string {
+	switch b {
+	case BackendLocal:
+		return LocalBackendPath
+	}
+	return ""
 }
 
 // Egress controls the MITM proxy allowlist. Rules are evaluated
@@ -92,11 +120,14 @@ func Load(path string) (*Spec, error) {
 
 // Validate enforces required-field invariants.
 func (s *Spec) Validate() error {
-	if s.Workspace.Backend == "" {
-		return errors.New("workspace.backend is required")
+	if s.FS.Backend == "" {
+		return errors.New("fs.backend is required")
 	}
-	if s.Workspace.Mount == "" {
-		return errors.New("workspace.mount is required")
+	if s.FS.Backend.HostPath() == "" {
+		return fmt.Errorf("fs.backend: unknown value %q (supported: %q)", s.FS.Backend, BackendLocal)
+	}
+	if s.FS.Mount == "" {
+		return errors.New("fs.mount is required")
 	}
 	if s.AuditDir == "" {
 		return errors.New("audit_dir is required")

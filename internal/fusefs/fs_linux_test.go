@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -33,10 +34,20 @@ func startFUSE(t *testing.T, rules []fusefs.Rule) (mountPoint, backend string, a
 	backend = t.TempDir()
 	mountPoint = t.TempDir()
 	audit = &bytes.Buffer{}
+	// Tests express rules in mount-relative form ("/", "/secret/**")
+	// for readability; the evaluator now sees absolute paths, so we
+	// prefix the dynamic mountPoint onto each rule before compiling.
+	abs := make([]fusefs.Rule, len(rules))
+	for i, r := range rules {
+		abs[i] = fusefs.Rule{
+			Path:   path.Clean(mountPoint + "/" + r.Path),
+			Access: r.Access,
+		}
+	}
 	srv, err := fusefs.Mount(fusefs.Config{
 		MountPoint: mountPoint,
 		Backend:    backend,
-		ACLs:       fusefs.Compile(rules),
+		ACLs:       fusefs.Compile(abs),
 		Audit:      audit,
 	})
 	if err != nil {
