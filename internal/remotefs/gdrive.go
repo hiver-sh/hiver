@@ -1,0 +1,347 @@
+package remotefs
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"path"
+	"strings"
+	"sync"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/api/option"
+)
+
+// GoogleDriveConfig is the JSON the user passes via fs.backend_config.
+//
+// Auth flavor is whichever set of fields is populated, in this order:
+//
+//  1. ServiceAccountJSON    — server-to-server creds; no user, no
+//                             refresh dance, recommended for production.
+//  2. AccessToken + Refresh + ClientID + ClientSecret — refreshable
+//                             user credentials, the normal interactive
+//                             flow.
+//  3. AccessToken alone     — short-lived (≈1h), no refresh; convenient
+//                             for OAuth-Playground-style scratch work.
+//
+// FolderID, when set, scopes every operation to that Drive folder (the
+// store treats it as the root). Leaving it blank uses the user's "My
+// Drive" root, which is rarely what you want for a sandbox workspace.
+type GoogleDriveConfig struct {
+	AccessToken        string `json:"access_token,omitempty"`
+	RefreshToken       string `json:"refresh_token,omitempty"`
+	ClientID           string `json:"client_id,omitempty"`
+	ClientSecret       string `json:"client_secret,omitempty"`
+	ServiceAccountJSON string `json:"service_account_json,omitempty"`
+	FolderID           string `json:"folder_id,omitempty"`
+}
+
+// driveScopes is what we ask Google for when refreshing user tokens.
+// drive.FileScope (drive.file) is the narrowest — only files the
+// sandbox creates or opens. For scoped folder access, drive.scope is
+// usually what users grant.
+var driveScopes = []string{drive.DriveScope}
+
+// GoogleDrive is a [Store] backed by the real Google Drive API. Path
+// → fileID resolution is cached lazily; the cache is invalidated on
+// Delete/Move so stale IDs don't leak across mutations.
+//
+// All paths from the caller are forward-slash, rooted at /. They map
+// to a folder hierarchy on Drive rooted at FolderID — intermediate
+// folders are auto-created on Put.
+type GoogleDrive struct {
+	svc    *drive.Service
+	rootID string
+
+	cacheMu  sync.Mutex
+	pathToID map[string]string
+}
+
+// NewGoogleDrive constructs a Drive client from cfg.
+func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig) (*GoogleDrive, error) {
+	httpClient, err := newOAuthClient(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("gdrive: auth: %w", err)
+	}
+	svc, err := drive.NewService(ctx, option.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, fmt.Errorf("gdrive: drive.NewService: %w", err)
+	}
+	root := cfg.FolderID
+	if root == "" {
+		root = "root" // Drive's alias for the user's My Drive root
+	}
+	return &GoogleDrive{
+		svc:      svc,
+		rootID:   root,
+		pathToID: map[string]string{"/": root},
+	}, nil
+}
+
+func newOAuthClient(ctx context.Context, cfg GoogleDriveConfig) (*http.Client, error) {
+	if cfg.ServiceAccountJSON != "" {
+		jcfg, err := google.JWTConfigFromJSON([]byte(cfg.ServiceAccountJSON), driveScopes...)
+		if err != nil {
+			return nil, fmt.Errorf("service account: %w", err)
+		}
+		return jcfg.Client(ctx), nil
+	}
+	if cfg.AccessToken == "" {
+		return nil, errors.New("either access_token or service_account_json is required")
+	}
+	tok := &oauth2.Token{AccessToken: cfg.AccessToken, RefreshToken: cfg.RefreshToken}
+	var src oauth2.TokenSource
+	if cfg.RefreshToken != "" && cfg.ClientID != "" && cfg.ClientSecret != "" {
+		oc := &oauth2.Config{
+			ClientID:     cfg.ClientID,
+			ClientSecret: cfg.ClientSecret,
+			Endpoint:     google.Endpoint,
+			Scopes:       driveScopes,
+		}
+		src = oc.TokenSource(ctx, tok)
+	} else {
+		src = oauth2.StaticTokenSource(tok)
+	}
+	return oauth2.NewClient(ctx, src), nil
+}
+
+// resolve walks the cached path → fileID map, calling Drive's Files.List
+// to fill gaps. Returns the fileID at p, or [ErrNotExist] if any
+// component is missing. The cache is best-effort — entries can stale
+// out under concurrent edits, in which case the caller's API call
+// returns 404 and we invalidate.
+func (g *GoogleDrive) resolve(ctx context.Context, p string) (string, error) {
+	p = path.Clean("/" + strings.TrimPrefix(p, "/"))
+	g.cacheMu.Lock()
+	if id, ok := g.pathToID[p]; ok {
+		g.cacheMu.Unlock()
+		return id, nil
+	}
+	g.cacheMu.Unlock()
+
+	parent := path.Dir(p)
+	parentID, err := g.resolve(ctx, parent)
+	if err != nil {
+		return "", err
+	}
+	name := path.Base(p)
+	id, err := g.findChild(ctx, parentID, name)
+	if err != nil {
+		return "", err
+	}
+	g.cacheMu.Lock()
+	g.pathToID[p] = id
+	g.cacheMu.Unlock()
+	return id, nil
+}
+
+func (g *GoogleDrive) findChild(ctx context.Context, parentID, name string) (string, error) {
+	q := fmt.Sprintf("'%s' in parents and name = %q and trashed = false", parentID, name)
+	resp, err := g.svc.Files.List().
+		Context(ctx).
+		Q(q).
+		Fields("files(id,name,mimeType)").
+		Do()
+	if err != nil {
+		return "", err
+	}
+	if len(resp.Files) == 0 {
+		return "", ErrNotExist
+	}
+	return resp.Files[0].Id, nil
+}
+
+// ensureFolder returns the folder ID at p, creating any missing
+// intermediate folders along the way. Used by Put/Move when the
+// destination's parent doesn't exist yet.
+func (g *GoogleDrive) ensureFolder(ctx context.Context, p string) (string, error) {
+	p = path.Clean("/" + strings.TrimPrefix(p, "/"))
+	if id, err := g.resolve(ctx, p); err == nil {
+		return id, nil
+	} else if !errors.Is(err, ErrNotExist) {
+		return "", err
+	}
+	parentID, err := g.ensureFolder(ctx, path.Dir(p))
+	if err != nil {
+		return "", err
+	}
+	f, err := g.svc.Files.Create(&drive.File{
+		Name:     path.Base(p),
+		MimeType: "application/vnd.google-apps.folder",
+		Parents:  []string{parentID},
+	}).Context(ctx).Fields("id").Do()
+	if err != nil {
+		return "", fmt.Errorf("create folder %s: %w", p, err)
+	}
+	g.cacheMu.Lock()
+	g.pathToID[p] = f.Id
+	g.cacheMu.Unlock()
+	return f.Id, nil
+}
+
+func (g *GoogleDrive) invalidate(p string) {
+	g.cacheMu.Lock()
+	delete(g.pathToID, p)
+	g.cacheMu.Unlock()
+}
+
+// List walks the folder tree and returns the agent-visible paths of
+// every regular file under prefix. Paginates internally.
+func (g *GoogleDrive) List(ctx context.Context, prefix string) ([]string, error) {
+	startID, err := g.resolve(ctx, "/")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	var walk func(folderID, folderPath string) error
+	walk = func(folderID, folderPath string) error {
+		pageToken := ""
+		for {
+			resp, err := g.svc.Files.List().
+				Context(ctx).
+				Q(fmt.Sprintf("'%s' in parents and trashed = false", folderID)).
+				Fields("nextPageToken, files(id,name,mimeType)").
+				PageToken(pageToken).
+				Do()
+			if err != nil {
+				return err
+			}
+			for _, f := range resp.Files {
+				childPath := path.Join(folderPath, f.Name)
+				if f.MimeType == "application/vnd.google-apps.folder" {
+					if err := walk(f.Id, childPath); err != nil {
+						return err
+					}
+					continue
+				}
+				if prefix == "" || strings.HasPrefix(childPath, prefix) {
+					out = append(out, childPath)
+				}
+			}
+			if resp.NextPageToken == "" {
+				break
+			}
+			pageToken = resp.NextPageToken
+		}
+		return nil
+	}
+	if err := walk(startID, "/"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (g *GoogleDrive) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	id, err := g.resolve(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := g.svc.Files.Get(id).Context(ctx).Download()
+	if err != nil {
+		var ge *googleapi.Error
+		if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
+			return nil, ErrNotExist
+		}
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+func (g *GoogleDrive) Put(ctx context.Context, p string, content io.Reader) error {
+	parentID, err := g.ensureFolder(ctx, path.Dir(p))
+	if err != nil {
+		return err
+	}
+	name := path.Base(p)
+	if id, err := g.findChild(ctx, parentID, name); err == nil {
+		// Existing file → update content via Files.Update.
+		_, err := g.svc.Files.Update(id, &drive.File{}).
+			Context(ctx).
+			Media(content).
+			Fields("id").
+			Do()
+		return err
+	} else if !errors.Is(err, ErrNotExist) {
+		return err
+	}
+	f, err := g.svc.Files.Create(&drive.File{
+		Name:    name,
+		Parents: []string{parentID},
+	}).Context(ctx).Media(content).Fields("id").Do()
+	if err != nil {
+		return err
+	}
+	g.cacheMu.Lock()
+	g.pathToID[path.Clean("/"+strings.TrimPrefix(p, "/"))] = f.Id
+	g.cacheMu.Unlock()
+	return nil
+}
+
+func (g *GoogleDrive) Delete(ctx context.Context, p string) error {
+	id, err := g.resolve(ctx, p)
+	if errors.Is(err, ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := g.svc.Files.Delete(id).Context(ctx).Do(); err != nil {
+		var ge *googleapi.Error
+		if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
+			g.invalidate(path.Clean("/" + strings.TrimPrefix(p, "/")))
+			return nil
+		}
+		return err
+	}
+	g.invalidate(path.Clean("/" + strings.TrimPrefix(p, "/")))
+	return nil
+}
+
+func (g *GoogleDrive) Move(ctx context.Context, src, dst string) error {
+	id, err := g.resolve(ctx, src)
+	if err != nil {
+		return err
+	}
+	srcMeta, err := g.svc.Files.Get(id).Context(ctx).Fields("parents").Do()
+	if err != nil {
+		return err
+	}
+	dstParentID, err := g.ensureFolder(ctx, path.Dir(dst))
+	if err != nil {
+		return err
+	}
+	upd := g.svc.Files.Update(id, &drive.File{Name: path.Base(dst)}).
+		Context(ctx).
+		Fields("id")
+	if len(srcMeta.Parents) > 0 {
+		upd = upd.RemoveParents(strings.Join(srcMeta.Parents, ","))
+	}
+	upd = upd.AddParents(dstParentID)
+	if _, err := upd.Do(); err != nil {
+		return err
+	}
+	g.invalidate(path.Clean("/" + strings.TrimPrefix(src, "/")))
+	g.cacheMu.Lock()
+	g.pathToID[path.Clean("/"+strings.TrimPrefix(dst, "/"))] = id
+	g.cacheMu.Unlock()
+	return nil
+}
+
+// ParseGoogleDriveConfig is a small convenience that lets sbxfuse
+// pass through the spec's backend_config map verbatim.
+func ParseGoogleDriveConfig(jsonBytes []byte) (GoogleDriveConfig, error) {
+	var cfg GoogleDriveConfig
+	if len(jsonBytes) == 0 {
+		return cfg, nil
+	}
+	if err := json.Unmarshal(jsonBytes, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse google-drive config: %w", err)
+	}
+	return cfg, nil
+}

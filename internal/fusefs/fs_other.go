@@ -17,6 +17,7 @@ type Config struct {
 	ACLs       *ACLs
 	Audit      io.Writer
 	AuditReads bool
+	Oplog      *Oplog
 }
 
 // AuditEvent is the schema for filesystem audit events.
@@ -27,7 +28,7 @@ type Server struct{}
 
 // Mount returns an error on non-Linux.
 func Mount(cfg Config) (*Server, error) {
-	return nil, errors.New("fusefs: only supported on Linux (the design rejects macFUSE; run inside the Linux VM on macOS — DESIGN.md §11.1, §19.2)")
+	return nil, errors.New("fusefs: only supported on Linux")
 }
 
 // Serve is a no-op stub.

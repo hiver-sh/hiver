@@ -164,6 +164,21 @@ func main() {
 	if sp.FS.AuditReads {
 		fuseArgs = append(fuseArgs, "-audit-reads")
 	}
+	// Remote backends: forward the backend name + a JSON-encoded
+	// config blob to sbxfuse, which constructs the [remotefs.Store]
+	// via a switch and stands up an Oplog. spec.FS.BackendConfigJSON
+	// produces the right shape for the active backend (e.g. the
+	// fields that map onto [remotefs.GoogleDriveConfig] for gdrive).
+	if sp.FS.Backend.IsRemote() {
+		blob, err := sp.FS.BackendConfigJSON()
+		if err != nil {
+			log.Fatalf("backend %q config: %v", sp.FS.Backend, err)
+		}
+		fuseArgs = append(fuseArgs,
+			"-remote", string(sp.FS.Backend),
+			"-remote-config", string(blob),
+		)
+	}
 	fuseCmd, err := startChild(ctx, &children, "sbxfuse", *fuseBin, fuseArgs, nil)
 	if err != nil {
 		log.Fatalf("start fuse: %v", err)
@@ -373,6 +388,7 @@ func freePort() (int, error) {
 func writeACLs(path string, acls any) error {
 	return writeJSON(path, acls)
 }
+
 
 // writeJSON encodes v to path as a single JSON document.
 func writeJSON(path string, v any) error {

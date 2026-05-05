@@ -36,7 +36,14 @@ const (
 // fixture under test/e2e/fixtures/<fixtureName>/. The fixture must
 // contain Dockerfile + spec.yaml + expectations.yaml; everything else
 // (sandbox-runtime image, host upstreams, audit assertions) is shared.
-func runFixtureE2E(t *testing.T, fixtureName string) {
+// runFixtureE2E orchestrates a full E2E run for the named fixture.
+//
+// Optional mutators receive the spec parsed from the fixture (before
+// validation) and can fill in fields supplied at test time — e.g.
+// gdrive auth tokens that come from env vars and can't be checked in.
+// Mutators run in order; after all of them the spec is validated and
+// re-rendered to a tmpfile that the pod actually mounts.
+func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec)) {
 	t.Helper()
 	requireDocker(t)
 
@@ -45,9 +52,29 @@ func runFixtureE2E(t *testing.T, fixtureName string) {
 		t.Fatalf("abs fixture dir: %v", err)
 	}
 	specPath := filepath.Join(fixtureDir, "spec.yaml")
-	sp, err := spec.Load(specPath)
+	// Parse without validating so mutators can fix up missing fields
+	// (e.g. fill in auth tokens) before Validate runs.
+	sp, err := spec.Parse(specPath)
 	if err != nil {
-		t.Fatalf("load spec: %v", err)
+		t.Fatalf("parse spec: %v", err)
+	}
+	for _, m := range mutators {
+		m(sp)
+	}
+	if err := sp.Validate(); err != nil {
+		t.Fatalf("validate spec: %v", err)
+	}
+	if len(mutators) > 0 {
+		// Re-render the mutated spec to a tmpfile so the pod sees the
+		// runtime-supplied fields.
+		rendered, err := yaml.Marshal(sp)
+		if err != nil {
+			t.Fatalf("re-render spec: %v", err)
+		}
+		specPath = filepath.Join(t.TempDir(), "spec.yaml")
+		if err := os.WriteFile(specPath, rendered, 0o644); err != nil {
+			t.Fatalf("write spec tmpfile: %v", err)
+		}
 	}
 	agentDir := sp.Agent.Image
 	if !filepath.IsAbs(agentDir) {
@@ -60,7 +87,8 @@ func runFixtureE2E(t *testing.T, fixtureName string) {
 
 	// Start the two host-side upstreams on the ports the fixture spec
 	// pins. One is allowlisted (host-aliased to "upstream-allowed"),
-	// the other isn't.
+	// the other isn't. Cheap to start even for fixtures that don't
+	// exercise HTTP egress — left running so we don't fork the helper.
 	stopUpstream := startUpstreams(t)
 	defer stopUpstream()
 
@@ -82,17 +110,23 @@ func runFixtureE2E(t *testing.T, fixtureName string) {
 		}
 	}
 
-	// (2) Proxy audit log on disk — at least one allow + one deny verdict.
+	// (2) Proxy audit log on disk — at least one allow + one deny
+	// verdict, but only when the fixture actually drives HTTP traffic.
+	// Empty proxy.log means "this fixture doesn't use the proxy"
+	// (e.g. agent-gdrive-fs only exercises the FS).
 	proxyEvents := readJSONLines(t, filepath.Join(auditDir, "proxy.log"))
-	verdicts := countByField(proxyEvents, "verdict")
-	if verdicts["allow"] < 1 {
-		t.Errorf("proxy audit: expected ≥1 allow; got %v", verdicts)
-	}
-	if verdicts["deny"] < 1 {
-		t.Errorf("proxy audit: expected ≥1 deny; got %v", verdicts)
+	if len(proxyEvents) > 0 {
+		verdicts := countByField(proxyEvents, "verdict")
+		if verdicts["allow"] < 1 {
+			t.Errorf("proxy audit: expected ≥1 allow; got %v", verdicts)
+		}
+		if verdicts["deny"] < 1 {
+			t.Errorf("proxy audit: expected ≥1 deny; got %v", verdicts)
+		}
 	}
 
-	// (3) FUSE audit log on disk — write-allow somewhere + deny on /secret/...
+	// (3) FUSE audit log on disk — write-allow somewhere; deny on
+	// /secret/... only checked when the fixture has a /secret rule.
 	fuseEvents := readJSONLines(t, filepath.Join(auditDir, "fuse.log"))
 	var sawWriteAllow, sawSecretDeny bool
 	for _, e := range fuseEvents {
@@ -109,7 +143,14 @@ func runFixtureE2E(t *testing.T, fixtureName string) {
 	if !sawWriteAllow {
 		t.Error("FUSE audit: no write-allow verdict")
 	}
-	if !sawSecretDeny {
+	hasSecretRule := false
+	for _, r := range sp.FS.ACLs {
+		if strings.Contains(r.Path, "/secret") {
+			hasSecretRule = true
+			break
+		}
+	}
+	if hasSecretRule && !sawSecretDeny {
 		t.Error("FUSE audit: no deny verdict on /secret/...")
 	}
 

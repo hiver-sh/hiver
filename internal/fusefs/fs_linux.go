@@ -36,6 +36,12 @@ type Config struct {
 	// (typically 4–128 KiB) so a single user-level read of a 1 MiB
 	// file can produce many events. Open is always audited.
 	AuditReads bool
+	// Oplog, when non-nil, receives an [OplogEntry] after every
+	// successful mutation (Create, Write, Remove, Rename). The
+	// uploader goroutine started by [Server.Serve] drains it into
+	// the configured remote store. Reads always come from the local
+	// buffer ([Backend]) — the oplog only carries mutations.
+	Oplog *Oplog
 }
 
 // AuditEvent is one record on the audit.filesystem topic (DESIGN.md §9.1).
@@ -81,11 +87,16 @@ func Mount(cfg Config) (*Server, error) {
 }
 
 // Serve handles FUSE requests until the mount is unmounted or ctx is cancelled.
+// If a Journal is configured, its uploader goroutine runs alongside the
+// FUSE server for the same lifetime.
 func (s *Server) Serve(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		_ = s.Unmount()
 	}()
+	if s.cfg.Oplog != nil {
+		go s.cfg.Oplog.Run(ctx)
+	}
 	return bazilfs.Serve(s.conn, &fileSystem{s: s})
 }
 
@@ -99,6 +110,30 @@ func (s *Server) audit(e AuditEvent) {
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
 	_ = s.auditEnc.Encode(e)
+}
+
+// enqueuePut / enqueueDelete / enqueueMove are no-ops when no journal
+// is configured. They run on the FUSE handler's goroutine; if the
+// queue is full Enqueue blocks, applying back-pressure to the agent.
+func (s *Server) enqueuePut(absPath, bufferPath string) {
+	if s.cfg.Oplog == nil {
+		return
+	}
+	s.cfg.Oplog.Enqueue(OplogEntry{Type: OpPut, Path: absPath, BufferPath: bufferPath})
+}
+
+func (s *Server) enqueueDelete(absPath string) {
+	if s.cfg.Oplog == nil {
+		return
+	}
+	s.cfg.Oplog.Enqueue(OplogEntry{Type: OpDelete, Path: absPath})
+}
+
+func (s *Server) enqueueMove(srcAbs, dstAbs string) {
+	if s.cfg.Oplog == nil {
+		return
+	}
+	s.cfg.Oplog.Enqueue(OplogEntry{Type: OpMove, Path: srcAbs, NewPath: dstAbs})
 }
 
 // fileSystem is the bazil/fuse FS impl.
@@ -270,6 +305,7 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	}
 	resp.Size = nWritten
 	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "allow"})
+	n.s.enqueuePut(n.absPath(), n.hostPath())
 	return nil
 }
 
@@ -287,6 +323,7 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 	}
 	_ = f.Close()
 	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "allow"})
+	n.s.enqueuePut(child.absPath(), child.hostPath())
 	return child, child, nil
 }
 
@@ -303,6 +340,7 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		return mapErr(err)
 	}
 	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "allow"})
+	n.s.enqueueDelete(childAbs)
 	return nil
 }
 
@@ -353,6 +391,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 		At: time.Now(), Type: "filesystem", Op: "rename",
 		Path: oldAbs + " → " + newAbs, Verdict: "allow",
 	})
+	n.s.enqueueMove(oldAbs, newAbs)
 	return nil
 }
 

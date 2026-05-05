@@ -11,6 +11,7 @@
 package spec
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -52,47 +53,114 @@ type Agent struct {
 const AgentImageTar = "/mnt/agent.tar"
 
 // FS defines the per-sandbox FUSE workspace. Mount is where it appears
-// to the agent; Backend names the storage flavor that backs it; ACLs
-// are evaluated longest-prefix-match, default-deny (DESIGN.md §8.2);
-// AuditReads turns on per-Read auditing (off by default — the kernel
-// chunks user-level reads into many FUSE Reads, so this can be chatty).
+// to the agent; Backend is the discriminator that picks the storage
+// flavor; ACLs are evaluated longest-prefix-match, default-deny
+// (DESIGN.md §8.2); AuditReads turns on per-Read auditing (off by
+// default — the kernel chunks user-level reads into many FUSE Reads,
+// so this can be chatty).
 //
 // Initial workspace content comes from the agent image itself: any
 // files in the agent rootfs at fs.mount get moved into the FUSE
 // backend at sandboxd startup. Authors set this up with a normal
 // COPY in the agent Dockerfile (e.g. `COPY inputs/ /workspace/inputs/`).
+//
+// Per-backend extras (auth tokens, folder IDs, bucket names, …) live
+// inline as optional fields. Each backend reads only the fields it
+// recognizes; [Spec.Validate] checks that the combination present
+// matches the chosen backend.
 type FS struct {
 	Mount      string        `json:"mount"`
 	Backend    Backend       `json:"backend"`
 	ACLs       []fusefs.Rule `json:"acls"`
 	AuditReads bool          `json:"audit_reads,omitempty"`
+
+	// gdrive only — see the GoogleDrive comment block below.
+	AccessToken        string `json:"access_token,omitempty"`
+	RefreshToken       string `json:"refresh_token,omitempty"`
+	ClientID           string `json:"client_id,omitempty"`
+	ClientSecret       string `json:"client_secret,omitempty"`
+	ServiceAccountJSON string `json:"service_account_json,omitempty"`
+	FolderID           string `json:"folder_id,omitempty"`
 }
 
-// Backend names a workspace storage type. Today only "local" is
-// supported (a sandboxd-managed host directory the FUSE daemon
-// passthrough-mounts); future values could be "s3", "nfs", etc.
+// Backend names a workspace storage type. New backends extend this
+// enum and the matching switch in [Backend.HostPath] / [Backend.IsRemote]
+// + the dispatch in cmd/sbxfuse/main.go.
+//
+// "local" is a sandboxd-managed directory the FUSE daemon
+// passthrough-mounts. Reads and writes stay local — there's no
+// uploader, no oplog, no remote consistency to worry about.
+//
+// "gdrive" backs the FUSE mount with a write-through cache: the local
+// buffer at [LocalBackendPath] serves the agent's hot path, every
+// mutation enqueues an oplog entry, and an uploader goroutine drains
+// it into Google Drive. The same shape applies to the planned
+// "onedrive" / "s3" / "gcs" backends — they all share the
+// [internal/remotefs].Store interface and only differ in the network
+// client behind it.
+//
+// Auth tokens for "gdrive" live inline on [FS] (access_token,
+// refresh_token, client_id, client_secret, service_account_json) —
+// at least one of access_token or service_account_json is required.
+// folder_id, when set, scopes the workspace to that Drive folder.
 type Backend string
 
 const (
-	// BackendLocal is a sandboxd-managed directory at LocalBackendPath
-	// inside the sandbox-pod. The agent never sees it directly — it
-	// only sees the FUSE mount.
-	BackendLocal Backend = "local"
+	BackendLocal       Backend = "local"
+	BackendGoogleDrive Backend = "gdrive"
 
-	// LocalBackendPath is the in-pod host directory the local backend
-	// uses for storage. Hardcoded since the agent doesn't get to
-	// choose it (and shouldn't know it exists).
+	// LocalBackendPath is the in-pod host directory every backend uses
+	// for the local buffer. For "local" it's the source of truth; for
+	// the journaled backends it's a write-through cache.
 	LocalBackendPath = "/workspace-backend"
 )
 
-// HostPath resolves a Backend to the in-pod path the FUSE daemon
-// overlays. Returns "" for unknown backends — Validate catches that.
+// HostPath returns the in-pod path the FUSE daemon overlays. All
+// backends today share LocalBackendPath — the difference is whether
+// an oplog + remote uploader runs alongside.
 func (b Backend) HostPath() string {
 	switch b {
-	case BackendLocal:
+	case BackendLocal, BackendGoogleDrive:
 		return LocalBackendPath
 	}
 	return ""
+}
+
+// IsRemote reports whether the backend writes through to a remote
+// store via the oplog. Local is the only non-remote backend today.
+func (b Backend) IsRemote() bool {
+	switch b {
+	case BackendGoogleDrive:
+		return true
+	}
+	return false
+}
+
+// BackendConfigJSON returns the per-backend config sandboxd should hand
+// to sbxfuse via -remote-config. Returns (nil, nil) for backends that
+// take no config (local). The schema mirrors the matching
+// [internal/remotefs] config struct so sbxfuse can json.Unmarshal
+// directly without translation.
+func (f *FS) BackendConfigJSON() ([]byte, error) {
+	switch f.Backend {
+	case BackendGoogleDrive:
+		return json.Marshal(struct {
+			AccessToken        string `json:"access_token,omitempty"`
+			RefreshToken       string `json:"refresh_token,omitempty"`
+			ClientID           string `json:"client_id,omitempty"`
+			ClientSecret       string `json:"client_secret,omitempty"`
+			ServiceAccountJSON string `json:"service_account_json,omitempty"`
+			FolderID           string `json:"folder_id,omitempty"`
+		}{
+			AccessToken:        f.AccessToken,
+			RefreshToken:       f.RefreshToken,
+			ClientID:           f.ClientID,
+			ClientSecret:       f.ClientSecret,
+			ServiceAccountJSON: f.ServiceAccountJSON,
+			FolderID:           f.FolderID,
+		})
+	}
+	return nil, nil
 }
 
 // Egress controls the MITM proxy allowlist. Rules are evaluated
@@ -104,6 +172,21 @@ type Egress struct {
 
 // Load reads and validates a spec file.
 func Load(path string) (*Spec, error) {
+	s, err := Parse(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("spec: invalid %s: %w", path, err)
+	}
+	return s, nil
+}
+
+// Parse reads a spec file without validating it. Useful for tests that
+// load a fixture, fill in fields supplied at runtime (auth tokens
+// from env vars, ports from free-port lookup, …), then validate the
+// fully-formed spec themselves before handing it to sandboxd.
+func Parse(path string) (*Spec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("spec: read %s: %w", path, err)
@@ -111,9 +194,6 @@ func Load(path string) (*Spec, error) {
 	var s Spec
 	if err := yaml.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("spec: parse %s: %w", path, err)
-	}
-	if err := s.Validate(); err != nil {
-		return nil, fmt.Errorf("spec: invalid %s: %w", path, err)
 	}
 	return &s, nil
 }
@@ -124,7 +204,10 @@ func (s *Spec) Validate() error {
 		return errors.New("fs.backend is required")
 	}
 	if s.FS.Backend.HostPath() == "" {
-		return fmt.Errorf("fs.backend: unknown value %q (supported: %q)", s.FS.Backend, BackendLocal)
+		return fmt.Errorf("fs.backend: unknown value %q (supported: %q, %q)", s.FS.Backend, BackendLocal, BackendGoogleDrive)
+	}
+	if s.FS.Backend == BackendGoogleDrive && s.FS.AccessToken == "" && s.FS.ServiceAccountJSON == "" {
+		return errors.New("fs.backend gdrive: one of access_token / service_account_json is required")
 	}
 	if s.FS.Mount == "" {
 		return errors.New("fs.mount is required")

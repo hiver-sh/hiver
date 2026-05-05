@@ -1,0 +1,29 @@
+# Sandbox spec for the agent-gdrive-fs E2E fixture.
+#
+# fs.backend = gdrive: the FUSE workspace is a write-through cache
+# over Google Drive. The host-side test injects auth tokens at run
+# time from env vars (they obviously can't live in a checked-in file);
+# the access_token / folder_id below are blank placeholders that the
+# test populates before validation.
+#
+# Required env vars for the test:
+#   HIVE_GDRIVE_ACCESS_TOKEN   — OAuth access token (or use a
+#                                service_account_json instead)
+#   HIVE_GDRIVE_FOLDER_ID      — Drive folder to scope the workspace to
+agent:
+  image: .
+
+fs:
+  backend: gdrive
+  mount: /workspace
+  acls:
+    - { path: /workspace,    access: rw }
+    - { path: /workspace/**, access: rw }
+  # access_token / folder_id filled in by TestGdriveFsE2E from env.
+  access_token: ""
+  folder_id: ""
+
+egress:
+  allow: []
+
+audit_dir: /audit-out
