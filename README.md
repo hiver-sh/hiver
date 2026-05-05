@@ -1,6 +1,8 @@
-# Hive
-
-A bounded environment for running AI agents.
+<p align="center">
+  <img src="./docs/hive.svg" width="200">
+  <br />
+  <b>A More Trusted Environment for AI Agents</b>
+</p>
 
 Hive gives an agent a self-contained pod — its own filesystem, its own
 network exit — with every read, write, and outbound request mediated
@@ -57,12 +59,12 @@ egress:
       methods: [GET]
       paths:   [/solutions/case-studies/*]   # TLS is intercepted to enforce paths
 
-workspace:
-  backend: /workspace-backend
+fs:
+  backend: local
   mount:   /workspace
   acls:
-    - { path: /,          access: rw   }
-    - { path: /secret/**, access: deny }
+    - { path: /workspace,          access: rw   }
+    - { path: /workspace/secret/**, access: deny }
 ```
 
 - **Host** — exact (`api.github.com`) or wildcard suffix (`*.pypi.org`).
