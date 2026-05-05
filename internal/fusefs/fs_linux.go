@@ -312,6 +312,41 @@ func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node,
 	return child, nil
 }
 
+// Rename moves a child of n to newDir under a new name. Both endpoints
+// must have rw access — the rule trie is consulted for the source
+// (preventing exfiltration of a deny-listed file via rename out of its
+// directory) and for the destination (preventing a write into a
+// deny-listed location). Auditing emits one event with both paths.
+func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazilfs.Node) error {
+	dst, ok := newDir.(*node)
+	if !ok {
+		return syscall.EXDEV
+	}
+	oldVirt := path.Join(n.virtPath, req.OldName)
+	newVirt := path.Join(dst.virtPath, req.NewName)
+	if n.s.cfg.ACLs.Eval(oldVirt) != AccessRW || n.s.cfg.ACLs.Eval(newVirt) != AccessRW {
+		n.s.audit(AuditEvent{
+			At: time.Now(), Type: "filesystem", Op: "rename",
+			Path: oldVirt + " → " + newVirt, Verdict: "deny",
+		})
+		return syscall.EROFS
+	}
+	oldHost := filepath.Join(n.hostPath(), req.OldName)
+	newHost := filepath.Join(dst.hostPath(), req.NewName)
+	if err := os.Rename(oldHost, newHost); err != nil {
+		n.s.audit(AuditEvent{
+			At: time.Now(), Type: "filesystem", Op: "rename",
+			Path: oldVirt + " → " + newVirt, Verdict: "error", Err: err.Error(),
+		})
+		return mapErr(err)
+	}
+	n.s.audit(AuditEvent{
+		At: time.Now(), Type: "filesystem", Op: "rename",
+		Path: oldVirt + " → " + newVirt, Verdict: "allow",
+	})
+	return nil
+}
+
 // Fsync is a no-op (we write through to the host file for the prototype).
 func (n *node) Fsync(ctx context.Context, req *fuse.FsyncRequest) error { return nil }
 
