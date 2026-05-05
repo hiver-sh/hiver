@@ -74,13 +74,17 @@ type FS struct {
 	ACLs       []fusefs.Rule `json:"acls"`
 	AuditReads bool          `json:"audit_reads,omitempty"`
 
-	// gdrive only — see the GoogleDrive comment block below.
-	AccessToken        string `json:"access_token,omitempty"`
-	RefreshToken       string `json:"refresh_token,omitempty"`
-	ClientID           string `json:"client_id,omitempty"`
-	ClientSecret       string `json:"client_secret,omitempty"`
-	ServiceAccountJSON string `json:"service_account_json,omitempty"`
-	FolderID           string `json:"folder_id,omitempty"`
+	// Per-backend extras live inline with a backend-name prefix so it's
+	// obvious from the YAML which backend a field belongs to. Only the
+	// fields matching `backend` are read; the rest are ignored.
+
+	// gdrive only — auth tokens and target folder.
+	GdriveAccessToken        string `json:"gdrive_access_token,omitempty"`
+	GdriveRefreshToken       string `json:"gdrive_refresh_token,omitempty"`
+	GdriveClientID           string `json:"gdrive_client_id,omitempty"`
+	GdriveClientSecret       string `json:"gdrive_client_secret,omitempty"`
+	GdriveServiceAccountJSON string `json:"gdrive_service_account_json,omitempty"`
+	GdriveFolderID           string `json:"gdrive_folder_id,omitempty"`
 }
 
 // Backend names a workspace storage type. New backends extend this
@@ -136,6 +140,37 @@ func (b Backend) IsRemote() bool {
 	return false
 }
 
+// Env-var fallbacks for gdrive credentials. Spec fields take precedence;
+// the env vars fill in only when the matching spec field is empty.
+const (
+	envGdriveAccessToken        = "HIVE_GDRIVE_ACCESS_TOKEN"
+	envGdriveRefreshToken       = "HIVE_GDRIVE_REFRESH_TOKEN"
+	envGdriveClientID           = "HIVE_GDRIVE_CLIENT_ID"
+	envGdriveClientSecret       = "HIVE_GDRIVE_CLIENT_SECRET"
+	envGdriveServiceAccountJSON = "HIVE_GDRIVE_SERVICE_ACCOUNT_JSON"
+	envGdriveFolderID           = "HIVE_GDRIVE_FOLDER_ID"
+)
+
+func or(value, envKey string) string {
+	if value != "" {
+		return value
+	}
+	return os.Getenv(envKey)
+}
+
+// gdriveResolved returns the effective gdrive credentials — spec
+// fields with env-var fallback. Used by both Validate (to check that
+// at least one credential is present) and BackendConfigJSON (to build
+// the JSON sbxfuse receives).
+func (f *FS) gdriveResolved() (accessToken, refreshToken, clientID, clientSecret, serviceAccountJSON, folderID string) {
+	return or(f.GdriveAccessToken, envGdriveAccessToken),
+		or(f.GdriveRefreshToken, envGdriveRefreshToken),
+		or(f.GdriveClientID, envGdriveClientID),
+		or(f.GdriveClientSecret, envGdriveClientSecret),
+		or(f.GdriveServiceAccountJSON, envGdriveServiceAccountJSON),
+		or(f.GdriveFolderID, envGdriveFolderID)
+}
+
 // BackendConfigJSON returns the per-backend config sandboxd should hand
 // to sbxfuse via -remote-config. Returns (nil, nil) for backends that
 // take no config (local). The schema mirrors the matching
@@ -144,6 +179,7 @@ func (b Backend) IsRemote() bool {
 func (f *FS) BackendConfigJSON() ([]byte, error) {
 	switch f.Backend {
 	case BackendGoogleDrive:
+		access, refresh, clientID, clientSecret, sa, folder := f.gdriveResolved()
 		return json.Marshal(struct {
 			AccessToken        string `json:"access_token,omitempty"`
 			RefreshToken       string `json:"refresh_token,omitempty"`
@@ -152,12 +188,12 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			ServiceAccountJSON string `json:"service_account_json,omitempty"`
 			FolderID           string `json:"folder_id,omitempty"`
 		}{
-			AccessToken:        f.AccessToken,
-			RefreshToken:       f.RefreshToken,
-			ClientID:           f.ClientID,
-			ClientSecret:       f.ClientSecret,
-			ServiceAccountJSON: f.ServiceAccountJSON,
-			FolderID:           f.FolderID,
+			AccessToken:        access,
+			RefreshToken:       refresh,
+			ClientID:           clientID,
+			ClientSecret:       clientSecret,
+			ServiceAccountJSON: sa,
+			FolderID:           folder,
 		})
 	}
 	return nil, nil
@@ -206,8 +242,11 @@ func (s *Spec) Validate() error {
 	if s.FS.Backend.HostPath() == "" {
 		return fmt.Errorf("fs.backend: unknown value %q (supported: %q, %q)", s.FS.Backend, BackendLocal, BackendGoogleDrive)
 	}
-	if s.FS.Backend == BackendGoogleDrive && s.FS.AccessToken == "" && s.FS.ServiceAccountJSON == "" {
-		return errors.New("fs.backend gdrive: one of access_token / service_account_json is required")
+	if s.FS.Backend == BackendGoogleDrive {
+		access, _, _, _, sa, _ := s.FS.gdriveResolved()
+		if access == "" && sa == "" {
+			return fmt.Errorf("fs.backend gdrive: one of gdrive_access_token / gdrive_service_account_json is required (or env %s / %s)", envGdriveAccessToken, envGdriveServiceAccountJSON)
+		}
 	}
 	if s.FS.Mount == "" {
 		return errors.New("fs.mount is required")

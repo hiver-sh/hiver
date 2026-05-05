@@ -16,12 +16,18 @@ agent:
 fs:
   backend: gdrive
   mount: /workspace
+  # Audit each FUSE Read so the test can assert on a "read allow"
+  # event, not just an "open allow" — the agent's fs_read calls f.read()
+  # which fires Read after Open, and we want both visible.
+  audit_reads: true
   acls:
     - { path: /workspace,    access: rw }
     - { path: /workspace/**, access: rw }
-  # access_token / folder_id filled in by TestGdriveFsE2E from env.
-  access_token: ""
-  folder_id: ""
+  # gdrive-prefixed fields are only read when backend == gdrive. The
+  # test fills these in from env vars before validation; here they're
+  # blank placeholders.
+  gdrive_access_token: ""
+  gdrive_folder_id: ""
 
 egress:
   allow: []

@@ -26,6 +26,35 @@ fi
 agent_image="sandbox-${fixture}:e2e"
 container_name="sandbox-pod-${fixture}"
 
+# Detect the FS backend from the fixture's spec. Cheap grep instead of
+# a YAML dependency — the file shape is well-known, every fixture
+# carries `backend: <name>` on its own line under `fs:`.
+spec_backend="$(awk '/^[[:space:]]*backend:[[:space:]]/ { gsub(/"|,/, "", $2); print $2; exit }' "${fixture_dir}/spec.yaml")"
+
+# Per-backend env-var passthrough into the container. spec.go falls
+# back from blank spec fields to these env vars, so a checked-in
+# spec.yaml can ship without secrets.
+backend_env_args=()
+if [[ "${spec_backend}" == "gdrive" ]]; then
+  # If we don't have an access token yet (and no service account
+  # either), run the interactive OAuth helper. It writes
+  # `export HIVE_GDRIVE_…` lines to stdout that we eval into this
+  # shell; everything else (prompts, browser URL, folder picker)
+  # goes to stderr.
+  if [[ -z "${HIVE_GDRIVE_ACCESS_TOKEN:-}" && -z "${HIVE_GDRIVE_SERVICE_ACCOUNT_JSON:-}" ]]; then
+    echo "==> gdrive backend: no HIVE_GDRIVE_ACCESS_TOKEN set; running OAuth setup"
+    eval "$(go run "${module_root}/test/e2e/hive-gdrive-setup")"
+  fi
+  for v in HIVE_GDRIVE_ACCESS_TOKEN HIVE_GDRIVE_REFRESH_TOKEN \
+           HIVE_GDRIVE_CLIENT_ID HIVE_GDRIVE_CLIENT_SECRET \
+           HIVE_GDRIVE_SERVICE_ACCOUNT_JSON HIVE_GDRIVE_FOLDER_ID; do
+    # `-e VAR` (no value) forwards from the host environment when set,
+    # silently omits when not.
+    backend_env_args+=(-e "${v}")
+  done
+  echo "==> gdrive backend: forwarding HIVE_GDRIVE_* env vars"
+fi
+
 echo "==> Building sandbox-runtime"
 docker build -t sandbox-runtime "${module_root}"
 
@@ -58,6 +87,7 @@ docker run -d --rm \
   --add-host upstream-allowed:host-gateway \
   --add-host upstream-denied:host-gateway \
   -p 18000:18000 \
+  ${backend_env_args[@]+"${backend_env_args[@]}"} \
   -v "${audit_dir}:/audit-out" \
   -v "${agent_tar}:/mnt/agent.tar:ro" \
   -v "${fixture_dir}/spec.yaml:/mnt/spec.yaml:ro" \

@@ -80,14 +80,47 @@ func (o *Oplog) Enqueue(e OplogEntry) {
 	o.queue <- e
 }
 
-// Run drains the oplog. Returns when ctx is done.
+// Run drains the oplog until ctx is cancelled, then flushes any
+// remaining queued entries with a fresh, bounded context before
+// returning. The shutdown drain matters for remote backends (gdrive,
+// future s3/gcs/onedrive): we don't want to lose writes the agent
+// thinks succeeded just because sbxfuse is being torn down — the
+// FUSE Write returned ok the moment the local buffer accepted it.
 func (o *Oplog) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			o.drainOnShutdown()
 			return
 		case e := <-o.queue:
 			o.flush(ctx, e)
+		}
+	}
+}
+
+// shutdownDrainTimeout caps how long Run will wait for the queue to
+// empty after ctx cancellation. Bounded so a hung remote (network
+// down, API rate limit) doesn't keep sbxfuse alive past sandboxd's
+// kill timeout.
+const shutdownDrainTimeout = 5 * time.Second
+
+func (o *Oplog) drainOnShutdown() {
+	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
+	defer cancel()
+	drained := 0
+	for {
+		select {
+		case e := <-o.queue:
+			o.flush(drainCtx, e)
+			drained++
+		case <-drainCtx.Done():
+			log.Printf("oplog: shutdown drain timed out after %v with %d remaining", shutdownDrainTimeout, len(o.queue))
+			return
+		default:
+			if drained > 0 {
+				log.Printf("oplog: flushed %d pending entries on shutdown", drained)
+			}
+			return
 		}
 	}
 }

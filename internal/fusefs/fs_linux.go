@@ -86,18 +86,30 @@ func Mount(cfg Config) (*Server, error) {
 	return &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit)}, nil
 }
 
-// Serve handles FUSE requests until the mount is unmounted or ctx is cancelled.
-// If a Journal is configured, its uploader goroutine runs alongside the
-// FUSE server for the same lifetime.
+// Serve handles FUSE requests until the mount is unmounted or ctx is
+// cancelled. If an Oplog is configured, its uploader goroutine runs
+// alongside the FUSE server; on shutdown Serve waits for the oplog to
+// drain pending entries before returning, so a SIGTERM doesn't lose
+// writes the agent already considers committed (each FUSE Write
+// returned success the moment its buffer write landed locally; the
+// remote upload happens on the oplog goroutine).
 func (s *Server) Serve(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		_ = s.Unmount()
 	}()
+	oplogDone := make(chan struct{})
 	if s.cfg.Oplog != nil {
-		go s.cfg.Oplog.Run(ctx)
+		go func() {
+			defer close(oplogDone)
+			s.cfg.Oplog.Run(ctx)
+		}()
+	} else {
+		close(oplogDone)
 	}
-	return bazilfs.Serve(s.conn, &fileSystem{s: s})
+	err := bazilfs.Serve(s.conn, &fileSystem{s: s})
+	<-oplogDone
+	return err
 }
 
 // Unmount releases the FUSE mount.

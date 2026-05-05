@@ -12,13 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
-	"go.yaml.in/yaml/v2"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -75,6 +76,7 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 		if err := os.WriteFile(specPath, rendered, 0o644); err != nil {
 			t.Fatalf("write spec tmpfile: %v", err)
 		}
+		t.Logf("rendered spec at %s:\n%s", specPath, redactSecrets(string(rendered)))
 	}
 	agentDir := sp.Agent.Image
 	if !filepath.IsAbs(agentDir) {
@@ -176,6 +178,15 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 	}
 }
 
+// redactSecrets masks token-like values in YAML so the rendered-spec
+// debug log doesn't leak credentials. We only need the structure +
+// presence/absence of fields when debugging the gdrive path.
+var secretFieldRE = regexp.MustCompile(`(?m)^(\s*(?:gdrive_access_token|gdrive_refresh_token|gdrive_client_secret|gdrive_service_account_json)\s*:\s*).+$`)
+
+func redactSecrets(s string) string {
+	return secretFieldRE.ReplaceAllString(s, `${1}<redacted>`)
+}
+
 // requireDocker skips the test if no Docker daemon is reachable.
 func requireDocker(t *testing.T) {
 	t.Helper()
@@ -271,9 +282,15 @@ func startUpstreams(t *testing.T) (stop func()) {
 // probes (so the pod stays up for docker-exec inspection during local
 // debugging). The orchestrator's view of the agent's behavior comes from
 // sandboxd's "agent op | …" lines, which it emits as it tails the proxy
-// and FUSE audit streams. We expect 5 such lines for the standard probe
-// sequence (2 proxy verdicts + 3 FUSE ops); once we've seen them, we
-// `docker kill` the named container and collect the captured output.
+// and FUSE audit streams. Once we've seen the agent's DONE sentinel,
+// we send SIGTERM and watch the docker-run subprocess's exit channel
+// directly — no fixed shutdown timeout. sandboxd's graceful chain
+// (sbxfuse oplog drain → FUSE unmount → child reap) runs in whatever
+// time it actually needs; the only upper bound is the outer test
+// deadline. SIGKILL via `docker kill` skips the drain entirely, so we
+// only fall back to it if SIGTERM doesn't take effect in time —
+// matters for remote-backed workspaces (gdrive et al.) where pending
+// uploads would otherwise be lost.
 //
 // Hand the pod the specific capabilities runc/iptables/FUSE need,
 // and disable seccomp and AppArmor (their default filters block syscalls
@@ -281,7 +298,10 @@ func startUpstreams(t *testing.T) (stop func()) {
 // /dev/fuse is the only device exposed.
 func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// 2 min outer deadline. The graceful-shutdown path adds ~25 s
+	// (sbxfuse drain + sandboxd WaitDelay) on top of the agent's
+	// own runtime, so the previous 90 s budget was tight.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	containerName := fmt.Sprintf("sandbox-pod-e2e-%d", time.Now().UnixNano())
@@ -386,19 +406,36 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 		sendIngressProbe(t)
 		sendExecProbe(t)
 		time.Sleep(500 * time.Millisecond)
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer stopCancel()
-		_ = exec.CommandContext(stopCtx, "docker", "kill", containerName).Run()
-		<-done
+
+		// SIGTERM the pod and wait for it to exit on its own. We watch
+		// `done` (the docker-run subprocess's Wait) directly — that
+		// channel closes the moment the container's PID 1 exits, so
+		// we don't pay any fixed timeout. sandboxd's own graceful
+		// shutdown (sbxfuse oplog drain, FUSE unmount, child reap)
+		// runs to completion in whatever time it actually needs. If
+		// something inside hangs, the outer ctx (120s) is the upper
+		// bound and trips the `<-ctx.Done()` arm below.
+		_ = exec.Command("docker", "kill", "-s", "TERM", containerName).Run()
+		select {
+		case <-done:
+			// graceful exit — nothing to do
+		case <-ctx.Done():
+			t.Logf("graceful shutdown didn't complete before outer deadline; SIGKILL")
+			_ = exec.Command("docker", "kill", containerName).Run()
+			<-done
+			t.Fatalf("container did not exit after SIGTERM within deadline\n%s", out.String())
+		}
 	case err := <-done:
 		// Container exited before reaching the idle marker — that's a
 		// failure (something crashed). Fall through with the partial
 		// output so the assertions can produce diagnostics.
 		t.Logf("container exited before agent reached idle: %v", err)
 	case <-ctx.Done():
+		// Hard-kill on timeout: at this point we've already waited the
+		// outer deadline, graceful shutdown is moot.
 		_ = exec.Command("docker", "kill", containerName).Run()
 		<-done
-		t.Fatalf("container timed out after 90s\n%s", out.String())
+		t.Fatalf("container timed out\n%s", out.String())
 	}
 	return out.String()
 }

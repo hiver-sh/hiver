@@ -59,11 +59,8 @@ class _IngressHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _serve_ingress():
-    HTTPServer(("0.0.0.0", 18000), _IngressHandler).serve_forever()
-
-
-threading.Thread(target=_serve_ingress, daemon=True).start()
+_ingress_server = HTTPServer(("0.0.0.0", 18000), _IngressHandler)
+threading.Thread(target=_ingress_server.serve_forever, daemon=True).start()
 
 
 def http_get(url):

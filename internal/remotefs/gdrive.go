@@ -64,8 +64,15 @@ type GoogleDrive struct {
 }
 
 // NewGoogleDrive constructs a Drive client from cfg.
-func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig) (*GoogleDrive, error) {
-	httpClient, err := newOAuthClient(ctx, cfg)
+//
+// outboundMark, when non-zero, sets SO_MARK on every TCP socket the
+// returned client opens — both for OAuth token refresh and for the
+// Drive API calls themselves. sandboxd uses this so sbxfuse's
+// platform traffic to Google escapes the iptables OUTPUT REDIRECT
+// it installed in the sandbox-pod's netns. Pass 0 when no escape is
+// needed (e.g. unit tests with no iptables).
+func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig, outboundMark int) (*GoogleDrive, error) {
+	httpClient, err := newOAuthClient(ctx, cfg, outboundMark)
 	if err != nil {
 		return nil, fmt.Errorf("gdrive: auth: %w", err)
 	}
@@ -84,7 +91,15 @@ func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig) (*GoogleDrive, e
 	}, nil
 }
 
-func newOAuthClient(ctx context.Context, cfg GoogleDriveConfig) (*http.Client, error) {
+func newOAuthClient(ctx context.Context, cfg GoogleDriveConfig, mark int) (*http.Client, error) {
+	// All OAuth and API traffic goes through the marked transport so
+	// the kernel's first iptables nat-OUTPUT rule (RETURN on -m mark
+	// match) skips the REDIRECT. We pass our base client to the
+	// oauth2 package via context — its token-refresh requests pick it
+	// up the same way the Drive client does.
+	base := markedHTTPClient(mark)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, base)
+
 	if cfg.ServiceAccountJSON != "" {
 		jcfg, err := google.JWTConfigFromJSON([]byte(cfg.ServiceAccountJSON), driveScopes...)
 		if err != nil {

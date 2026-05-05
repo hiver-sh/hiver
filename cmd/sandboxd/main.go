@@ -177,6 +177,11 @@ func main() {
 		fuseArgs = append(fuseArgs,
 			"-remote", string(sp.FS.Backend),
 			"-remote-config", string(blob),
+			// Same SO_MARK we hand sbxproxy: sbxfuse's outbound TLS to
+			// the cloud API needs to escape the OUTPUT REDIRECT too,
+			// otherwise its traffic ends up at sbxproxy and gets
+			// allowlist-checked against the workload's egress rules.
+			"-mark", fmt.Sprintf("%d", soMark),
 		)
 	}
 	fuseCmd, err := startChild(ctx, &children, "sbxfuse", *fuseBin, fuseArgs, nil)
@@ -296,12 +301,15 @@ func main() {
 // stdout/stderr to ours, and tracks completion via wg.
 //
 // On ctx cancel, the child is given SIGTERM (with a WaitDelay grace period
-// before SIGKILL) so subsystems with cleanup hooks — notably sbxfuse —
-// get a chance to run fusermount -u before exiting.
+// before SIGKILL) so subsystems with cleanup hooks get a chance to
+// finish: sbxfuse needs to run fusermount -u, and (when a remote
+// backend is in play) drain its oplog of pending uploads. The grace
+// must outlive the longest cleanup; sbxfuse's oplog drain is bounded
+// at 5s, so 10s here gives that drain plus mount teardown room.
 func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args, env []string) (*exec.Cmd, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 3 * time.Second
+	cmd.WaitDelay = 10 * time.Second
 	if env != nil {
 		cmd.Env = env
 	}
@@ -360,19 +368,26 @@ func waitForListen(ctx context.Context, addr string, d time.Duration) error {
 	return fmt.Errorf("timeout waiting for %s", addr)
 }
 
+// fuseSuperMagic is the f_type value Linux reports via statfs for any
+// FUSE filesystem (see <linux/magic.h> FUSE_SUPER_MAGIC). We use it to
+// distinguish "sbxfuse mounted here" from "this path happens to be a
+// regular directory" — the latter is the silent-failure mode where
+// sbxfuse hung in init but the mountpoint pre-existed in the rootfs.
+const fuseSuperMagic = 0x65735546
+
 func waitForMountReady(ctx context.Context, mp string, d time.Duration) error {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		st, err := os.Stat(mp)
-		if err == nil && st.IsDir() {
+		var st syscall.Statfs_t
+		if err := syscall.Statfs(mp, &st); err == nil && st.Type == fuseSuperMagic {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("timeout waiting for FUSE mount %s", mp)
+	return fmt.Errorf("timeout waiting for FUSE mount %s (statfs did not report fuse magic — sbxfuse likely failed during init)", mp)
 }
 
 func freePort() (int, error) {

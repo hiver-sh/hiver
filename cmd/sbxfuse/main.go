@@ -34,6 +34,7 @@ func main() {
 		remoteName   = flag.String("remote", "", "remote backend name; blank = local-only. Supported: gdrive. Unimplemented: s3, gcs, onedrive.")
 		remoteConfig = flag.String("remote-config", "", "JSON config consumed by the remote backend (per-impl schema; see remotefs.GoogleDriveConfig).")
 		oplogDepth   = flag.Int("oplog-depth", 1024, "oplog queue size; Enqueue blocks when full")
+		outboundMark = flag.Int("mark", 0, "SO_MARK to stamp on outbound TCP from the remote backend's HTTP client; needed inside the sandbox-pod to escape iptables OUTPUT REDIRECT.")
 	)
 	flag.Parse()
 
@@ -60,12 +61,17 @@ func main() {
 		AuditReads: *auditReads,
 	}
 
-	store, err := buildStore(context.Background(), *remoteName, []byte(*remoteConfig))
+	log.Printf("sbxfuse: starting (remote=%q, mount=%s, backend=%s, mark=0x%x)",
+		*remoteName, *mountPoint, *backendDir, *outboundMark)
+
+	log.Printf("sbxfuse: building remote store…")
+	store, err := buildStore(context.Background(), *remoteName, []byte(*remoteConfig), *outboundMark)
 	if err != nil {
 		log.Fatalf("remote: %v", err)
 	}
 	if store != nil {
 		cfg.Oplog = fusefs.NewOplog(store, *oplogDepth)
+		log.Printf("sbxfuse: bootstrapping from remote (this contacts the cloud API)…")
 		ctxBoot, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := fusefs.Bootstrap(ctxBoot, store, *backendDir, *mountPoint); err != nil {
 			cancel()
@@ -93,7 +99,7 @@ func main() {
 	}
 }
 
-func buildStore(ctx context.Context, name string, configJSON []byte) (remotefs.Store, error) {
+func buildStore(ctx context.Context, name string, configJSON []byte, outboundMark int) (remotefs.Store, error) {
 	switch name {
 	case "":
 		return nil, nil
@@ -102,7 +108,7 @@ func buildStore(ctx context.Context, name string, configJSON []byte) (remotefs.S
 		if err != nil {
 			return nil, err
 		}
-		return remotefs.NewGoogleDrive(ctx, cfg)
+		return remotefs.NewGoogleDrive(ctx, cfg, outboundMark)
 	case "s3", "gcs", "onedrive":
 		return nil, fmt.Errorf("backend %q is not implemented yet", name)
 	}
