@@ -55,9 +55,7 @@ const AgentImageTar = "/mnt/agent.tar"
 // FS defines the per-sandbox FUSE workspace. Mount is where it appears
 // to the agent; Backend is the discriminator that picks the storage
 // flavor; ACLs are evaluated longest-prefix-match, default-deny
-// (DESIGN.md §8.2); AuditReads turns on per-Read auditing (off by
-// default — the kernel chunks user-level reads into many FUSE Reads,
-// so this can be chatty).
+// (DESIGN.md §8.2);
 //
 // Initial workspace content comes from the agent image itself: any
 // files in the agent rootfs at fs.mount get moved into the FUSE
@@ -69,10 +67,9 @@ const AgentImageTar = "/mnt/agent.tar"
 // recognizes; [Spec.Validate] checks that the combination present
 // matches the chosen backend.
 type FS struct {
-	Mount      string        `json:"mount"`
-	Backend    Backend       `json:"backend"`
-	ACLs       []fusefs.Rule `json:"acls"`
-	AuditReads bool          `json:"audit_reads,omitempty"`
+	Mount   string        `json:"mount"`
+	Backend Backend       `json:"backend"`
+	ACLs    []fusefs.Rule `json:"acls"`
 
 	// Per-backend extras live inline with a backend-name prefix so it's
 	// obvious from the YAML which backend a field belongs to. Only the

@@ -16,10 +16,6 @@ agent:
 fs:
   backend: gdrive
   mount: /workspace
-  # Audit each FUSE Read so the test can assert on a "read allow"
-  # event, not just an "open allow" — the agent's fs_read calls f.read()
-  # which fires Read after Open, and we want both visible.
-  audit_reads: true
   acls:
     - { path: /workspace,    access: rw }
     - { path: /workspace/**, access: rw }

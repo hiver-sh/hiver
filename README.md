@@ -51,19 +51,19 @@ egress:
   allow:
     - host: api.github.com
       methods: [GET]
-      paths:   [/repos/*, /user]
+      paths: [/repos/*, /user]
       headers:
         X-Sandbox: hive
 
     - host: go.dev
       methods: [GET]
-      paths:   [/solutions/case-studies/*]   # TLS is intercepted to enforce paths
+      paths: [/solutions/case-studies/*] # TLS is intercepted to enforce paths
 
 fs:
   backend: local
-  mount:   /workspace
+  mount: /workspace
   acls:
-    - { path: /workspace,          access: rw   }
+    - { path: /workspace, access: rw }
     - { path: /workspace/secret/**, access: deny }
 ```
 
@@ -79,14 +79,13 @@ fs:
 See [`test/e2e/fixtures/agent-python/spec.yaml`](test/e2e/fixtures/agent-python/spec.yaml)
 for the working reference.
 
-
 ## What's inside the pod
 
-| Process    | Job                                                                                |
-|------------|------------------------------------------------------------------------------------|
-| `sandboxd` | Generates a per-pod CA, stands up the sidecars, installs iptables OUTPUT REDIRECT, unpacks the agent rootfs, splices the CA into its trust store, runs `runc`, and tails proxy + FUSE audit logs as `sandboxd: agent op | …` lines on stdout. |
+| Process    | Job                                                                                                                                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `sandboxd` | Generates a per-pod CA, stands up the sidecars, installs iptables OUTPUT REDIRECT, unpacks the agent rootfs, splices the CA into its trust store, runs `runc`, and tails proxy + FUSE audit logs as `sandboxd: agent op         | …` lines on stdout. |
 | `sbxproxy` | Transparent TCP intercept (via SO_ORIGINAL_DST). Sniffs HTTP vs TLS. HTTP gets full method/path/header matching; TLS gets host-only matching from SNI, with optional MITM termination when path/method/header rules require it. |
-| `sbxfuse`  | bazil/fuse passthrough mount over a host backend, longest-prefix-match ACLs. Read auditing is opt-in (`workspace.audit_reads`) since the kernel chunks one user-level read into many FUSE Read calls. |
+| `sbxfuse`  | bazil/fuse passthrough mount over a host backend, longest-prefix-match ACLs.                                                                                                                                                    |
 
 Every mediated operation produces a JSON-line audit event in
 `/audit-out/{proxy,fuse}.log`; sandboxd also surfaces them on stdout

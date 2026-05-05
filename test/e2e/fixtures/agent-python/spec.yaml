@@ -14,7 +14,6 @@ agent:
 fs:
   backend: local
   mount: /workspace
-  audit_reads: true
   acls:
     - { path: /workspace,           access: rw   }
     - { path: /workspace/**,        access: rw   }

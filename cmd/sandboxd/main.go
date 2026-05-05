@@ -160,9 +160,7 @@ func main() {
 		"-backend", backendPath,
 		"-audit", fuseAuditPath,
 		"-acls", aclTmp,
-	}
-	if sp.FS.AuditReads {
-		fuseArgs = append(fuseArgs, "-audit-reads")
+		"-audit-reads",
 	}
 	// Remote backends: forward the backend name + a JSON-encoded
 	// config blob to sbxfuse, which constructs the [remotefs.Store]
@@ -403,7 +401,6 @@ func freePort() (int, error) {
 func writeACLs(path string, acls any) error {
 	return writeJSON(path, acls)
 }
-
 
 // writeJSON encodes v to path as a single JSON document.
 func writeJSON(path string, v any) error {
