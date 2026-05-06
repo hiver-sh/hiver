@@ -36,6 +36,8 @@ import (
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
 )
 
+const mountReadTimout = 35 * time.Second
+
 func main() {
 	var (
 		specPath = flag.String("spec", "", "path to the sandbox spec JSON (required)")
@@ -186,7 +188,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("start fuse: %v", err)
 	}
-	if err := waitForMountReady(ctx, sp.FS.Mount, 5*time.Second); err != nil {
+	// Cloud-bootstrapped backends (gdrive) have to fetch a directory
+	// listing before they can mount; sbxfuse caps that bootstrap at
+	// 30s. Wait long enough to cover it plus a small buffer — local
+	// backends still return in <100ms so this isn't a slowdown.
+	if err := waitForMountReady(ctx, sp.FS.Mount, mountReadTimout); err != nil {
 		_ = fuseCmd.Process.Kill()
 		log.Fatalf("fuse did not mount: %v", err)
 	}
