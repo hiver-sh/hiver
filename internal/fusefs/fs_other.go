@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"io"
+
+	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
 )
 
 // Config drives a [Server]. See fs_linux.go for the real implementation.
@@ -18,6 +20,7 @@ type Config struct {
 	Audit      io.Writer
 	AuditReads bool
 	Oplog      *Oplog
+	Remote     remotefs.Store
 }
 
 // AuditEvent is the schema for filesystem audit events.

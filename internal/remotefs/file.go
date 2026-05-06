@@ -59,6 +59,48 @@ func (s *FileStore) List(_ context.Context, prefix string) ([]string, error) {
 	return out, err
 }
 
+func (s *FileStore) Stat(_ context.Context, p string) (FileInfo, error) {
+	st, err := os.Stat(s.hostPath(p))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return FileInfo{}, ErrNotExist
+		}
+		return FileInfo{}, err
+	}
+	return FileInfo{
+		Path:  "/" + strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+strings.TrimPrefix(p, "/"))), "/"),
+		Size:  st.Size(),
+		Mtime: st.ModTime(),
+		IsDir: st.IsDir(),
+	}, nil
+}
+
+func (s *FileStore) ListDir(_ context.Context, dir string) ([]FileInfo, error) {
+	base := s.hostPath(dir)
+	dirCanon := filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(dir, "/")))
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrNotExist
+		}
+		return nil, err
+	}
+	out := make([]FileInfo, 0, len(entries))
+	for _, e := range entries {
+		st, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, FileInfo{
+			Path:  filepath.ToSlash(filepath.Join(dirCanon, e.Name())),
+			Size:  st.Size(),
+			Mtime: st.ModTime(),
+			IsDir: e.IsDir(),
+		})
+	}
+	return out, nil
+}
+
 func (s *FileStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
 	f, err := os.Open(s.hostPath(path))
 	if errors.Is(err, os.ErrNotExist) {

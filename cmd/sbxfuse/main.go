@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/sandbox-platform/agent-sandbox/internal/fusefs"
 	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
@@ -70,15 +69,15 @@ func main() {
 		log.Fatalf("remote: %v", err)
 	}
 	if store != nil {
+		// Wire the store as both write-back target (Oplog) and read-side
+		// authority (Config.Remote). The local backend dir is now a write
+		// buffer only — no Bootstrap pre-fetch, no read cache. Reads on
+		// remote-backed mounts always consult the upstream store via the
+		// fusefs handlers (see Lookup/Attr/ReadDirAll/Open).
 		cfg.Oplog = fusefs.NewOplog(store, *oplogDepth)
-		log.Printf("sbxfuse: bootstrapping from remote (this contacts the cloud API)…")
-		ctxBoot, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := fusefs.Bootstrap(ctxBoot, store, *backendDir, *mountPoint); err != nil {
-			cancel()
-			log.Fatalf("bootstrap: %v", err)
-		}
-		cancel()
-		log.Printf("sbxfuse: bootstrapped from %q into %s", *remoteName, *backendDir)
+		cfg.Remote = store
+		log.Printf("sbxfuse: remote-backed mount (%q) — local %s is a write buffer; reads go to upstream",
+			*remoteName, *backendDir)
 	}
 
 	srv, err := fusefs.Mount(cfg)

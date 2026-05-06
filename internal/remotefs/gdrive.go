@@ -10,6 +10,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -17,6 +18,9 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
+
+// driveFolderMime is what Drive returns for File.MimeType on folders.
+const driveFolderMime = "application/vnd.google-apps.folder"
 
 // GoogleDriveConfig is the JSON the user passes via fs.backend_config.
 //
@@ -248,6 +252,78 @@ func (g *GoogleDrive) List(ctx context.Context, prefix string) ([]string, error)
 	}
 	if err := walk(startID, "/"); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+// Stat returns metadata for the file or folder at p. One Drive API call
+// (files.get with size/mimeType/modifiedTime) — cheap enough that fusefs
+// can call it on every Lookup/Attr to keep the agent's view fresh.
+func (g *GoogleDrive) Stat(ctx context.Context, p string) (FileInfo, error) {
+	id, err := g.resolve(ctx, p)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	f, err := g.svc.Files.Get(id).
+		Context(ctx).
+		Fields("id,name,mimeType,size,modifiedTime").
+		Do()
+	if err != nil {
+		var ge *googleapi.Error
+		if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
+			g.invalidate(path.Clean("/" + strings.TrimPrefix(p, "/")))
+			return FileInfo{}, ErrNotExist
+		}
+		return FileInfo{}, err
+	}
+	mtime, _ := time.Parse(time.RFC3339, f.ModifiedTime)
+	return FileInfo{
+		Path:  path.Clean("/" + strings.TrimPrefix(p, "/")),
+		Size:  f.Size,
+		Mtime: mtime,
+		IsDir: f.MimeType == driveFolderMime,
+	}, nil
+}
+
+// ListDir returns the immediate children of dir (one Drive page request,
+// not a recursive walk). Used for FUSE ReadDirAll.
+func (g *GoogleDrive) ListDir(ctx context.Context, dir string) ([]FileInfo, error) {
+	folderID, err := g.resolve(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	dirCanon := path.Clean("/" + strings.TrimPrefix(dir, "/"))
+	var out []FileInfo
+	pageToken := ""
+	for {
+		resp, err := g.svc.Files.List().
+			Context(ctx).
+			Q(fmt.Sprintf("'%s' in parents and trashed = false", folderID)).
+			Fields("nextPageToken, files(id,name,mimeType,size,modifiedTime)").
+			PageToken(pageToken).
+			Do()
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range resp.Files {
+			childPath := path.Join(dirCanon, f.Name)
+			mtime, _ := time.Parse(time.RFC3339, f.ModifiedTime)
+			out = append(out, FileInfo{
+				Path:  childPath,
+				Size:  f.Size,
+				Mtime: mtime,
+				IsDir: f.MimeType == driveFolderMime,
+			})
+			// Warm the path → ID cache so a follow-up Stat/Get on this
+			// child doesn't re-issue a findChild call.
+			g.cacheMu.Lock()
+			g.pathToID[childPath] = f.Id
+			g.cacheMu.Unlock()
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
 	}
 	return out, nil
 }

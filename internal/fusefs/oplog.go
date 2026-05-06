@@ -3,10 +3,8 @@ package fusefs
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -59,8 +57,9 @@ type Oplog struct {
 	store remotefs.Store
 	queue chan OplogEntry
 
-	mu   sync.Mutex
-	dead []OplogEntry
+	mu    sync.Mutex
+	dead  []OplogEntry
+	dirty map[string]int // agent-visible path → outstanding Op count
 }
 
 // NewOplog returns an Oplog that will replay to store. depth is the
@@ -69,15 +68,56 @@ func NewOplog(store remotefs.Store, depth int) *Oplog {
 	return &Oplog{
 		store: store,
 		queue: make(chan OplogEntry, depth),
+		dirty: make(map[string]int),
 	}
 }
 
 // Enqueue submits an entry to the uploader. Blocks if the queue is full.
+// The entry's primary path (and NewPath, for OpMove) is marked dirty so
+// fusefs read paths know to serve from the local buffer instead of
+// re-fetching from the remote — pending writes haven't been uploaded
+// yet, so the remote's view is staler than the buffer's.
 func (o *Oplog) Enqueue(e OplogEntry) {
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
+	o.markDirty(e)
 	o.queue <- e
+}
+
+// IsDirty reports whether path has at least one Op pending or in flight
+// (Enqueue'd, not yet flushed). fusefs read paths consult this to choose
+// "serve local buffer" vs "fetch from remote".
+func (o *Oplog) IsDirty(path string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.dirty[path] > 0
+}
+
+func (o *Oplog) markDirty(e OplogEntry) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.dirty[e.Path]++
+	if e.Type == OpMove && e.NewPath != "" {
+		o.dirty[e.NewPath]++
+	}
+}
+
+func (o *Oplog) markClean(e OplogEntry) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.dirty[e.Path] > 0 {
+		o.dirty[e.Path]--
+		if o.dirty[e.Path] == 0 {
+			delete(o.dirty, e.Path)
+		}
+	}
+	if e.Type == OpMove && e.NewPath != "" && o.dirty[e.NewPath] > 0 {
+		o.dirty[e.NewPath]--
+		if o.dirty[e.NewPath] == 0 {
+			delete(o.dirty, e.NewPath)
+		}
+	}
 }
 
 // Run drains the oplog until ctx is cancelled, then flushes any
@@ -127,13 +167,37 @@ func (o *Oplog) drainOnShutdown() {
 
 // flush replays one entry against the store. On error the entry is
 // appended to the dead-letter list — callers inspect via [Oplog.Dead].
+//
+// On success the entry's path is marked clean and any local buffer file
+// for OpPut is evicted: the remote now holds the canonical content, so
+// keeping a copy in the write buffer would just make the buffer dir
+// double as a stale read cache (the very thing we explicitly removed
+// when we deleted Bootstrap). Subsequent reads consult the remote
+// directly via [Config.Remote].
 func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
 	var err error
 	switch e.Type {
 	case OpPut:
 		var f *os.File
 		f, err = os.Open(e.BufferPath)
-		if err == nil {
+		if err != nil {
+			if os.IsNotExist(err) {
+				// The buffer file is gone. Two ways this happens, both
+				// are a clean skip rather than a failure:
+				//   1. A previous flush for the same path already
+				//      uploaded + evicted the buffer (e.g. a Create
+				//      enqueue followed by a Write enqueue, both for
+				//      the same path).
+				//   2. The agent removed the file between Write and
+				//      our flush.
+				// Either way the remote either already has the latest
+				// content or will receive it from a later Op. Don't
+				// dead-letter — that would surface a phantom error.
+				log.Printf("oplog: skip put %s: buffer evicted", e.Path)
+				o.markClean(e)
+				return
+			}
+		} else {
 			err = o.store.Put(ctx, e.Path, f)
 			f.Close()
 		}
@@ -151,6 +215,12 @@ func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
 		o.mu.Unlock()
 		return
 	}
+	if e.Type == OpPut && e.BufferPath != "" {
+		if rmErr := os.Remove(e.BufferPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Printf("oplog: evict buffer %s: %v", e.BufferPath, rmErr)
+		}
+	}
+	o.markClean(e)
 	log.Printf("oplog: replayed %s", e)
 }
 
@@ -165,56 +235,9 @@ func (o *Oplog) Dead() []OplogEntry {
 	return out
 }
 
-// Bootstrap walks the remote store at mount time and copies any
-// objects missing from the local buffer down into it. The result is a
-// hot read path: every Get the agent does after this returns from the
-// local buffer with no network call.
-//
-// Existing local files are NOT overwritten — that lets sandboxd's
-// agent-rootfs seed run before bootstrap, with seed content winning
-// any conflict.
-func Bootstrap(ctx context.Context, store remotefs.Store, bufferDir, mountPoint string) error {
-	paths, err := store.List(ctx, "")
-	if err != nil {
-		return fmt.Errorf("bootstrap: list: %w", err)
-	}
-	for _, p := range paths {
-		// Strip mountPoint from the remote-side path so we get a
-		// buffer-relative location: remote keys are full agent-visible
-		// paths (e.g. "/workspace/inputs/data.txt") and the local
-		// buffer is rooted at the corresponding fs.backend directory.
-		rel := stripPrefix(p, mountPoint)
-		local := filepath.Join(bufferDir, rel)
-		if _, err := os.Stat(local); err == nil {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
-			return fmt.Errorf("bootstrap: mkdir %s: %w", local, err)
-		}
-		rc, err := store.Get(ctx, p)
-		if err != nil {
-			log.Printf("bootstrap: skip %s: %v", p, err)
-			continue
-		}
-		f, err := os.Create(local)
-		if err != nil {
-			rc.Close()
-			return fmt.Errorf("bootstrap: create %s: %w", local, err)
-		}
-		if _, err := io.Copy(f, rc); err != nil {
-			f.Close()
-			rc.Close()
-			return fmt.Errorf("bootstrap: copy %s: %w", local, err)
-		}
-		f.Close()
-		rc.Close()
-	}
-	return nil
-}
-
-func stripPrefix(p, prefix string) string {
-	if len(p) >= len(prefix) && p[:len(prefix)] == prefix {
-		return p[len(prefix):]
-	}
-	return p
-}
+// Bootstrap was the mount-time pre-fetch that warmed the local buffer
+// from the remote store. It's intentionally removed: the new model is
+// "local buffer holds writes only, reads consult the remote each time"
+// (see [Config.Remote] and the fusefs Lookup/Attr/ReadDirAll/Open
+// handlers). Pre-fetching would re-introduce the stale-cache problem
+// that switch was meant to solve.
