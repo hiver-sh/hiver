@@ -14,6 +14,19 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 module_root="$(cd "${script_dir}/../.." && pwd)"
 fixture_dir="${script_dir}/fixtures/${fixture}"
 
+# .env.local lives in the repo root, gitignored. Devs can stash secrets
+# there (HIVE_GDRIVE_* tokens, registry creds, etc.) so they're not
+# re-prompted every run. Sourced before any backend-specific block so
+# downstream env-var fallbacks see the values.
+env_local="${module_root}/.env.local"
+if [[ -f "${env_local}" ]]; then
+  echo "==> Sourcing ${env_local}"
+  set -a  # auto-export everything we source
+  # shellcheck disable=SC1090
+  source "${env_local}"
+  set +a
+fi
+
 if [[ ! -d "${fixture_dir}" ]]; then
   echo "fixture not found: ${fixture_dir}" >&2
   exit 1
@@ -43,7 +56,26 @@ if [[ "${spec_backend}" == "gdrive" ]]; then
   # goes to stderr.
   if [[ -z "${HIVE_GDRIVE_ACCESS_TOKEN:-}" && -z "${HIVE_GDRIVE_SERVICE_ACCOUNT_JSON:-}" ]]; then
     echo "==> gdrive backend: no HIVE_GDRIVE_ACCESS_TOKEN set; running OAuth setup"
-    eval "$(go run "${module_root}/test/e2e/hive-gdrive-setup")"
+    exports="$(go run "${module_root}/test/e2e/hive-gdrive-setup")"
+    eval "${exports}"
+
+    # Persist HIVE_GDRIVE_* lines to .env.local so subsequent runs skip
+    # the OAuth flow. We normalize the helper's `export NAME=value` lines
+    # to bare `NAME=value` so the file stays in standard dotenv format
+    # (the source-with-`set -a` block at the top reads either form).
+    # Existing HIVE_GDRIVE_* lines (in either form) are replaced; every
+    # other line in the file is preserved untouched.
+    umask 077
+    if [[ -f "${env_local}" ]]; then
+      grep -Ev '^[[:space:]]*(export[[:space:]]+)?HIVE_GDRIVE_' "${env_local}" \
+        > "${env_local}.tmp" || true
+      mv "${env_local}.tmp" "${env_local}"
+    fi
+    printf '%s\n' "${exports}" \
+      | sed -E 's/^[[:space:]]*export[[:space:]]+//' \
+      >> "${env_local}"
+    chmod 600 "${env_local}"
+    echo "==> Wrote HIVE_GDRIVE_* tokens to ${env_local} (gitignored, mode 600)"
   fi
   for v in HIVE_GDRIVE_ACCESS_TOKEN HIVE_GDRIVE_REFRESH_TOKEN \
            HIVE_GDRIVE_CLIENT_ID HIVE_GDRIVE_CLIENT_SECRET \
@@ -111,9 +143,20 @@ done
 # Capture the operation log and print to stdout. The leading
 # "sandboxd: " prefix is stripped so each line reads as a single op.
 ops_file="${audit_dir}/agent-ops.txt"
-docker logs "${container_name}" 2>&1 \
+# `|| true` so a crashed/removed container doesn't make `set -e + pipefail`
+# silently exit before we print diagnostics below.
+{ docker logs "${container_name}" 2>&1 || true; } \
   | sed -n 's/.*sandboxd: agent op | //p' \
   > "${ops_file}"
+
+# If the container died, surface its full logs and a clear "crashed" banner
+# instead of pretending everything is fine.
+container_state="$(docker inspect -f '{{.State.Status}}' "${container_name}" 2>/dev/null || echo missing)"
+if [[ "${container_state}" != "running" ]]; then
+  echo
+  echo "==> Sandbox-pod container is not running (state=${container_state}). Last 100 log lines:"
+  docker logs --tail 100 "${container_name}" 2>&1 || echo "(container removed; no logs available)"
+fi
 
 echo
 echo "==> Observed agent ops:"
