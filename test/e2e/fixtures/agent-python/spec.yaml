@@ -1,13 +1,3 @@
-# Sandbox spec for the agent-python E2E fixture.
-#
-# sandboxd reads this file (mounted at /mnt/spec.yaml) and uses it to
-# stand up the proxy + FUSE sidecars and to launch the agent under runc.
-# The agent image is built from `image:` (relative to this file) and
-# bind-mounted into sandboxd as a docker-archive tarball.
-#
-# All probe URLs and paths are hardcoded inside agent.py — the agent
-# doesn't read configuration from env vars. The host-side test binds
-# upstream-allowed:17080 and upstream-denied:17081 to match.
 agent:
   image: .
 
