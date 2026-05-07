@@ -1,0 +1,334 @@
+openapi: 3.1.0
+info:
+  title: Hive API
+  version: 0.1.0
+  summary: Manage a sandbox's file systems and network egress declaratively.
+  description: |
+    The Hive API exposes a single declarative configuration
+    document — `SandboxConfig` — that fully describes what an agent
+    running inside the sandbox can see and reach. Submit the desired
+    configuration and the API computes the minimum set of changes
+    required to converge the running sandbox to that state.
+
+servers:
+  - url: http://localhost:8787
+    description: Default sandbox control endpoint.
+
+tags:
+  - name: Configuration
+    description: Read and apply the sandbox's configuration document.
+
+paths:
+  /v1/config:
+    get:
+      tags: [Configuration]
+      summary: Read the current configuration.
+      operationId: getConfig
+      description: Returns the `SandboxConfig` currently in effect.
+      responses:
+        '200':
+          description: The current configuration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxConfig' }
+
+    put:
+      tags: [Configuration]
+      summary: Apply a desired configuration.
+      operationId: applyConfig
+      description: |
+        Compares the supplied desired configuration with the current
+        applied state and applies the additions and removals needed
+        to converge. Returns the post-apply configuration and a
+        `Changes` document describing what was added or removed.
+
+        The call is atomic: if any individual change fails, the entire
+        apply is rolled back and `applied` is `false`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SandboxConfig' }
+            examples:
+              addFileSystem:
+                summary: Add a Google Drive file system to an existing sandbox
+                value:
+                  agent:
+                    image: my-agent:latest
+                  fs:
+                    - mount: /workspace
+                      backend: local
+                      acls:
+                        - { path: /workspace, access: rw }
+                        - { path: /workspace/**, access: rw }
+                    - mount: /drive
+                      backend: gdrive
+                      gdrive_access_token: ya29.example
+                      gdrive_folder_id: 1QWodtGM...
+                      acls:
+                        - { path: /drive, access: rw }
+                        - { path: /drive/**, access: rw }
+                  egress:
+                    allow:
+                      - host: api.github.com
+                        methods: [GET]
+                        paths: [/repos/*]
+                  audit_dir: /audit-out
+      responses:
+        '200':
+          description: Apply attempted. Inspect `applied` and `changes`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplyResult' }
+        '400':
+          description: The supplied configuration is invalid.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: A previous apply is still in progress.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  schemas:
+    SandboxConfig:
+      type: object
+      description: A complete sandbox configuration.
+      required: [fs, audit_dir]
+      additionalProperties: false
+      properties:
+        agent:
+          $ref: '#/components/schemas/Agent'
+        fs:
+          type: array
+          minItems: 1
+          description: |
+            One or more file systems exposed to the agent. Mount paths
+            must be unique and non-overlapping (a mount path may not
+            be a parent directory of another mount path).
+          items: { $ref: '#/components/schemas/FileSystem' }
+        egress:
+          $ref: '#/components/schemas/Egress'
+        audit_dir:
+          type: string
+          description: Directory where audit logs are written.
+          example: /audit-out
+
+    Agent:
+      type: object
+      description: |
+        The workload that runs inside the sandbox. Defined at sandbox
+        creation time and not modifiable through this API.
+      additionalProperties: false
+      properties:
+        image:
+          type: string
+          description: Reference to the agent image to launch.
+          example: my-agent:latest
+        env:
+          type: array
+          items:
+            type: string
+          description: Additional environment variables in `KEY=VALUE` form.
+          example: ["LOG_LEVEL=info", "REGION=us-east-1"]
+
+    FileSystem:
+      type: object
+      description: |
+        A file system exposed to the agent at `mount`. The `backend`
+        selects the storage type. Access is governed by `acls`,
+        evaluated longest-prefix-first with deny as the default.
+      required: [mount, backend]
+      additionalProperties: false
+      properties:
+        mount:
+          type: string
+          description: Absolute path at which the file system appears to the agent.
+          pattern: '^/.+'
+          example: /workspace
+        backend:
+          $ref: '#/components/schemas/Backend'
+        acls:
+          type: array
+          description: Access control rules for paths under `mount`.
+          items: { $ref: '#/components/schemas/ACLRule' }
+        gdrive_access_token:
+          type: string
+          format: password
+          description: OAuth access token. Only used when `backend = gdrive`.
+        gdrive_refresh_token:
+          type: string
+          format: password
+          description: OAuth refresh token. Only used when `backend = gdrive`.
+        gdrive_client_id:
+          type: string
+          description: OAuth client ID. Only used when `backend = gdrive`.
+        gdrive_client_secret:
+          type: string
+          format: password
+          description: OAuth client secret. Only used when `backend = gdrive`.
+        gdrive_service_account_json:
+          type: string
+          format: password
+          description: |
+            Service account credential JSON. Mutually exclusive with
+            the OAuth fields above. Only used when `backend = gdrive`.
+        gdrive_folder_id:
+          type: string
+          description: |
+            ID of the Drive folder the file system is scoped to. When
+            omitted, the account root is used. Only used when
+            `backend = gdrive`.
+
+    Backend:
+      type: string
+      enum: [local, gdrive]
+      description: |
+        Storage type for a file system.
+          * `local`  — sandbox-local storage with no external dependency.
+          * `gdrive` — backed by Google Drive.
+
+    ACLRule:
+      type: object
+      description: One access control rule.
+      required: [path, access]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: |
+            Path or glob the rule applies to (for example
+            `/workspace/secret/**`). Rules are matched
+            longest-prefix-first; access is denied by default when
+            no rule matches.
+          example: /workspace/secret/**
+        access:
+          type: string
+          enum: [rw, ro, deny]
+          description: Read-write, read-only, or fully denied.
+
+    Egress:
+      type: object
+      description: Network egress configuration.
+      additionalProperties: false
+      properties:
+        allow:
+          type: array
+          description: |
+            Ordered list of allow rules. The first rule that matches a
+            request decides the outcome; requests that match no rule
+            are denied.
+          items: { $ref: '#/components/schemas/EgressRule' }
+
+    EgressRule:
+      type: object
+      description: One egress allow rule.
+      required: [host]
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          description: |
+            Exact host (`api.github.com`) or wildcard suffix
+            (`*.pypi.org`).
+          example: api.github.com
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+          description: HTTP methods allowed by this rule. Empty means any method.
+          example: [GET]
+        paths:
+          type: array
+          items: { type: string }
+          description: |
+            Glob path patterns allowed by this rule. Empty means any
+            path.
+          example: ["/repos/*"]
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Headers added to outbound requests that match this rule.
+            The agent cannot see or override these values.
+          example:
+            X-Sandbox-Tenant: acme
+
+    ApplyResult:
+      type: object
+      description: The outcome of an apply call.
+      required: [applied, config, changes]
+      additionalProperties: false
+      properties:
+        applied:
+          type: boolean
+          description: |
+            `true` if every change was applied successfully. `false`
+            if the apply failed and was rolled back; in that case the
+            sandbox is unchanged.
+        config:
+          $ref: '#/components/schemas/SandboxConfig'
+          description: |
+            The configuration in effect after this call. When `applied`
+            is `true` this matches the request, except for any
+            non-modifiable fields preserved from the previous state
+            (see `changes.warnings`).
+        changes:
+          $ref: '#/components/schemas/Changes'
+        error:
+          type: string
+          description: Human-readable failure reason. Set only when `applied` is `false`.
+
+    Changes:
+      type: object
+      description: |
+        Concrete additions and removals carried out by the apply. Each
+        list contains whole entries (a complete `FileSystem` or
+        `EgressRule`) so the caller can audit what was changed without
+        re-diffing the request.
+      additionalProperties: false
+      properties:
+        fs:
+          type: object
+          additionalProperties: false
+          properties:
+            added:
+              type: array
+              items: { $ref: '#/components/schemas/FileSystem' }
+            removed:
+              type: array
+              items: { $ref: '#/components/schemas/FileSystem' }
+        egress:
+          type: object
+          additionalProperties: false
+          properties:
+            added:
+              type: array
+              items: { $ref: '#/components/schemas/EgressRule' }
+            removed:
+              type: array
+              items: { $ref: '#/components/schemas/EgressRule' }
+        warnings:
+          type: array
+          items: { type: string }
+          description: |
+            Non-fatal advisories. Example: a non-modifiable field was
+            present in the request and was ignored.
+
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Human-readable failure reason.
+        details:
+          type: object
+          additionalProperties: true
+          description: |
+            Optional structured context such as the offending field
+            path or a conflict identifier.
