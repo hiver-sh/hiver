@@ -50,7 +50,22 @@ type Config struct {
 	// is reduced to a write buffer for in-flight Puts. Leave nil
 	// for local-only mounts (no upstream).
 	Remote remotefs.Store
+	// RemoteStatTTL controls how long ReadDirAll-populated metadata
+	// stays cached for follow-up Attr/Lookup calls. The motivating
+	// pattern is `ls -la <dir>`: kernel issues 1 readdir + N attrs,
+	// and without the cache each attr is its own Remote.Stat round-
+	// trip. The cache is consulted only when the path is not dirty
+	// (pending oplog writes always defer to the local buffer), and
+	// invalidated by every mutating handler. Zero defaults to
+	// [defaultRemoteStatTTL]; negative disables the cache.
+	RemoteStatTTL time.Duration
 }
+
+// defaultRemoteStatTTL is the cache window used when Config.RemoteStatTTL
+// is unset. Long enough to coalesce a back-to-back-`ls` workflow into a
+// single Drive call; short enough that out-of-band Drive edits surface
+// within a coffee-sip.
+const defaultRemoteStatTTL = 30 * time.Second
 
 // AuditEvent is one record on the audit.filesystem topic (DESIGN.md §9.1).
 type AuditEvent struct {
@@ -69,6 +84,11 @@ type Server struct {
 
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
+
+	// statCache memoizes Remote.Stat results within RemoteStatTTL so a
+	// readdir-followed-by-N-stats pattern is one API call instead of N+1.
+	// Nil for pure-local mounts.
+	statCache *statCache
 }
 
 // Mount opens the FUSE connection and mounts at cfg.MountPoint.
@@ -91,7 +111,15 @@ func Mount(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fusefs: mount %s: %w", cfg.MountPoint, err)
 	}
-	return &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit)}, nil
+	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit)}
+	if cfg.Remote != nil {
+		ttl := cfg.RemoteStatTTL
+		if ttl == 0 {
+			ttl = defaultRemoteStatTTL
+		}
+		s.statCache = newStatCache(ttl)
+	}
+	return s, nil
 }
 
 // Serve handles FUSE requests until the mount is unmounted or ctx is
@@ -130,6 +158,19 @@ func (s *Server) audit(e AuditEvent) {
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
 	_ = s.auditEnc.Encode(e)
+}
+
+// cachePut stores remote metadata in the stat cache, but only when the
+// path is not currently the target of a pending oplog write. Skipping
+// dirty paths is what keeps the cache safe across the post-flush race:
+// an in-flight upload can't leave behind a stale pre-write snapshot
+// that survives [Oplog.IsDirty] flipping back to false on completion,
+// because we never cached during the dirty window in the first place.
+func (s *Server) cachePut(p string, info remotefs.FileInfo) {
+	if s.cfg.Oplog != nil && s.cfg.Oplog.IsDirty(p) {
+		return
+	}
+	s.statCache.put(p, info)
 }
 
 // enqueuePut / enqueueDelete / enqueueMove are no-ops when no journal
@@ -213,8 +254,14 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 		return syscall.ENOENT
 	}
 	if n.s.cfg.Remote != nil && !n.isDirty() {
+		if info, ok := n.s.statCache.get(n.absPath()); ok {
+			fillAttrFromRemote(a, info)
+			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
+			return nil
+		}
 		info, err := n.s.cfg.Remote.Stat(ctx, n.absPath())
 		if err == nil {
+			n.s.cachePut(n.absPath(), info)
 			fillAttrFromRemote(a, info)
 			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
 			return nil
@@ -259,8 +306,13 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 		return nil, syscall.ENOENT
 	}
 	if n.s.cfg.Remote != nil && !child.isDirty() {
-		_, err := n.s.cfg.Remote.Stat(ctx, child.absPath())
+		if _, ok := n.s.statCache.get(child.absPath()); ok {
+			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
+			return child, nil
+		}
+		info, err := n.s.cfg.Remote.Stat(ctx, child.absPath())
 		if err == nil {
+			n.s.cachePut(child.absPath(), info)
 			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
 			return child, nil
 		}
@@ -296,9 +348,18 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 			return nil, mapErr(err)
 		}
+		// Cache the parent's own FileInfo so a follow-up Attr on this
+		// dir is a hit. We don't have the directory's own remote
+		// metadata here (ListDir returns children, not parent
+		// attrs); synthesize a minimal IsDir=true entry — the kernel
+		// only ever uses IsDir + Mtime for directories on the read path,
+		// and the cache TTL bounds how long the synthesized mtime is
+		// served before a real Stat refreshes it.
+		n.s.cachePut(n.absPath(), remotefs.FileInfo{Path: n.absPath(), IsDir: true, Mtime: time.Now()})
 		for _, info := range infos {
 			name := path.Base(info.Path)
-			if n.s.cfg.ACLs.Eval(n.childAbs(name)) == AccessDeny {
+			childAbs := n.childAbs(name)
+			if n.s.cfg.ACLs.Eval(childAbs) == AccessDeny {
 				continue
 			}
 			t := fuse.DT_File
@@ -306,6 +367,11 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 				t = fuse.DT_Dir
 			}
 			seen[name] = t
+			// Populate the stat cache so the kernel's follow-up Attr
+			// fan-out (one per entry, immediate after readdir) reuses
+			// metadata we already paid for in this ListDir call. Skips
+			// dirty children — those serve from local Lstat anyway.
+			n.s.cachePut(childAbs, info)
 		}
 	}
 
@@ -362,6 +428,20 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		return nil, syscall.EROFS
 	}
 	if n.s.cfg.Remote != nil && !n.isDirty() {
+		// Directory opens (req.Dir = OPENDIR) don't need a remote Stat:
+		// the kernel only OPENDIRs a node it already knows is a dir
+		// (via Lookup/Attr), and our only setup work is MkdirAll on the
+		// local buffer so ReadDirAll's local-merge step has somewhere
+		// to look. Skipping the Stat is what gets a repeat `ls <dir>`
+		// down to one Drive call (the ListDir).
+		if req.Dir {
+			if err := os.MkdirAll(n.hostPath(), 0o755); err != nil {
+				n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+				return nil, mapErr(err)
+			}
+			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "allow"})
+			return n, nil
+		}
 		err := n.materializeLocal(ctx, req.Flags)
 		if err != nil {
 			if !errors.Is(err, remotefs.ErrNotExist) {
@@ -406,9 +486,18 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 // the caller maps that to ENOENT (open of a non-existent file with no
 // O_CREAT, which Lookup should already have caught, but defence in depth).
 func (n *node) materializeLocal(ctx context.Context, flags fuse.OpenFlags) error {
-	info, err := n.s.cfg.Remote.Stat(ctx, n.absPath())
-	if err != nil {
-		return err
+	// Try the stat cache first — Attr/Lookup just before this Open
+	// commonly populated it, so re-fetching the same metadata over the
+	// wire is wasted work. On miss, populate the cache so a follow-up
+	// Attr in the same TTL window also stays local.
+	info, ok := n.s.statCache.get(n.absPath())
+	if !ok {
+		var err error
+		info, err = n.s.cfg.Remote.Stat(ctx, n.absPath())
+		if err != nil {
+			return err
+		}
+		n.s.cachePut(n.absPath(), info)
 	}
 	host := n.hostPath()
 	if info.IsDir {
@@ -504,6 +593,7 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	}
 	resp.Size = nWritten
 	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "allow"})
+	n.s.statCache.invalidate(n.absPath())
 	n.s.enqueuePut(n.absPath(), n.hostPath())
 	return nil
 }
@@ -531,6 +621,7 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 	}
 	_ = f.Close()
 	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "allow"})
+	n.s.statCache.invalidate(child.absPath())
 	// We deliberately do NOT enqueue a Put here. The common
 	// "open(O_CREAT|O_TRUNC) + Write + Close" sequence would double-
 	// enqueue (once empty from Create, once with content from Write),
@@ -566,6 +657,9 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		return mapErr(localErr)
 	}
 	localExisted := localErr == nil
+	// Whether the local unlink succeeded or the file was already gone,
+	// the path's cached stat (if any) is now stale.
+	n.s.statCache.invalidate(childAbs)
 
 	if n.s.cfg.Remote != nil {
 		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(childAbs)
@@ -603,6 +697,7 @@ func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node,
 		return nil, mapErr(err)
 	}
 	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "allow"})
+	n.s.statCache.invalidate(child.absPath())
 	return child, nil
 }
 
@@ -652,6 +747,10 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 		return mapErr(localErr)
 	}
 	localRenamed := localErr == nil
+	// Drop both ends from the stat cache: the old name is gone, the
+	// new name's metadata changed underneath any prior cached entry.
+	n.s.statCache.invalidate(oldAbs)
+	n.s.statCache.invalidate(newAbs)
 
 	if n.s.cfg.Remote != nil {
 		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(oldAbs)
@@ -740,6 +839,7 @@ func (n *node) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 			return mapErr(err)
 		}
 		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "allow"})
+		n.s.statCache.invalidate(n.absPath())
 		// Don't enqueue here — Write will, and a typical truncate is
 		// followed by a Write. A bare truncate-no-write leaves the
 		// local stub un-uploaded (same edge case as bare Create).

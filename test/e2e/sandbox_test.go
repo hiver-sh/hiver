@@ -21,10 +21,11 @@ func TestGdriveFsE2E(t *testing.T) {
 		t.Skip("set HIVE_GDRIVE_ACCESS_TOKEN [+ HIVE_GDRIVE_FOLDER_ID] to run")
 	}
 	runFixtureE2E(t, "agent-gdrive-fs", func(sp *spec.Spec) {
-		sp.FS.GdriveAccessToken = token
-		sp.FS.GdriveRefreshToken = os.Getenv("HIVE_GDRIVE_REFRESH_TOKEN")
-		sp.FS.GdriveClientID = os.Getenv("HIVE_GDRIVE_CLIENT_ID")
-		sp.FS.GdriveClientSecret = os.Getenv("HIVE_GDRIVE_CLIENT_SECRET")
-		sp.FS.GdriveFolderID = os.Getenv("HIVE_GDRIVE_FOLDER_ID")
+		f := &sp.FS[0]
+		f.GdriveAccessToken = token
+		f.GdriveRefreshToken = os.Getenv("HIVE_GDRIVE_REFRESH_TOKEN")
+		f.GdriveClientID = os.Getenv("HIVE_GDRIVE_CLIENT_ID")
+		f.GdriveClientSecret = os.Getenv("HIVE_GDRIVE_CLIENT_SECRET")
+		f.GdriveFolderID = os.Getenv("HIVE_GDRIVE_FOLDER_ID")
 	})
 }

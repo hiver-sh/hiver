@@ -129,7 +129,12 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 
 	// (3) FUSE audit log on disk — write-allow somewhere; deny on
 	// /secret/... only checked when the fixture has a /secret rule.
-	fuseEvents := readJSONLines(t, filepath.Join(auditDir, "fuse.log"))
+	// Each mount writes to its own fuse-<slug>.log; aggregate them.
+	var fuseEvents []map[string]any
+	for i := range sp.FS {
+		slug := sp.FS[i].Slug()
+		fuseEvents = append(fuseEvents, readJSONLines(t, filepath.Join(auditDir, "fuse-"+slug+".log"))...)
+	}
 	var sawWriteAllow, sawSecretDeny bool
 	for _, e := range fuseEvents {
 		op, _ := e["op"].(string)
@@ -146,10 +151,12 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 		t.Error("FUSE audit: no write-allow verdict")
 	}
 	hasSecretRule := false
-	for _, r := range sp.FS.ACLs {
-		if strings.Contains(r.Path, "/secret") {
-			hasSecretRule = true
-			break
+	for i := range sp.FS {
+		for _, r := range sp.FS[i].ACLs {
+			if strings.Contains(r.Path, "/secret") {
+				hasSecretRule = true
+				break
+			}
 		}
 	}
 	if hasSecretRule && !sawSecretDeny {
@@ -162,7 +169,7 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 		"[sbxproxy:err]",
 		"sbxproxy listening (transparent)",
 		"sandboxd: iptables OUTPUT nat redirect",
-		"[sbxfuse:err]",
+		"[sbxfuse:workspace:err]",
 		"sbxfuse: mounted",
 		"sandboxd: agent image unpacked to",
 		"sandboxd: agent op |",

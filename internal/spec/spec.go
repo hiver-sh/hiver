@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 
@@ -25,7 +26,7 @@ import (
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
 	Agent    Agent  `json:"agent"`
-	FS       FS     `json:"fs"`
+	FS       []FS   `json:"fs"`
 	Egress   Egress `json:"egress"`
 	AuditDir string `json:"audit_dir"`
 }
@@ -52,13 +53,15 @@ type Agent struct {
 // before launching the sandbox-pod.
 const AgentImageTar = "/mnt/agent.tar"
 
-// FS defines the per-sandbox FUSE workspace. Mount is where it appears
-// to the agent; Backend is the discriminator that picks the storage
-// flavor; ACLs are evaluated longest-prefix-match, default-deny
+// FS defines one FUSE workspace. A spec carries a list of these so
+// agents can mount multiple workspaces side-by-side (e.g. a local
+// scratch dir plus a write-through gdrive mount). Mount is where it
+// appears to the agent; Backend is the discriminator that picks the
+// storage flavor; ACLs are evaluated longest-prefix-match, default-deny
 // (DESIGN.md §8.2);
 //
 // Initial workspace content comes from the agent image itself: any
-// files in the agent rootfs at fs.mount get moved into the FUSE
+// files in the agent rootfs at the mount path get moved into the FUSE
 // backend at sandboxd startup. Authors set this up with a normal
 // COPY in the agent Dockerfile (e.g. `COPY inputs/ /workspace/inputs/`).
 //
@@ -85,20 +88,20 @@ type FS struct {
 }
 
 // Backend names a workspace storage type. New backends extend this
-// enum and the matching switch in [Backend.HostPath] / [Backend.IsRemote]
+// enum and the matching switch in [Backend.Valid] / [Backend.IsRemote]
 // + the dispatch in cmd/sbxfuse/main.go.
 //
 // "local" is a sandboxd-managed directory the FUSE daemon
 // passthrough-mounts. Reads and writes stay local — there's no
 // uploader, no oplog, no remote consistency to worry about.
 //
-// "gdrive" backs the FUSE mount with a write-through cache: the local
-// buffer at [LocalBackendPath] serves the agent's hot path, every
-// mutation enqueues an oplog entry, and an uploader goroutine drains
-// it into Google Drive. The same shape applies to the planned
-// "onedrive" / "s3" / "gcs" backends — they all share the
-// [internal/remotefs].Store interface and only differ in the network
-// client behind it.
+// "gdrive" backs the FUSE mount with a write-through cache: a local
+// buffer derived from the mount path ([FS.BackendPath]) serves the
+// agent's hot path, every mutation enqueues an oplog entry, and an
+// uploader goroutine drains it into Google Drive. The same shape
+// applies to the planned "onedrive" / "s3" / "gcs" backends — they
+// all share the [internal/remotefs].Store interface and only differ
+// in the network client behind it.
 //
 // Auth tokens for "gdrive" live inline on [FS] (access_token,
 // refresh_token, client_id, client_secret, service_account_json) —
@@ -109,22 +112,15 @@ type Backend string
 const (
 	BackendLocal       Backend = "local"
 	BackendGoogleDrive Backend = "gdrive"
-
-	// LocalBackendPath is the in-pod host directory every backend uses
-	// for the local buffer. For "local" it's the source of truth; for
-	// the journaled backends it's a write-through cache.
-	LocalBackendPath = "/workspace-backend"
 )
 
-// HostPath returns the in-pod path the FUSE daemon overlays. All
-// backends today share LocalBackendPath — the difference is whether
-// an oplog + remote uploader runs alongside.
-func (b Backend) HostPath() string {
+// Valid reports whether the backend is one sandboxd knows how to wire up.
+func (b Backend) Valid() bool {
 	switch b {
 	case BackendLocal, BackendGoogleDrive:
-		return LocalBackendPath
+		return true
 	}
-	return ""
+	return false
 }
 
 // IsRemote reports whether the backend writes through to a remote
@@ -135,6 +131,25 @@ func (b Backend) IsRemote() bool {
 		return true
 	}
 	return false
+}
+
+// BackendPath returns the in-pod host directory that backs this mount —
+// the local buffer for remote backends, the source of truth for local.
+// Derived from the mount so each FS entry gets its own dir without the
+// caller having to thread per-mount config through.
+func (f *FS) BackendPath() string {
+	return f.Mount + "-backend"
+}
+
+// Slug returns a filename-safe identifier derived from the mount path,
+// used by sandboxd to name per-mount sidecar files (ACL JSON, audit log).
+func (f *FS) Slug() string {
+	s := strings.Trim(f.Mount, "/")
+	s = strings.ReplaceAll(s, "/", "-")
+	if s == "" {
+		return "root"
+	}
+	return s
 }
 
 // Env-var fallbacks for gdrive credentials. Spec fields take precedence;
@@ -233,23 +248,57 @@ func Parse(path string) (*Spec, error) {
 
 // Validate enforces required-field invariants.
 func (s *Spec) Validate() error {
-	if s.FS.Backend == "" {
-		return errors.New("fs.backend is required")
+	if len(s.FS) == 0 {
+		return errors.New("fs is required (at least one mount)")
 	}
-	if s.FS.Backend.HostPath() == "" {
-		return fmt.Errorf("fs.backend: unknown value %q (supported: %q, %q)", s.FS.Backend, BackendLocal, BackendGoogleDrive)
-	}
-	if s.FS.Backend == BackendGoogleDrive {
-		access, _, _, _, sa, _ := s.FS.gdriveResolved()
-		if access == "" && sa == "" {
-			return fmt.Errorf("fs.backend gdrive: one of gdrive_access_token / gdrive_service_account_json is required (or env %s / %s)", envGdriveAccessToken, envGdriveServiceAccountJSON)
+	for i := range s.FS {
+		f := &s.FS[i]
+		ctx := fmt.Sprintf("fs[%d]", i)
+		if f.Backend == "" {
+			return fmt.Errorf("%s.backend is required", ctx)
+		}
+		if !f.Backend.Valid() {
+			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive)
+		}
+		if f.Backend == BackendGoogleDrive {
+			access, _, _, _, sa, _ := f.gdriveResolved()
+			if access == "" && sa == "" {
+				return fmt.Errorf("%s.backend gdrive: one of gdrive_access_token / gdrive_service_account_json is required (or env %s / %s)", ctx, envGdriveAccessToken, envGdriveServiceAccountJSON)
+			}
+		}
+		if f.Mount == "" {
+			return fmt.Errorf("%s.mount is required", ctx)
+		}
+		if !strings.HasPrefix(f.Mount, "/") {
+			return fmt.Errorf("%s.mount: must be an absolute path, got %q", ctx, f.Mount)
 		}
 	}
-	if s.FS.Mount == "" {
-		return errors.New("fs.mount is required")
+	// Mount paths must be unique and non-overlapping: one being a
+	// prefix of another would let bind-mounts and ACLs collide. Compare
+	// every pair as path strings, treating "/a" as a prefix of "/a/b"
+	// but not of "/ab".
+	for i := range s.FS {
+		for j := i + 1; j < len(s.FS); j++ {
+			a, b := s.FS[i].Mount, s.FS[j].Mount
+			if pathOverlaps(a, b) {
+				return fmt.Errorf("fs[%d].mount %q overlaps fs[%d].mount %q", i, a, j, b)
+			}
+		}
 	}
 	if s.AuditDir == "" {
 		return errors.New("audit_dir is required")
 	}
 	return nil
+}
+
+// pathOverlaps reports whether two mount paths collide: identical, or
+// one is a parent directory of the other.
+func pathOverlaps(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, strings.TrimRight(a, "/")+"/")
 }

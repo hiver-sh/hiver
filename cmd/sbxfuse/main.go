@@ -63,8 +63,12 @@ func main() {
 	log.Printf("sbxfuse: starting (remote=%q, mount=%s, backend=%s, mark=0x%x)",
 		*remoteName, *mountPoint, *backendDir, *outboundMark)
 
+	// Remote-backend HTTP traffic (Drive API + OAuth) is logged to
+	// sbxfuse's stdout as one JSON line per request; sandboxd's
+	// streamPrefixed will re-emit each line as `[sbxfuse:<slug>:out]`,
+	// so the user can grep the pod log instead of tailing a file.
 	log.Printf("sbxfuse: building remote store…")
-	store, err := buildStore(context.Background(), *remoteName, []byte(*remoteConfig), *outboundMark)
+	store, err := buildStore(context.Background(), *remoteName, []byte(*remoteConfig), *outboundMark, os.Stdout)
 	if err != nil {
 		log.Fatalf("remote: %v", err)
 	}
@@ -98,7 +102,7 @@ func main() {
 	}
 }
 
-func buildStore(ctx context.Context, name string, configJSON []byte, outboundMark int) (remotefs.Store, error) {
+func buildStore(ctx context.Context, name string, configJSON []byte, outboundMark int, requestLog io.Writer) (remotefs.Store, error) {
 	switch name {
 	case "":
 		return nil, nil
@@ -107,7 +111,7 @@ func buildStore(ctx context.Context, name string, configJSON []byte, outboundMar
 		if err != nil {
 			return nil, err
 		}
-		return remotefs.NewGoogleDrive(ctx, cfg, outboundMark)
+		return remotefs.NewGoogleDrive(ctx, cfg, outboundMark, requestLog)
 	case "s3", "gcs", "onedrive":
 		return nil, fmt.Errorf("backend %q is not implemented yet", name)
 	}

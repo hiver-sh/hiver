@@ -39,10 +39,21 @@ fi
 agent_image="sandbox-${fixture}:e2e"
 container_name="sandbox-pod-${fixture}"
 
-# Detect the FS backend from the fixture's spec. Cheap grep instead of
+# Detect the FS backend from the fixture's spec. Cheap parse instead of
 # a YAML dependency — the file shape is well-known, every fixture
-# carries `backend: <name>` on its own line under `fs:`.
-spec_backend="$(awk '/^[[:space:]]*backend:[[:space:]]/ { gsub(/"|,/, "", $2); print $2; exit }' "${fixture_dir}/spec.yaml")"
+# carries `backend: <name>` on its own line under `fs:`. Accepts both
+# the bare key (`backend: gdrive`) and the list-entry form
+# (`- backend: gdrive`); first match wins, which matches sandboxd's
+# "remote env vars apply to any gdrive entry" behavior.
+spec_backend="$(awk '
+  {
+    for (i=1; i<=NF; i++) {
+      if ($i == "backend:") {
+        v = $(i+1); gsub(/"|,/, "", v); print v; exit
+      }
+    }
+  }
+' "${fixture_dir}/spec.yaml")"
 
 # Per-backend env-var passthrough into the container. spec.go falls
 # back from blank spec fields to these env vars, so a checked-in
@@ -169,7 +180,8 @@ sandbox-pod is still running.
   follow logs   docker logs -f ${container_name}
   shell         docker exec -it ${container_name} bash
   proxy audit   tail -f ${audit_dir}/proxy.log
-  fuse audit    tail -f ${audit_dir}/fuse.log
+  fuse audit    tail -f ${audit_dir}/fuse-*.log
+  gdrive http   docker logs -f ${container_name} 2>&1 | grep '\[sbxfuse:.*:out\]'
   sandbox CA    ${audit_dir}/sandbox-ca.crt
   ingress       curl -d 'hi from host' http://localhost:18000/hello
   exec cmd      curl -d 'uname -a; ls /workspace' http://localhost:18000/exec

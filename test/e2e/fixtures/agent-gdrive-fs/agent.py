@@ -86,6 +86,9 @@ def fs_read(path):
 fs_write("/workspace/note.txt", "hello from gdrive-backed workspace")
 fs_read("/workspace/note.txt")
 
+fs_write("/scratch/scratch.txt", "hello from local scratch")
+fs_read("/scratch/scratch.txt")
+
 print("DONE", flush=True)
 
 while True:

@@ -27,12 +27,12 @@ const driveFolderMime = "application/vnd.google-apps.folder"
 // Auth flavor is whichever set of fields is populated, in this order:
 //
 //  1. ServiceAccountJSON    — server-to-server creds; no user, no
-//                             refresh dance, recommended for production.
+//     refresh dance, recommended for production.
 //  2. AccessToken + Refresh + ClientID + ClientSecret — refreshable
-//                             user credentials, the normal interactive
-//                             flow.
+//     user credentials, the normal interactive
+//     flow.
 //  3. AccessToken alone     — short-lived (≈1h), no refresh; convenient
-//                             for OAuth-Playground-style scratch work.
+//     for OAuth-Playground-style scratch work.
 //
 // FolderID, when set, scopes every operation to that Drive folder (the
 // store treats it as the root). Leaving it blank uses the user's "My
@@ -75,8 +75,12 @@ type GoogleDrive struct {
 // platform traffic to Google escapes the iptables OUTPUT REDIRECT
 // it installed in the sandbox-pod's netns. Pass 0 when no escape is
 // needed (e.g. unit tests with no iptables).
-func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig, outboundMark int) (*GoogleDrive, error) {
-	httpClient, err := newOAuthClient(ctx, cfg, outboundMark)
+//
+// requestLog, when non-nil, receives one JSON line per outbound HTTP
+// request (Drive API + OAuth token endpoint), useful for measuring
+// API call volume and the impact of the fusefs stat cache.
+func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig, outboundMark int, requestLog io.Writer) (*GoogleDrive, error) {
+	httpClient, err := newOAuthClient(ctx, cfg, outboundMark, requestLog)
 	if err != nil {
 		return nil, fmt.Errorf("gdrive: auth: %w", err)
 	}
@@ -95,13 +99,18 @@ func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig, outboundMark int
 	}, nil
 }
 
-func newOAuthClient(ctx context.Context, cfg GoogleDriveConfig, mark int) (*http.Client, error) {
+func newOAuthClient(ctx context.Context, cfg GoogleDriveConfig, mark int, requestLog io.Writer) (*http.Client, error) {
 	// All OAuth and API traffic goes through the marked transport so
 	// the kernel's first iptables nat-OUTPUT rule (RETURN on -m mark
 	// match) skips the REDIRECT. We pass our base client to the
 	// oauth2 package via context — its token-refresh requests pick it
 	// up the same way the Drive client does.
 	base := markedHTTPClient(mark)
+	if requestLog != nil {
+		// Wrap the marked transport so every outbound request — OAuth
+		// token refresh and Drive API alike — gets a JSON-line log entry.
+		base = &http.Client{Transport: newLoggingRoundTripper(base.Transport, requestLog)}
+	}
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, base)
 
 	if cfg.ServiceAccountJSON != "" {
@@ -115,19 +124,33 @@ func newOAuthClient(ctx context.Context, cfg GoogleDriveConfig, mark int) (*http
 		return nil, errors.New("either access_token or service_account_json is required")
 	}
 	tok := &oauth2.Token{AccessToken: cfg.AccessToken, RefreshToken: cfg.RefreshToken}
-	var src oauth2.TokenSource
 	if cfg.RefreshToken != "" && cfg.ClientID != "" && cfg.ClientSecret != "" {
+		// Past Expiry on the seed forces a refresh on the very first
+		// request — we don't track real Expiry through the env-var
+		// chain, so we can't trust the saved access token's lifetime.
+		tok.Expiry = time.Now().Add(-time.Minute)
 		oc := &oauth2.Config{
 			ClientID:     cfg.ClientID,
 			ClientSecret: cfg.ClientSecret,
 			Endpoint:     google.Endpoint,
 			Scopes:       driveScopes,
 		}
-		src = oc.TokenSource(ctx, tok)
-	} else {
-		src = oauth2.StaticTokenSource(tok)
+		// Build the chain ourselves so we own the token cache:
+		//   retryOn401  (catches 401, invalidates cache, retries once)
+		//     └── oauth2.Transport (injects Authorization header)
+		//           └── base.Transport  (marked + maybe-logging TCP)
+		// On a 401 we Invalidate the cache; the retry's call to
+		// Source.Token() then misses, refreshes, and the second
+		// attempt goes out with a fresh access token.
+		cache := newTokenCache(ctx, oc, tok)
+		return &http.Client{
+			Transport: &retryOn401RoundTripper{
+				base:       &oauth2.Transport{Source: cache, Base: base.Transport},
+				invalidate: cache.Invalidate,
+			},
+		}, nil
 	}
-	return oauth2.NewClient(ctx, src), nil
+	return oauth2.NewClient(ctx, oauth2.StaticTokenSource(tok)), nil
 }
 
 // resolve walks the cached path → fileID map, calling Drive's Files.List

@@ -14,16 +14,22 @@ agent:
   image: .
 
 fs:
-  backend: gdrive
-  mount: /workspace
-  acls:
-    - { path: /workspace,    access: rw }
-    - { path: /workspace/**, access: rw }
-  # gdrive-prefixed fields are only read when backend == gdrive. The
-  # test fills these in from env vars before validation; here they're
-  # blank placeholders.
-  gdrive_access_token: ""
-  gdrive_folder_id: ""
+  - backend: gdrive
+    mount: /workspace
+    acls:
+      - { path: /workspace,    access: rw }
+      - { path: /workspace/**, access: rw }
+    # gdrive-prefixed fields are only read when backend == gdrive. The
+    # test fills these in from env vars before validation; here they're
+    # blank placeholders.
+    gdrive_access_token: ""
+    gdrive_folder_id: ""
+
+  - backend: local
+    mount: /scratch
+    acls:
+      - { path: /scratch,    access: rw }
+      - { path: /scratch/**, access: rw }
 
 egress:
   allow: []

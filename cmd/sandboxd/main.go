@@ -60,12 +60,14 @@ func main() {
 	}
 	log.Printf("sandboxd: audit dir = %s", sp.AuditDir)
 
-	if err := os.MkdirAll(sp.FS.Mount, 0o755); err != nil {
-		log.Fatalf("create mount point %s: %v", sp.FS.Mount, err)
-	}
-	backendPath := sp.FS.Backend.HostPath()
-	if err := os.MkdirAll(backendPath, 0o755); err != nil {
-		log.Fatalf("create backend %s: %v", backendPath, err)
+	for i := range sp.FS {
+		f := &sp.FS[i]
+		if err := os.MkdirAll(f.Mount, 0o755); err != nil {
+			log.Fatalf("create mount point %s: %v", f.Mount, err)
+		}
+		if err := os.MkdirAll(f.BackendPath(), 0o755); err != nil {
+			log.Fatalf("create backend %s: %v", f.BackendPath(), err)
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -82,7 +84,6 @@ func main() {
 	// distinctive one for grep-ability.
 	const soMark = 0x5b1
 	proxyAuditPath := filepath.Join(sp.AuditDir, "proxy.log")
-	fuseAuditPath := filepath.Join(sp.AuditDir, "fuse.log")
 
 	// As the orchestrator, sandboxd is responsible for reporting what
 	// the agent does — the agent itself produces no application-level
@@ -90,7 +91,9 @@ func main() {
 	// per-operation record per DESIGN.md §9.1) and surface each event
 	// as a single "agent op | …" line on sandboxd's stdout.
 	go tailAudit(ctx, proxyAuditPath, formatProxyEvent)
-	go tailAudit(ctx, fuseAuditPath, formatFuseEvent)
+	for i := range sp.FS {
+		go tailAudit(ctx, fuseAuditPathFor(sp.AuditDir, &sp.FS[i]), formatFuseEvent)
+	}
 
 	var children sync.WaitGroup
 
@@ -152,49 +155,55 @@ func main() {
 	}
 	log.Printf("sandboxd: iptables OUTPUT nat redirect → %s installed (mark=0x%x)", proxyAddr, soMark)
 
-	// 2. sbxfuse. Pass the ACLs by writing them to a file the daemon reads.
-	aclTmp := filepath.Join(sp.AuditDir, "acls.json")
-	if err := writeACLs(aclTmp, sp.FS.ACLs); err != nil {
-		log.Fatalf("write ACLs: %v", err)
-	}
-	fuseArgs := []string{
-		"-mount", sp.FS.Mount,
-		"-backend", backendPath,
-		"-audit", fuseAuditPath,
-		"-acls", aclTmp,
-		"-audit-reads",
-	}
-	// Remote backends: forward the backend name + a JSON-encoded
-	// config blob to sbxfuse, which constructs the [remotefs.Store]
-	// via a switch and stands up an Oplog. spec.FS.BackendConfigJSON
-	// produces the right shape for the active backend (e.g. the
-	// fields that map onto [remotefs.GoogleDriveConfig] for gdrive).
-	if sp.FS.Backend.IsRemote() {
-		blob, err := sp.FS.BackendConfigJSON()
-		if err != nil {
-			log.Fatalf("backend %q config: %v", sp.FS.Backend, err)
+	// 2. sbxfuse — one daemon per fs entry. Each gets its own ACL file,
+	// audit log, mount point, and backend dir; remote backends also get
+	// their own oplog + uploader inside their own sbxfuse process so a
+	// stuck remote on one mount can't block writes to another.
+	for i := range sp.FS {
+		f := &sp.FS[i]
+		aclTmp := filepath.Join(sp.AuditDir, "acls-"+f.Slug()+".json")
+		if err := writeACLs(aclTmp, f.ACLs); err != nil {
+			log.Fatalf("write ACLs (%s): %v", f.Mount, err)
 		}
-		fuseArgs = append(fuseArgs,
-			"-remote", string(sp.FS.Backend),
-			"-remote-config", string(blob),
-			// Same SO_MARK we hand sbxproxy: sbxfuse's outbound TLS to
-			// the cloud API needs to escape the OUTPUT REDIRECT too,
-			// otherwise its traffic ends up at sbxproxy and gets
-			// allowlist-checked against the workload's egress rules.
-			"-mark", fmt.Sprintf("%d", soMark),
-		)
-	}
-	fuseCmd, err := startChild(ctx, &children, "sbxfuse", *fuseBin, fuseArgs, nil)
-	if err != nil {
-		log.Fatalf("start fuse: %v", err)
-	}
-	// Cloud-bootstrapped backends (gdrive) have to fetch a directory
-	// listing before they can mount; sbxfuse caps that bootstrap at
-	// 30s. Wait long enough to cover it plus a small buffer — local
-	// backends still return in <100ms so this isn't a slowdown.
-	if err := waitForMountReady(ctx, sp.FS.Mount, mountReadTimout); err != nil {
-		_ = fuseCmd.Process.Kill()
-		log.Fatalf("fuse did not mount: %v", err)
+		fuseArgs := []string{
+			"-mount", f.Mount,
+			"-backend", f.BackendPath(),
+			"-audit", fuseAuditPathFor(sp.AuditDir, f),
+			"-acls", aclTmp,
+			"-audit-reads",
+		}
+		// Remote backends: forward the backend name + a JSON-encoded
+		// config blob to sbxfuse, which constructs the [remotefs.Store]
+		// via a switch and stands up an Oplog. FS.BackendConfigJSON
+		// produces the right shape for the active backend (e.g. the
+		// fields that map onto [remotefs.GoogleDriveConfig] for gdrive).
+		if f.Backend.IsRemote() {
+			blob, err := f.BackendConfigJSON()
+			if err != nil {
+				log.Fatalf("backend %q config (%s): %v", f.Backend, f.Mount, err)
+			}
+			fuseArgs = append(fuseArgs,
+				"-remote", string(f.Backend),
+				"-remote-config", string(blob),
+				// Same SO_MARK we hand sbxproxy: sbxfuse's outbound TLS to
+				// the cloud API needs to escape the OUTPUT REDIRECT too,
+				// otherwise its traffic ends up at sbxproxy and gets
+				// allowlist-checked against the workload's egress rules.
+				"-mark", fmt.Sprintf("%d", soMark),
+			)
+		}
+		fuseCmd, err := startChild(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil)
+		if err != nil {
+			log.Fatalf("start fuse (%s): %v", f.Mount, err)
+		}
+		// Cloud-bootstrapped backends (gdrive) have to fetch a directory
+		// listing before they can mount; sbxfuse caps that bootstrap at
+		// 30s. Wait long enough to cover it plus a small buffer — local
+		// backends still return in <100ms so this isn't a slowdown.
+		if err := waitForMountReady(ctx, f.Mount, mountReadTimout); err != nil {
+			_ = fuseCmd.Process.Kill()
+			log.Fatalf("fuse did not mount %s: %v", f.Mount, err)
+		}
 	}
 
 	// 3. Agent. Egress + workspace are now mediated.
@@ -222,24 +231,29 @@ func main() {
 	}
 	log.Printf("sandboxd: agent image unpacked to %s (entrypoint=%v)", rootfsDir, imgCfg.Entrypoint)
 
-	// Seed the FUSE backend from the agent image's own rootfs: any
-	// content the image carries at fs.mount (e.g. `COPY inputs/
+	// Seed each FUSE backend from the agent image's own rootfs: any
+	// content the image carries at the mount path (e.g. `COPY inputs/
 	// /workspace/inputs/` in the Dockerfile) gets moved into the
 	// backend so the agent sees it through the FUSE mount, with
 	// whatever access the ACLs grant. Move (not copy) so we don't
-	// keep two copies — runc's bind mount over fs.mount will hide
+	// keep two copies — runc's bind mount over the mount will hide
 	// whatever's left at <rootfs><mount> at runtime anyway.
-	if entries, err := os.ReadDir(filepath.Join(rootfsDir, sp.FS.Mount)); err == nil {
+	for i := range sp.FS {
+		f := &sp.FS[i]
+		entries, err := os.ReadDir(filepath.Join(rootfsDir, f.Mount))
+		if err != nil {
+			continue
+		}
 		for _, e := range entries {
-			src := filepath.Join(rootfsDir, sp.FS.Mount, e.Name())
-			dst := filepath.Join(backendPath, e.Name())
+			src := filepath.Join(rootfsDir, f.Mount, e.Name())
+			dst := filepath.Join(f.BackendPath(), e.Name())
 			if err := os.Rename(src, dst); err != nil {
 				log.Fatalf("seed from agent rootfs %s → %s: %v", src, dst, err)
 			}
 		}
 		if len(entries) > 0 {
 			log.Printf("sandboxd: seeded %s from agent rootfs %s (%d entries)",
-				backendPath, filepath.Join(rootfsDir, sp.FS.Mount), len(entries))
+				f.BackendPath(), filepath.Join(rootfsDir, f.Mount), len(entries))
 		}
 	}
 
@@ -261,26 +275,29 @@ func main() {
 		log.Printf("sandboxd: agent rootfs has no %s — TLS interception will fail; install ca-certificates in the agent image", caBundle)
 	}
 
-	extraEnv := append([]string{
-		"WORKSPACE=" + sp.FS.Mount,
-	}, sp.Agent.Env...)
+	mounts := make([]runc.BindMount, 0, len(sp.FS)+2)
+	for i := range sp.FS {
+		mounts = append(mounts, runc.BindMount{
+			Source: sp.FS[i].Mount, Destination: sp.FS[i].Mount, Options: []string{"rw"},
+		})
+	}
+	// /etc/hosts and /etc/resolv.conf are needed by the agent so
+	// hostnames resolve. With the legacy HTTP_PROXY model the
+	// agent dialed 127.0.0.1 and DNS was the proxy's problem;
+	// in transparent mode the agent does its own DNS, then the
+	// kernel redirects the resulting TCP. The parent's files
+	// already carry --add-host entries for upstream-allowed/denied.
+	mounts = append(mounts,
+		runc.BindMount{Source: "/etc/hosts", Destination: "/etc/hosts", Options: []string{"ro"}},
+		runc.BindMount{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
+	)
 
 	if err := runc.WriteConfig(runc.BundleParams{
 		BundleDir:   bundleDir,
 		ImageConfig: imgCfg,
-		ExtraEnv:    extraEnv,
+		ExtraEnv:    sp.Agent.Env,
 		Hostname:    "agent",
-		Mounts: []runc.BindMount{
-			{Source: sp.FS.Mount, Destination: sp.FS.Mount, Options: []string{"rw"}},
-			// /etc/hosts and /etc/resolv.conf are needed by the agent so
-			// hostnames resolve. With the legacy HTTP_PROXY model the
-			// agent dialed 127.0.0.1 and DNS was the proxy's problem;
-			// in transparent mode the agent does its own DNS, then the
-			// kernel redirects the resulting TCP. The parent's files
-			// already carry --add-host entries for upstream-allowed/denied.
-			{Source: "/etc/hosts", Destination: "/etc/hosts", Options: []string{"ro"}},
-			{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
-		},
+		Mounts:      mounts,
 	}); err != nil {
 		log.Fatalf("write bundle config: %v", err)
 	}
@@ -401,6 +418,12 @@ func freePort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// fuseAuditPathFor returns the per-mount audit log path. Each sbxfuse
+// process gets its own file so concurrent appends don't interleave.
+func fuseAuditPathFor(auditDir string, f *spec.FS) string {
+	return filepath.Join(auditDir, "fuse-"+f.Slug()+".log")
 }
 
 // writeACLs serializes the ACL list to a file sbxfuse can load.
