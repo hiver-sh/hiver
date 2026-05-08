@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sandbox-platform/agent-sandbox/internal/api"
 	"github.com/sandbox-platform/agent-sandbox/internal/proxy"
 	"github.com/sandbox-platform/agent-sandbox/internal/runc"
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
@@ -40,9 +41,10 @@ const mountReadTimout = 35 * time.Second
 
 func main() {
 	var (
-		specPath = flag.String("spec", "", "path to the sandbox spec JSON (required)")
-		proxyBin = flag.String("proxy-bin", "sbxproxy", "path to sbxproxy binary")
-		fuseBin  = flag.String("fuse-bin", "sbxfuse", "path to sbxfuse binary")
+		specPath      = flag.String("spec", "", "path to the sandbox spec JSON (required)")
+		proxyBin      = flag.String("proxy-bin", "sbxproxy", "path to sbxproxy binary")
+		fuseBin       = flag.String("fuse-bin", "sbxfuse", "path to sbxfuse binary")
+		apiServerPort = flag.String("api-server-port", "8080", "port of the API server")
 	)
 	flag.Parse()
 
@@ -54,6 +56,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("spec: %v", err)
 	}
+
+	s := api.NewServer(*apiServerPort)
+	go s.ListenAndServe()
 
 	if err := os.MkdirAll(sp.AuditDir, 0o755); err != nil {
 		log.Fatalf("create audit dir %s: %v", sp.AuditDir, err)
