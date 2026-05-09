@@ -1,0 +1,136 @@
+components:
+  schemas:
+    SandboxEvent:
+      description: |
+        A typed event emitted by the sandbox. The `type` field selects
+        the variant; consumers should switch on it to access
+        variant-specific fields.
+      oneOf:
+        - $ref: '#/components/schemas/ConfigAppliedEvent'
+        - $ref: '#/components/schemas/ConfigApplyFailedEvent'
+        - $ref: '#/components/schemas/EgressDeniedEvent'
+        - $ref: '#/components/schemas/FSAccessDeniedEvent'
+      discriminator:
+        propertyName: type
+        mapping:
+          config.applied: '#/components/schemas/ConfigAppliedEvent'
+          config.apply_failed: '#/components/schemas/ConfigApplyFailedEvent'
+          egress.denied: '#/components/schemas/EgressDeniedEvent'
+          fs.access_denied: '#/components/schemas/FSAccessDeniedEvent'
+
+    SandboxEventBase:
+      type: object
+      description: Fields common to every `SandboxEvent` variant.
+      required: [type, id, timestamp]
+      properties:
+        type:
+          type: string
+          description: Discriminator selecting the event variant.
+        id:
+          type: integer
+          description: |
+            Monotonic event id. Pass via the `lastEventId` query
+            parameter on `GET /v1/events` to resume after this event.
+        timestamp:
+          type: string
+          format: date-time
+
+    ConfigAppliedEvent:
+      description: Emitted after a successful `applyConfig` call.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, changes]
+          properties:
+            type:
+              type: string
+              const: config.applied
+            changes:
+              $ref: './config.yaml#/components/schemas/Changes'
+      example:
+        type: config.applied
+        id: 184
+        timestamp: "2026-05-08T17:04:11Z"
+        changes:
+          fs:
+            added:
+              - mount: /drive
+                backend: gdrive
+                acls:
+                  - { path: /drive/**, access: rw }
+          egress:
+            added:
+              - host: api.github.com
+                methods: [GET]
+                paths: [/repos/*]
+
+    ConfigApplyFailedEvent:
+      description: Emitted when an `applyConfig` call was rolled back.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, error]
+          properties:
+            type:
+              type: string
+              const: config.apply_failed
+            error:
+              type: string
+              description: Human-readable failure reason.
+      example:
+        type: config.apply_failed
+        id: 185
+        timestamp: "2026-05-08T17:05:02Z"
+        error: "egress rule for host *.internal conflicts with deny policy"
+
+    EgressDeniedEvent:
+      description: |
+        Emitted when an outbound request from the agent matched no
+        allow rule and was blocked.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, host, method, path]
+          properties:
+            type:
+              type: string
+              const: egress.denied
+            host:
+              type: string
+            method:
+              $ref: './config.yaml#/components/schemas/HttpMethod'
+            path:
+              type: string
+      example:
+        type: egress.denied
+        id: 186
+        timestamp: "2026-05-08T17:06:44Z"
+        host: registry.npmjs.org
+        method: GET
+        path: /left-pad
+
+    FSAccessDeniedEvent:
+      description: |
+        Emitted when an agent file operation was denied by an ACL rule.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, mount, path, operation]
+          properties:
+            type:
+              type: string
+              const: fs.access_denied
+            mount:
+              type: string
+            path:
+              type: string
+            operation:
+              type: string
+              enum: [read, write]
+      example:
+        type: fs.access_denied
+        id: 187
+        timestamp: "2026-05-08T17:07:12Z"
+        mount: /workspace
+        path: /workspace/secret/keys.pem
+        operation: read

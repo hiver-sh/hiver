@@ -1,0 +1,272 @@
+openapi: 3.0.0
+info:
+  title: Hive API
+  version: 0.1.0
+  summary: Manage a sandbox's file systems and network egress declaratively.
+  description: |
+    The Hive API exposes a single declarative configuration
+    document — `SandboxConfig` — that fully describes what an agent
+    running inside the sandbox can see and reach. Submit the desired
+    configuration and the API computes the minimum set of changes
+    required to converge the running sandbox to that state.
+
+servers:
+  - url: http://localhost:8787
+    description: Default sandbox control endpoint.
+
+tags:
+  - name: Configuration
+    description: Read and apply the sandbox's configuration document.
+  - name: MCP
+    description: |
+      Model Context Protocol endpoint. Exposes the configuration
+      operations as MCP tools so language-model agents can read and
+      change the sandbox through their native tool-use loop, without
+      hand-rolling REST calls.
+
+paths:
+  /v1/config:
+    get:
+      tags: [Configuration]
+      summary: Read the current configuration.
+      operationId: getConfig
+      description: Returns the `SandboxConfig` currently in effect.
+      responses:
+        '200':
+          description: The current configuration.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+
+    put:
+      tags: [Configuration]
+      summary: Apply a desired configuration.
+      operationId: applyConfig
+      description: |
+        Compares the supplied desired configuration with the current
+        applied state and applies the additions and removals needed
+        to converge. Returns the post-apply configuration and a
+        `Changes` document describing what was added or removed.
+
+        The call is atomic: if any individual change fails, the entire
+        apply is rolled back and `applied` is `false`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+            examples:
+              addFileSystem:
+                summary: Add a Google Drive file system to an existing sandbox
+                value:
+                  agent:
+                    image: my-agent:latest
+                  fs:
+                    - mount: /workspace
+                      backend: local
+                      acls:
+                        - { path: /workspace, access: rw }
+                        - { path: /workspace/**, access: rw }
+                    - mount: /drive
+                      backend: gdrive
+                      gdrive_access_token: ya29.example
+                      gdrive_folder_id: 1QWodtGM...
+                      acls:
+                        - { path: /drive, access: rw }
+                        - { path: /drive/**, access: rw }
+                  egress:
+                    allow:
+                      - host: api.github.com
+                        methods: [GET]
+                        paths: [/repos/*]
+                  audit_dir: /audit-out
+      responses:
+        '200':
+          description: Apply attempted. Inspect `applied` and `changes`.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/ApplyResult' }
+        '400':
+          description: The supplied configuration is invalid.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+        '409':
+          description: A previous apply is still in progress.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
+  /v1/mcp:
+    post:
+      tags: [MCP]
+      summary: Send an MCP request.
+      operationId: mcpRequest
+      description: |
+        Implements the Model Context Protocol Streamable HTTP
+        transport. The request body is a JSON-RPC 2.0 envelope; the
+        response is either a single JSON-RPC envelope (for simple
+        request/response calls) or a Server-Sent Events stream (for
+        long-running calls and progress notifications).
+
+        ## Tools
+
+        The server advertises the following tools through `tools/list`:
+
+          * `get_config`   — equivalent to `GET /v1/config`. Takes no
+                             arguments; returns the current
+                             `SandboxConfig`.
+          * `apply_config` — equivalent to `PUT /v1/config`. Takes a
+                             `SandboxConfig` as its argument; returns
+                             an `ApplyResult`.
+
+        ## Sessions
+
+        Clients that need session continuity (for example, to resume an
+        in-flight stream after a network blip) may set
+        `Mcp-Session-Id` on requests. Servers that issue a session ID
+        return it in the response header of the same name.
+      parameters:
+        - in: header
+          name: Mcp-Session-Id
+          required: false
+          schema: { type: string }
+          description: Optional client-supplied session identifier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: './mcp.yaml#/components/schemas/JSONRPCRequest'
+                - $ref: './mcp.yaml#/components/schemas/JSONRPCNotification'
+                - type: array
+                  description: A JSON-RPC batch.
+                  items:
+                    oneOf:
+                      - $ref: './mcp.yaml#/components/schemas/JSONRPCRequest'
+                      - $ref: './mcp.yaml#/components/schemas/JSONRPCNotification'
+            examples:
+              listTools:
+                summary: List available MCP tools
+                value:
+                  jsonrpc: "2.0"
+                  id: 1
+                  method: tools/list
+              callApplyConfig:
+                summary: Call the apply_config tool
+                value:
+                  jsonrpc: "2.0"
+                  id: 2
+                  method: tools/call
+                  params:
+                    name: apply_config
+                    arguments:
+                      agent:
+                        image: my-agent:latest
+                      fs:
+                        - mount: /workspace
+                          backend: local
+                          acls:
+                            - { path: /workspace, access: rw }
+                      audit_dir: /audit-out
+      responses:
+        '200':
+          description: A JSON-RPC response, or an SSE stream when the call carries follow-up messages.
+          headers:
+            Mcp-Session-Id:
+              schema: { type: string }
+              description: Echoed when the server is operating in session mode.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: './mcp.yaml#/components/schemas/JSONRPCResponse'
+                  - type: array
+                    items: { $ref: './mcp.yaml#/components/schemas/JSONRPCResponse' }
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each `data:` payload is a
+                  JSON-RPC `JSONRPCResponse` or `JSONRPCNotification`.
+        '202':
+          description: A notification was accepted. The body is empty.
+        '400':
+          description: The request was not a valid JSON-RPC envelope.
+          content:
+            application/json:
+              schema: { $ref: './mcp.yaml#/components/schemas/JSONRPCResponse' }
+
+    get:
+      tags: [MCP]
+      summary: Open a server-to-client SSE stream.
+      operationId: mcpStream
+      description: |
+        Opens a Server-Sent Events stream the server can use to push
+        notifications and out-of-band responses to the client. Servers
+        that do not initiate messages outside of request/response
+        return `405 Method Not Allowed`.
+      parameters:
+        - in: header
+          name: Mcp-Session-Id
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: SSE stream opened.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Stream of JSON-RPC notifications and responses.
+        '405':
+          description: This server does not push messages outside of request/response.
+
+  /v1/events:
+    get:
+      summary: Open the SSE event stream.
+      operationId: getEvents
+      description: |
+        Opens a long-lived Server-Sent Events stream of `SandboxEvent`
+        payloads. The connection stays open for as long as the client
+        is willing to read; the server pushes one SSE `data:` frame per
+        event in the order events occur.
+
+        ## Resuming after a disconnect
+
+        Pass the `id` of the last event the client successfully
+        processed as `lastEventId`. The server will replay every event
+        with a greater id and then continue with new events as they
+        happen. Omit `lastEventId` to start from the next event the
+        sandbox emits — past events are not replayed in that case.
+
+        ## Framing
+
+        Each SSE frame is a single `data:` line whose value is a
+        JSON-encoded `SandboxEvent`. The SSE `id:` field mirrors the
+        event's `id`, so SSE-aware clients (including browsers, which
+        send `Last-Event-ID` automatically on reconnect) can resume
+        without inspecting the payload.
+      parameters:
+        - in: query
+          name: lastEventId
+          schema:
+            type: integer
+          description: |
+            Resume the stream after this event id. Only events with a
+            strictly greater `id` will be sent. Omit to start from the
+            next new event.
+      responses:
+        '200':
+          description: |
+            SSE stream opened. The response is open-ended; the server
+            keeps writing frames until the client disconnects or the
+            sandbox shuts down.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each `data:` payload is a
+                  JSON-encoded `SandboxEvent`.
