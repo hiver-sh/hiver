@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/HEAD/configuration-schema.json
-package: api
+package: gen
 generate:
   models: true
-output: config.gen.go
+output: ./gen/config.gen.go
 output-options:
   skip-prune: true

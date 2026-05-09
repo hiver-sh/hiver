@@ -2,3 +2,4 @@
 # Holds OAuth tokens, registry creds, etc. Never commit.
 .env.local
 .env.*.local
+bin

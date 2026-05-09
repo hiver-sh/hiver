@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/HEAD/configuration-schema.json
-package: api
+package: gen
 generate:
   models: true
-output: mcp.gen.go
+output: ./gen/mcp.gen.go
 output-options:
   skip-prune: true

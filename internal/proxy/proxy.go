@@ -79,7 +79,7 @@ type AuditEvent struct {
 	Method  string    `json:"method"`
 	Host    string    `json:"host"`
 	Path    string    `json:"path,omitempty"`
-	Verdict string    `json:"verdict"`        // "allow" | "deny" | "error"
+	Verdict string    `json:"verdict"` // "allow" | "deny" | "error"
 	Status  int       `json:"status,omitempty"`
 	Reason  string    `json:"reason,omitempty"`
 }
