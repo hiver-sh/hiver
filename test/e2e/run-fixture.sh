@@ -129,6 +129,7 @@ docker run -d --rm \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   --add-host upstream-allowed:host-gateway \
   --add-host upstream-denied:host-gateway \
+  -p 8080:8080 \
   -p 18000:18000 \
   ${backend_env_args[@]+"${backend_env_args[@]}"} \
   -v "${audit_dir}:/audit-out" \

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
 )
@@ -12,7 +14,8 @@ func NewHandlers() *Handlers {
 }
 
 func (h *Handlers) GetConfig(c *gin.Context) {
-
+	res := make(map[string]any)
+	c.JSON(http.StatusOK, res)
 }
 
 func (h *Handlers) ApplyConfig(c *gin.Context) {

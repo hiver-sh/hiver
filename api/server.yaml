@@ -11,7 +11,7 @@ info:
     required to converge the running sandbox to that state.
 
 servers:
-  - url: http://localhost:8787
+  - url: http://localhost:8080
     description: Default sandbox control endpoint.
 
 tags:
