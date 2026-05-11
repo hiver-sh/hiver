@@ -20,6 +20,7 @@ func NewServer(port string) *http.Server {
 	swagger.Servers = nil
 
 	r := gin.Default()
+	r.Use(allowAllCORS)
 	r.Use(middleware.OapiRequestValidator(swagger))
 
 	h := NewHandlers(newMCPServer())
@@ -30,4 +31,17 @@ func NewServer(port string) *http.Server {
 		Addr:    net.JoinHostPort("0.0.0.0", port),
 	}
 	return s
+}
+
+func allowAllCORS(c *gin.Context) {
+	h := c.Writer.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	h.Set("Access-Control-Allow-Headers", "*")
+	h.Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
+	if c.Request.Method == http.MethodOptions {
+		c.AbortWithStatus(http.StatusNoContent)
+		return
+	}
+	c.Next()
 }

@@ -190,3 +190,6 @@ sandbox-pod is still running.
 
 Audit dir lives in ${audit_dir} and is bind-mounted at /audit-out inside the pod.
 EOF
+
+echo "==> Starting MCP inspector:"
+npx @modelcontextprotocol/inspector --server-url http://localhost:8080/v1/mcp
