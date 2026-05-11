@@ -39,6 +39,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sandbox-platform/agent-sandbox/test/e2e/setup"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/drive/v3"
@@ -255,10 +256,12 @@ func chooseFolder(in *bufio.Reader, folders []folder) (string, error) {
 
 func emitExports(clientID, clientSecret string, tok *oauth2.Token, folderID string) {
 	// stdout — what the calling script `eval`s.
+	envMap := make(map[string]string)
 	emit := func(k, v string) {
 		if v == "" {
 			return
 		}
+		envMap[k] = v
 		fmt.Printf("export %s=%s\n", k, shellQuote(v))
 	}
 	emit("HIVE_GDRIVE_CLIENT_ID", clientID)
@@ -266,6 +269,8 @@ func emitExports(clientID, clientSecret string, tok *oauth2.Token, folderID stri
 	emit("HIVE_GDRIVE_ACCESS_TOKEN", tok.AccessToken)
 	emit("HIVE_GDRIVE_REFRESH_TOKEN", tok.RefreshToken)
 	emit("HIVE_GDRIVE_FOLDER_ID", folderID)
+
+	setup.SetEnv(envMap)
 }
 
 // shellQuote wraps v in single quotes, escaping any embedded ones.

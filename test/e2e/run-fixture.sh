@@ -67,7 +67,7 @@ if [[ "${spec_backend}" == "gdrive" ]]; then
   # goes to stderr.
   if [[ -z "${HIVE_GDRIVE_ACCESS_TOKEN:-}" && -z "${HIVE_GDRIVE_SERVICE_ACCOUNT_JSON:-}" ]]; then
     echo "==> gdrive backend: no HIVE_GDRIVE_ACCESS_TOKEN set; running OAuth setup"
-    exports="$(go run "${module_root}/test/e2e/hive-gdrive-setup")"
+    exports="$(go run "${module_root}/test/e2e/setup/gdrive")"
     eval "${exports}"
 
     # Persist HIVE_GDRIVE_* lines to .env.local so subsequent runs skip
