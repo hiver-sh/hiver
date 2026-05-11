@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="./docs/hive.svg" width="200">
-  <br />
-  <b>A More Trusted Environment for AI Agents</b>
-</p>
+# Hive Agent Sandbox
 
 Hive gives an agent a self-contained pod — its own filesystem, its own
 network exit — with every read, write, and outbound request mediated
