@@ -17,10 +17,12 @@ func NewServer(port string) *http.Server {
 		fmt.Fprintf(os.Stderr, "Error loading swagger spec: %s", err)
 		os.Exit(1)
 	}
+	swagger.Servers = nil
+
 	r := gin.Default()
 	r.Use(middleware.OapiRequestValidator(swagger))
 
-	h := NewHandlers()
+	h := NewHandlers(newMCPServer())
 	gen.RegisterHandlers(r, h)
 
 	s := &http.Server{

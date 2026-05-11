@@ -223,6 +223,28 @@ paths:
         '405':
           description: This server does not push messages outside of request/response.
 
+    delete:
+      tags: [MCP]
+      summary: Terminate an MCP session.
+      operationId: mcpDelete
+      description: |
+        Closes the session identified by `Mcp-Session-Id`. The server
+        releases all per-session state. Subsequent requests carrying
+        the same session id will be rejected with `404 Not Found`.
+      parameters:
+        - in: header
+          name: Mcp-Session-Id
+          required: true
+          schema: { type: string }
+          description: Identifier of the session to close.
+      responses:
+        '204':
+          description: Session closed.
+        '400':
+          description: The `Mcp-Session-Id` header was missing.
+        '404':
+          description: No session with that id exists.
+
   /v1/events:
     get:
       summary: Open the SSE event stream.
