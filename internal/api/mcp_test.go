@@ -28,20 +28,13 @@ func TestListTools(t *testing.T) {
 		t.Fatalf("ListTools: %v", err)
 	}
 
-	if len(res.Tools) != 1 {
-		t.Fatalf("got %d tools, want 1", len(res.Tools))
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
 	}
-
-	toolNames := ""
-	for idx, tool := range res.Tools {
-		toolNames += tool.Name
-		if idx > 0 {
-			toolNames += ","
+	for _, name := range []string{"bash", "read", "write", "edit", "glob", "grep"} {
+		if !got[name] {
+			t.Errorf("missing tool %q; got %v", name, got)
 		}
-	}
-
-	want := "bash"
-	if toolNames != want {
-		t.Errorf("tool names = %q, want %q", toolNames, want)
 	}
 }
