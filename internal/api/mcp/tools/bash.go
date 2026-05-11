@@ -10,7 +10,8 @@ import (
 )
 
 type BashParams struct {
-	Cmd string `json:"cmd" jsonschema:"The command to execute"`
+	Cmd string `json:"cmd" jsonschema:"Shell command to execute via /bin/sh -c. Supports pipes, redirection, quoting, and environment variable expansion. Each call runs in a fresh shell, so 'cd' and exported variables do not persist to later calls — use 'cwd' to scope a command to a directory instead."`
+	Cwd string `json:"cwd,omitempty" jsonschema:"Absolute or relative working directory to run the command in. Defaults to the server's working directory."`
 }
 
 type BashResponse struct {
@@ -21,6 +22,7 @@ type BashResponse struct {
 
 func Bash(ctx context.Context, _ *mcp.CallToolRequest, params *BashParams) (*mcp.CallToolResult, *BashResponse, error) {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", params.Cmd)
+	cmd.Dir = params.Cwd
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
