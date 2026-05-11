@@ -16,9 +16,8 @@ import (
 // and caches them by hostname. Used by the transparent TLS-intercept
 // path: `tls.Server` with `GetCertificate` calls into Mint(SNI).
 //
-// The cache is unbounded for the prototype — egress allowlists are tiny
-// and the pod is short-lived; LRU eviction is a follow-up if a workload
-// hits dozens of unique HTTPS hosts.
+// Egress allowlists are tiny and the pod is short-lived; LRU eviction
+// is a follow-up if a workload hits dozens of unique HTTPS hosts.
 type CertMinter struct {
 	ca    *x509.Certificate
 	caKey *ecdsa.PrivateKey

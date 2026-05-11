@@ -50,9 +50,7 @@ func (o OplogEntry) String() string {
 // drains the queue.
 //
 // Failures land in a dead-letter list (inspectable via [Oplog.Dead]); a
-// follow-up will add disk-spilling + retry-with-backoff. For the
-// prototype's purposes the in-memory list is enough to surface upload
-// failures during tests.
+// follow-up will add disk-spilling + retry-with-backoff.
 type Oplog struct {
 	store remotefs.Store
 	queue chan OplogEntry

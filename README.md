@@ -112,7 +112,7 @@ test/
 
 ## Status
 
-Prototype. The architecture rationale and the open design questions
+Work in progress. The architecture rationale and the open design questions
 live in [DESIGN.md](docs/DESIGN.md)
 
 ## Testing

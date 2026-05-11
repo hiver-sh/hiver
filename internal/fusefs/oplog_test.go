@@ -17,9 +17,7 @@ import (
 // TestOplogReplaysFsMutations writes / renames / removes through a
 // FUSE mount whose Config carries an Oplog targeting a [remotefs.Store].
 // We assert the mutations replicate to the store with the same paths
-// the agent used. This is the prototype's stand-in for "google-drive
-// backend" — the same Oplog flow, with a Drive client behind the
-// Store interface, would prove out the real backend.
+// the agent used.
 func TestOplogReplaysFsMutations(t *testing.T) {
 	requiresFUSE(t)
 

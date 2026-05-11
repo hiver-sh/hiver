@@ -1,4 +1,4 @@
-// Command sandboxd is the prototype runtime agent that wires together the
+// Command sandboxd is the runtime agent that wires together the
 // MITM proxy, FUSE daemon, and agent workload as a single sandbox "pod".
 //
 // sandboxd is configured by a single JSON spec file (see internal/spec).
@@ -6,7 +6,7 @@
 // workspace's host-side backend and FUSE mount point, the FUSE ACLs, the
 // proxy's egress allowlist, and where to write audit logs.
 //
-// Prototype scope (T47, T50): launch the three processes in the right order
+// Scope (T47, T50): launch the three processes in the right order
 // (proxy + FUSE first, then agent — DESIGN.md §3.3), wire env vars, prefix-
 // stream stdio. Out of scope: real namespace/cgroup isolation (T49), CSI
 // integration (T82), preflight checks (T51), credential broker (T60).

@@ -1,10 +1,5 @@
 // Package spec defines the on-wire format that drives sandboxd.
 //
-// This is a prototype-shaped subset of the full sandbox spec described in
-// DESIGN.md §5. It carries just the fields the prototype actually consumes:
-// what to run as the agent, what host directory backs the workspace, the
-// FUSE ACLs, the egress allowlist, and where audit logs land.
-//
 // Files may be YAML or JSON — sigs.k8s.io/yaml decodes via JSON internally
 // so the existing `json:"…"` struct tags drive both formats. The tests
 // keep the spec next to the agent fixture as `spec.yaml` for readability.

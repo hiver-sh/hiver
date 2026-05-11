@@ -13,9 +13,6 @@ import (
 
 // TestFileStoreRoundTrip exercises the full Store contract against the
 // FileStore impl: put, list (incl. nested), get, move, delete.
-// FileStore is also the prototype's stand-in for Drive/S3/GCS/OneDrive,
-// so a clean run here demonstrates the contract any future backend has
-// to honor.
 func TestFileStoreRoundTrip(t *testing.T) {
 	s, err := remotefs.NewFileStore(t.TempDir())
 	if err != nil {

@@ -1,6 +1,6 @@
 // Command sbxproxy is the per-sandbox MITM egress proxy.
 //
-// Prototype scope (T56, T58, T59, T68): HTTP forward proxy + HTTPS via
+// Scope (T56, T58, T59, T68): HTTP forward proxy + HTTPS via
 // CONNECT tunneling, host-pattern allowlist with optional method/path
 // filters and request-header overrides, JSON-line audit log, default
 // inbound auth-header stripping.

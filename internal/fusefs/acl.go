@@ -1,4 +1,4 @@
-// Package fusefs is the prototype FUSE filesystem for the sandbox workspace.
+// Package fusefs is the FUSE filesystem for the sandbox workspace.
 // The ACL evaluator in this file is platform-agnostic so it can be unit-tested
 // on macOS even though the FUSE mount itself is Linux-only.
 package fusefs
@@ -66,7 +66,7 @@ func matches(p, pattern string) bool {
 }
 
 // sortByPrefixLengthDesc orders rules so longer prefixes come first.
-// Hand-rolled (no sort import for the prototype) — N is small.
+// Hand-rolled (no sort import) — N is small.
 func sortByPrefixLengthDesc(rs []Rule) {
 	for i := 1; i < len(rs); i++ {
 		for j := i; j > 0; j-- {

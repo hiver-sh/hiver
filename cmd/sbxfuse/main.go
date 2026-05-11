@@ -1,6 +1,6 @@
 // Command sbxfuse is the per-sandbox FUSE filesystem daemon.
 //
-// Prototype scope (T69, T71, T75, T79): Linux-only passthrough mount over a
+// Scope (T69, T71, T75, T79): Linux-only passthrough mount over a
 // host directory backend, with longest-prefix-match ACL evaluation (deny → ENOENT)
 // and JSON-line audit logging.
 //
@@ -120,7 +120,7 @@ func buildStore(ctx context.Context, name string, configJSON []byte, outboundMar
 
 func loadACLs(p string) []fusefs.Rule {
 	if p == "" {
-		// Sensible default for the prototype: workspace is rw, everything else denied.
+		// Default: workspace is rw, everything else denied.
 		return []fusefs.Rule{{Path: "/", Access: fusefs.AccessRW}}
 	}
 	data, err := os.ReadFile(p)

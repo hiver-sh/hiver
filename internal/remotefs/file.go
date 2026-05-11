@@ -11,7 +11,7 @@ import (
 
 // FileStore is a [Store] backed by a local directory.
 //
-// Used as a stand-in for cloud backends in the prototype: the Drive
+// Used as a stand-in for cloud backends: the Drive
 // client, S3 SDK, GCS client, and Graph API client all sit behind the
 // same Store interface, so swapping them in is a one-file change. The
 // rest of the system (journal, bootstrap, FUSE wiring) doesn't care

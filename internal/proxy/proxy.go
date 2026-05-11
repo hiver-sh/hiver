@@ -1,6 +1,6 @@
 // Package proxy implements the sandbox's MITM egress proxy.
 //
-// Prototype scope: HTTP forward proxy + CONNECT tunneling for HTTPS, with
+// Scope: HTTP forward proxy + CONNECT tunneling for HTTPS, with
 // host-pattern allowlist and JSON-line audit logging. No TLS body inspection
 // (no per-sandbox CA), no body inspectors, no credential broker — all those
 // belong to later tickets (T57, T60–T65).
@@ -378,7 +378,7 @@ func hostnameOf(urlHost, reqHost string) string {
 	}
 	// Strip port if present.
 	if i := strings.LastIndex(h, ":"); i >= 0 && !strings.Contains(h[i:], "]") {
-		// Rough IPv6-aware split; good enough for the prototype.
+		// Rough IPv6-aware split;
 		host, _, err := net.SplitHostPort(h)
 		if err == nil {
 			return host

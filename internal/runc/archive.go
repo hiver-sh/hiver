@@ -1,7 +1,7 @@
 // Package runc converts a docker-archive tarball (the output of
 // `docker save`) into an OCI runtime bundle and runs it under runc.
 //
-// Why no skopeo / umoci dependency? The prototype only needs to consume
+// Why no skopeo / umoci dependency? We only need to consume
 // images produced by the local Docker daemon, and `docker save` emits a
 // well-defined archive format we can parse in ~150 lines. Pulling in
 // skopeo+umoci would mean ~80 MB of apt packages and a multi-step
@@ -109,8 +109,8 @@ func extractTarFile(tarPath, destDir string) error {
 
 // extractTarReader walks a tar (transparently decompressed if gzipped)
 // and materializes its entries under destDir. Device nodes and unknown
-// types are skipped — runc populates /dev itself, and the prototype
-// images don't carry whiteouts.
+// types are skipped — runc populates /dev itself, and the images don't
+// carry whiteouts.
 func extractTarReader(r io.Reader, destDir string) error {
 	br := bufio.NewReader(r)
 	magic, _ := br.Peek(2)

@@ -795,7 +795,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	return nil
 }
 
-// Fsync is a no-op (we write through to the host file for the prototype).
+// Fsync is a no-op (we write through to the host file).
 func (n *node) Fsync(ctx context.Context, req *fuse.FsyncRequest) error { return nil }
 
 // Setattr handles attribute mutations the kernel asks for. The one
