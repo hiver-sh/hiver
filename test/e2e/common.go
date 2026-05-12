@@ -82,9 +82,21 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 	if !filepath.IsAbs(agentDir) {
 		agentDir = filepath.Join(fixtureDir, agentDir)
 	}
+	// When the fixture points `image:` outside its own directory (e.g.
+	// `../../../cmd/mcp` to reuse a binary from the repo), the Dockerfile
+	// at that path likely needs the module root as its build context so
+	// it can see go.mod and the source tree. For self-contained fixtures
+	// (image: .) the fixture dir IS the build context, as before.
+	buildContext := agentDir
+	if rel, err := filepath.Rel(fixtureDir, agentDir); err == nil && strings.HasPrefix(rel, "..") {
+		buildContext, err = filepath.Abs(moduleRoot)
+		if err != nil {
+			t.Fatalf("abs module root: %v", err)
+		}
+	}
 
 	agentImage := "sandbox-" + fixtureName + ":e2e"
-	buildImages(t, agentDir, agentImage)
+	buildImages(t, agentDir, buildContext, agentImage)
 	agentTar := saveAgentImage(t, agentImage)
 
 	// Start the two host-side upstreams on the ports the fixture spec
@@ -206,15 +218,19 @@ func requireDocker(t *testing.T) {
 
 // buildImages builds the two independent images this test needs:
 // sandbox-runtime (the pod, always at the module root) and the agent
-// image at agentDir, tagged as agentImage. They're not layered — each
-// is its own root.
-func buildImages(t *testing.T, agentDir, agentImage string) {
+// image. The agent image's Dockerfile lives at agentDir/Dockerfile and
+// is built with buildContext as the docker build context — usually
+// agentDir itself, but moduleRoot for fixtures that reuse a Dockerfile
+// from elsewhere in the repo (see runFixtureE2E for the rule).
+func buildImages(t *testing.T, agentDir, buildContext, agentImage string) {
 	t.Helper()
-	build := func(tag, contextDir string) {
+	build := func(tag, contextDir string, extraArgs ...string) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "docker", "build", "-t", tag, contextDir)
+		args := append([]string{"build", "-t", tag}, extraArgs...)
+		args = append(args, contextDir)
+		cmd := exec.CommandContext(ctx, "docker", args...)
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
 		if err := cmd.Run(); err != nil {
@@ -222,7 +238,7 @@ func buildImages(t *testing.T, agentDir, agentImage string) {
 		}
 	}
 	build(sandboxRuntimeImage, moduleRoot)
-	build(agentImage, agentDir)
+	build(agentImage, buildContext, "-f", filepath.Join(agentDir, "Dockerfile"))
 }
 
 // saveAgentImage runs `docker save` to produce a docker-archive tarball

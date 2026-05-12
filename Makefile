@@ -1,4 +1,4 @@
-CMDS := sandboxd sbxfuse sbxproxy
+CMDS := sandboxd sbxfuse sbxproxy mcp
 
 .PHONY: help build test-e2e test-unit gen fmt $(CMDS)
 
@@ -17,7 +17,7 @@ $(CMDS):
 	go build -o bin/$@ ./cmd/$@
 
 gen: ## Run go generate on the API package.
-	go generate ./internal/api
+	go generate ./internal/api ./internal/mcp
 
 fmt: ## Format Go sources with gofmt -s.
 	gofmt -s -w .

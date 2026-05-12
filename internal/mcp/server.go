@@ -1,4 +1,4 @@
-package api
+package mcp
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	middleware "github.com/oapi-codegen/gin-middleware"
-	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
+	"github.com/sandbox-platform/agent-sandbox/internal/mcp/gen"
 )
 
 func NewServer(port string) *http.Server {
@@ -23,7 +23,7 @@ func NewServer(port string) *http.Server {
 	r.Use(allowAllCORS)
 	r.Use(middleware.OapiRequestValidator(swagger))
 
-	h := NewHandlers()
+	h := NewHandlers(newMCPServer())
 	gen.RegisterHandlers(r, h)
 
 	s := &http.Server{

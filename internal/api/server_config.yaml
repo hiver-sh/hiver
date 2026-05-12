@@ -9,5 +9,4 @@ output-options:
   skip-prune: true
 import-mapping:
   ./config.yaml: "-"
-  ./mcp.yaml: "-"
   ./events.yaml: "-"

@@ -16,4 +16,6 @@ COPY agent.js /agent.js
 # access the spec.yaml ACLs grant for that path (here: ro).
 COPY inputs/ /workspace/inputs/
 
+EXPOSE 18000
+
 ENTRYPOINT ["node", "/agent.js"]

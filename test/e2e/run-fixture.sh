@@ -31,10 +31,30 @@ if [[ ! -d "${fixture_dir}" ]]; then
   echo "fixture not found: ${fixture_dir}" >&2
   exit 1
 fi
-if [[ ! -f "${fixture_dir}/Dockerfile" || ! -f "${fixture_dir}/spec.yaml" ]]; then
-  echo "fixture is missing Dockerfile and/or spec.yaml: ${fixture_dir}" >&2
+if [[ ! -f "${fixture_dir}/spec.yaml" ]]; then
+  echo "fixture is missing spec.yaml: ${fixture_dir}" >&2
   exit 1
 fi
+
+# Resolve agent.image from spec.yaml. Defaults to "." (build the
+# fixture-local Dockerfile). When it points outside the fixture dir
+# (e.g. ../../../cmd/mcp), the Dockerfile at that path likely needs
+# the module root as build context — match common.go's rule.
+image_value="$(awk '
+  /^agent:/ { in_agent=1; next }
+  in_agent && /^[^ \t]/ { in_agent=0 }
+  in_agent && $1 == "image:" { print $2; exit }
+' "${fixture_dir}/spec.yaml")"
+image_value="${image_value:-.}"
+agent_dir="$(cd "${fixture_dir}/${image_value}" && pwd)"
+if [[ ! -f "${agent_dir}/Dockerfile" ]]; then
+  echo "agent image dir is missing Dockerfile: ${agent_dir}" >&2
+  exit 1
+fi
+build_context="${agent_dir}"
+case "${image_value}" in
+  ..*) build_context="${module_root}" ;;
+esac
 
 agent_image="sandbox-${fixture}:e2e"
 container_name="sandbox-pod-${fixture}"
@@ -102,7 +122,21 @@ echo "==> Building sandbox-runtime"
 docker build -t sandbox-runtime "${module_root}"
 
 echo "==> Building agent image: ${agent_image}"
-docker build -t "${agent_image}" "${fixture_dir}"
+docker build -t "${agent_image}" -f "${agent_dir}/Dockerfile" "${build_context}"
+
+# Forward every port the agent's Dockerfile EXPOSEs to the host. Each
+# EXPOSE line may carry multiple ports, optionally suffixed /tcp or
+# /udp. Sandboxd's own API port (8080) is always added below.
+expose_args=()
+while read -r port; do
+  port="${port%/*}"
+  [[ -z "${port}" ]] && continue
+  expose_args+=(-p "${port}:${port}")
+done < <(awk '
+  toupper($1) == "EXPOSE" {
+    for (i=2; i<=NF; i++) print $i
+  }
+' "${agent_dir}/Dockerfile")
 
 # docker save → tarball that sandboxd will unpack inside the pod.
 audit_dir="$(mktemp -d -t sandbox-audit-XXXXXX)"
@@ -130,7 +164,7 @@ docker run -d --rm \
   --add-host upstream-allowed:host-gateway \
   --add-host upstream-denied:host-gateway \
   -p 8080:8080 \
-  -p 18000:18000 \
+  ${expose_args[@]+"${expose_args[@]}"} \
   ${backend_env_args[@]+"${backend_env_args[@]}"} \
   -v "${audit_dir}:/audit-out" \
   -v "${agent_tar}:/mnt/agent.tar:ro" \
@@ -191,5 +225,8 @@ sandbox-pod is still running.
 Audit dir lives in ${audit_dir} and is bind-mounted at /audit-out inside the pod.
 EOF
 
-echo "==> Starting MCP inspector:"
-npx @modelcontextprotocol/inspector --server-url http://localhost:8080/v1/mcp
+if [[ "${fixture}" == "mcp-server" ]]; then
+  inspector_url="http://localhost:8081/v1/mcp"
+  echo "==> Starting MCP inspector:"
+  npx @modelcontextprotocol/inspector --server-url "${inspector_url}"
+fi

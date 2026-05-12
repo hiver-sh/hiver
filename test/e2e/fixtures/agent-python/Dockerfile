@@ -13,4 +13,6 @@ COPY agent.py /agent.py
 # access the spec.yaml ACLs grant for that path (here: ro).
 COPY inputs/ /workspace/inputs/
 
+EXPOSE 18000
+
 ENTRYPOINT ["python3", "/agent.py"]

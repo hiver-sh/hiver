@@ -1,8 +1,8 @@
-package api
+package mcp
 
 import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sandbox-platform/agent-sandbox/internal/api/mcp/tools"
+	"github.com/sandbox-platform/agent-sandbox/internal/mcp/tools"
 )
 
 func newMCPServer() *mcp.Server {
