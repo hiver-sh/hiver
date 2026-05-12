@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/mcp ./cmd/mcp
+RUN CGO_ENABLED=0 go build -o /out/mcpserver ./cmd/mcpserver
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/mcp /usr/local/bin/mcp
+COPY --from=build /out/mcpserver /usr/local/bin/mcpserver
 
 EXPOSE 8081
-ENTRYPOINT ["/usr/local/bin/mcp"]
+ENTRYPOINT ["/usr/local/bin/mcpserver"]

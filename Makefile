@@ -1,4 +1,4 @@
-CMDS := sandboxd sbxfuse sbxproxy mcp
+CMDS := sandboxd sbxfuse sbxproxy mcpserver
 
 .PHONY: help build test-e2e test-unit gen fmt $(CMDS)
 
