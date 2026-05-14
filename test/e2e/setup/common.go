@@ -178,8 +178,19 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	}
 
 	// (3) FS: assert ≥1 write-allow fs.request; deny on /secret/... only
-	// checked when the fixture has a /secret rule.
+	// checked when the fixture has a /secret rule. Every allowed
+	// fs.request reached the backend, so an fs.response must follow.
 	fsRequests := filterEvents(pod.events, "fs.request")
+	fsResponses := filterEvents(pod.events, "fs.response")
+	allowedFs := 0
+	for _, e := range fsRequests {
+		if a, _ := e["access"].(string); a == "allowed" {
+			allowedFs++
+		}
+	}
+	if allowedFs > 0 && len(fsResponses) == 0 {
+		t.Errorf("fs.response: expected ≥1 paired response for %d allowed fs.request", allowedFs)
+	}
 	var sawWriteAllow, sawSecretDeny bool
 	for _, e := range fsRequests {
 		op, _ := e["operation"].(string)
@@ -227,7 +238,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 
 	if t.Failed() {
 		t.Logf("\n----- container output -----\n%s\n", pod.output)
-		t.Logf("\n----- SSE events (%d) -----\n%s\n", len(pod.events), summarizeEvents(pod.events))
+		t.Logf("\n----- SSE events (%d) -----\n%s\n", len(pod.events), SummarizeEvents(pod.events))
 	}
 }
 
@@ -244,18 +255,26 @@ func filterEvents(events []map[string]any, t string) []map[string]any {
 	return out
 }
 
-// summarizeEvents renders the collected stream as one line per event
-// for failure logs; full JSON would be unreadable for runs with
-// hundreds of events.
-func summarizeEvents(events []map[string]any) string {
+// SummarizeEvents renders the collected stream as one line per event.
+// Suitable for `t.Log` / failure logs — full JSON would be unreadable
+// for runs with hundreds of events.
+func SummarizeEvents(events []map[string]any) string {
 	var b strings.Builder
 	for _, e := range events {
 		id, _ := e["id"].(float64)
 		typ, _ := e["type"].(string)
 		fmt.Fprintf(&b, "  #%d %s", int(id), typ)
-		for _, k := range []string{"access", "host", "path", "method", "operation", "status", "duration_ms", "request_id"} {
+		for _, k := range []string{"access", "host", "path", "method", "operation", "status", "duration_ms", "request_id", "backend"} {
 			if v, ok := e[k]; ok {
 				fmt.Fprintf(&b, " %s=%v", k, v)
+			}
+		}
+		// stdio carries one of stdout/stderr per event; quote the chunk
+		// so trailing whitespace is visible and a runaway newline can't
+		// break the one-line-per-event format.
+		for _, k := range []string{"stdout", "stderr"} {
+			if v, ok := e[k].(string); ok {
+				fmt.Fprintf(&b, " %s=%q", k, v)
 			}
 		}
 		b.WriteByte('\n')

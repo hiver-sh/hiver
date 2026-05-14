@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/sandbox-platform/agent-sandbox/internal/api"
+	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
 	"github.com/sandbox-platform/agent-sandbox/internal/events"
 	"github.com/sandbox-platform/agent-sandbox/internal/runc"
 	"github.com/sandbox-platform/agent-sandbox/internal/sandboxd"
@@ -175,7 +176,7 @@ func main() {
 			)
 		}
 		fuseCmd, err := startSidecar(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil,
-			sidecarOnEvent(broker, formatFuseEvent, translateFuseEvent(f.Mount)))
+			sidecarOnEvent(broker, formatFuseEvent, translateFuseEvent(f.Mount, gen.Backend(f.Backend))))
 		if err != nil {
 			log.Fatalf("start fuse (%s): %v", f.Mount, err)
 		}

@@ -19,6 +19,7 @@ func TestEventsLastEventIdE2E(t *testing.T) {
 			LastEventID: "0",
 			IdleTimeout: idleTimeout,
 		})
+		t.Logf("SSE events (%d):\n%s", len(full), setup.SummarizeEvents(full))
 		if len(full) < 4 {
 			t.Fatalf("expected ≥4 events to exercise resume; got %d", len(full))
 		}
@@ -129,11 +130,12 @@ func sortedKeys(m map[int64]bool) []int64 {
 //   - egress.response, with `request_id` + `status` + `duration_ms`
 //     present (request/response pairing survives the wire),
 //   - fs.request with the schema's required fields,
+//   - fs.response, with `backend` set to the per-mount value
+//     ("local" for agent-node's workspace),
 //   - stdio, with at least one stdout chunk (agent prints
 //     "[agent:out] …" per probe).
 //
-// fs.response and config.apply aren't asserted: the fixture doesn't
-// drive them.
+// config.apply isn't asserted: no PUT /v1/config in this fixture.
 func assertEventTypes(t *testing.T, events []map[string]any) {
 	t.Helper()
 	byType := map[string][]map[string]any{}
@@ -142,7 +144,7 @@ func assertEventTypes(t *testing.T, events []map[string]any) {
 		byType[typ] = append(byType[typ], e)
 	}
 
-	for _, want := range []string{"egress.request", "egress.response", "fs.request", "stdio"} {
+	for _, want := range []string{"egress.request", "egress.response", "fs.request", "fs.response", "stdio"} {
 		if len(byType[want]) == 0 {
 			t.Errorf("expected ≥1 event of type %q; got types %v", want, typeKeys(byType))
 		}
@@ -187,6 +189,18 @@ func assertEventTypes(t *testing.T, events []map[string]any) {
 			if _, ok := e[f].(string); !ok {
 				t.Errorf("fs.request missing %s: %v", f, e)
 			}
+		}
+	}
+
+	// fs.response: schema-required backend + duration_ms. agent-node's
+	// workspace mount is local, so the backend field is exactly "local".
+	for _, e := range byType["fs.response"] {
+		backend, _ := e["backend"].(string)
+		if backend != "local" {
+			t.Errorf("fs.response: expected backend=local, got %q (%v)", backend, e)
+		}
+		if _, ok := e["duration_ms"].(float64); !ok {
+			t.Errorf("fs.response missing duration_ms: %v", e)
 		}
 	}
 

@@ -8,10 +8,10 @@ help:
 build: $(CMDS) ## Build all cmd binaries into bin/.
 
 test-e2e: ## Run e2e tests
-	go test -count=1 ./test/e2e/... 2>&1
+	go test -v -count=1 ./test/e2e/... 2>&1
 
 test-unit: ## Run unit tests
-	go test -count=1 $$(go list ./... | grep -v '/test/e2e') 2>&1
+	go test -v -count=1 $$(go list ./... | grep -v '/test/e2e') 2>&1
 
 $(CMDS):
 	go build -o bin/$@ ./cmd/$@

@@ -63,13 +63,20 @@ type Config struct {
 const defaultRemoteStatTTL = 30 * time.Second
 
 // AuditEvent is one record on the audit.filesystem topic (DESIGN.md §9.1).
+//
+// DurationMs is the wall-clock time spent in the backend op for the
+// allow/error verdicts. Zero on `deny` (ACL short-circuit; the backend
+// was never touched). Consumers split a single event into fs.request
+// (always) + fs.response (verdict in {allow, error}) — duration lives
+// on the response side.
 type AuditEvent struct {
-	At      time.Time `json:"at"`
-	Type    string    `json:"type"` // "filesystem"
-	Op      string    `json:"op"`
-	Path    string    `json:"path"`
-	Verdict string    `json:"verdict"` // "allow" | "deny" | "error"
-	Err     string    `json:"err,omitempty"`
+	At         time.Time `json:"at"`
+	Type       string    `json:"type"` // "filesystem"
+	Op         string    `json:"op"`
+	Path       string    `json:"path"`
+	Verdict    string    `json:"verdict"` // "allow" | "deny" | "error"
+	DurationMs int       `json:"duration_ms,omitempty"`
+	Err        string    `json:"err,omitempty"`
 }
 
 // Server holds a running FUSE mount.
@@ -153,6 +160,15 @@ func (s *Server) audit(e AuditEvent) {
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
 	_ = s.auditEnc.Encode(e)
+}
+
+// auditDone stamps wall-clock duration (since `start`) onto `e` and
+// emits it. Used by handlers on the allow/error paths where the
+// backend op actually ran; deny short-circuits before the backend and
+// stays on plain audit().
+func (s *Server) auditDone(start time.Time, e AuditEvent) {
+	e.DurationMs = int(time.Since(start) / time.Millisecond)
+	s.audit(e)
 }
 
 // cachePut stores remote metadata in the stat cache, but only when the
@@ -244,21 +260,22 @@ func (n *node) childAbs(name string) string {
 //  3. Local Lstat fallback — when there's no remote configured (pure
 //     local backend), or the remote call errors transiently.
 func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
+	start := time.Now()
 	if n.access() == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "deny"})
 		return syscall.ENOENT
 	}
 	if n.s.cfg.Remote != nil && !n.isDirty() {
 		if info, ok := n.s.statCache.get(n.absPath()); ok {
 			fillAttrFromRemote(a, info)
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
 			return nil
 		}
 		info, err := n.s.cfg.Remote.Stat(ctx, n.absPath())
 		if err == nil {
 			n.s.cachePut(n.absPath(), info)
 			fillAttrFromRemote(a, info)
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
 			return nil
 		}
 		// Remote ErrNotExist or transient failure → fall through to
@@ -269,11 +286,11 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 	}
 	st, err := os.Lstat(n.hostPath())
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	fillAttr(a, st)
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "attr", Path: n.absPath(), Verdict: "allow"})
 	return nil
 }
 
@@ -295,20 +312,21 @@ func (n *node) isDirty() bool {
 // thin air — if neither source confirms the child exists, return
 // ENOENT so the kernel doesn't cache a phantom inode.
 func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
+	start := time.Now()
 	child := &node{s: n.s, virtPath: path.Join(n.virtPath, name)}
 	if child.access() == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "deny"})
 		return nil, syscall.ENOENT
 	}
 	if n.s.cfg.Remote != nil && !child.isDirty() {
 		if _, ok := n.s.statCache.get(child.absPath()); ok {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
 			return child, nil
 		}
 		info, err := n.s.cfg.Remote.Stat(ctx, child.absPath())
 		if err == nil {
 			n.s.cachePut(child.absPath(), info)
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
 			return child, nil
 		}
 		// Remote ErrNotExist or transient failure → fall through to local
@@ -317,10 +335,10 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 		// final answer when both sides come back empty.
 	}
 	if _, err := os.Lstat(child.hostPath()); err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, mapErr(err)
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "lookup", Path: child.absPath(), Verdict: "allow"})
 	return child, nil
 }
 
@@ -331,8 +349,9 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 // the agent sees its own pending creates immediately. Pure-local mounts
 // just list the backend dir directly.
 func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	start := time.Now()
 	if n.access() == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "deny"})
 		return nil, syscall.ENOENT
 	}
 	seen := map[string]fuse.DirentType{}
@@ -340,7 +359,7 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	if n.s.cfg.Remote != nil {
 		infos, err := n.s.cfg.Remote.ListDir(ctx, n.absPath())
 		if err != nil && !errors.Is(err, remotefs.ErrNotExist) {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 			return nil, mapErr(err)
 		}
 		// Cache the parent's own FileInfo so a follow-up Attr on this
@@ -388,7 +407,7 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		}
 	} else if n.s.cfg.Remote == nil {
 		// Pure-local mount and the dir doesn't exist → return the error.
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, mapErr(err)
 	}
 
@@ -396,7 +415,7 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	for name, t := range seen {
 		out = append(out, fuse.Dirent{Name: name, Type: t})
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "readdir", Path: n.absPath(), Verdict: "allow"})
 	return out, nil
 }
 
@@ -413,13 +432,14 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 //   - The open is write-only / truncating (the agent is about to
 //     overwrite anyway; downloading would just be wasted bytes).
 func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (bazilfs.Handle, error) {
+	start := time.Now()
 	verdict := n.access()
 	if verdict == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "deny"})
 		return nil, syscall.ENOENT
 	}
 	if verdict == AccessRO && (req.Flags&fuse.OpenWriteOnly != 0 || req.Flags&fuse.OpenReadWrite != 0) {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open-write", Path: n.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "open-write", Path: n.absPath(), Verdict: "deny"})
 		return nil, syscall.EROFS
 	}
 	if n.s.cfg.Remote != nil && !n.isDirty() {
@@ -431,16 +451,16 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		// down to one Drive call (the ListDir).
 		if req.Dir {
 			if err := os.MkdirAll(n.hostPath(), 0o755); err != nil {
-				n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+				n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 				return nil, mapErr(err)
 			}
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "allow"})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "allow"})
 			return n, nil
 		}
 		err := n.materializeLocal(ctx, req.Flags)
 		if err != nil {
 			if !errors.Is(err, remotefs.ErrNotExist) {
-				n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+				n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 				return nil, mapErr(err)
 			}
 			// Remote says the file doesn't exist. Two real cases:
@@ -454,12 +474,12 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			//      stale node whose dentry was aliased onto another
 			//      name by a recent Rename.
 			if _, statErr := os.Lstat(n.hostPath()); statErr != nil {
-				n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "error", Err: "not found"})
+				n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "error", Err: "not found"})
 				return nil, syscall.ENOENT
 			}
 		}
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "open", Path: n.absPath(), Verdict: "allow"})
 	return n, nil
 }
 
@@ -537,31 +557,33 @@ func (n *node) materializeLocal(ctx context.Context, flags fuse.OpenFlags) error
 
 // Read returns file bytes at the requested offset.
 func (n *node) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
+	start := time.Now()
 	if n.access() == AccessDeny {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "deny"})
 		return syscall.ENOENT
 	}
 	f, err := os.Open(n.hostPath())
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	defer f.Close()
 	buf := make([]byte, req.Size)
 	nRead, err := f.ReadAt(buf, req.Offset)
 	if err != nil && !errors.Is(err, io.EOF) {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	resp.Data = buf[:nRead]
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "allow"})
 	return nil
 }
 
 // Write writes file bytes at the requested offset.
 func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
+	start := time.Now()
 	if n.access() != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "deny"})
 		return syscall.EROFS
 	}
 	f, err := os.OpenFile(n.hostPath(), os.O_WRONLY, 0)
@@ -571,11 +593,11 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	defer f.Close()
 	nWritten, err := f.WriteAt(req.Data, req.Offset)
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	resp.Size = nWritten
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "write", Path: n.absPath(), Verdict: "allow"})
 	n.s.statCache.invalidate(n.absPath())
 	n.s.enqueuePut(n.absPath(), n.hostPath())
 	return nil
@@ -588,22 +610,23 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 // gone — the local buffer holds writes only). The remote-side parent
 // hierarchy is created lazily by the Store on Put.
 func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (bazilfs.Node, bazilfs.Handle, error) {
+	start := time.Now()
 	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.Name)}
 	if child.access() != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "deny"})
 		return nil, nil, syscall.EROFS
 	}
 	if err := os.MkdirAll(filepath.Dir(child.hostPath()), 0o755); err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, nil, mapErr(err)
 	}
 	f, err := os.OpenFile(child.hostPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, nil, mapErr(err)
 	}
 	_ = f.Close()
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "create", Path: child.absPath(), Verdict: "allow"})
 	n.s.statCache.invalidate(child.absPath())
 	// We deliberately do NOT enqueue a Put here. The common
 	// "open(O_CREAT|O_TRUNC) + Write + Close" sequence would double-
@@ -628,15 +651,16 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 //
 // "Neither local nor remote" → ENOENT, matching POSIX `rm` semantics.
 func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
+	start := time.Now()
 	childAbs := n.childAbs(req.Name)
 	if n.s.cfg.ACLs.Eval(childAbs) != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "deny"})
 		return syscall.EROFS
 	}
 	hostChild := filepath.Join(n.hostPath(), req.Name)
 	localErr := os.Remove(hostChild)
 	if localErr != nil && !os.IsNotExist(localErr) {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "error", Err: localErr.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "error", Err: localErr.Error()})
 		return mapErr(localErr)
 	}
 	localExisted := localErr == nil
@@ -651,35 +675,36 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 			// Enqueue OpDelete so the FIFO queue runs Put-then-Delete
 			// against the remote (the wasted upload is cheaper than
 			// stalling the FUSE handler waiting for the Put to finish).
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "allow"})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "allow"})
 			n.s.enqueueDelete(childAbs)
 			return nil
 		}
 		if err := n.s.cfg.Remote.Delete(ctx, childAbs); err != nil && !errors.Is(err, remotefs.ErrNotExist) {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "error", Err: err.Error()})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "error", Err: err.Error()})
 			return mapErr(err)
 		}
 	} else if !localExisted {
 		// Pure-local mount and the file never existed.
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "error", Err: "not found"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "error", Err: "not found"})
 		return syscall.ENOENT
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "remove", Path: childAbs, Verdict: "allow"})
 	return nil
 }
 
 // Mkdir creates a subdirectory.
 func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node, error) {
+	start := time.Now()
 	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.Name)}
 	if child.access() != AccessRW {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "deny"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "deny"})
 		return nil, syscall.EROFS
 	}
 	if err := os.Mkdir(child.hostPath(), 0o755); err != nil {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "error", Err: err.Error()})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "error", Err: err.Error()})
 		return nil, mapErr(err)
 	}
-	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "allow"})
+	n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "mkdir", Path: child.absPath(), Verdict: "allow"})
 	n.s.statCache.invalidate(child.absPath())
 	return child, nil
 }
@@ -696,6 +721,7 @@ func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node,
 // For a dirty source (pending OpPut), we enqueue OpMove behind the
 // Put — the FIFO queue keeps Put→Move ordered against the remote.
 func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazilfs.Node) error {
+	start := time.Now()
 	dst, ok := newDir.(*node)
 	if !ok {
 		return syscall.EXDEV
@@ -703,7 +729,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	oldAbs := n.childAbs(req.OldName)
 	newAbs := dst.childAbs(req.NewName)
 	if n.s.cfg.ACLs.Eval(oldAbs) != AccessRW || n.s.cfg.ACLs.Eval(newAbs) != AccessRW {
-		n.s.audit(AuditEvent{
+		n.s.auditDone(start, AuditEvent{
 			At: time.Now(), Type: "filesystem", Op: "rename",
 			Path: oldAbs + " → " + newAbs, Verdict: "deny",
 		})
@@ -715,7 +741,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	// when the destination is a remote-only path (Bootstrap is gone,
 	// so subdirs only materialize on demand).
 	if err := os.MkdirAll(filepath.Dir(newHost), 0o755); err != nil {
-		n.s.audit(AuditEvent{
+		n.s.auditDone(start, AuditEvent{
 			At: time.Now(), Type: "filesystem", Op: "rename",
 			Path: oldAbs + " → " + newAbs, Verdict: "error", Err: err.Error(),
 		})
@@ -723,7 +749,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	}
 	localErr := os.Rename(oldHost, newHost)
 	if localErr != nil && !os.IsNotExist(localErr) {
-		n.s.audit(AuditEvent{
+		n.s.auditDone(start, AuditEvent{
 			At: time.Now(), Type: "filesystem", Op: "rename",
 			Path: oldAbs + " → " + newAbs, Verdict: "error", Err: localErr.Error(),
 		})
@@ -738,7 +764,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	if n.s.cfg.Remote != nil {
 		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(oldAbs)
 		if dirty {
-			n.s.audit(AuditEvent{
+			n.s.auditDone(start, AuditEvent{
 				At: time.Now(), Type: "filesystem", Op: "rename",
 				Path: oldAbs + " → " + newAbs, Verdict: "allow",
 			})
@@ -752,26 +778,26 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 				_ = os.Rename(newHost, oldHost)
 			}
 			if errors.Is(err, remotefs.ErrNotExist) && !localRenamed {
-				n.s.audit(AuditEvent{
+				n.s.auditDone(start, AuditEvent{
 					At: time.Now(), Type: "filesystem", Op: "rename",
 					Path: oldAbs + " → " + newAbs, Verdict: "error", Err: "source not found",
 				})
 				return syscall.ENOENT
 			}
-			n.s.audit(AuditEvent{
+			n.s.auditDone(start, AuditEvent{
 				At: time.Now(), Type: "filesystem", Op: "rename",
 				Path: oldAbs + " → " + newAbs, Verdict: "error", Err: err.Error(),
 			})
 			return mapErr(err)
 		}
 	} else if !localRenamed {
-		n.s.audit(AuditEvent{
+		n.s.auditDone(start, AuditEvent{
 			At: time.Now(), Type: "filesystem", Op: "rename",
 			Path: oldAbs + " → " + newAbs, Verdict: "error", Err: "not found",
 		})
 		return syscall.ENOENT
 	}
-	n.s.audit(AuditEvent{
+	n.s.auditDone(start, AuditEvent{
 		At: time.Now(), Type: "filesystem", Op: "rename",
 		Path: oldAbs + " → " + newAbs, Verdict: "allow",
 	})
@@ -791,9 +817,10 @@ func (n *node) Fsync(ctx context.Context, req *fuse.FsyncRequest) error { return
 // no-ops — the FUSE ACL is the access boundary, POSIX bits don't
 // need to be authoritative.
 func (n *node) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
+	start := time.Now()
 	if req.Valid.Size() {
 		if n.access() != AccessRW {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "deny"})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "deny"})
 			return syscall.EROFS
 		}
 		host := n.hostPath()
@@ -803,25 +830,25 @@ func (n *node) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 		// satisfy by creating a fresh local stub of that size.
 		if _, err := os.Stat(host); err != nil {
 			if !os.IsNotExist(err) {
-				n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+				n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 				return mapErr(err)
 			}
 			if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
-				n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+				n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 				return mapErr(err)
 			}
 			f, err := os.Create(host)
 			if err != nil {
-				n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+				n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 				return mapErr(err)
 			}
 			f.Close()
 		}
 		if err := os.Truncate(host, int64(req.Size)); err != nil {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
+			n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 			return mapErr(err)
 		}
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "allow"})
+		n.s.auditDone(start, AuditEvent{At: time.Now(), Type: "filesystem", Op: "truncate", Path: n.absPath(), Verdict: "allow"})
 		n.s.statCache.invalidate(n.absPath())
 		// Don't enqueue here — Write will, and a typical truncate is
 		// followed by a Write. A bare truncate-no-write leaves the

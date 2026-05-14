@@ -110,11 +110,11 @@ func ingestEvents(ctx context.Context, r io.ReadCloser, name string, onEvent fun
 func sidecarOnEvent(
 	broker *events.Broker,
 	formatLog func(map[string]any) string,
-	translate func(map[string]any) events.Factory,
+	translate func(map[string]any) []events.Factory,
 ) func(map[string]any) {
 	return func(raw map[string]any) {
 		log.Printf("sandboxd: agent op | %s", formatLog(raw))
-		if build := translate(raw); build != nil {
+		for _, build := range translate(raw) {
 			broker.Publish(build)
 		}
 	}
@@ -194,15 +194,22 @@ func formatFuseEvent(ev map[string]any) string {
 //   - phase=response, verdict=allow           → egress.response
 //   - phase=response, verdict=error           → dropped (no upstream
 //     status to report)
-func translateProxyEvent(raw map[string]any) events.Factory {
+//
+// Returns a slice for parity with [translateFuseEvent], which emits
+// two SSE events per source record. Proxy is always one-in-one-out.
+func translateProxyEvent(raw map[string]any) []events.Factory {
 	phase, _ := raw["phase"].(string)
+	var f events.Factory
 	switch phase {
 	case "request":
-		return translateProxyRequest(raw)
+		f = translateProxyRequest(raw)
 	case "response":
-		return translateProxyResponse(raw)
+		f = translateProxyResponse(raw)
 	}
-	return nil
+	if f == nil {
+		return nil
+	}
+	return []events.Factory{f}
 }
 
 func translateProxyRequest(raw map[string]any) events.Factory {
@@ -256,41 +263,86 @@ func translateProxyResponse(raw map[string]any) events.Factory {
 	}
 }
 
-// translateFuseEvent maps the fuse AuditEvent shape onto an
-// `fs.request` SandboxEvent factory. The mount is closed over by the
-// caller since the audit shape doesn't carry it. Op kinds are bucketed
-// into read/write per FSRequestEventOperation; verdict "error" drops
-// out.
-func translateFuseEvent(mount string) func(map[string]any) events.Factory {
-	return func(raw map[string]any) events.Factory {
+// translateFuseEvent maps the fuse AuditEvent shape onto fs.request /
+// fs.response SandboxEvent factories. mount and backend are closed
+// over by the caller (per-FS context that the audit event doesn't
+// carry).
+//
+// Each source record produces:
+//   - fs.request, always (with the access decision),
+//   - fs.response, only when the op reached the backend (verdict in
+//     {allow, error}) — the schema models this as "FUSE got a response
+//     from a storage backend". Deny short-circuits before the backend.
+//
+// Op kinds are bucketed into read/write per FSRequestEventOperation;
+// unknown ops drop out of fs.request but still get an fs.response when
+// the backend was reached. Local backends omit method/url/status (those
+// are HTTP-shaped fields for remote backends like gdrive).
+func translateFuseEvent(mount string, backend gen.Backend) func(map[string]any) []events.Factory {
+	return func(raw map[string]any) []events.Factory {
 		verdict, _ := raw["verdict"].(string)
-		var access gen.FSRequestEventAccess
-		switch verdict {
-		case "allow":
-			access = gen.FSRequestEventAccessAllowed
-		case "deny":
-			access = gen.FSRequestEventAccessDenied
-		default:
-			return nil
+		var out []events.Factory
+		if f := fuseRequestFactory(raw, mount, verdict); f != nil {
+			out = append(out, f)
 		}
-		op, _ := raw["op"].(string)
-		operation := fuseOpKind(op)
-		if operation == "" {
-			return nil
+		if verdict == "allow" || verdict == "error" {
+			if f := fuseResponseFactory(raw, backend); f != nil {
+				out = append(out, f)
+			}
 		}
-		path, _ := raw["path"].(string)
-		return func(id int64, ts time.Time) gen.SandboxEvent {
-			var ev gen.SandboxEvent
-			_ = ev.FromFSRequestEvent(gen.FSRequestEvent{
-				Id:        int(id),
-				Timestamp: ts,
-				Access:    access,
-				Mount:     mount,
-				Path:      path,
-				Operation: operation,
-			})
-			return ev
-		}
+		return out
+	}
+}
+
+func fuseRequestFactory(raw map[string]any, mount, verdict string) events.Factory {
+	var access gen.FSRequestEventAccess
+	switch verdict {
+	case "allow", "error":
+		// "error" is fusefs-speak for "ACL allowed but the backend
+		// errored". The ACL decision was allowed; the fs.response
+		// event (which the caller emits for both allow and error)
+		// carries the failure.
+		access = gen.FSRequestEventAccessAllowed
+	case "deny":
+		access = gen.FSRequestEventAccessDenied
+	default:
+		return nil
+	}
+	op, _ := raw["op"].(string)
+	operation := fuseOpKind(op)
+	if operation == "" {
+		return nil
+	}
+	path, _ := raw["path"].(string)
+	return func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromFSRequestEvent(gen.FSRequestEvent{
+			Id:        int(id),
+			Timestamp: ts,
+			Access:    access,
+			Mount:     mount,
+			Path:      path,
+			Operation: operation,
+		})
+		return ev
+	}
+}
+
+// fuseResponseFactory builds an fs.response event. Local backends emit
+// the minimum shape (backend + duration_ms); remote-HTTP backends
+// could carry method/url/status too but the fuse audit shape doesn't
+// surface those today.
+func fuseResponseFactory(raw map[string]any, backend gen.Backend) events.Factory {
+	durationMs := intField(raw, "duration_ms")
+	return func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromFSResponseEvent(gen.FSResponseEvent{
+			Id:         int(id),
+			Timestamp:  ts,
+			Backend:    backend,
+			DurationMs: durationMs,
+		})
+		return ev
 	}
 }
 
