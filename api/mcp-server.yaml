@@ -83,7 +83,6 @@ paths:
                           backend: local
                           acls:
                             - { path: /workspace, access: rw }
-                      audit_dir: /audit-out
       responses:
         '200':
           description: A JSON-RPC response, or an SSE stream when the call carries follow-up messages.

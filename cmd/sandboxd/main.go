@@ -47,6 +47,7 @@ func main() {
 		proxyBin      = flag.String("proxy-bin", "sbxproxy", "path to sbxproxy binary")
 		fuseBin       = flag.String("fuse-bin", "sbxfuse", "path to sbxfuse binary")
 		apiServerPort = flag.String("api-server-port", "8080", "port of the API server")
+		workDir       = flag.String("work-dir", "/run/sandboxd", "directory for sandboxd's internal scratch (CA cert, rules JSON, ACL files, persisted config)")
 	)
 	flag.Parse()
 
@@ -59,18 +60,28 @@ func main() {
 		log.Fatalf("spec: %v", err)
 	}
 
+	if err := os.MkdirAll(*workDir, 0o755); err != nil {
+		log.Fatalf("create work dir %s: %v", *workDir, err)
+	}
+	log.Printf("sandboxd: work dir = %s", *workDir)
+
+	// Persist the parsed spec as the API's source-of-truth config so
+	// GET/PUT /v1/config have something to read/diff against from the
+	// first request. The on-disk format is gen.SandboxConfig JSON; the
+	// spec's JSON shape already matches, so we round-trip through the
+	// generated type for type safety.
+	configPath := filepath.Join(*workDir, "config.json")
+	if err := writeInitialConfig(configPath, sp); err != nil {
+		log.Fatalf("write initial config %s: %v", configPath, err)
+	}
+
 	// The broker is the single fan-out point for the SSE `/v1/events`
 	// stream. Sidecar audit events arrive over the per-child socketpair
 	// (see startSidecar), get translated to SandboxEvent shape, and
 	// Publish'd here; api.NewServer hands subscribers to the SSE handler.
 	broker := events.New(events.DefaultCapacity, 0)
-	s := api.NewServer(*apiServerPort, broker)
+	s := api.NewServer(*apiServerPort, broker, configPath)
 	go s.ListenAndServe()
-
-	if err := os.MkdirAll(sp.AuditDir, 0o755); err != nil {
-		log.Fatalf("create audit dir %s: %v", sp.AuditDir, err)
-	}
-	log.Printf("sandboxd: audit dir = %s", sp.AuditDir)
 
 	for i := range sp.FS {
 		f := &sp.FS[i]
@@ -103,13 +114,13 @@ func main() {
 	// recovers the original destination via SO_ORIGINAL_DST and
 	// dispatches by protocol sniff. The agent itself is unaware of
 	// the proxy — no HTTP_PROXY env, no opt-in cooperation required.
-	rulesTmp := filepath.Join(sp.AuditDir, "egress-rules.json")
+	rulesTmp := filepath.Join(*workDir, "egress-rules.json")
 	if err := writeJSON(rulesTmp, sp.Egress.Allow); err != nil {
 		log.Fatalf("write rules: %v", err)
 	}
 
-	caCertPath := filepath.Join(sp.AuditDir, "sandbox-ca.crt")
-	caKeyPath := filepath.Join(sp.AuditDir, "sandbox-ca.key")
+	caCertPath := filepath.Join(*workDir, "sandbox-ca.crt")
+	caKeyPath := filepath.Join(*workDir, "sandbox-ca.key")
 
 	caCert := sandboxd.GenerateCaCert(caCertPath, caKeyPath)
 	proxyArgs := []string{
@@ -121,7 +132,7 @@ func main() {
 		"-ca-key", caKeyPath,
 	}
 	proxyCmd, err := startSidecar(ctx, &children, "sbxproxy", *proxyBin, proxyArgs, nil,
-		sidecarOnEvent(broker, formatProxyEvent, translateProxyEvent))
+		sidecarOnEvent(formatProxyEvent, newProxyTranslator(broker).handle))
 	if err != nil {
 		log.Fatalf("start proxy: %v", err)
 	}
@@ -146,7 +157,7 @@ func main() {
 	// stuck remote on one mount can't block writes to another.
 	for i := range sp.FS {
 		f := &sp.FS[i]
-		aclTmp := filepath.Join(sp.AuditDir, "acls-"+f.Slug()+".json")
+		aclTmp := filepath.Join(*workDir, "acls-"+f.Slug()+".json")
 		if err := writeACLs(aclTmp, f.ACLs); err != nil {
 			log.Fatalf("write ACLs (%s): %v", f.Mount, err)
 		}
@@ -176,7 +187,7 @@ func main() {
 			)
 		}
 		fuseCmd, err := startSidecar(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil,
-			sidecarOnEvent(broker, formatFuseEvent, translateFuseEvent(f.Mount, gen.Backend(f.Backend))))
+			sidecarOnEvent(formatFuseEvent, newFuseTranslator(broker, f.Mount, gen.Backend(f.Backend)).handle))
 		if err != nil {
 			log.Fatalf("start fuse (%s): %v", f.Mount, err)
 		}
@@ -419,6 +430,27 @@ func writeJSON(path string, v any) error {
 	}
 	defer f.Close()
 	return json.NewEncoder(f).Encode(v)
+}
+
+// writeInitialConfig persists sp to path in the gen.SandboxConfig JSON
+// shape that GET /v1/config serves. spec.Spec's JSON tags align with
+// gen.SandboxConfig's, so a marshal/unmarshal round-trip is enough —
+// going through the generated type catches drift between the two
+// structs at startup rather than at first GET.
+func writeInitialConfig(path string, sp *spec.Spec) error {
+	data, err := json.Marshal(sp)
+	if err != nil {
+		return fmt.Errorf("marshal spec: %w", err)
+	}
+	var cfg gen.SandboxConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("unmarshal as SandboxConfig: %w", err)
+	}
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
 // installIptables sets up the OUTPUT-chain nat REDIRECT rules that make

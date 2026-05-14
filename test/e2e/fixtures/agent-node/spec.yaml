@@ -30,4 +30,3 @@ egress:
       methods: [GET]
       paths: [/solutions/case-studies/*]
 
-audit_dir: /audit-out

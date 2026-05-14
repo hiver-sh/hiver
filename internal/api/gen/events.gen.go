@@ -149,16 +149,17 @@ type FSResponseEvent struct {
 	// DurationMs Wall-clock duration of the request, in milliseconds.
 	DurationMs int `json:"duration_ms"`
 
+	// Error Optional error message.
+	Error *string `json:"error,omitempty"`
+
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
-	Id     int         `json:"id"`
-	Method *HttpMethod `json:"method,omitempty"`
+	Id int `json:"id"`
 
-	// Status HTTP status code returned by the backend.
-	Status    *int      `json:"status,omitempty"`
+	// RequestId Unique identifier correlating this result to its `FSRequestEvent`.
+	RequestId string    `json:"request_id"`
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
-	Url       *string   `json:"url,omitempty"`
 }
 
 // SandboxEvent A typed event emitted by the sandbox. The `type` field selects

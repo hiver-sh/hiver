@@ -76,8 +76,7 @@ func TestMcpServerE2E(t *testing.T) {
 	setup.BuildImages(t, agentDir, buildContext, agentImage)
 	agentTar := setup.SaveAgentImage(t, agentImage)
 
-	auditDir := t.TempDir()
-	pod := startMCPPod(t, agentTar, specPath, auditDir)
+	pod := startMCPPod(t, agentTar, specPath)
 	defer pod.stop()
 
 	mcpURL := "http://127.0.0.1:8081/v1/mcp"
@@ -182,7 +181,7 @@ type mcpPod struct {
 // 8081 to the host. Unlike runSandboxPod it doesn't wait for any
 // agent-side "DONE" marker — the readiness check is "MCP server
 // answers initialize", which the caller does via connectMCP.
-func startMCPPod(t *testing.T, agentTar, specPath, auditDir string) *mcpPod {
+func startMCPPod(t *testing.T, agentTar, specPath string) *mcpPod {
 	t.Helper()
 
 	containerName := fmt.Sprintf("sandbox-pod-mcp-e2e-%d", time.Now().UnixNano())
@@ -197,7 +196,6 @@ func startMCPPod(t *testing.T, agentTar, specPath, auditDir string) *mcpPod {
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8081:8081",
-		"-v", auditDir + ":/audit-out",
 		"-v", agentTar + ":/mnt/agent.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
 		sandboxRuntimeImage,

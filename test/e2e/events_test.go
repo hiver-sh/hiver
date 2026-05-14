@@ -125,17 +125,6 @@ func sortedKeys(m map[int64]bool) []int64 {
 
 // assertEventTypes verifies the SSE stream carries every SandboxEvent
 // variant the agent-node fixture drives (per its expectations.yaml):
-//
-//   - egress.request, both `allowed` and `denied` accesses,
-//   - egress.response, with `request_id` + `status` + `duration_ms`
-//     present (request/response pairing survives the wire),
-//   - fs.request with the schema's required fields,
-//   - fs.response, with `backend` set to the per-mount value
-//     ("local" for agent-node's workspace),
-//   - stdio, with at least one stdout chunk (agent prints
-//     "[agent:out] …" per probe).
-//
-// config.apply isn't asserted: no PUT /v1/config in this fixture.
 func assertEventTypes(t *testing.T, events []map[string]any) {
 	t.Helper()
 	byType := map[string][]map[string]any{}

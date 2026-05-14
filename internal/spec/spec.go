@@ -20,10 +20,9 @@ import (
 
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
-	Agent    Agent  `json:"agent"`
-	FS       []FS   `json:"fs"`
-	Egress   Egress `json:"egress"`
-	AuditDir string `json:"audit_dir"`
+	Agent  Agent  `json:"agent"`
+	FS     []FS   `json:"fs"`
+	Egress Egress `json:"egress"`
 }
 
 // Agent describes the workload sandboxd will launch once the sidecars are up.
@@ -279,9 +278,6 @@ func (s *Spec) Validate() error {
 				return fmt.Errorf("fs[%d].mount %q overlaps fs[%d].mount %q", i, a, j, b)
 			}
 		}
-	}
-	if s.AuditDir == "" {
-		return errors.New("audit_dir is required")
 	}
 	return nil
 }

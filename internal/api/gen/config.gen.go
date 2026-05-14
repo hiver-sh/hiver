@@ -226,9 +226,6 @@ type SandboxConfig struct {
 	// creation time and not modifiable through this API.
 	Agent *Agent `json:"agent,omitempty"`
 
-	// AuditDir Directory where audit logs are written.
-	AuditDir string `json:"audit_dir"`
-
 	// Egress Network egress configuration.
 	Egress *Egress `json:"egress,omitempty"`
 

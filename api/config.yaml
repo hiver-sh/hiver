@@ -3,7 +3,7 @@ components:
     SandboxConfig:
       type: object
       description: A complete sandbox configuration.
-      required: [fs, audit_dir]
+      required: [fs]
       additionalProperties: false
       properties:
         agent:
@@ -18,10 +18,6 @@ components:
           items: { $ref: '#/components/schemas/FileSystem' }
         egress:
           $ref: '#/components/schemas/Egress'
-        audit_dir:
-          type: string
-          description: Directory where audit logs are written.
-          example: /audit-out
 
     Agent:
       type: object

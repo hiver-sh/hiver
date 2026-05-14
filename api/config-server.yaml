@@ -73,7 +73,6 @@ paths:
                       - host: api.github.com
                         methods: [GET]
                         paths: [/repos/*]
-                  audit_dir: /audit-out
       responses:
         '200':
           description: Apply attempted. Inspect `applied` and `changes`.

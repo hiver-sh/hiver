@@ -26,8 +26,7 @@ func TestLoadValid(t *testing.T) {
 		"agent":  {"env": ["FOO=bar"]},
 		"fs":     [{"backend": "local", "mount": "/work",
 		            "acls": [{"path": "/work", "access": "rw"}]}],
-		"egress": {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]},
-		"audit_dir": "/audit"
+		"egress": {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]}
 	}`)
 	s, err := spec.Load(p)
 	if err != nil {
@@ -48,9 +47,6 @@ func TestLoadValid(t *testing.T) {
 	if got := s.Egress.Allow; len(got) != 1 || got[0].Host != "api.github.com" || len(got[0].Methods) != 1 || got[0].Methods[0] != "GET" {
 		t.Errorf("egress: %+v", got)
 	}
-	if s.AuditDir != "/audit" {
-		t.Errorf("audit_dir: %q", s.AuditDir)
-	}
 }
 
 func TestLoadMultipleMounts(t *testing.T) {
@@ -58,8 +54,7 @@ func TestLoadMultipleMounts(t *testing.T) {
 		"fs": [
 			{"backend":"local","mount":"/work","acls":[{"path":"/work","access":"rw"}]},
 			{"backend":"local","mount":"/data","acls":[{"path":"/data","access":"ro"}]}
-		],
-		"audit_dir":"/audit"
+		]
 	}`)
 	s, err := spec.Load(p)
 	if err != nil {
@@ -79,15 +74,14 @@ func TestLoadMissingRequired(t *testing.T) {
 		body string
 		want string
 	}{
-		{"no fs", `{"audit_dir":"/a"}`, "fs is required"},
-		{"empty fs", `{"fs":[],"audit_dir":"/a"}`, "fs is required"},
-		{"no backend", `{"fs":[{"mount":"/m"}],"audit_dir":"/a"}`, "backend"},
-		{"unknown backend", `{"fs":[{"backend":"s3","mount":"/m"}],"audit_dir":"/a"}`, "backend"},
-		{"no mount", `{"fs":[{"backend":"local"}],"audit_dir":"/a"}`, "mount"},
-		{"relative mount", `{"fs":[{"backend":"local","mount":"work"}],"audit_dir":"/a"}`, "absolute path"},
-		{"no audit_dir", `{"fs":[{"backend":"local","mount":"/m"}]}`, "audit_dir"},
-		{"duplicate mount", `{"fs":[{"backend":"local","mount":"/m"},{"backend":"local","mount":"/m"}],"audit_dir":"/a"}`, "overlaps"},
-		{"prefix mount", `{"fs":[{"backend":"local","mount":"/m"},{"backend":"local","mount":"/m/sub"}],"audit_dir":"/a"}`, "overlaps"},
+		{"no fs", `{}`, "fs is required"},
+		{"empty fs", `{"fs":[]}`, "fs is required"},
+		{"no backend", `{"fs":[{"mount":"/m"}]}`, "backend"},
+		{"unknown backend", `{"fs":[{"backend":"s3","mount":"/m"}]}`, "backend"},
+		{"no mount", `{"fs":[{"backend":"local"}]}`, "mount"},
+		{"relative mount", `{"fs":[{"backend":"local","mount":"work"}]}`, "absolute path"},
+		{"duplicate mount", `{"fs":[{"backend":"local","mount":"/m"},{"backend":"local","mount":"/m"}]}`, "overlaps"},
+		{"prefix mount", `{"fs":[{"backend":"local","mount":"/m"},{"backend":"local","mount":"/m/sub"}]`, "overlaps"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

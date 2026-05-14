@@ -176,28 +176,28 @@ components:
       allOf:
         - $ref: '#/components/schemas/SandboxEventBase'
         - type: object
-          required: [type, backend, duration_ms]
+          required: [type, backend, request_id, duration_ms]
           properties:
             type:
               type: string
               const: fs.response
             backend:
               $ref: './config.yaml#/components/schemas/Backend'
-            method:
-              $ref: './config.yaml#/components/schemas/HttpMethod'
-            url:
+            request_id:
               type: string
-            status:
-              type: integer
-              description: HTTP status code returned by the backend.
+              description: Unique identifier correlating this result to its `FSRequestEvent`.
             duration_ms:
               type: integer
               description: Wall-clock duration of the request, in milliseconds.
+            error:
+              type: string
+              description: Optional error message.
       example:
         type: fs.response
         id: 188
         timestamp: "2026-05-08T17:08:03Z"
         backend: gdrive
+        request_id: 187
         method: GET
         url: https://www.googleapis.com/drive/v3/files/1aBcDeFgHiJkLmNoP
         status: 200

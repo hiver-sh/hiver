@@ -22,4 +22,3 @@ fs:
 egress:
   allow: []
 
-audit_dir: /audit-out

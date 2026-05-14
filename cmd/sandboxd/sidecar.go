@@ -101,23 +101,47 @@ func ingestEvents(ctx context.Context, r io.ReadCloser, name string, onEvent fun
 // sidecarOnEvent builds the per-event callback every sidecar uses.
 // For each raw audit record it emits a `sandboxd: agent op | …`
 // summary line (the e2e fixture grep-extracts these from docker logs)
-// and, when the translation produces a SandboxEvent variant, publishes
-// it to the broker so it fans out to SSE subscribers.
+// and hands the event to `handle`, which decides what (if anything)
+// to publish to the broker.
 //
-// Translation returning nil drops the event from the broker but keeps
-// the log line (useful for verdict="error" or ops we haven't mapped
-// onto the SSE schema yet).
+// The handler owns its own state — typically a correlator that lets
+// a response event reference the SSE id its paired request was given
+// — so it's per-sidecar, not shared across them.
 func sidecarOnEvent(
-	broker *events.Broker,
 	formatLog func(map[string]any) string,
-	translate func(map[string]any) []events.Factory,
+	handle func(raw map[string]any),
 ) func(map[string]any) {
 	return func(raw map[string]any) {
 		log.Printf("sandboxd: agent op | %s", formatLog(raw))
-		for _, build := range translate(raw) {
-			broker.Publish(build)
-		}
+		handle(raw)
 	}
+}
+
+// correlator maps a sidecar's internal request_id to the SSE event id
+// the broker assigned to the paired request event.
+type correlator struct {
+	mu sync.Mutex
+	m  map[string]int64
+}
+
+func newCorrelator() *correlator { return &correlator{m: map[string]int64{}} }
+
+func (c *correlator) put(internalID string, sseID int64) {
+	c.mu.Lock()
+	c.m[internalID] = sseID
+	c.mu.Unlock()
+}
+
+// take returns the SSE id for internalID and removes the entry —
+// pair-once semantics.
+func (c *correlator) take(internalID string) (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sseID, ok := c.m[internalID]
+	if ok {
+		delete(c.m, internalID)
+	}
+	return sseID, ok
 }
 
 // publishAgentStdio returns the per-line callback for the agent
@@ -140,11 +164,7 @@ func publishAgentStdio(broker *events.Broker) func(stream, line string) {
 	}
 }
 
-// formatProxyEvent renders an internal/proxy.AuditEvent map for the
-// "agent op | …" log line. Schema (see internal/proxy.AuditEvent):
-//
-//	{at, type:"network", phase, request_id, method, host, path, verdict,
-//	 status?, duration_ms?, reason?}
+// formatProxyEvent renders an internal/proxy.AuditEvent.
 func formatProxyEvent(ev map[string]any) string {
 	verdict, _ := ev["verdict"].(string)
 	method, _ := ev["method"].(string)
@@ -174,45 +194,72 @@ func intField(ev map[string]any, key string) int {
 	return 0
 }
 
-// formatFuseEvent renders an internal/fusefs.AuditEvent map. Schema:
-//
-//	{at, type:"filesystem", op, path, verdict, err?}
+// formatFuseEvent renders an internal/fusefs.AuditEvent map.
 func formatFuseEvent(ev map[string]any) string {
-	verdict, _ := ev["verdict"].(string)
 	op, _ := ev["op"].(string)
 	path, _ := ev["path"].(string)
+	phase, _ := ev["phase"].(string)
+	if phase == "response" {
+		durMs := intField(ev, "duration_ms")
+		if errStr, ok := ev["err"].(string); ok && errStr != "" {
+			return fmt.Sprintf("fuse  resp  %-10s %s %dms err=%s", op, path, durMs, errStr)
+		}
+		return fmt.Sprintf("fuse  resp  %-10s %s %dms", op, path, durMs)
+	}
+	verdict, _ := ev["verdict"].(string)
 	return fmt.Sprintf("fuse  %-5s %-10s %s", verdict, op, path)
 }
 
-// translateProxyEvent maps the proxy's raw AuditEvent shape onto a
-// SandboxEvent factory. The proxy emits two events per HTTP-like flow
-// (phase=request with the access decision, then phase=response with
-// upstream status + duration_ms); host-only flows (CONNECT, raw-forward
-// TLS) emit phase=request only.
+// proxyTranslator turns proxy AuditEvents into egress.request /
+// egress.response SandboxEvents and publishes them to the broker.
 //
+// Phase semantics:
 //   - phase=request, verdict in {allow, deny} → egress.request
-//   - phase=response, verdict=allow           → egress.response
+//   - phase=response, verdict=allow           → egress.response with
+//     `request_id` set to the SSE event id of the paired request
+//     (looked up via the correlator).
 //   - phase=response, verdict=error           → dropped (no upstream
-//     status to report)
-//
-// Returns a slice for parity with [translateFuseEvent], which emits
-// two SSE events per source record. Proxy is always one-in-one-out.
-func translateProxyEvent(raw map[string]any) []events.Factory {
-	phase, _ := raw["phase"].(string)
-	var f events.Factory
-	switch phase {
-	case "request":
-		f = translateProxyRequest(raw)
-	case "response":
-		f = translateProxyResponse(raw)
-	}
-	if f == nil {
-		return nil
-	}
-	return []events.Factory{f}
+//     status to report).
+type proxyTranslator struct {
+	broker *events.Broker
+	corr   *correlator
 }
 
-func translateProxyRequest(raw map[string]any) events.Factory {
+func newProxyTranslator(broker *events.Broker) *proxyTranslator {
+	return &proxyTranslator{broker: broker, corr: newCorrelator()}
+}
+
+func (t *proxyTranslator) handle(raw map[string]any) {
+	phase, _ := raw["phase"].(string)
+	internalID, _ := raw["request_id"].(string)
+	switch phase {
+	case "request":
+		verdict, _ := raw["verdict"].(string)
+		f := proxyRequestFactory(raw)
+		if f == nil {
+			return
+		}
+		sseID := t.broker.Publish(f)
+		// Only allowed requests get a response.
+		if verdict == "allow" {
+			t.corr.put(internalID, sseID)
+		}
+	case "response":
+		if v, _ := raw["verdict"].(string); v != "allow" {
+			return
+		}
+		sseID, ok := t.corr.take(internalID)
+		if !ok {
+			return // paired request was filtered out (shouldn't happen for proxy)
+		}
+		f := proxyResponseFactory(raw, strconv.FormatInt(sseID, 10))
+		if f != nil {
+			t.broker.Publish(f)
+		}
+	}
+}
+
+func proxyRequestFactory(raw map[string]any) events.Factory {
 	verdict, _ := raw["verdict"].(string)
 	var access gen.EgressRequestEventAccess
 	switch verdict {
@@ -243,11 +290,7 @@ func translateProxyRequest(raw map[string]any) events.Factory {
 	}
 }
 
-func translateProxyResponse(raw map[string]any) events.Factory {
-	if v, _ := raw["verdict"].(string); v != "allow" {
-		return nil
-	}
-	requestID, _ := raw["request_id"].(string)
+func proxyResponseFactory(raw map[string]any, requestID string) events.Factory {
 	status := intField(raw, "status")
 	durationMs := intField(raw, "duration_ms")
 	return func(id int64, ts time.Time) gen.SandboxEvent {
@@ -263,45 +306,93 @@ func translateProxyResponse(raw map[string]any) events.Factory {
 	}
 }
 
-// translateFuseEvent maps the fuse AuditEvent shape onto fs.request /
-// fs.response SandboxEvent factories. mount and backend are closed
-// over by the caller (per-FS context that the audit event doesn't
-// carry).
+// fuseTranslator turns fuse AuditEvents into fs.request / fs.response
+// SandboxEvents and publishes them to the broker.
 //
-// Each source record produces:
-//   - fs.request, always (with the access decision),
-//   - fs.response, only when the op reached the backend (verdict in
-//     {allow, error}) — the schema models this as "FUSE got a response
-//     from a storage backend". Deny short-circuits before the backend.
+// The fuse source emits one event per kernel callback (attr, lookup,
+// open, read, write, …) but the kernel fans out auxiliary callbacks
+// around every user-level op — a single agent read(2) becomes
+// lookup + open + read. We collapse to one SSE event per user-visible
+// operation:
 //
-// Op kinds are bucketed into read/write per FSRequestEventOperation;
-// unknown ops drop out of fs.request but still get an fs.response when
-// the backend was reached. Local backends omit method/url/status (those
-// are HTTP-shaped fields for remote backends like gdrive).
-func translateFuseEvent(mount string, backend gen.Backend) func(map[string]any) []events.Factory {
-	return func(raw map[string]any) []events.Factory {
+//   - allow path: emit only the "concrete" ops (read, readdir, write,
+//     mkdir, remove, rename). attr/lookup/open are kernel scaffolding,
+//     and create/truncate are preludes to Write — the agent's
+//     fs.writeFileSync produces Create+Write (new file) or
+//     Truncate+Write (overwrite); the Write captures the intent.
+//   - deny path: emit every op, because a denied lookup/attr/open IS
+//     the user-visible failure (the kernel short-circuits before
+//     reaching the concrete op).
+//   - response phase: only for concrete ops; for each one its
+//     request_id is the SSE event id of the paired fs.request,
+//     looked up via the correlator.
+type fuseTranslator struct {
+	broker  *events.Broker
+	mount   string
+	backend gen.Backend
+	corr    *correlator
+}
+
+func newFuseTranslator(broker *events.Broker, mount string, backend gen.Backend) *fuseTranslator {
+	return &fuseTranslator{broker: broker, mount: mount, backend: backend, corr: newCorrelator()}
+}
+
+func (t *fuseTranslator) handle(raw map[string]any) {
+	phase, _ := raw["phase"].(string)
+	op, _ := raw["op"].(string)
+	internalID, _ := raw["request_id"].(string)
+	switch phase {
+	case "request":
 		verdict, _ := raw["verdict"].(string)
-		var out []events.Factory
-		if f := fuseRequestFactory(raw, mount, verdict); f != nil {
-			out = append(out, f)
+		if verdict == "allow" && !isConcreteFuseOp(op) {
+			return
 		}
-		if verdict == "allow" || verdict == "error" {
-			if f := fuseResponseFactory(raw, backend); f != nil {
-				out = append(out, f)
-			}
+		f := fuseRequestFactory(raw, t.mount)
+		if f == nil {
+			return
 		}
-		return out
+		sseID := t.broker.Publish(f)
+		if verdict == "allow" {
+			t.corr.put(internalID, sseID)
+		}
+	case "response":
+		if !isConcreteFuseOp(op) {
+			return
+		}
+		sseID, ok := t.corr.take(internalID)
+		if !ok {
+			return // paired request was filtered out
+		}
+		f := fuseResponseFactory(raw, t.backend, strconv.FormatInt(sseID, 10))
+		if f != nil {
+			t.broker.Publish(f)
+		}
 	}
 }
 
-func fuseRequestFactory(raw map[string]any, mount, verdict string) events.Factory {
+// isConcreteFuseOp reports whether the op is a user-visible file
+// operation. The kernel decomposes one user-level call into multiple
+// FUSE callbacks; the rest of them are kernel scaffolding that we
+// elide on the allow path:
+//
+//   - attr / lookup / open: metadata probes around every read/write
+//     — already covered by the read/write event that follows.
+//   - create / truncate: preludes to Write — the agent's
+//     fs.writeFileSync produces Create+Write (new file) or
+//     Truncate+Write (overwrite); the Write captures the intent.
+func isConcreteFuseOp(op string) bool {
+	switch op {
+	case "read", "readdir", "write", "mkdir", "remove", "rename":
+		return true
+	}
+	return false
+}
+
+func fuseRequestFactory(raw map[string]any, mount string) events.Factory {
+	verdict, _ := raw["verdict"].(string)
 	var access gen.FSRequestEventAccess
 	switch verdict {
-	case "allow", "error":
-		// "error" is fusefs-speak for "ACL allowed but the backend
-		// errored". The ACL decision was allowed; the fs.response
-		// event (which the caller emits for both allow and error)
-		// carries the failure.
+	case "allow":
 		access = gen.FSRequestEventAccessAllowed
 	case "deny":
 		access = gen.FSRequestEventAccessDenied
@@ -328,20 +419,29 @@ func fuseRequestFactory(raw map[string]any, mount, verdict string) events.Factor
 	}
 }
 
-// fuseResponseFactory builds an fs.response event. Local backends emit
-// the minimum shape (backend + duration_ms); remote-HTTP backends
-// could carry method/url/status too but the fuse audit shape doesn't
-// surface those today.
-func fuseResponseFactory(raw map[string]any, backend gen.Backend) events.Factory {
+// fuseResponseFactory builds an fs.response event. `requestID` is the
+// stringified SSE event id of the paired fs.request — looked up by
+// the translator's correlator, NOT the fuse-internal counter that
+// rides on the source AuditEvent. Local backends emit the minimum
+// shape (request_id + backend + duration_ms, plus err on failure);
+// remote-HTTP backends would also carry method/url/status, which the
+// fuse audit shape doesn't surface today.
+func fuseResponseFactory(raw map[string]any, backend gen.Backend, requestID string) events.Factory {
 	durationMs := intField(raw, "duration_ms")
+	errStr, _ := raw["err"].(string)
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
-		_ = ev.FromFSResponseEvent(gen.FSResponseEvent{
+		out := gen.FSResponseEvent{
 			Id:         int(id),
 			Timestamp:  ts,
+			RequestId:  requestID,
 			Backend:    backend,
 			DurationMs: durationMs,
-		})
+		}
+		if errStr != "" {
+			out.Error = &errStr
+		}
+		_ = ev.FromFSResponseEvent(out)
 		return ev
 	}
 }

@@ -136,9 +136,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	stopUpstream := startUpstreams(t)
 	defer stopUpstream()
 
-	auditDir := t.TempDir()
-
-	pod := runSandboxPod(t, agentTar, specPath, auditDir, cfg.DuringLifetime)
+	pod := runSandboxPod(t, agentTar, specPath, cfg.DuringLifetime)
 
 	// (1) Substring assertions against the pod's combined stdout/stderr.
 	// Expected lines live in the fixture's expectations.yaml so the
@@ -221,7 +219,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 
 	// (4) sandboxd's own lifecycle log lines.
 	wantSubstrings := []string{
-		"sandboxd: audit dir = ",
+		"sandboxd: work dir = ",
 		"[sbxproxy:err]",
 		"sbxproxy listening (transparent)",
 		"sandboxd: iptables OUTPUT nat redirect",
@@ -412,7 +410,7 @@ type podRun struct {
 	events []map[string]any
 }
 
-func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string, duringLifetime FixtureHook) podRun {
+func runSandboxPod(t *testing.T, agentTar, specPath string, duringLifetime FixtureHook) podRun {
 	t.Helper()
 	// 2 min outer deadline. The graceful-shutdown path adds ~25 s
 	// (sbxfuse drain + sandboxd WaitDelay) on top of the agent's
@@ -423,7 +421,7 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string, duringLife
 	containerName := fmt.Sprintf("sandbox-pod-e2e-%d", time.Now().UnixNano())
 
 	args := []string{
-		"run", "--rm",
+		"run", "-d", "--rm",
 		"--name", containerName,
 		// /dev/fuse is the only host device exposed; sbxfuse opens it
 		// to mount the workspace. /dev/* is otherwise hidden.
@@ -488,13 +486,26 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string, duringLife
 		// Publish sandboxd's API server so the host-side e2e harness can
 		// subscribe to /v1/events while the workload runs.
 		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),
-		"-v", auditDir + ":/audit-out",
 		"-v", agentTar + ":/mnt/agent.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
 		sandboxRuntimeImage,
 		"--spec", "/mnt/spec.yaml",
 	}
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	// Start the pod detached. With -d, `docker run` returns once the
+	// container exists; we then fetch its combined stdout+stderr via
+	// `docker logs -f` (mirrors run-fixture.sh) rather than reading
+	// from a host-side audit file. t.Cleanup catches the panic path —
+	// in the happy path SIGTERM below stops the container and --rm
+	// reaps it.
+	runCmd := exec.CommandContext(ctx, "docker", args...)
+	var runOut bytes.Buffer
+	runCmd.Stdout, runCmd.Stderr = &runOut, &runOut
+	if err := runCmd.Run(); err != nil {
+		t.Fatalf("docker run -d: %v\n%s", err, runOut.String())
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "kill", containerName).Run()
+	})
 
 	var out bytes.Buffer
 	idleSeen := make(chan struct{})
@@ -506,11 +517,21 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string, duringLife
 		minCount: 1,
 		fired:    idleSeen,
 	}
-	cmd.Stdout, cmd.Stderr = w, w
 
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("docker run start: %v", err)
+	// `docker logs -f` replays from the start of the container's log and
+	// then streams new lines as they arrive, so the lineSentinel sees
+	// every byte the container produces. It exits on its own once the
+	// container is removed (which --rm does after exit).
+	logsCmd := exec.CommandContext(ctx, "docker", "logs", "-f", containerName)
+	logsCmd.Stdout, logsCmd.Stderr = w, w
+	if err := logsCmd.Start(); err != nil {
+		t.Fatalf("docker logs -f: %v", err)
 	}
+	logsDone := make(chan struct{})
+	go func() {
+		_ = logsCmd.Wait()
+		close(logsDone)
+	}()
 
 	// Subscribe to /v1/events while the pod is alive. The collector
 	// retries until sandboxd's API server binds, then streams every
@@ -518,8 +539,15 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string, duringLife
 	// (container exit) or sse.stop() is called.
 	sse := startSSECollector(t, fmt.Sprintf("http://127.0.0.1:%d", apiServerPort))
 
+	// `docker wait` blocks until the container exits; its stdout is the
+	// container's exit code, which we don't need — the channel signal
+	// alone tells us the pod is gone.
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		waitCmd := exec.CommandContext(ctx, "docker", "wait", containerName)
+		_, err := waitCmd.Output()
+		done <- err
+	}()
 
 	select {
 	case <-idleSeen:
@@ -568,6 +596,15 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string, duringLife
 		_ = exec.Command("docker", "kill", containerName).Run()
 		<-done
 		t.Fatalf("container timed out\n%s", out.String())
+	}
+
+	// Drain the `docker logs -f` subprocess so trailing output (anything
+	// the daemon flushed between `docker wait` returning and the log
+	// stream closing) is mirrored into `out` before we read it. Bound
+	// the wait so a wedged daemon can't hang the test.
+	select {
+	case <-logsDone:
+	case <-time.After(5 * time.Second):
 	}
 	return podRun{output: out.String(), events: sse.stop()}
 }

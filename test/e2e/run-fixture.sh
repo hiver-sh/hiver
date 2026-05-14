@@ -141,8 +141,8 @@ done < <(awk '
 ' "${agent_dir}/Dockerfile")
 
 # docker save → tarball that sandboxd will unpack inside the pod.
-audit_dir="$(mktemp -d -t sandbox-audit-XXXXXX)"
-agent_tar="${audit_dir}/agent.tar"
+staging_dir="$(mktemp -d -t sandbox-staging-XXXXXX)"
+agent_tar="${staging_dir}/agent.tar"
 echo "==> Saving agent image to ${agent_tar}"
 docker save -o "${agent_tar}" "${agent_image}"
 
@@ -175,7 +175,6 @@ docker run -d --rm \
   -p 8080:8080 \
   ${expose_args[@]+"${expose_args[@]}"} \
   ${docker_env_args[@]+"${docker_env_args[@]}"} \
-  -v "${audit_dir}:/audit-out" \
   -v "${agent_tar}:/mnt/agent.tar:ro" \
   -v "${fixture_dir}/spec.yaml:/mnt/spec.yaml:ro" \
   sandbox-runtime \
@@ -197,7 +196,7 @@ done
 
 # Capture the operation log and print to stdout. The leading
 # "sandboxd: " prefix is stripped so each line reads as a single op.
-ops_file="${audit_dir}/agent-ops.txt"
+ops_file="${staging_dir}/agent-ops.txt"
 # `|| true` so a crashed/removed container doesn't make `set -e + pipefail`
 # silently exit before we print diagnostics below.
 { docker logs "${container_name}" 2>&1 || true; } \
@@ -223,15 +222,14 @@ sandbox-pod is still running.
 
   follow logs   docker logs -f ${container_name}
   shell         docker exec -it ${container_name} bash
-  proxy audit   tail -f ${audit_dir}/proxy.log
-  fuse audit    tail -f ${audit_dir}/fuse-*.log
-  gdrive http   docker logs -f ${container_name} 2>&1 | grep '\[sbxfuse:.*:out\]'
-  sandbox CA    ${audit_dir}/sandbox-ca.crt
+  proxy audit   docker logs -f ${container_name} 2>&1 | grep 'agent op | proxy'
+  fuse audit    docker logs -f ${container_name} 2>&1 | grep 'agent op | fuse'
+  sandbox CA    docker exec ${container_name} cat /run/sandboxd/sandbox-ca.crt
   ingress       curl -d 'hi from host' http://localhost:18000/hello
   exec cmd      curl -d 'uname -a; ls /workspace' http://localhost:18000/exec
   stop          docker kill ${container_name}
 
-Audit dir lives in ${audit_dir} and is bind-mounted at /audit-out inside the pod.
+Host-side staging (agent.tar, ops log) lives in ${staging_dir}.
 EOF
 
 if [[ "${fixture}" == "mcp-server" ]]; then
