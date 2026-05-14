@@ -11,14 +11,50 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
-// Defines values for FSAccessDeniedEventOperation.
+// Defines values for EgressRequestEventAccess.
 const (
-	Read  FSAccessDeniedEventOperation = "read"
-	Write FSAccessDeniedEventOperation = "write"
+	EgressRequestEventAccessAllowed EgressRequestEventAccess = "allowed"
+	EgressRequestEventAccessDenied  EgressRequestEventAccess = "denied"
 )
 
-// Valid indicates whether the value is a known member of the FSAccessDeniedEventOperation enum.
-func (e FSAccessDeniedEventOperation) Valid() bool {
+// Valid indicates whether the value is a known member of the EgressRequestEventAccess enum.
+func (e EgressRequestEventAccess) Valid() bool {
+	switch e {
+	case EgressRequestEventAccessAllowed:
+		return true
+	case EgressRequestEventAccessDenied:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FSRequestEventAccess.
+const (
+	FSRequestEventAccessAllowed FSRequestEventAccess = "allowed"
+	FSRequestEventAccessDenied  FSRequestEventAccess = "denied"
+)
+
+// Valid indicates whether the value is a known member of the FSRequestEventAccess enum.
+func (e FSRequestEventAccess) Valid() bool {
+	switch e {
+	case FSRequestEventAccessAllowed:
+		return true
+	case FSRequestEventAccessDenied:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FSRequestEventOperation.
+const (
+	Read  FSRequestEventOperation = "read"
+	Write FSRequestEventOperation = "write"
+)
+
+// Valid indicates whether the value is a known member of the FSRequestEventOperation enum.
+func (e FSRequestEventOperation) Valid() bool {
 	switch e {
 	case Read:
 		return true
@@ -29,36 +65,29 @@ func (e FSAccessDeniedEventOperation) Valid() bool {
 	}
 }
 
-// ConfigAppliedEvent defines model for ConfigAppliedEvent.
-type ConfigAppliedEvent struct {
+// ConfigApplyEvent defines model for ConfigApplyEvent.
+type ConfigApplyEvent struct {
 	// Changes Concrete additions and removals carried out by the apply. Each
 	// list contains whole entries (a complete `FileSystem` or
 	// `EgressRule`) so the caller can audit what was changed without
 	// re-diffing the request.
 	Changes Changes `json:"changes"`
 
-	// Id Monotonic event id. Pass via the `lastEventId` query
-	// parameter on `GET /v1/events` to resume after this event.
-	Id        int       `json:"id"`
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`
-}
-
-// ConfigApplyFailedEvent defines model for ConfigApplyFailedEvent.
-type ConfigApplyFailedEvent struct {
-	// Error Human-readable failure reason.
-	Error string `json:"error"`
+	// ErrorMessage Human-readable failure reason. Set when `success` is false.
+	ErrorMessage *string `json:"errorMessage,omitempty"`
 
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
 	Id        int       `json:"id"`
+	Success   bool      `json:"success"`
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
 }
 
-// EgressDeniedEvent defines model for EgressDeniedEvent.
-type EgressDeniedEvent struct {
-	Host string `json:"host"`
+// EgressRequestEvent defines model for EgressRequestEvent.
+type EgressRequestEvent struct {
+	Access EgressRequestEventAccess `json:"access"`
+	Host   string                   `json:"host"`
 
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
@@ -69,20 +98,68 @@ type EgressDeniedEvent struct {
 	Type      string     `json:"type"`
 }
 
-// FSAccessDeniedEvent defines model for FSAccessDeniedEvent.
-type FSAccessDeniedEvent struct {
+// EgressRequestEventAccess defines model for EgressRequestEvent.Access.
+type EgressRequestEventAccess string
+
+// EgressResponseEvent defines model for EgressResponseEvent.
+type EgressResponseEvent struct {
+	// DurationMs Wall-clock duration of the request, in milliseconds.
+	DurationMs int `json:"duration_ms"`
+
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
-	Id        int                          `json:"id"`
-	Mount     string                       `json:"mount"`
-	Operation FSAccessDeniedEventOperation `json:"operation"`
-	Path      string                       `json:"path"`
-	Timestamp time.Time                    `json:"timestamp"`
-	Type      string                       `json:"type"`
+	Id int `json:"id"`
+
+	// RequestId Unique identifier correlating this result to its `EgressEventRequest`.
+	RequestId string `json:"request_id"`
+
+	// Status HTTP status code returned by the upstream.
+	Status    int       `json:"status"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
 }
 
-// FSAccessDeniedEventOperation defines model for FSAccessDeniedEvent.Operation.
-type FSAccessDeniedEventOperation string
+// FSRequestEvent defines model for FSRequestEvent.
+type FSRequestEvent struct {
+	Access FSRequestEventAccess `json:"access"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id        int                     `json:"id"`
+	Mount     string                  `json:"mount"`
+	Operation FSRequestEventOperation `json:"operation"`
+	Path      string                  `json:"path"`
+	Timestamp time.Time               `json:"timestamp"`
+	Type      string                  `json:"type"`
+}
+
+// FSRequestEventAccess defines model for FSRequestEvent.Access.
+type FSRequestEventAccess string
+
+// FSRequestEventOperation defines model for FSRequestEvent.Operation.
+type FSRequestEventOperation string
+
+// FSResponseEvent defines model for FSResponseEvent.
+type FSResponseEvent struct {
+	// Backend Storage type for a file system.
+	//   * `local`  — sandbox-local storage with no external dependency.
+	//   * `gdrive` — backed by Google Drive.
+	Backend Backend `json:"backend"`
+
+	// DurationMs Wall-clock duration of the request, in milliseconds.
+	DurationMs int `json:"duration_ms"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id     int         `json:"id"`
+	Method *HttpMethod `json:"method,omitempty"`
+
+	// Status HTTP status code returned by the backend.
+	Status    *int      `json:"status,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+	Url       *string   `json:"url,omitempty"`
+}
 
 // SandboxEvent A typed event emitted by the sandbox. The `type` field selects
 // the variant; consumers should switch on it to access
@@ -102,24 +179,39 @@ type SandboxEventBase struct {
 	Type string `json:"type"`
 }
 
-// AsConfigAppliedEvent returns the union data inside the SandboxEvent as a ConfigAppliedEvent
-func (t SandboxEvent) AsConfigAppliedEvent() (ConfigAppliedEvent, error) {
-	var body ConfigAppliedEvent
+// StdioEvent defines model for StdioEvent.
+type StdioEvent struct {
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// Stderr Chunk written to stderr.
+	Stderr *string `json:"stderr,omitempty"`
+
+	// Stdout Chunk written to stdout.
+	Stdout    *string   `json:"stdout,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
+// AsConfigApplyEvent returns the union data inside the SandboxEvent as a ConfigApplyEvent
+func (t SandboxEvent) AsConfigApplyEvent() (ConfigApplyEvent, error) {
+	var body ConfigApplyEvent
 	err := json.Unmarshal(t.union, &body)
 	return body, err
 }
 
-// FromConfigAppliedEvent overwrites any union data inside the SandboxEvent as the provided ConfigAppliedEvent
-func (t *SandboxEvent) FromConfigAppliedEvent(v ConfigAppliedEvent) error {
-	v.Type = "config.applied"
+// FromConfigApplyEvent overwrites any union data inside the SandboxEvent as the provided ConfigApplyEvent
+func (t *SandboxEvent) FromConfigApplyEvent(v ConfigApplyEvent) error {
+	v.Type = "config.apply"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
 }
 
-// MergeConfigAppliedEvent performs a merge with any union data inside the SandboxEvent, using the provided ConfigAppliedEvent
-func (t *SandboxEvent) MergeConfigAppliedEvent(v ConfigAppliedEvent) error {
-	v.Type = "config.applied"
+// MergeConfigApplyEvent performs a merge with any union data inside the SandboxEvent, using the provided ConfigApplyEvent
+func (t *SandboxEvent) MergeConfigApplyEvent(v ConfigApplyEvent) error {
+	v.Type = "config.apply"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -130,24 +222,24 @@ func (t *SandboxEvent) MergeConfigAppliedEvent(v ConfigAppliedEvent) error {
 	return err
 }
 
-// AsConfigApplyFailedEvent returns the union data inside the SandboxEvent as a ConfigApplyFailedEvent
-func (t SandboxEvent) AsConfigApplyFailedEvent() (ConfigApplyFailedEvent, error) {
-	var body ConfigApplyFailedEvent
+// AsEgressRequestEvent returns the union data inside the SandboxEvent as a EgressRequestEvent
+func (t SandboxEvent) AsEgressRequestEvent() (EgressRequestEvent, error) {
+	var body EgressRequestEvent
 	err := json.Unmarshal(t.union, &body)
 	return body, err
 }
 
-// FromConfigApplyFailedEvent overwrites any union data inside the SandboxEvent as the provided ConfigApplyFailedEvent
-func (t *SandboxEvent) FromConfigApplyFailedEvent(v ConfigApplyFailedEvent) error {
-	v.Type = "config.apply_failed"
+// FromEgressRequestEvent overwrites any union data inside the SandboxEvent as the provided EgressRequestEvent
+func (t *SandboxEvent) FromEgressRequestEvent(v EgressRequestEvent) error {
+	v.Type = "egress.request"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
 }
 
-// MergeConfigApplyFailedEvent performs a merge with any union data inside the SandboxEvent, using the provided ConfigApplyFailedEvent
-func (t *SandboxEvent) MergeConfigApplyFailedEvent(v ConfigApplyFailedEvent) error {
-	v.Type = "config.apply_failed"
+// MergeEgressRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressRequestEvent
+func (t *SandboxEvent) MergeEgressRequestEvent(v EgressRequestEvent) error {
+	v.Type = "egress.request"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -158,24 +250,24 @@ func (t *SandboxEvent) MergeConfigApplyFailedEvent(v ConfigApplyFailedEvent) err
 	return err
 }
 
-// AsEgressDeniedEvent returns the union data inside the SandboxEvent as a EgressDeniedEvent
-func (t SandboxEvent) AsEgressDeniedEvent() (EgressDeniedEvent, error) {
-	var body EgressDeniedEvent
+// AsEgressResponseEvent returns the union data inside the SandboxEvent as a EgressResponseEvent
+func (t SandboxEvent) AsEgressResponseEvent() (EgressResponseEvent, error) {
+	var body EgressResponseEvent
 	err := json.Unmarshal(t.union, &body)
 	return body, err
 }
 
-// FromEgressDeniedEvent overwrites any union data inside the SandboxEvent as the provided EgressDeniedEvent
-func (t *SandboxEvent) FromEgressDeniedEvent(v EgressDeniedEvent) error {
-	v.Type = "egress.denied"
+// FromEgressResponseEvent overwrites any union data inside the SandboxEvent as the provided EgressResponseEvent
+func (t *SandboxEvent) FromEgressResponseEvent(v EgressResponseEvent) error {
+	v.Type = "egress.response"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
 }
 
-// MergeEgressDeniedEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressDeniedEvent
-func (t *SandboxEvent) MergeEgressDeniedEvent(v EgressDeniedEvent) error {
-	v.Type = "egress.denied"
+// MergeEgressResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressResponseEvent
+func (t *SandboxEvent) MergeEgressResponseEvent(v EgressResponseEvent) error {
+	v.Type = "egress.response"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -186,24 +278,80 @@ func (t *SandboxEvent) MergeEgressDeniedEvent(v EgressDeniedEvent) error {
 	return err
 }
 
-// AsFSAccessDeniedEvent returns the union data inside the SandboxEvent as a FSAccessDeniedEvent
-func (t SandboxEvent) AsFSAccessDeniedEvent() (FSAccessDeniedEvent, error) {
-	var body FSAccessDeniedEvent
+// AsFSRequestEvent returns the union data inside the SandboxEvent as a FSRequestEvent
+func (t SandboxEvent) AsFSRequestEvent() (FSRequestEvent, error) {
+	var body FSRequestEvent
 	err := json.Unmarshal(t.union, &body)
 	return body, err
 }
 
-// FromFSAccessDeniedEvent overwrites any union data inside the SandboxEvent as the provided FSAccessDeniedEvent
-func (t *SandboxEvent) FromFSAccessDeniedEvent(v FSAccessDeniedEvent) error {
-	v.Type = "fs.access_denied"
+// FromFSRequestEvent overwrites any union data inside the SandboxEvent as the provided FSRequestEvent
+func (t *SandboxEvent) FromFSRequestEvent(v FSRequestEvent) error {
+	v.Type = "fs.request"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
 }
 
-// MergeFSAccessDeniedEvent performs a merge with any union data inside the SandboxEvent, using the provided FSAccessDeniedEvent
-func (t *SandboxEvent) MergeFSAccessDeniedEvent(v FSAccessDeniedEvent) error {
-	v.Type = "fs.access_denied"
+// MergeFSRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided FSRequestEvent
+func (t *SandboxEvent) MergeFSRequestEvent(v FSRequestEvent) error {
+	v.Type = "fs.request"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsFSResponseEvent returns the union data inside the SandboxEvent as a FSResponseEvent
+func (t SandboxEvent) AsFSResponseEvent() (FSResponseEvent, error) {
+	var body FSResponseEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromFSResponseEvent overwrites any union data inside the SandboxEvent as the provided FSResponseEvent
+func (t *SandboxEvent) FromFSResponseEvent(v FSResponseEvent) error {
+	v.Type = "fs.response"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeFSResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided FSResponseEvent
+func (t *SandboxEvent) MergeFSResponseEvent(v FSResponseEvent) error {
+	v.Type = "fs.response"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsStdioEvent returns the union data inside the SandboxEvent as a StdioEvent
+func (t SandboxEvent) AsStdioEvent() (StdioEvent, error) {
+	var body StdioEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromStdioEvent overwrites any union data inside the SandboxEvent as the provided StdioEvent
+func (t *SandboxEvent) FromStdioEvent(v StdioEvent) error {
+	v.Type = "stdio"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeStdioEvent performs a merge with any union data inside the SandboxEvent, using the provided StdioEvent
+func (t *SandboxEvent) MergeStdioEvent(v StdioEvent) error {
+	v.Type = "stdio"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -228,14 +376,18 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 		return nil, err
 	}
 	switch discriminator {
-	case "config.applied":
-		return t.AsConfigAppliedEvent()
-	case "config.apply_failed":
-		return t.AsConfigApplyFailedEvent()
-	case "egress.denied":
-		return t.AsEgressDeniedEvent()
-	case "fs.access_denied":
-		return t.AsFSAccessDeniedEvent()
+	case "config.apply":
+		return t.AsConfigApplyEvent()
+	case "egress.request":
+		return t.AsEgressRequestEvent()
+	case "egress.response":
+		return t.AsEgressResponseEvent()
+	case "fs.request":
+		return t.AsFSRequestEvent()
+	case "fs.response":
+		return t.AsFSResponseEvent()
+	case "stdio":
+		return t.AsStdioEvent()
 	default:
 		return nil, errors.New("unknown discriminator value: " + discriminator)
 	}

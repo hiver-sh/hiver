@@ -6,17 +6,21 @@ components:
         the variant; consumers should switch on it to access
         variant-specific fields.
       oneOf:
-        - $ref: '#/components/schemas/ConfigAppliedEvent'
-        - $ref: '#/components/schemas/ConfigApplyFailedEvent'
-        - $ref: '#/components/schemas/EgressDeniedEvent'
-        - $ref: '#/components/schemas/FSAccessDeniedEvent'
+        - $ref: '#/components/schemas/ConfigApplyEvent'
+        - $ref: '#/components/schemas/EgressRequestEvent'
+        - $ref: '#/components/schemas/EgressResponseEvent'
+        - $ref: '#/components/schemas/FSRequestEvent'
+        - $ref: '#/components/schemas/FSResponseEvent'
+        - $ref: '#/components/schemas/StdioEvent'
       discriminator:
         propertyName: type
         mapping:
-          config.applied: '#/components/schemas/ConfigAppliedEvent'
-          config.apply_failed: '#/components/schemas/ConfigApplyFailedEvent'
-          egress.denied: '#/components/schemas/EgressDeniedEvent'
-          fs.access_denied: '#/components/schemas/FSAccessDeniedEvent'
+          config.apply: '#/components/schemas/ConfigApplyEvent'
+          egress.request: '#/components/schemas/EgressRequestEvent'
+          egress.response: '#/components/schemas/EgressResponseEvent'
+          fs.request: '#/components/schemas/FSRequestEvent'
+          fs.response: '#/components/schemas/FSResponseEvent'
+          stdio: '#/components/schemas/StdioEvent'
 
     SandboxEventBase:
       type: object
@@ -35,22 +39,31 @@ components:
           type: string
           format: date-time
 
-    ConfigAppliedEvent:
-      description: Emitted after a successful `applyConfig` call.
+    ConfigApplyEvent:
+      description: |
+        Emitted after an `applyConfig` call. `success` indicates whether
+        the change was committed or rolled back; `errorMessage` is set
+        when `success` is false.
       allOf:
         - $ref: '#/components/schemas/SandboxEventBase'
         - type: object
-          required: [type, changes]
+          required: [type, success, changes]
           properties:
             type:
               type: string
-              const: config.applied
+              const: config.apply
+            success:
+              type: boolean
             changes:
               $ref: './config.yaml#/components/schemas/Changes'
+            errorMessage:
+              type: string
+              description: Human-readable failure reason. Set when `success` is false.
       example:
-        type: config.applied
+        type: config.apply
         id: 184
         timestamp: "2026-05-08T17:04:11Z"
+        success: true
         changes:
           fs:
             added:
@@ -64,37 +77,22 @@ components:
                 methods: [GET]
                 paths: [/repos/*]
 
-    ConfigApplyFailedEvent:
-      description: Emitted when an `applyConfig` call was rolled back.
-      allOf:
-        - $ref: '#/components/schemas/SandboxEventBase'
-        - type: object
-          required: [type, error]
-          properties:
-            type:
-              type: string
-              const: config.apply_failed
-            error:
-              type: string
-              description: Human-readable failure reason.
-      example:
-        type: config.apply_failed
-        id: 185
-        timestamp: "2026-05-08T17:05:02Z"
-        error: "egress rule for host *.internal conflicts with deny policy"
-
-    EgressDeniedEvent:
+    EgressRequestEvent:
       description: |
-        Emitted when an outbound request from the agent matched no
-        allow rule and was blocked.
+        Emitted when an outbound request from the agent was evaluated
+        against egress rules. `access` indicates whether it was allowed
+        or denied.
       allOf:
         - $ref: '#/components/schemas/SandboxEventBase'
         - type: object
-          required: [type, host, method, path]
+          required: [type, access, host, method, path]
           properties:
             type:
               type: string
-              const: egress.denied
+              const: egress.request
+            access:
+              type: string
+              enum: [allowed, denied]
             host:
               type: string
             method:
@@ -102,24 +100,59 @@ components:
             path:
               type: string
       example:
-        type: egress.denied
+        type: egress.request
         id: 186
         timestamp: "2026-05-08T17:06:44Z"
+        access: denied
         host: registry.npmjs.org
         method: GET
         path: /left-pad
 
-    FSAccessDeniedEvent:
+    EgressResponseEvent:
       description: |
-        Emitted when an agent file operation was denied by an ACL rule.
+        Emitted when an allowed outbound request completed. The
+        `request_id` matches the `request_id` of the originating
+        `EgressEvent`.
       allOf:
         - $ref: '#/components/schemas/SandboxEventBase'
         - type: object
-          required: [type, mount, path, operation]
+          required: [type, request_id, status, duration_ms]
           properties:
             type:
               type: string
-              const: fs.access_denied
+              const: egress.response
+            request_id:
+              type: string
+              description: Unique identifier correlating this result to its `EgressEventRequest`.
+            status:
+              type: integer
+              description: HTTP status code returned by the upstream.
+            duration_ms:
+              type: integer
+              description: Wall-clock duration of the request, in milliseconds.
+      example:
+        type: egress.result
+        id: 190
+        timestamp: "2026-05-08T17:10:02Z"
+        request_id: 186
+        status: 200
+        duration_ms: 87
+
+    FSRequestEvent:
+      description: |
+        Emitted when an agent file operation was evaluated against ACL
+        rules. `access` indicates whether it was allowed or denied.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, access, mount, path, operation]
+          properties:
+            type:
+              type: string
+              const: fs.request
+            access:
+              type: string
+              enum: [allowed, denied]
             mount:
               type: string
             path:
@@ -128,9 +161,68 @@ components:
               type: string
               enum: [read, write]
       example:
-        type: fs.access_denied
+        type: fs.request
         id: 187
         timestamp: "2026-05-08T17:07:12Z"
+        access: denied
         mount: /workspace
         path: /workspace/secret/keys.pem
         operation: read
+
+    FSResponseEvent:
+      description: |
+        Emitted when the FUSE layer got a response from a
+        storage backend (for example, local drive, Google Drive).
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, backend, duration_ms]
+          properties:
+            type:
+              type: string
+              const: fs.response
+            backend:
+              $ref: './config.yaml#/components/schemas/Backend'
+            method:
+              $ref: './config.yaml#/components/schemas/HttpMethod'
+            url:
+              type: string
+            status:
+              type: integer
+              description: HTTP status code returned by the backend.
+            duration_ms:
+              type: integer
+              description: Wall-clock duration of the request, in milliseconds.
+      example:
+        type: fs.response
+        id: 188
+        timestamp: "2026-05-08T17:08:03Z"
+        backend: gdrive
+        method: GET
+        url: https://www.googleapis.com/drive/v3/files/1aBcDeFgHiJkLmNoP
+        status: 200
+        duration_ms: 142
+
+    StdioEvent:
+      description: |
+        Emitted when the sandboxed process wrote to a standard pipe.
+        At least one of `stdout` or `stderr` is set per event.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              const: stdio
+            stdout:
+              type: string
+              description: Chunk written to stdout.
+            stderr:
+              type: string
+              description: Chunk written to stderr.
+      example:
+        type: stdio
+        id: 189
+        timestamp: "2026-05-08T17:09:21Z"
+        stdout: "hello world\n"
