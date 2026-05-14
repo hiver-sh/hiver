@@ -14,17 +14,29 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 module_root="$(cd "${script_dir}/../.." && pwd)"
 fixture_dir="${script_dir}/fixtures/${fixture}"
 
-# .env.local lives in the repo root, gitignored. Devs can stash secrets
-# there (HIVE_GDRIVE_* tokens, registry creds, etc.) so they're not
-# re-prompted every run. Sourced before any backend-specific block so
-# downstream env-var fallbacks see the values.
+
 env_local="${module_root}/.env.local"
-if [[ -f "${env_local}" ]]; then
-  echo "==> Sourcing ${env_local}"
-  set -a  # auto-export everything we source
-  # shellcheck disable=SC1090
-  source "${env_local}"
-  set +a
+env_local_kvs=()
+load_env_local() {
+  env_local_kvs=()
+  [[ -f "${env_local}" ]] || return 0
+  while IFS= read -r line; do
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    if [[ "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=\'(.*)\'$ ]]; then
+      env_local_kvs+=("${BASH_REMATCH[1]}=${BASH_REMATCH[2]}")
+    fi
+  done < "${env_local}"
+}
+env_local_has() {
+  local target="$1" kv
+  for kv in "${env_local_kvs[@]+"${env_local_kvs[@]}"}"; do
+    [[ "${kv}" == "${target}="?* ]] && return 0
+  done
+  return 1
+}
+load_env_local
+if [[ ${#env_local_kvs[@]} -gt 0 ]]; then
+  echo "==> Loaded ${#env_local_kvs[@]} entries from ${env_local}"
 fi
 
 if [[ ! -d "${fixture_dir}" ]]; then
@@ -75,27 +87,22 @@ spec_backend="$(awk '
   }
 ' "${fixture_dir}/spec.yaml")"
 
-# Per-backend env-var passthrough into the container. spec.go falls
-# back from blank spec fields to these env vars, so a checked-in
-# spec.yaml can ship without secrets.
-backend_env_args=()
 if [[ "${spec_backend}" == "gdrive" ]]; then
-  # If we don't have an access token yet (and no service account
-  # either), run the interactive OAuth helper. It writes
-  # `export HIVE_GDRIVE_…` lines to stdout that we eval into this
-  # shell; everything else (prompts, browser URL, folder picker)
-  # goes to stderr.
-  if [[ -z "${HIVE_GDRIVE_ACCESS_TOKEN:-}" && -z "${HIVE_GDRIVE_SERVICE_ACCOUNT_JSON:-}" ]]; then
-    echo "==> gdrive backend: no HIVE_GDRIVE_ACCESS_TOKEN set; running OAuth setup"
-    exports="$(go run "${module_root}/test/e2e/setup/gdrive")"
-    eval "${exports}"
+  # Run the OAuth helper if neither an access token nor a service
+  # account is already in .env.local. The helper writes
+  # `export KEY='value'` lines to stdout (everything else — prompts,
+  # browser URL, folder picker — goes to stderr). It reads OAuth
+  # client creds from its own env, so we forward .env.local through
+  # `env` rather than sourcing.
+  if ! env_local_has HIVE_GDRIVE_ACCESS_TOKEN && ! env_local_has HIVE_GDRIVE_SERVICE_ACCOUNT_JSON; then
+    echo "==> gdrive backend: no HIVE_GDRIVE_ACCESS_TOKEN or HIVE_GDRIVE_SERVICE_ACCOUNT_JSON in ${env_local}; running OAuth setup"
+    exports="$(env "${env_local_kvs[@]+"${env_local_kvs[@]}"}" \
+      go run "${module_root}/test/e2e/setup/gdrive")"
 
-    # Persist HIVE_GDRIVE_* lines to .env.local so subsequent runs skip
-    # the OAuth flow. We normalize the helper's `export NAME=value` lines
-    # to bare `NAME=value` so the file stays in standard dotenv format
-    # (the source-with-`set -a` block at the top reads either form).
-    # Existing HIVE_GDRIVE_* lines (in either form) are replaced; every
-    # other line in the file is preserved untouched.
+    # Persist new HIVE_GDRIVE_* values to .env.local in `KEY='value'`
+    # form, replacing any prior HIVE_GDRIVE_* lines. The helper's
+    # `export KEY='value'` lines just need the `export ` prefix
+    # stripped to land in our format.
     umask 077
     if [[ -f "${env_local}" ]]; then
       grep -Ev '^[[:space:]]*(export[[:space:]]+)?HIVE_GDRIVE_' "${env_local}" \
@@ -107,15 +114,10 @@ if [[ "${spec_backend}" == "gdrive" ]]; then
       >> "${env_local}"
     chmod 600 "${env_local}"
     echo "==> Wrote HIVE_GDRIVE_* tokens to ${env_local} (gitignored, mode 600)"
+
+    # Reload so the new values are visible to env_local_kvs below.
+    load_env_local
   fi
-  for v in HIVE_GDRIVE_ACCESS_TOKEN HIVE_GDRIVE_REFRESH_TOKEN \
-           HIVE_GDRIVE_CLIENT_ID HIVE_GDRIVE_CLIENT_SECRET \
-           HIVE_GDRIVE_SERVICE_ACCOUNT_JSON HIVE_GDRIVE_FOLDER_ID; do
-    # `-e VAR` (no value) forwards from the host environment when set,
-    # silently omits when not.
-    backend_env_args+=(-e "${v}")
-  done
-  echo "==> gdrive backend: forwarding HIVE_GDRIVE_* env vars"
 fi
 
 echo "==> Building sandbox-runtime"
@@ -150,6 +152,13 @@ if docker inspect "${container_name}" >/dev/null 2>&1; then
   docker rm -f "${container_name}" >/dev/null
 fi
 
+# Each .env.local entry becomes a `-e KEY=VALUE` pair so docker
+# receives the value verbatim (handles spaces, quotes, JSON blobs).
+docker_env_args=()
+for kv in "${env_local_kvs[@]+"${env_local_kvs[@]}"}"; do
+  docker_env_args+=(-e "${kv}")
+done
+
 echo "==> Starting sandbox-pod (detached): ${container_name}"
 docker run -d --rm \
   --name "${container_name}" \
@@ -165,7 +174,7 @@ docker run -d --rm \
   --add-host upstream-denied:host-gateway \
   -p 8080:8080 \
   ${expose_args[@]+"${expose_args[@]}"} \
-  ${backend_env_args[@]+"${backend_env_args[@]}"} \
+  ${docker_env_args[@]+"${docker_env_args[@]}"} \
   -v "${audit_dir}:/audit-out" \
   -v "${agent_tar}:/mnt/agent.tar:ro" \
   -v "${fixture_dir}/spec.yaml:/mnt/spec.yaml:ro" \
