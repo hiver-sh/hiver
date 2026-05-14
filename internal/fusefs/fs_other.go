@@ -18,7 +18,6 @@ type Config struct {
 	Backend    string
 	ACLs       *ACLs
 	Audit      io.Writer
-	AuditReads bool
 	Oplog      *Oplog
 	Remote     remotefs.Store
 }

@@ -1,10 +1,9 @@
-package e2e_test
+package setup
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,22 +30,53 @@ const (
 	// avoid common dev-tool collisions.
 	upstreamAllowedPort = 17080
 	upstreamDeniedPort  = 17081
+	// sandboxd's API + SSE port inside the pod, published to the host
+	// so the e2e harness can subscribe to /v1/events.
+	apiServerPort = 8080
 )
 
-// runFixtureE2E orchestrates a single end-to-end run for the named
+// RunFixtureE2E orchestrates a single end-to-end run for the named
 // fixture under test/e2e/fixtures/<fixtureName>/. The fixture must
 // contain Dockerfile + spec.yaml + expectations.yaml; everything else
 // (sandbox-runtime image, host upstreams, audit assertions) is shared.
-// runFixtureE2E orchestrates a full E2E run for the named fixture.
+// RunFixtureE2E orchestrates a full E2E run for the named fixture.
 //
 // Optional mutators receive the spec parsed from the fixture (before
 // validation) and can fill in fields supplied at test time — e.g.
 // gdrive auth tokens that come from env vars and can't be checked in.
 // Mutators run in order; after all of them the spec is validated and
 // re-rendered to a tmpfile that the pod actually mounts.
-func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec)) {
+func RunFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec)) {
+	runFixture(t, fixtureName, fixtureRun{Mutators: mutators})
+}
+
+// FixtureHook is the signature for callbacks that run while the pod
+// is alive — after the agent's DONE marker (and the ingress/exec
+// probes) but before sandboxd is SIGTERM'd. baseURL is the host-side
+// URL of sandboxd's API server inside the pod (e.g.
+// http://127.0.0.1:8080).
+type FixtureHook func(t *testing.T, baseURL string)
+
+// RunFixtureE2EHook is like RunFixtureE2E but invokes `hook` once,
+// inside the pod's live window, before shutdown. Use it for assertions
+// that need to query the running sandbox (e.g. `/v1/events` resume).
+// All the standard fixture-level assertions (substrings, egress, fs)
+// still run.
+func RunFixtureE2EHook(t *testing.T, fixtureName string, hook FixtureHook, mutators ...func(*spec.Spec)) {
+	runFixture(t, fixtureName, fixtureRun{Mutators: mutators, DuringLifetime: hook})
+}
+
+// fixtureRun is the internal config struct shared by the public
+// entry points.
+type fixtureRun struct {
+	Mutators       []func(*spec.Spec)
+	DuringLifetime FixtureHook
+}
+
+func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	t.Helper()
-	requireDocker(t)
+	RequireDocker(t)
+	mutators := cfg.Mutators
 
 	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures", fixtureName))
 	if err != nil {
@@ -96,8 +126,8 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 	}
 
 	agentImage := "sandbox-" + fixtureName + ":e2e"
-	buildImages(t, agentDir, buildContext, agentImage)
-	agentTar := saveAgentImage(t, agentImage)
+	BuildImages(t, agentDir, buildContext, agentImage)
+	agentTar := SaveAgentImage(t, agentImage)
 
 	// Start the two host-side upstreams on the ports the fixture spec
 	// pins. One is allowlisted (host-aliased to "upstream-allowed"),
@@ -108,7 +138,7 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 
 	auditDir := t.TempDir()
 
-	output := runSandboxPod(t, agentTar, specPath, auditDir)
+	pod := runSandboxPod(t, agentTar, specPath, auditDir, cfg.DuringLifetime)
 
 	// (1) Substring assertions against the pod's combined stdout/stderr.
 	// Expected lines live in the fixture's expectations.yaml so the
@@ -119,48 +149,51 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 	// "agent op | …", etc.).
 	expectationsPath := filepath.Join(fixtureDir, "expectations.yaml")
 	for _, want := range loadExpectations(t, expectationsPath) {
-		if !strings.Contains(output, want.Substring) {
+		if !strings.Contains(pod.output, want.Substring) {
 			t.Errorf("missing %s: no substring %q in pod output", want.Desc, want.Substring)
 		}
 	}
 
-	// (2) Proxy audit log on disk — at least one allow + one deny
-	// verdict, but only when the fixture actually drives HTTP traffic.
-	// Empty proxy.log means "this fixture doesn't use the proxy"
-	// (e.g. agent-gdrive-fs only exercises the FS).
-	proxyEvents := readJSONLines(t, filepath.Join(auditDir, "proxy.log"))
-	if len(proxyEvents) > 0 {
-		verdicts := countByField(proxyEvents, "verdict")
-		if verdicts["allow"] < 1 {
-			t.Errorf("proxy audit: expected ≥1 allow; got %v", verdicts)
+	// (2) Egress: assert at least one allowed + one denied egress.request
+	// SandboxEvent — but only when the fixture actually drives HTTP
+	// traffic. Zero egress events means "this fixture doesn't use the
+	// proxy" (e.g. agent-gdrive-fs only exercises the FS).
+	egressRequests := filterEvents(pod.events, "egress.request")
+	if len(egressRequests) > 0 {
+		accesses := countByField(egressRequests, "access")
+		if accesses["allowed"] < 1 {
+			t.Errorf("egress.request: expected ≥1 allowed; got %v", accesses)
 		}
-		if verdicts["deny"] < 1 {
-			t.Errorf("proxy audit: expected ≥1 deny; got %v", verdicts)
+		if accesses["denied"] < 1 {
+			t.Errorf("egress.request: expected ≥1 denied; got %v", accesses)
+		}
+		// Every allowed HTTP-shaped request should pair with an
+		// egress.response carrying the matching request_id. CONNECT /
+		// raw-forward TLS don't get a response, so this is a "best
+		// effort" check — only fail when we have allows but no responses.
+		responses := filterEvents(pod.events, "egress.response")
+		if len(responses) == 0 && accesses["allowed"] > 0 {
+			t.Errorf("egress.response: expected ≥1 paired response for %d allowed requests", accesses["allowed"])
 		}
 	}
 
-	// (3) FUSE audit log on disk — write-allow somewhere; deny on
-	// /secret/... only checked when the fixture has a /secret rule.
-	// Each mount writes to its own fuse-<slug>.log; aggregate them.
-	var fuseEvents []map[string]any
-	for i := range sp.FS {
-		slug := sp.FS[i].Slug()
-		fuseEvents = append(fuseEvents, readJSONLines(t, filepath.Join(auditDir, "fuse-"+slug+".log"))...)
-	}
+	// (3) FS: assert ≥1 write-allow fs.request; deny on /secret/... only
+	// checked when the fixture has a /secret rule.
+	fsRequests := filterEvents(pod.events, "fs.request")
 	var sawWriteAllow, sawSecretDeny bool
-	for _, e := range fuseEvents {
-		op, _ := e["op"].(string)
-		v, _ := e["verdict"].(string)
+	for _, e := range fsRequests {
+		op, _ := e["operation"].(string)
+		access, _ := e["access"].(string)
 		path, _ := e["path"].(string)
-		if op == "write" && v == "allow" {
+		if op == "write" && access == "allowed" {
 			sawWriteAllow = true
 		}
-		if v == "deny" && strings.HasPrefix(path, "/workspace/secret") {
+		if access == "denied" && strings.HasPrefix(path, "/workspace/secret") {
 			sawSecretDeny = true
 		}
 	}
 	if !sawWriteAllow {
-		t.Error("FUSE audit: no write-allow verdict")
+		t.Errorf("fs.request: no write/allowed event; got %d fs.request total", len(fsRequests))
 	}
 	hasSecretRule := false
 	for i := range sp.FS {
@@ -172,7 +205,7 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 		}
 	}
 	if hasSecretRule && !sawSecretDeny {
-		t.Error("FUSE audit: no deny verdict on /secret/...")
+		t.Error("fs.request: no denied event on /workspace/secret/...")
 	}
 
 	// (4) sandboxd's own lifecycle log lines.
@@ -187,14 +220,47 @@ func runFixtureE2E(t *testing.T, fixtureName string, mutators ...func(*spec.Spec
 		"sandboxd: agent op |",
 	}
 	for _, want := range wantSubstrings {
-		if !strings.Contains(output, want) {
+		if !strings.Contains(pod.output, want) {
 			t.Errorf("sandboxd logs missing expected substring %q", want)
 		}
 	}
 
 	if t.Failed() {
-		t.Logf("\n----- container output -----\n%s\n", output)
+		t.Logf("\n----- container output -----\n%s\n", pod.output)
+		t.Logf("\n----- SSE events (%d) -----\n%s\n", len(pod.events), summarizeEvents(pod.events))
 	}
+}
+
+// filterEvents returns events of one SandboxEvent type. The `type`
+// field is set on every variant by the gen.SandboxEvent.From*Event
+// helpers.
+func filterEvents(events []map[string]any, t string) []map[string]any {
+	var out []map[string]any
+	for _, e := range events {
+		if got, _ := e["type"].(string); got == t {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// summarizeEvents renders the collected stream as one line per event
+// for failure logs; full JSON would be unreadable for runs with
+// hundreds of events.
+func summarizeEvents(events []map[string]any) string {
+	var b strings.Builder
+	for _, e := range events {
+		id, _ := e["id"].(float64)
+		typ, _ := e["type"].(string)
+		fmt.Fprintf(&b, "  #%d %s", int(id), typ)
+		for _, k := range []string{"access", "host", "path", "method", "operation", "status", "duration_ms", "request_id"} {
+			if v, ok := e[k]; ok {
+				fmt.Fprintf(&b, " %s=%v", k, v)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // redactSecrets masks token-like values in YAML so the rendered-spec
@@ -206,8 +272,8 @@ func redactSecrets(s string) string {
 	return secretFieldRE.ReplaceAllString(s, `${1}<redacted>`)
 }
 
-// requireDocker skips the test if no Docker daemon is reachable.
-func requireDocker(t *testing.T) {
+// RequireDocker skips the test if no Docker daemon is reachable.
+func RequireDocker(t *testing.T) {
 	t.Helper()
 	cmd := exec.Command("docker", "info")
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
@@ -216,13 +282,13 @@ func requireDocker(t *testing.T) {
 	}
 }
 
-// buildImages builds the two independent images this test needs:
+// BuildImages builds the two independent images this test needs:
 // sandbox-runtime (the pod, always at the module root) and the agent
 // image. The agent image's Dockerfile lives at agentDir/Dockerfile and
 // is built with buildContext as the docker build context — usually
 // agentDir itself, but moduleRoot for fixtures that reuse a Dockerfile
 // from elsewhere in the repo (see runFixtureE2E for the rule).
-func buildImages(t *testing.T, agentDir, buildContext, agentImage string) {
+func BuildImages(t *testing.T, agentDir, buildContext, agentImage string) {
 	t.Helper()
 	build := func(tag, contextDir string, extraArgs ...string) {
 		t.Helper()
@@ -241,11 +307,11 @@ func buildImages(t *testing.T, agentDir, buildContext, agentImage string) {
 	build(agentImage, buildContext, "-f", filepath.Join(agentDir, "Dockerfile"))
 }
 
-// saveAgentImage runs `docker save` to produce a docker-archive tarball
+// SaveAgentImage runs `docker save` to produce a docker-archive tarball
 // of the named agent image. sandboxd unpacks this tar into an OCI
 // rootfs at container start. The path is returned so the test can
 // bind-mount it.
-func saveAgentImage(t *testing.T, agentImage string) string {
+func SaveAgentImage(t *testing.T, agentImage string) string {
 	t.Helper()
 	tarPath := filepath.Join(t.TempDir(), "agent.tar")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -319,7 +385,15 @@ func startUpstreams(t *testing.T) (stop func()) {
 // and disable seccomp and AppArmor (their default filters block syscalls
 // runc uses to create namespaces and pivot_root the inner container).
 // /dev/fuse is the only device exposed.
-func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
+// podRun is what runSandboxPod returns: the container's combined
+// stdout+stderr plus every SandboxEvent the SSE harness collected
+// during the container's lifetime.
+type podRun struct {
+	output string
+	events []map[string]any
+}
+
+func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string, duringLifetime FixtureHook) podRun {
 	t.Helper()
 	// 2 min outer deadline. The graceful-shutdown path adds ~25 s
 	// (sbxfuse drain + sandboxd WaitDelay) on top of the agent's
@@ -392,6 +466,9 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 		// Publish the agent's ingress listener so the host can POST in.
 		// 18000:18000 is matched by agent.py's HTTPServer binding.
 		"-p", "18000:18000",
+		// Publish sandboxd's API server so the host-side e2e harness can
+		// subscribe to /v1/events while the workload runs.
+		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),
 		"-v", auditDir + ":/audit-out",
 		"-v", agentTar + ":/mnt/agent.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
@@ -416,6 +493,12 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 		t.Fatalf("docker run start: %v", err)
 	}
 
+	// Subscribe to /v1/events while the pod is alive. The collector
+	// retries until sandboxd's API server binds, then streams every
+	// SandboxEvent into an in-memory slice until the connection drops
+	// (container exit) or sse.stop() is called.
+	sse := startSSECollector(t, fmt.Sprintf("http://127.0.0.1:%d", apiServerPort))
+
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
@@ -429,6 +512,13 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 		sendIngressProbe(t)
 		sendExecProbe(t)
 		time.Sleep(500 * time.Millisecond)
+
+		// Caller-supplied hook (e.g. lastEventId resume checks). Runs
+		// while the pod is still serving so the broker is live; any
+		// new events it triggers land in `sse` and in pod.events.
+		if duringLifetime != nil {
+			duringLifetime(t, fmt.Sprintf("http://127.0.0.1:%d", apiServerPort))
+		}
 
 		// SIGTERM the pod and wait for it to exit on its own. We watch
 		// `done` (the docker-run subprocess's Wait) directly — that
@@ -460,7 +550,7 @@ func runSandboxPod(t *testing.T, agentTar, specPath, auditDir string) string {
 		<-done
 		t.Fatalf("container timed out\n%s", out.String())
 	}
-	return out.String()
+	return podRun{output: out.String(), events: sse.stop()}
 }
 
 // sendIngressProbe posts a small payload to the agent's ingress
@@ -587,33 +677,6 @@ func loadExpectations(t *testing.T, path string) []Expectation {
 		t.Fatalf("parse expectations: %v", err)
 	}
 	return f.Ops
-}
-
-// readJSONLines reads a file with one JSON object per line. Returns an
-// empty slice if the file doesn't exist (so missing-file failures surface
-// as missing-event assertions, not a fatal).
-func readJSONLines(t *testing.T, path string) []map[string]any {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Errorf("open %s: %v", path, err)
-		return nil
-	}
-	defer f.Close()
-	var out []map[string]any
-	dec := json.NewDecoder(f)
-	for {
-		var m map[string]any
-		if err := dec.Decode(&m); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			t.Errorf("decode %s: %v", path, err)
-			break
-		}
-		out = append(out, m)
-	}
-	return out
 }
 
 func countByField(events []map[string]any, field string) map[string]int {

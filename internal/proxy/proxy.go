@@ -16,8 +16,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -73,15 +75,24 @@ var DefaultStrippedAuthHeaders = []string{
 }
 
 // AuditEvent is one record on the audit.network topic (§9.1).
+//
+// Each user-level request produces a pair of events sharing the same
+// RequestID: a `phase:"request"` carrying the access decision, then
+// (for allowed HTTP flows that reach upstream) a `phase:"response"`
+// carrying the upstream Status and DurationMs. CONNECT and raw-forward
+// TLS emit request only — there's no HTTP-level response to report.
 type AuditEvent struct {
-	At      time.Time `json:"at"`
-	Type    string    `json:"type"` // always "network"
-	Method  string    `json:"method"`
-	Host    string    `json:"host"`
-	Path    string    `json:"path,omitempty"`
-	Verdict string    `json:"verdict"` // "allow" | "deny" | "error"
-	Status  int       `json:"status,omitempty"`
-	Reason  string    `json:"reason,omitempty"`
+	At         time.Time `json:"at"`
+	Type       string    `json:"type"` // always "network"
+	Phase      string    `json:"phase"`           // "request" | "response"
+	RequestID  string    `json:"request_id"`
+	Method     string    `json:"method"`
+	Host       string    `json:"host"`
+	Path       string    `json:"path,omitempty"`
+	Verdict    string    `json:"verdict"` // "allow" | "deny" | "error"
+	Status     int       `json:"status,omitempty"`
+	DurationMs int       `json:"duration_ms,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
 }
 
 // Proxy is the running proxy. Construct with [New], drive with [Run].
@@ -95,6 +106,8 @@ type Proxy struct {
 
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
+
+	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
 }
 
 // New validates the config and returns a Proxy.
@@ -185,16 +198,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	host := hostnameOf(r.URL.Host, r.Host)
+	ac := p.beginAudit(r.Method, host, r.URL.Path)
 	rule := MatchEgress(p.cfg.Allow, r.Method, host, r.URL.Path)
 	if rule == nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: r.Method,
-			Host: host, Path: r.URL.Path, Verdict: "deny",
-			Status: http.StatusForbidden, Reason: "no matching rule",
-		})
+		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, "egress denied: "+host, http.StatusForbidden)
 		return
 	}
+	ac.allow()
 
 	for _, h := range p.stripHeaders {
 		r.Header.Del(h)
@@ -215,11 +226,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	out, err := p.transport.RoundTrip(r)
 	if err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: r.Method,
-			Host: host, Path: r.URL.Path, Verdict: "error",
-			Status: http.StatusBadGateway, Reason: err.Error(),
-		})
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -233,31 +240,24 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(out.StatusCode)
 	_, _ = io.Copy(w, out.Body)
 
-	p.audit(AuditEvent{
-		At: time.Now(), Type: "network", Method: r.Method,
-		Host: host, Path: r.URL.Path, Verdict: "allow", Status: out.StatusCode,
-	})
+	ac.response(out.StatusCode)
 }
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host := hostnameOf("", r.Host)
+	ac := p.beginAudit("CONNECT", host, "")
 	// CONNECT is host-only — body is opaque under TLS.
 	if MatchEgress(p.cfg.Allow, "CONNECT", host, "") == nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "CONNECT",
-			Host: host, Verdict: "deny", Status: http.StatusForbidden,
-			Reason: "no matching rule",
-		})
+		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, "egress denied: "+host, http.StatusForbidden)
 		return
 	}
 
 	upstream, err := p.dialer.DialContext(r.Context(), "tcp", r.Host)
 	if err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "CONNECT",
-			Host: host, Verdict: "error", Reason: err.Error(),
-		})
+		// Tunnel dial failed before we ever allowed the tunnel: surface
+		// as a deny so consumers don't see an orphan response event.
+		ac.deny("upstream dial: "+err.Error(), http.StatusBadGateway)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -279,10 +279,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.audit(AuditEvent{
-		At: time.Now(), Type: "network", Method: "CONNECT",
-		Host: host, Verdict: "allow",
-	})
+	ac.allow()
 
 	// Bidi tunnel until either side closes.
 	done := make(chan struct{}, 2)
@@ -369,6 +366,78 @@ func (p *Proxy) audit(e AuditEvent) {
 	p.auditMu.Lock()
 	defer p.auditMu.Unlock()
 	_ = p.auditEnc.Encode(e)
+}
+
+// auditCtx tracks state across the request/response audit pair: the
+// shared RequestID and the start time used to compute DurationMs on
+// the response side. Callers invoke .allow()/.deny() at decision time
+// and .response()/.responseError() once the upstream call finishes.
+type auditCtx struct {
+	p              *Proxy
+	requestID      string
+	start          time.Time
+	method         string
+	host           string
+	path           string
+}
+
+func (p *Proxy) beginAudit(method, host, path string) *auditCtx {
+	n := p.requestSeq.Add(1)
+	return &auditCtx{
+		p:         p,
+		requestID: strconv.FormatUint(n, 10),
+		start:     time.Now(),
+		method:    method,
+		host:      host,
+		path:      path,
+	}
+}
+
+// deny emits a request event with verdict="deny". `status` is the HTTP
+// status the proxy will return to the client (typically 403), and is
+// surfaced for human debugging — it isn't part of the SSE
+// egress.request shape.
+func (a *auditCtx) deny(reason string, status int) {
+	a.p.audit(AuditEvent{
+		At: a.start, Type: "network", Phase: "request",
+		RequestID: a.requestID,
+		Method:    a.method, Host: a.host, Path: a.path,
+		Verdict: "deny", Status: status, Reason: reason,
+	})
+}
+
+// allow emits a request event with verdict="allow". Callers must
+// follow up with response()/responseError() if the request reaches an
+// upstream that returns an HTTP status (i.e. HTTP and intercepted-TLS
+// paths). CONNECT and raw-forward TLS skip response — the schema's
+// egress.response is HTTP-status-shaped.
+func (a *auditCtx) allow() {
+	a.p.audit(AuditEvent{
+		At: a.start, Type: "network", Phase: "request",
+		RequestID: a.requestID,
+		Method:    a.method, Host: a.host, Path: a.path,
+		Verdict: "allow",
+	})
+}
+
+func (a *auditCtx) response(status int) {
+	a.p.audit(AuditEvent{
+		At: time.Now(), Type: "network", Phase: "response",
+		RequestID: a.requestID,
+		Method:    a.method, Host: a.host, Path: a.path,
+		Verdict: "allow", Status: status,
+		DurationMs: int(time.Since(a.start) / time.Millisecond),
+	})
+}
+
+func (a *auditCtx) responseError(reason string, status int) {
+	a.p.audit(AuditEvent{
+		At: time.Now(), Type: "network", Phase: "response",
+		RequestID: a.requestID,
+		Method:    a.method, Host: a.host, Path: a.path,
+		Verdict: "error", Status: status, Reason: reason,
+		DurationMs: int(time.Since(a.start) / time.Millisecond),
+	})
 }
 
 func hostnameOf(urlHost, reqHost string) string {

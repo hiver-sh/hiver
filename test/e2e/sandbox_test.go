@@ -8,11 +8,11 @@ import (
 )
 
 func TestPythonSandboxE2E(t *testing.T) {
-	runFixtureE2E(t, "agent-python")
+	setup.RunFixtureE2E(t, "agent-python")
 }
 
 func TestNodeSandboxE2E(t *testing.T) {
-	runFixtureE2E(t, "agent-node")
+	setup.RunFixtureE2E(t, "agent-node")
 }
 
 func TestGdriveFsE2E(t *testing.T) {
@@ -20,7 +20,7 @@ func TestGdriveFsE2E(t *testing.T) {
 	if token == "" {
 		t.Skip("set HIVE_GDRIVE_ACCESS_TOKEN [+ HIVE_GDRIVE_FOLDER_ID] to run")
 	}
-	runFixtureE2E(t, "agent-gdrive-fs", func(sp *spec.Spec) {
+	setup.RunFixtureE2E(t, "agent-gdrive-fs", func(sp *spec.Spec) {
 		f := &sp.FS[0]
 		f.GdriveAccessToken = token
 		f.GdriveRefreshToken = setup.GetEnv("HIVE_GDRIVE_REFRESH_TOKEN")

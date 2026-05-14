@@ -29,6 +29,7 @@ func main() {
 		addr        = flag.String("addr", "127.0.0.1:3128", "listen address")
 		rulesPath   = flag.String("rules", "", "path to JSON file containing []proxy.EgressRule")
 		auditPath   = flag.String("audit", "", "audit log file (default: stderr)")
+		eventsFD    = flag.Int("events-fd", 0, "inherited fd for streaming audit events; overrides -audit when >0 (set by sandboxd)")
 		transparent = flag.Bool("transparent", false, "accept iptables-redirected TCP and dispatch by protocol sniff (Linux only)")
 		mark        = flag.Int("mark", 0, "SO_MARK to stamp on upstream sockets so iptables can skip them; required when -transparent is set")
 		caCertPath  = flag.String("ca-cert", "", "PEM CA cert; with -ca-key enables TLS interception for inspectable rules")
@@ -36,8 +37,20 @@ func main() {
 	)
 	flag.Parse()
 
+	// -events-fd is the sandboxd-driven path: a socketpair fd inherited
+	// from the parent. Stream audit events there instead of a file —
+	// no disk I/O, backpressure is the kernel socket buffer. Falls back
+	// to -audit (and then stderr) for standalone runs.
 	var auditOut io.Writer = os.Stderr
-	if *auditPath != "" {
+	switch {
+	case *eventsFD > 0:
+		f := os.NewFile(uintptr(*eventsFD), "events")
+		if f == nil {
+			log.Fatalf("events-fd=%d not open", *eventsFD)
+		}
+		defer f.Close()
+		auditOut = f
+	case *auditPath != "":
 		f, err := os.OpenFile(*auditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			log.Fatalf("audit log: %v", err)

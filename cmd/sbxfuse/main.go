@@ -28,8 +28,7 @@ func main() {
 		mountPoint   = flag.String("mount", "/workspace", "FUSE mount point (agent-visible path root)")
 		backendDir   = flag.String("backend", "", "host directory backing the workspace (required)")
 		aclPath      = flag.String("acls", "", "path to JSON file containing ACL rules")
-		auditPath    = flag.String("audit", "", "audit log file (default: stderr)")
-		auditReads   = flag.Bool("audit-reads", false, "audit each FUSE Read request (chatty: many events per user-level read)")
+		eventsFD     = flag.Int("events-fd", 0, "inherited fd for streaming audit events; overrides -audit when >0 (set by sandboxd)")
 		remoteName   = flag.String("remote", "", "remote backend name; blank = local-only. Supported: gdrive. Unimplemented: s3, gcs, onedrive.")
 		remoteConfig = flag.String("remote-config", "", "JSON config consumed by the remote backend (per-impl schema; see remotefs.GoogleDriveConfig).")
 		oplogDepth   = flag.Int("oplog-depth", 1024, "oplog queue size; Enqueue blocks when full")
@@ -42,11 +41,14 @@ func main() {
 	}
 
 	rules := loadACLs(*aclPath)
+	// -events-fd is the sandboxd-driven path: a socketpair fd inherited
+	// from the parent. Stream audit events there instead of a file —
+	// no disk I/O, backpressure is the kernel socket buffer.
 	var auditOut io.Writer = os.Stderr
-	if *auditPath != "" {
-		f, err := os.OpenFile(*auditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			log.Fatalf("audit log: %v", err)
+	if *eventsFD > 0 {
+		f := os.NewFile(uintptr(*eventsFD), "events")
+		if f == nil {
+			log.Fatalf("events-fd=%d not open", *eventsFD)
 		}
 		defer f.Close()
 		auditOut = f
@@ -57,7 +59,6 @@ func main() {
 		Backend:    *backendDir,
 		ACLs:       fusefs.Compile(rules),
 		Audit:      auditOut,
-		AuditReads: *auditReads,
 	}
 
 	log.Printf("sbxfuse: starting (remote=%q, mount=%s, backend=%s, mark=0x%x)",

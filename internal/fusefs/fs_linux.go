@@ -33,11 +33,6 @@ type Config struct {
 	Backend    string
 	ACLs       *ACLs
 	Audit      io.Writer
-	// AuditReads controls whether each FUSE Read request is audited.
-	// Off by default because the kernel issues one Read per chunk
-	// (typically 4–128 KiB) so a single user-level read of a 1 MiB
-	// file can produce many events. Open is always audited.
-	AuditReads bool
 	// Oplog, when non-nil, receives an [OplogEntry] after every
 	// successful mutation (Create, Write, Remove, Rename). The
 	// uploader goroutine started by [Server.Serve] drains it into
@@ -541,37 +536,25 @@ func (n *node) materializeLocal(ctx context.Context, flags fuse.OpenFlags) error
 }
 
 // Read returns file bytes at the requested offset.
-//
-// Per-Read auditing is opt-in (Config.AuditReads): the kernel issues one
-// Read per chunk so a single user-level read of a 1 MiB file generates
-// many events. Open is always audited.
 func (n *node) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
 	if n.access() == AccessDeny {
-		if n.s.cfg.AuditReads {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "deny"})
-		}
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "deny"})
 		return syscall.ENOENT
 	}
 	f, err := os.Open(n.hostPath())
 	if err != nil {
-		if n.s.cfg.AuditReads {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
-		}
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	defer f.Close()
 	buf := make([]byte, req.Size)
 	nRead, err := f.ReadAt(buf, req.Offset)
 	if err != nil && !errors.Is(err, io.EOF) {
-		if n.s.cfg.AuditReads {
-			n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
-		}
+		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "error", Err: err.Error()})
 		return mapErr(err)
 	}
 	resp.Data = buf[:nRead]
-	if n.s.cfg.AuditReads {
-		n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "allow"})
-	}
+	n.s.audit(AuditEvent{At: time.Now(), Type: "filesystem", Op: "read", Path: n.absPath(), Verdict: "allow"})
 	return nil
 }
 

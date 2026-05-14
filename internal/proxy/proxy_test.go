@@ -98,11 +98,17 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	}
 
 	events := decodeAudit(t, audit)
-	if len(events) != 1 {
-		t.Fatalf("audit events: got %d, want 1: %+v", len(events), events)
+	if len(events) != 2 {
+		t.Fatalf("audit events: got %d, want 2 (request+response): %+v", len(events), events)
 	}
-	if events[0].Verdict != "allow" || events[0].Method != "GET" {
-		t.Errorf("audit event mismatch: %+v", events[0])
+	if events[0].Phase != "request" || events[0].Verdict != "allow" || events[0].Method != "GET" {
+		t.Errorf("request event mismatch: %+v", events[0])
+	}
+	if events[1].Phase != "response" || events[1].Verdict != "allow" || events[1].Status != 200 {
+		t.Errorf("response event mismatch: %+v", events[1])
+	}
+	if events[0].RequestID == "" || events[0].RequestID != events[1].RequestID {
+		t.Errorf("request_id should pair the two events: req=%q resp=%q", events[0].RequestID, events[1].RequestID)
 	}
 }
 
@@ -128,10 +134,10 @@ func TestHTTPDeniedReturns403(t *testing.T) {
 
 	events := decodeAudit(t, audit)
 	if len(events) != 1 {
-		t.Fatalf("audit events: got %d, want 1", len(events))
+		t.Fatalf("audit events: got %d, want 1 (deny is request-only): %+v", len(events), events)
 	}
-	if events[0].Verdict != "deny" {
-		t.Errorf("expected deny verdict; got %+v", events[0])
+	if events[0].Phase != "request" || events[0].Verdict != "deny" {
+		t.Errorf("expected request-deny event; got %+v", events[0])
 	}
 }
 

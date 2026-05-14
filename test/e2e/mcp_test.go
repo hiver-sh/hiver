@@ -18,18 +18,23 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+const (
+	moduleRoot          = "../.."
+	sandboxRuntimeImage = "sandbox-runtime"
+	fixtureName         = "mcp-server"
+)
+
 // TestMcpServerE2E brings up the mcp-server fixture and drives the
 // streamable HTTP MCP endpoint with the Go SDK client, exercising one
 // call per registered tool.
 func TestMcpServerE2E(t *testing.T) {
-	requireDocker(t)
+	setup.RequireDocker(t)
 
 	token := setup.GetEnv("HIVE_GDRIVE_ACCESS_TOKEN")
 	if token == "" {
 		t.Skip("set HIVE_GDRIVE_ACCESS_TOKEN [+ HIVE_GDRIVE_FOLDER_ID] to run")
 	}
 
-	const fixtureName = "mcp-server"
 	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures", fixtureName))
 	if err != nil {
 		t.Fatalf("abs fixture dir: %v", err)
@@ -68,8 +73,8 @@ func TestMcpServerE2E(t *testing.T) {
 		}
 	}
 	agentImage := "sandbox-" + fixtureName + ":e2e"
-	buildImages(t, agentDir, buildContext, agentImage)
-	agentTar := saveAgentImage(t, agentImage)
+	setup.BuildImages(t, agentDir, buildContext, agentImage)
+	agentTar := setup.SaveAgentImage(t, agentImage)
 
 	auditDir := t.TempDir()
 	pod := startMCPPod(t, agentTar, specPath, auditDir)

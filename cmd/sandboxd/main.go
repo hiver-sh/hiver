@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/sandbox-platform/agent-sandbox/internal/api"
+	"github.com/sandbox-platform/agent-sandbox/internal/events"
 	"github.com/sandbox-platform/agent-sandbox/internal/runc"
 	"github.com/sandbox-platform/agent-sandbox/internal/sandboxd"
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
@@ -57,7 +58,12 @@ func main() {
 		log.Fatalf("spec: %v", err)
 	}
 
-	s := api.NewServer(*apiServerPort)
+	// The broker is the single fan-out point for the SSE `/v1/events`
+	// stream. Sidecar audit events arrive over the per-child socketpair
+	// (see startSidecar), get translated to SandboxEvent shape, and
+	// Publish'd here; api.NewServer hands subscribers to the SSE handler.
+	broker := events.New(events.DefaultCapacity, 0)
+	s := api.NewServer(*apiServerPort, broker)
 	go s.ListenAndServe()
 
 	if err := os.MkdirAll(sp.AuditDir, 0o755); err != nil {
@@ -88,17 +94,6 @@ func main() {
 	// avoid an infinite loop. Any non-zero value works; we pick a
 	// distinctive one for grep-ability.
 	const soMark = 0x5b1
-	proxyAuditPath := filepath.Join(sp.AuditDir, "proxy.log")
-
-	// As the orchestrator, sandboxd is responsible for reporting what
-	// the agent does — the agent itself produces no application-level
-	// logs. We tail the proxy and FUSE audit streams (the canonical
-	// per-operation record per DESIGN.md §9.1) and surface each event
-	// as a single "agent op | …" line on sandboxd's stdout.
-	go tailAudit(ctx, proxyAuditPath, formatProxyEvent)
-	for i := range sp.FS {
-		go tailAudit(ctx, fuseAuditPathFor(sp.AuditDir, &sp.FS[i]), formatFuseEvent)
-	}
 
 	var children sync.WaitGroup
 
@@ -120,12 +115,12 @@ func main() {
 		"-transparent",
 		"-addr", proxyAddr,
 		"-rules", rulesTmp,
-		"-audit", proxyAuditPath,
 		"-mark", fmt.Sprintf("%d", soMark),
 		"-ca-cert", caCertPath,
 		"-ca-key", caKeyPath,
 	}
-	proxyCmd, err := startChild(ctx, &children, "sbxproxy", *proxyBin, proxyArgs, nil)
+	proxyCmd, err := startSidecar(ctx, &children, "sbxproxy", *proxyBin, proxyArgs, nil,
+		sidecarOnEvent(broker, formatProxyEvent, translateProxyEvent))
 	if err != nil {
 		log.Fatalf("start proxy: %v", err)
 	}
@@ -157,9 +152,7 @@ func main() {
 		fuseArgs := []string{
 			"-mount", f.Mount,
 			"-backend", f.BackendPath(),
-			"-audit", fuseAuditPathFor(sp.AuditDir, f),
 			"-acls", aclTmp,
-			"-audit-reads",
 		}
 		// Remote backends: forward the backend name + a JSON-encoded
 		// config blob to sbxfuse, which constructs the [remotefs.Store]
@@ -181,7 +174,8 @@ func main() {
 				"-mark", fmt.Sprintf("%d", soMark),
 			)
 		}
-		fuseCmd, err := startChild(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil)
+		fuseCmd, err := startSidecar(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil,
+			sidecarOnEvent(broker, formatFuseEvent, translateFuseEvent(f.Mount)))
 		if err != nil {
 			log.Fatalf("start fuse (%s): %v", f.Mount, err)
 		}
@@ -277,7 +271,8 @@ func main() {
 
 	containerID := fmt.Sprintf("agent-%d", os.Getpid())
 	agentCmd, err := startChild(ctx, &children, "agent", "runc",
-		[]string{"run", "-b", bundleDir, containerID}, nil)
+		[]string{"run", "-b", bundleDir, containerID}, nil, nil,
+		publishAgentStdio(broker))
 	if err != nil {
 		log.Fatalf("start agent (runc): %v", err)
 	}
@@ -300,12 +295,21 @@ func main() {
 // backend is in play) drain its oplog of pending uploads. The grace
 // must outlive the longest cleanup; sbxfuse's oplog drain is bounded
 // at 5s, so 10s here gives that drain plus mount teardown room.
-func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args, env []string) (*exec.Cmd, error) {
+// onStdio (when non-nil) is invoked per line of child output, tagged
+// "stdout" or "stderr". Used by the agent spawn to publish StdioEvents
+// into the broker; sidecars pass nil because their stdout is
+// operational logging, not workload output.
+func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args, env []string, extraFiles []*os.File, onStdio func(stream, line string)) (*exec.Cmd, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
 	if env != nil {
 		cmd.Env = env
+	}
+	// ExtraFiles[i] becomes fd 3+i in the child. Used by startSidecar
+	// to hand the child its events-stream fd (3).
+	if len(extraFiles) > 0 {
+		cmd.ExtraFiles = extraFiles
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -318,24 +322,32 @@ func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args,
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	var outCb, errCb func(string)
+	if onStdio != nil {
+		outCb = func(line string) { onStdio("stdout", line) }
+		errCb = func(line string) { onStdio("stderr", line) }
+	}
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		streamPrefixed(name+":out", stdout)
+		streamPrefixed(name+":out", stdout, outCb)
 	}()
 	go func() {
 		defer wg.Done()
-		streamPrefixed(name+":err", stderr)
+		streamPrefixed(name+":err", stderr, errCb)
 	}()
 	return cmd, nil
 }
 
-func streamPrefixed(prefix string, r io.Reader) {
+func streamPrefixed(prefix string, r io.Reader, onLine func(string)) {
 	br := bufio.NewReader(r)
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
 			fmt.Fprintf(os.Stderr, "[%s] %s", prefix, line)
+			if onLine != nil {
+				onLine(line)
+			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -393,12 +405,6 @@ func freePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// fuseAuditPathFor returns the per-mount audit log path. Each sbxfuse
-// process gets its own file so concurrent appends don't interleave.
-func fuseAuditPathFor(auditDir string, f *spec.FS) string {
-	return filepath.Join(auditDir, "fuse-"+f.Slug()+".log")
-}
-
 // writeACLs serializes the ACL list to a file sbxfuse can load.
 func writeACLs(path string, acls any) error {
 	return writeJSON(path, acls)
@@ -440,97 +446,4 @@ func installIptables(ctx context.Context, proxyPort, soMark int) error {
 		}
 	}
 	return nil
-}
-
-// tailAudit follows a sidecar's JSON-line audit file and re-emits each
-// event on sandboxd's own log stream as a single "agent op | …" line.
-//
-// Standard tail-follow pattern: open the file (creating it if the sidecar
-// hasn't yet), read until EOF, sleep briefly, repeat. The audit files are
-// append-only so seeking forward by the bytes-consumed is safe.
-func tailAudit(ctx context.Context, path string, format func(map[string]any) string) {
-	var f *os.File
-	defer func() {
-		if f != nil {
-			f.Close()
-		}
-	}()
-
-	for ctx.Err() == nil {
-		if f == nil {
-			ff, err := os.Open(path)
-			if err != nil {
-				if !sleepCtx(ctx, 100*time.Millisecond) {
-					return
-				}
-				continue
-			}
-			f = ff
-		}
-		var leftover []byte
-		buf := make([]byte, 4096)
-	read:
-		for {
-			n, err := f.Read(buf)
-			if n > 0 {
-				leftover = append(leftover, buf[:n]...)
-				for {
-					i := bytes.IndexByte(leftover, '\n')
-					if i < 0 {
-						break
-					}
-					line := leftover[:i]
-					leftover = leftover[i+1:]
-					var ev map[string]any
-					if json.Unmarshal(line, &ev) == nil {
-						log.Printf("sandboxd: agent op | %s", format(ev))
-					}
-				}
-			}
-			if errors.Is(err, io.EOF) {
-				if !sleepCtx(ctx, 100*time.Millisecond) {
-					return
-				}
-				continue read
-			}
-			if err != nil {
-				return
-			}
-		}
-	}
-}
-
-// sleepCtx returns false if ctx is cancelled before d elapses.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	select {
-	case <-time.After(d):
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-// formatProxyEvent renders an internal/proxy.AuditEvent map for the
-// "agent op | …" log line. Schema (see internal/proxy.AuditEvent):
-//
-//	{at, type:"network", method, host, path, verdict}
-func formatProxyEvent(ev map[string]any) string {
-	verdict, _ := ev["verdict"].(string)
-	method, _ := ev["method"].(string)
-	host, _ := ev["host"].(string)
-	path, _ := ev["path"].(string)
-	if path == "" {
-		path = "/"
-	}
-	return fmt.Sprintf("proxy %-5s %s %s%s", verdict, method, host, path)
-}
-
-// formatFuseEvent renders an internal/fusefs.AuditEvent map. Schema:
-//
-//	{at, type:"filesystem", op, path, verdict, err?}
-func formatFuseEvent(ev map[string]any) string {
-	verdict, _ := ev["verdict"].(string)
-	op, _ := ev["op"].(string)
-	path, _ := ev["path"].(string)
-	return fmt.Sprintf("fuse  %-5s %-10s %s", verdict, op, path)
 }

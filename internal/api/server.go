@@ -9,9 +9,10 @@ import (
 	"github.com/gin-gonic/gin"
 	middleware "github.com/oapi-codegen/gin-middleware"
 	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
+	"github.com/sandbox-platform/agent-sandbox/internal/events"
 )
 
-func NewServer(port string) *http.Server {
+func NewServer(port string, broker *events.Broker) *http.Server {
 	swagger, err := gen.GetSpec()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading swagger spec: %s", err)
@@ -23,7 +24,7 @@ func NewServer(port string) *http.Server {
 	r.Use(allowAllCORS)
 	r.Use(middleware.OapiRequestValidator(swagger))
 
-	h := NewHandlers()
+	h := NewHandlers(broker)
 	gen.RegisterHandlers(r, h)
 
 	s := &http.Server{

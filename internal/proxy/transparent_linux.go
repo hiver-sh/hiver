@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
@@ -81,11 +80,7 @@ func (p *Proxy) handleTransparent(c *net.TCPConn) {
 	case protoTLS:
 		p.handleTransparentTLS(c, br, origDst)
 	default:
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "?",
-			Host: origDst, Verdict: "deny",
-			Reason: "unknown protocol",
-		})
+		p.beginAudit("?", origDst, "").deny("unknown protocol", 0)
 	}
 }
 
@@ -135,10 +130,7 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	}
 	rule := MatchEgress(p.cfg.Allow, "TLS", host, "")
 	if rule == nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "TLS",
-			Host: host, Verdict: "deny", Reason: "no matching rule",
-		})
+		p.beginAudit("TLS", host, "").deny("no matching rule", 0)
 		return
 	}
 	if needsInspection(rule) && p.minter != nil {
@@ -155,19 +147,18 @@ func needsInspection(r *EgressRule) bool {
 }
 
 func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string) {
+	// Raw-forward TLS is host-only: there's no HTTP-level response shape
+	// to report, so the decision is the whole audit story. Dial failure
+	// before the tunnel exists is treated as a deny so consumers don't
+	// see an orphan allow.
+	ac := p.beginAudit("TLS", host, "")
 	upstream, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
 	if err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "TLS",
-			Host: host, Verdict: "error", Reason: err.Error(),
-		})
+		ac.deny("upstream dial: "+err.Error(), 0)
 		return
 	}
 	defer upstream.Close()
-	p.audit(AuditEvent{
-		At: time.Now(), Type: "network", Method: "TLS",
-		Host: host, Verdict: "allow",
-	})
+	ac.allow()
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(upstream, br); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(c, upstream); done <- struct{}{} }()
@@ -188,23 +179,21 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		// http/1.1 keeps the agent's stack on the version we can read.
 		NextProtos: []string{"http/1.1"},
 	}
+	// Handshake/dial failures here happen before we know the inner HTTP
+	// request, so the audit event is host-only (method "TLS"). The inner
+	// allowlist match — once we can read req.Method / req.URL.Path —
+	// opens a fresh auditCtx with the proper request/response pair.
+	tlsAC := p.beginAudit("TLS", host, "")
 	clientTLS := tls.Server(&peekedConn{Conn: c, r: br}, innerCfg)
 	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "TLS",
-			Host: host, Verdict: "error",
-			Reason: "inner handshake: " + err.Error(),
-		})
+		tlsAC.deny("inner handshake: "+err.Error(), 0)
 		return
 	}
 	defer clientTLS.Close()
 
 	rawUp, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
 	if err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "TLS",
-			Host: host, Verdict: "error", Reason: err.Error(),
-		})
+		tlsAC.deny("upstream dial: "+err.Error(), 0)
 		return
 	}
 	upstreamTLS := tls.Client(rawUp, &tls.Config{
@@ -212,11 +201,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		NextProtos: []string{"http/1.1"},
 	})
 	if err := upstreamTLS.HandshakeContext(context.Background()); err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: "TLS",
-			Host: host, Verdict: "error",
-			Reason: "upstream handshake: " + err.Error(),
-		})
+		tlsAC.deny("upstream handshake: "+err.Error(), 0)
 		_ = rawUp.Close()
 		return
 	}
@@ -226,16 +211,14 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	if err != nil {
 		return
 	}
+	ac := p.beginAudit(req.Method, host, req.URL.Path)
 	rule := MatchEgress(p.cfg.Allow, req.Method, host, req.URL.Path)
 	if rule == nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: req.Method,
-			Host: host, Path: req.URL.Path, Verdict: "deny",
-			Status: http.StatusForbidden, Reason: "no matching rule",
-		})
+		ac.deny("no matching rule", http.StatusForbidden)
 		_, _ = clientTLS.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 		return
 	}
+	ac.allow()
 	for _, h := range p.stripHeaders {
 		req.Header.Del(h)
 	}
@@ -246,25 +229,16 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	req.Header.Set("Connection", "close")
 
 	if err := req.Write(upstreamTLS); err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: req.Method,
-			Host: host, Path: req.URL.Path, Verdict: "error", Reason: err.Error(),
-		})
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(upstreamTLS), req)
 	if err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: req.Method,
-			Host: host, Path: req.URL.Path, Verdict: "error", Reason: err.Error(),
-		})
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
-	p.audit(AuditEvent{
-		At: time.Now(), Type: "network", Method: req.Method,
-		Host: host, Path: req.URL.Path, Verdict: "allow", Status: resp.StatusCode,
-	})
+	ac.response(resp.StatusCode)
 	_ = resp.Write(clientTLS)
 }
 
@@ -295,16 +269,14 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	}
 	hostOnly := hostnameOf("", host)
 
+	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path)
 	rule := MatchEgress(p.cfg.Allow, req.Method, hostOnly, req.URL.Path)
 	if rule == nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: req.Method,
-			Host: hostOnly, Path: req.URL.Path, Verdict: "deny",
-			Status: http.StatusForbidden, Reason: "no matching rule",
-		})
+		ac.deny("no matching rule", http.StatusForbidden)
 		_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 		return
 	}
+	ac.allow()
 
 	for _, h := range p.stripHeaders {
 		req.Header.Del(h)
@@ -319,34 +291,23 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 
 	upstream, err := p.dialer.DialContext(req.Context(), "tcp", origDst)
 	if err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: req.Method,
-			Host: hostOnly, Path: req.URL.Path, Verdict: "error",
-			Reason: err.Error(),
-		})
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		_, _ = c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 		return
 	}
 	defer upstream.Close()
 
 	if err := req.Write(upstream); err != nil {
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
 	upstreamBR := bufio.NewReader(upstream)
 	resp, err := http.ReadResponse(upstreamBR, req)
 	if err != nil {
-		p.audit(AuditEvent{
-			At: time.Now(), Type: "network", Method: req.Method,
-			Host: hostOnly, Path: req.URL.Path, Verdict: "error",
-			Reason: err.Error(),
-		})
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.audit(AuditEvent{
-		At: time.Now(), Type: "network", Method: req.Method,
-		Host: hostOnly, Path: req.URL.Path, Verdict: "allow",
-		Status: resp.StatusCode,
-	})
+	ac.response(resp.StatusCode)
 	_ = resp.Write(c)
 	_ = resp.Body.Close()
 }
