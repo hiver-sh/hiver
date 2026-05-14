@@ -144,25 +144,34 @@ func TestHTTPDeniedReturns403(t *testing.T) {
 func TestMatchEgress(t *testing.T) {
 	rules := []proxy.EgressRule{
 		{Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/repos/*"}},
-		{Host: "*.pypi.org"}, // any method, any path
+		{Host: "*.pypi.org"}, // any method, any path, any port
 		{Host: "files.example.com", Headers: map[string]string{"X-Auth": "tok"}},
+		{Host: "127.0.0.1", Ports: []int{8080}},                   // port-pinned, host-only
+		{Host: "metrics.internal", Ports: []int{9090, 9091, 9092}}, // port set
 	}
 	cases := []struct {
 		name             string
-		method, host, p  string
+		method, host     string
+		port             int
+		p                string
 		wantMatch        bool
 		wantHeaderInject string
 	}{
-		{"http: full match on rule 1", "GET", "api.github.com", "/repos/foo", true, ""},
-		{"http: method denied", "POST", "api.github.com", "/repos/foo", false, ""},
-		{"http: path denied", "GET", "api.github.com", "/users/foo", false, ""},
-		{"http: wildcard host any method/path", "POST", "files.pypi.org", "/anything", true, ""},
-		{"http: wildcard apex excluded", "GET", "pypi.org", "/", false, ""},
-		{"http: header rule injects", "GET", "files.example.com", "/x", true, "tok"},
-		{"tls: host-only match (path empty)", "TLS", "files.pypi.org", "", true, ""},
-		{"tls: host miss", "TLS", "evil.com", "", false, ""},
-		{"empty host always denied", "GET", "", "/", false, ""},
-		{"empty rules deny everything", "GET", "anywhere.com", "/", false, ""},
+		{"http: full match on rule 1", "GET", "api.github.com", 443, "/repos/foo", true, ""},
+		{"http: method denied", "POST", "api.github.com", 443, "/repos/foo", false, ""},
+		{"http: path denied", "GET", "api.github.com", 443, "/users/foo", false, ""},
+		{"http: wildcard host any method/path", "POST", "files.pypi.org", 443, "/anything", true, ""},
+		{"http: wildcard apex excluded", "GET", "pypi.org", 443, "/", false, ""},
+		{"http: header rule injects", "GET", "files.example.com", 80, "/x", true, "tok"},
+		{"tls: host-only match (path empty)", "TLS", "files.pypi.org", 443, "", true, ""},
+		{"tls: host miss", "TLS", "evil.com", 443, "", false, ""},
+		{"port: pinned port matches", "GET", "127.0.0.1", 8080, "/x", true, ""},
+		{"port: pinned port wrong port denied", "GET", "127.0.0.1", 22, "/x", false, ""},
+		{"port: list match", "GET", "metrics.internal", 9091, "/m", true, ""},
+		{"port: list miss", "GET", "metrics.internal", 9100, "/m", false, ""},
+		{"port: unenforced rule ignores port", "GET", "files.pypi.org", 8443, "/", true, ""},
+		{"empty host always denied", "GET", "", 80, "/", false, ""},
+		{"empty rules deny everything", "GET", "anywhere.com", 80, "/", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,9 +179,9 @@ func TestMatchEgress(t *testing.T) {
 			if tc.name == "empty rules deny everything" {
 				r = nil
 			}
-			got := proxy.MatchEgress(r, tc.method, tc.host, tc.p)
+			got := proxy.MatchEgress(r, tc.method, tc.host, tc.port, tc.p)
 			if (got != nil) != tc.wantMatch {
-				t.Fatalf("MatchEgress(%q,%q,%q) match=%v, want %v", tc.method, tc.host, tc.p, got != nil, tc.wantMatch)
+				t.Fatalf("MatchEgress(%q,%q,%d,%q) match=%v, want %v", tc.method, tc.host, tc.port, tc.p, got != nil, tc.wantMatch)
 			}
 			if tc.wantHeaderInject != "" {
 				if got == nil || got.Headers["X-Auth"] != tc.wantHeaderInject {

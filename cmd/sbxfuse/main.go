@@ -93,6 +93,29 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// SIGHUP → reload ACLs from -acls. sandboxd signals this after a
+	// /v1/config PUT rewrites the file. Read failures keep the
+	// current policy in place — a half-written file can't relax
+	// access by accident.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				newRules, err := readACLs(*aclPath)
+				if err != nil {
+					log.Printf("sbxfuse: SIGHUP reload failed (keeping current ACLs): %v", err)
+					continue
+				}
+				srv.SetACLs(fusefs.Compile(newRules))
+				log.Printf("sbxfuse: reloaded %d ACL rules from %s", len(newRules), *aclPath)
+			}
+		}
+	}()
+
 	remoteDesc := *remoteName
 	if remoteDesc == "" {
 		remoteDesc = "local-only"
@@ -120,17 +143,27 @@ func buildStore(ctx context.Context, name string, configJSON []byte, outboundMar
 }
 
 func loadACLs(p string) []fusefs.Rule {
+	rules, err := readACLs(p)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	return rules
+}
+
+// readACLs is the non-fatal sibling of loadACLs; SIGHUP reloads use it
+// so a transient on-disk error doesn't crash the FUSE daemon.
+func readACLs(p string) ([]fusefs.Rule, error) {
 	if p == "" {
 		// Default: workspace is rw, everything else denied.
-		return []fusefs.Rule{{Path: "/", Access: fusefs.AccessRW}}
+		return []fusefs.Rule{{Path: "/", Access: fusefs.AccessRW}}, nil
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
-		log.Fatalf("read ACL file: %v", err)
+		return nil, fmt.Errorf("read ACL file %s: %w", p, err)
 	}
 	var rules []fusefs.Rule
 	if err := json.Unmarshal(data, &rules); err != nil {
-		log.Fatalf("parse ACL file: %v", err)
+		return nil, fmt.Errorf("parse ACL file %s: %w", p, err)
 	}
-	return rules
+	return rules, nil
 }

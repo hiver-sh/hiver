@@ -93,6 +93,13 @@ type Server struct {
 	cfg  Config
 	conn *fuse.Conn
 
+	// acls holds the live ACL policy, swappable at runtime via
+	// SetACLs so sandboxd can reconcile after a /v1/config PUT
+	// without unmounting. The pointer-level atomic swap guarantees
+	// in-flight Eval calls see either the old or new policy, never a
+	// torn read.
+	acls atomic.Pointer[ACLs]
+
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
 
@@ -102,6 +109,23 @@ type Server struct {
 	statCache *statCache
 
 	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
+}
+
+// SetACLs atomically replaces the live ACL policy. Safe to call from
+// any goroutine. A nil argument is treated as "default deny everywhere"
+// (Compile(nil)) so a misconfigured reload can never silently relax
+// access — it locks down instead.
+func (s *Server) SetACLs(a *ACLs) {
+	if a == nil {
+		a = Compile(nil)
+	}
+	s.acls.Store(a)
+}
+
+// currentACLs returns the live policy. The returned pointer is owned
+// by the server — callers must not mutate the underlying rules.
+func (s *Server) currentACLs() *ACLs {
+	return s.acls.Load()
 }
 
 // Mount opens the FUSE connection and mounts at cfg.MountPoint.
@@ -125,6 +149,7 @@ func Mount(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("fusefs: mount %s: %w", cfg.MountPoint, err)
 	}
 	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit)}
+	s.SetACLs(cfg.ACLs)
 	if cfg.Remote != nil {
 		ttl := cfg.RemoteStatTTL
 		if ttl == 0 {
@@ -305,7 +330,7 @@ func (n *node) absPath() string {
 }
 
 func (n *node) access() Access {
-	return n.s.cfg.ACLs.Eval(n.absPath())
+	return n.s.currentACLs().Eval(n.absPath())
 }
 
 // childAbs returns the agent-visible absolute path of a child file
@@ -443,7 +468,7 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		for _, info := range infos {
 			name := path.Base(info.Path)
 			childAbs := n.childAbs(name)
-			if n.s.cfg.ACLs.Eval(childAbs) == AccessDeny {
+			if n.s.currentACLs().Eval(childAbs) == AccessDeny {
 				continue
 			}
 			t := fuse.DT_File
@@ -466,7 +491,7 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	// blank the entire listing.
 	if entries, err := os.ReadDir(n.hostPath()); err == nil {
 		for _, e := range entries {
-			if n.s.cfg.ACLs.Eval(n.childAbs(e.Name())) == AccessDeny {
+			if n.s.currentACLs().Eval(n.childAbs(e.Name())) == AccessDeny {
 				continue
 			}
 			t := fuse.DT_File
@@ -732,7 +757,7 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	childAbs := n.childAbs(req.Name)
 	ac := n.s.beginAudit("remove", childAbs)
-	if n.s.cfg.ACLs.Eval(childAbs) != AccessRW {
+	if n.s.currentACLs().Eval(childAbs) != AccessRW {
 		ac.deny()
 		return syscall.EROFS
 	}
@@ -809,7 +834,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	oldAbs := n.childAbs(req.OldName)
 	newAbs := dst.childAbs(req.NewName)
 	ac := n.s.beginAudit("rename", oldAbs+" → "+newAbs)
-	if n.s.cfg.ACLs.Eval(oldAbs) != AccessRW || n.s.cfg.ACLs.Eval(newAbs) != AccessRW {
+	if n.s.currentACLs().Eval(oldAbs) != AccessRW || n.s.currentACLs().Eval(newAbs) != AccessRW {
 		ac.deny()
 		return syscall.EROFS
 	}

@@ -137,6 +137,12 @@ components:
             Exact host (`api.github.com`) or wildcard suffix
             (`*.pypi.org`).
           example: api.github.com
+        ports:
+          type: array
+          items: { type: integer }
+          description: |
+            Optional ports otherwise no port enforcement is performed.
+          example: [443]
         methods:
           type: array
           items: { $ref: '#/components/schemas/HttpMethod' }

@@ -279,6 +279,17 @@ func (s *Spec) Validate() error {
 			}
 		}
 	}
+	for i, e := range s.Egress.Allow {
+		ctx := fmt.Sprintf("egress.allow[%d]", i)
+		if strings.TrimSpace(e.Host) == "" {
+			return fmt.Errorf("%s.host is required", ctx)
+		}
+		for j, p := range e.Ports {
+			if p < 1 || p > 65535 {
+				return fmt.Errorf("%s.ports[%d]: %d out of range [1, 65535]", ctx, j, p)
+			}
+		}
+	}
 	return nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -76,6 +77,30 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// SIGHUP → reload the egress allowlist from -rules. sandboxd
+	// signals this after writing a fresh rules file in response to a
+	// /v1/config PUT. Re-reading from disk on each signal (vs. a
+	// passed-in pointer) keeps the on-wire contract simple and lets
+	// an operator hand-edit and SIGHUP for debugging.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				newRules, err := readRules(*rulesPath)
+				if err != nil {
+					log.Printf("sbxproxy: SIGHUP reload failed (keeping current rules): %v", err)
+					continue
+				}
+				p.SetAllow(newRules)
+				log.Printf("sbxproxy: reloaded %d rules from %s", len(newRules), *rulesPath)
+			}
+		}
+	}()
+
 	if *transparent {
 		log.Printf("sbxproxy listening (transparent) on %s, %d rules, mark=0x%x", *addr, len(rules), *mark)
 		if err := p.ServeTransparent(ctx, *addr); err != nil {
@@ -95,20 +120,31 @@ func main() {
 
 // loadRules reads a JSON-encoded []proxy.EgressRule. An empty path
 // yields a deny-everything proxy, which is the right default if the
-// orchestrator forgot to wire rules in.
+// orchestrator forgot to wire rules in. Errors are fatal — initial
+// load failures shouldn't be papered over.
 func loadRules(path string) []proxy.EgressRule {
+	rules, err := readRules(path)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	return rules
+}
+
+// readRules is the non-fatal sibling of loadRules; SIGHUP reloads use
+// it so a bad on-disk write doesn't crash the proxy.
+func readRules(path string) ([]proxy.EgressRule, error) {
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Fatalf("read rules: %v", err)
+		return nil, fmt.Errorf("read rules %s: %w", path, err)
 	}
 	var rules []proxy.EgressRule
 	if err := json.Unmarshal(data, &rules); err != nil {
-		log.Fatalf("parse rules: %v", err)
+		return nil, fmt.Errorf("parse rules %s: %w", path, err)
 	}
-	return rules
+	return rules, nil
 }
 
 // loadCA reads the PEM CA cert + key. Returns (nil, nil) when both

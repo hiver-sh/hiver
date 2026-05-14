@@ -155,6 +155,7 @@ func main() {
 	// audit log, mount point, and backend dir; remote backends also get
 	// their own oplog + uploader inside their own sbxfuse process so a
 	// stuck remote on one mount can't block writes to another.
+	fsSidecars := map[string]fsSidecar{}
 	for i := range sp.FS {
 		f := &sp.FS[i]
 		aclTmp := filepath.Join(*workDir, "acls-"+f.Slug()+".json")
@@ -199,7 +200,15 @@ func main() {
 			_ = fuseCmd.Process.Kill()
 			log.Fatalf("fuse did not mount %s: %v", f.Mount, err)
 		}
+		fsSidecars[f.Mount] = fsSidecar{pid: fuseCmd.Process.Pid, aclPath: aclTmp}
 	}
+
+	// Reconcile sidecar policy whenever the API publishes a
+	// config.apply event: re-derive egress rules + per-mount ACLs from
+	// the persisted config, rewrite the files each sidecar reads on
+	// SIGHUP, and signal. Sidecars keep the current policy on read
+	// errors so a half-written file can't relax access by accident.
+	go reconcileSidecars(ctx, broker, proxyCmd.Process.Pid, configPath, rulesTmp, fsSidecars)
 
 	// 3. Agent. Egress + workspace are now mediated.
 	//
@@ -432,6 +441,112 @@ func writeJSON(path string, v any) error {
 	return json.NewEncoder(f).Encode(v)
 }
 
+// fsSidecar identifies one sbxfuse process for the reconciler: the pid
+// we SIGHUP and the ACL file we rewrite for it.
+type fsSidecar struct {
+	pid     int
+	aclPath string
+}
+
+// reconcileSidecars subscribes to the broker and, for every successful
+// config.apply event, rewrites the on-disk policy files each sidecar
+// reads (sbxproxy's egress allowlist + each sbxfuse's per-mount ACLs)
+// and signals them with SIGHUP. We re-read the full config from disk
+// (rather than re-applying just the event's `changes` diff) so a
+// missed or out-of-order event can't leave a sidecar stuck on a stale
+// policy.
+//
+// fsSidecars is keyed by agent-visible mount path; FS entries in the
+// new config that don't match an existing sidecar are ignored — adding
+// or removing mounts at runtime isn't supported, and we lean
+// conservative ("don't quietly change something we can't enforce")
+// rather than try to start/stop sbxfuse processes mid-flight.
+func reconcileSidecars(ctx context.Context, broker *events.Broker, proxyPID int, configPath, rulesPath string, fsSidecars map[string]fsSidecar) {
+	ch, cancel := broker.Subscribe(0)
+	defer cancel()
+	for {
+		select {
+		case entry, ok := <-ch:
+			if !ok {
+				return
+			}
+			disc, err := entry.Event.Discriminator()
+			if err != nil || disc != "config.apply" {
+				continue
+			}
+			ev, err := entry.Event.AsConfigApplyEvent()
+			if err != nil || !ev.Success {
+				continue
+			}
+			cfg, err := readPersistedConfig(configPath)
+			if err != nil {
+				log.Printf("sandboxd: reconcile: %v", err)
+				continue
+			}
+			if err := writeEgressRules(rulesPath, cfg); err != nil {
+				log.Printf("sandboxd: reconcile egress: %v", err)
+			} else if err := syscall.Kill(proxyPID, syscall.SIGHUP); err != nil {
+				log.Printf("sandboxd: SIGHUP sbxproxy (pid=%d): %v", proxyPID, err)
+			}
+			for _, fs := range cfg.Fs {
+				sc, ok := fsSidecars[fs.Mount]
+				if !ok {
+					log.Printf("sandboxd: reconcile fs: no sidecar for mount %q (mount add/remove not supported)", fs.Mount)
+					continue
+				}
+				if err := writeACLsForMount(sc.aclPath, fs); err != nil {
+					log.Printf("sandboxd: reconcile acls (%s): %v", fs.Mount, err)
+					continue
+				}
+				if err := syscall.Kill(sc.pid, syscall.SIGHUP); err != nil {
+					log.Printf("sandboxd: SIGHUP sbxfuse (mount=%s pid=%d): %v", fs.Mount, sc.pid, err)
+					continue
+				}
+			}
+			log.Printf("sandboxd: reconciled sidecar policy from config (event id=%d)", entry.ID)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// readPersistedConfig reads the on-disk SandboxConfig JSON the API
+// server writes through.
+func readPersistedConfig(path string) (gen.SandboxConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return gen.SandboxConfig{}, fmt.Errorf("read config: %w", err)
+	}
+	var cfg gen.SandboxConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return gen.SandboxConfig{}, fmt.Errorf("parse config: %w", err)
+	}
+	return cfg, nil
+}
+
+// writeEgressRules writes cfg.Egress.Allow (or `[]` if absent) to
+// rulesPath in the JSON shape sbxproxy expects. gen.EgressRule and
+// proxy.EgressRule share their wire format, so no conversion is
+// needed — sbxproxy unmarshals into its own type.
+func writeEgressRules(rulesPath string, cfg gen.SandboxConfig) error {
+	allow := []gen.EgressRule{}
+	if cfg.Egress != nil && cfg.Egress.Allow != nil {
+		allow = *cfg.Egress.Allow
+	}
+	return writeJSON(rulesPath, allow)
+}
+
+// writeACLsForMount writes fs.Acls to aclPath in the JSON shape
+// sbxfuse expects. gen.ACLRule and fusefs.Rule share their wire
+// format.
+func writeACLsForMount(aclPath string, fs gen.FileSystem) error {
+	acls := []gen.ACLRule{}
+	if fs.Acls != nil {
+		acls = *fs.Acls
+	}
+	return writeJSON(aclPath, acls)
+}
+
 // writeInitialConfig persists sp to path in the gen.SandboxConfig JSON
 // shape that GET /v1/config serves. spec.Spec's JSON tags align with
 // gen.SandboxConfig's, so a marshal/unmarshal round-trip is enough —
@@ -457,19 +572,24 @@ func writeInitialConfig(path string, sp *spec.Spec) error {
 // the proxy transparent to the agent. Runs in the sandbox-pod's network
 // namespace, so the agent (which shares the netns) inherits these rules.
 //
-// Rule order matters:
-//  1. -m mark --mark <soMark> -j RETURN — proxy's upstream traffic is
-//     stamped with SO_MARK by the dialer in internal/proxy/mark_linux.go
-//     and must escape the redirect, otherwise the proxy talks to itself.
-//  2. -o lo -j RETURN — keep loopback traffic untouched (e.g. the proxy's
-//     own listener, future control sockets).
-//  3. -p tcp -j REDIRECT --to-ports <proxyPort> — everything else.
+// Loopback is NOT exempted: an in-pod listener like sandboxd's own API
+// server at 127.0.0.1:8080 is just another egress target, and the agent
+// must be subject to the same allowlist for it as for the public
+// internet. Sandboxd's own readiness-probe dial to the proxy address
+// works because the proxy's transparent handler detects "SO_ORIGINAL_DST
+// equals LocalAddr" (no real NAT happened) and bails out early.
+//
+// Rule order:
+//  1. -m mark --mark <soMark> -j RETURN — proxy- and sbxfuse-originated
+//     upstream traffic is stamped with SO_MARK so it escapes the
+//     redirect, otherwise the proxy talks to itself.
+//  2. -p tcp -j REDIRECT --to-ports <proxyPort> — everything else,
+//     loopback included.
 //
 // Requires CAP_NET_ADMIN; the sandbox-pod runs --privileged for now.
 func installIptables(ctx context.Context, proxyPort, soMark int) error {
 	rules := [][]string{
 		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", fmt.Sprintf("0x%x", soMark), "-j", "RETURN"},
-		{"-t", "nat", "-A", "OUTPUT", "-o", "lo", "-j", "RETURN"},
 		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-j", "REDIRECT", "--to-ports", fmt.Sprintf("%d", proxyPort)},
 	}
 	for _, args := range rules {

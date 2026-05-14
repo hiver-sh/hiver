@@ -168,6 +168,9 @@ type EgressRule struct {
 	// Paths Glob path patterns allowed by this rule. Empty means any
 	// path.
 	Paths *[]string `json:"paths,omitempty"`
+
+	// Ports Optional ports otherwise default ports are used.
+	Ports *[]int `json:"ports,omitempty"`
 }
 
 // Error defines model for Error.

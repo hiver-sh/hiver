@@ -128,7 +128,8 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	if host == "" {
 		host = origDst
 	}
-	rule := MatchEgress(p.cfg.Allow, "TLS", host, "")
+	_, port := splitHostPort("", origDst, 0)
+	rule := MatchEgress(p.currentAllow(), "TLS", host, port, "")
 	if rule == nil {
 		p.beginAudit("TLS", host, "").deny("no matching rule", 0)
 		return
@@ -212,7 +213,8 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		return
 	}
 	ac := p.beginAudit(req.Method, host, req.URL.Path)
-	rule := MatchEgress(p.cfg.Allow, req.Method, host, req.URL.Path)
+	_, port := splitHostPort("", origDst, 0)
+	rule := MatchEgress(p.currentAllow(), req.Method, host, port, req.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
 		_, _ = clientTLS.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
@@ -267,10 +269,14 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	if host == "" {
 		host = origDst
 	}
-	hostOnly := hostnameOf("", host)
+	hostOnly, _ := splitHostPort("", host, 0)
+	// The destination port comes from SO_ORIGINAL_DST, not the Host
+	// header — that's what the kernel will actually dial, and what
+	// the agent is being held to.
+	_, port := splitHostPort("", origDst, 0)
 
 	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path)
-	rule := MatchEgress(p.cfg.Allow, req.Method, hostOnly, req.URL.Path)
+	rule := MatchEgress(p.currentAllow(), req.Method, hostOnly, port, req.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
 		_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))

@@ -81,7 +81,7 @@ func TestLoadMissingRequired(t *testing.T) {
 		{"no mount", `{"fs":[{"backend":"local"}]}`, "mount"},
 		{"relative mount", `{"fs":[{"backend":"local","mount":"work"}]}`, "absolute path"},
 		{"duplicate mount", `{"fs":[{"backend":"local","mount":"/m"},{"backend":"local","mount":"/m"}]}`, "overlaps"},
-		{"prefix mount", `{"fs":[{"backend":"local","mount":"/m"},{"backend":"local","mount":"/m/sub"}]`, "overlaps"},
+		{"prefix mount", `{"fs":[{"backend":"local","mount":"/m"},{"backend":"local","mount":"/m/sub"}]}`, "overlaps"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

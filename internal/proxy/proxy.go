@@ -53,16 +53,19 @@ type Config struct {
 
 // EgressRule is one allow entry for outbound traffic.
 //
-// Host is required (exact, or "*.suffix" wildcard). Methods and Paths
-// are optional HTTP filters — an empty list means "any". Headers, when
-// set, are merged into the forwarded HTTP request via Header.Set
+// Host is required (exact, or "*.suffix" wildcard). Ports, Methods, and
+// Paths are optional filters — an empty list means "no enforcement on
+// this dimension" (any port / any method / any path matches). Headers,
+// when set, are merged into the forwarded HTTP request via Header.Set
 // (existing values are replaced).
 //
-// For TLS in transparent mode, only Host is consulted (the proxy can
-// read SNI from the ClientHello but not method/path under encryption);
+// For TLS in transparent mode, only Host and Ports are consulted (the
+// proxy can read SNI from the ClientHello and the destination port
+// from SO_ORIGINAL_DST, but not method/path under encryption);
 // Methods/Paths/Headers are ignored on those flows.
 type EgressRule struct {
 	Host    string            `json:"host"`
+	Ports   []int             `json:"ports,omitempty"`
 	Methods []string          `json:"methods,omitempty"`
 	Paths   []string          `json:"paths,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
@@ -104,10 +107,33 @@ type Proxy struct {
 	transport    *http.Transport
 	minter       *CertMinter // nil unless TLS termination is enabled
 
+	// allow holds the current allowlist, swappable at runtime via
+	// SetAllow so sandboxd can reconcile after a /v1/config PUT
+	// without restarting the proxy.
+	allow atomic.Pointer[[]EgressRule]
+
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
 
 	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
+}
+
+// SetAllow atomically replaces the egress allowlist. Safe to call from
+// any goroutine; in-flight matches see either the old or the new list,
+// never a torn read.
+func (p *Proxy) SetAllow(rules []EgressRule) {
+	cp := make([]EgressRule, len(rules))
+	copy(cp, rules)
+	p.allow.Store(&cp)
+}
+
+// currentAllow returns the live allowlist. The returned slice is
+// owned by the proxy — callers must not mutate it.
+func (p *Proxy) currentAllow() []EgressRule {
+	if r := p.allow.Load(); r != nil {
+		return *r
+	}
+	return nil
 }
 
 // New validates the config and returns a Proxy.
@@ -144,6 +170,7 @@ func New(cfg Config) (*Proxy, error) {
 	if cfg.CACert != nil && cfg.CAKey != nil {
 		p.minter = NewCertMinter(cfg.CACert, cfg.CAKey)
 	}
+	p.SetAllow(cfg.Allow)
 	return p, nil
 }
 
@@ -197,9 +224,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	host := hostnameOf(r.URL.Host, r.Host)
+	// Default port matches the URL scheme: explicit-proxy HTTP carries
+	// proxy-form URLs (http://… or https://…) and the scheme decides
+	// the default when the agent omits the port. Without scheme info
+	// fall back to 80.
+	defPort := 80
+	if r.URL.Scheme == "https" {
+		defPort = 443
+	}
+	host, port := splitHostPort(r.URL.Host, r.Host, defPort)
 	ac := p.beginAudit(r.Method, host, r.URL.Path)
-	rule := MatchEgress(p.cfg.Allow, r.Method, host, r.URL.Path)
+	rule := MatchEgress(p.currentAllow(), r.Method, host, port, r.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, "egress denied: "+host, http.StatusForbidden)
@@ -244,10 +279,12 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	host := hostnameOf("", r.Host)
+	// CONNECT always carries a port (e.g. "example.com:443"); 443 is
+	// only used as a safety net for malformed inputs.
+	host, port := splitHostPort("", r.Host, 443)
 	ac := p.beginAudit("CONNECT", host, "")
 	// CONNECT is host-only — body is opaque under TLS.
-	if MatchEgress(p.cfg.Allow, "CONNECT", host, "") == nil {
+	if MatchEgress(p.currentAllow(), "CONNECT", host, port, "") == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, "egress denied: "+host, http.StatusForbidden)
 		return
@@ -292,14 +329,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 // MatchEgress finds the first rule that matches a request, or nil if
 // none does. method and path may be "" for non-HTTP traffic (TLS,
-// CONNECT) — in that case only Host is matched.
-func MatchEgress(rules []EgressRule, method, host, path string) *EgressRule {
+// CONNECT) — in that case Method/Path are not enforced; Host and Port
+// still are. port=0 means "destination port unknown"; rules that pin
+// Ports will never match in that case.
+func MatchEgress(rules []EgressRule, method, host string, port int, path string) *EgressRule {
 	if host == "" {
 		return nil
 	}
 	for i := range rules {
 		r := &rules[i]
 		if !matchHost(r.Host, host) {
+			continue
+		}
+		if !matchPort(r.Ports, port) {
 			continue
 		}
 		if path == "" {
@@ -326,6 +368,20 @@ func matchHost(pat, host string) bool {
 	}
 	if strings.HasPrefix(pat, "*.") && strings.HasSuffix(host, pat[1:]) {
 		return true
+	}
+	return false
+}
+
+// matchPort reports whether port is permitted by the rule. An empty
+// allowed list means "no port enforcement" — any port matches.
+func matchPort(allowed []int, port int) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, a := range allowed {
+		if a == port {
+			return true
+		}
 	}
 	return false
 }
@@ -440,18 +496,24 @@ func (a *auditCtx) responseError(reason string, status int) {
 	})
 }
 
-func hostnameOf(urlHost, reqHost string) string {
+// splitHostPort returns the hostname and port from one of urlHost
+// (proxy-form, may be empty) or reqHost (Host header). If neither
+// carries a port, defaultPort is returned. defaultPort=0 means
+// "unknown" — port-based matching against that value will only succeed
+// for rules without a Ports filter.
+func splitHostPort(urlHost, reqHost string, defaultPort int) (string, int) {
 	h := urlHost
 	if h == "" {
 		h = reqHost
 	}
-	// Strip port if present.
 	if i := strings.LastIndex(h, ":"); i >= 0 && !strings.Contains(h[i:], "]") {
-		// Rough IPv6-aware split;
-		host, _, err := net.SplitHostPort(h)
+		host, portStr, err := net.SplitHostPort(h)
 		if err == nil {
-			return host
+			if port, err := strconv.Atoi(portStr); err == nil {
+				return host, port
+			}
+			return host, defaultPort
 		}
 	}
-	return h
+	return h, defaultPort
 }

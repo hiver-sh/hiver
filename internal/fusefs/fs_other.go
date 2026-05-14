@@ -40,3 +40,6 @@ func (s *Server) Serve(ctx context.Context) error {
 
 // Unmount is a no-op stub.
 func (s *Server) Unmount() error { return nil }
+
+// SetACLs is a no-op stub.
+func (s *Server) SetACLs(a *ACLs) {}

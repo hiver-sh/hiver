@@ -28,61 +28,9 @@ const (
 // streamable HTTP MCP endpoint with the Go SDK client, exercising one
 // call per registered tool.
 func TestMcpServerE2E(t *testing.T) {
-	setup.RequireDocker(t)
-
-	token := setup.GetEnv("HIVE_GDRIVE_ACCESS_TOKEN")
-	if token == "" {
-		t.Skip("set HIVE_GDRIVE_ACCESS_TOKEN [+ HIVE_GDRIVE_FOLDER_ID] to run")
-	}
-
-	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures", fixtureName))
-	if err != nil {
-		t.Fatalf("abs fixture dir: %v", err)
-	}
-	sp, err := spec.Parse(filepath.Join(fixtureDir, "spec.yaml"))
-	if err != nil {
-		t.Fatalf("parse spec: %v", err)
-	}
-	gd := &sp.FS[0]
-	gd.GdriveAccessToken = token
-	gd.GdriveRefreshToken = setup.GetEnv("HIVE_GDRIVE_REFRESH_TOKEN")
-	gd.GdriveClientID = setup.GetEnv("HIVE_GDRIVE_CLIENT_ID")
-	gd.GdriveClientSecret = setup.GetEnv("HIVE_GDRIVE_CLIENT_SECRET")
-	gd.GdriveFolderID = setup.GetEnv("HIVE_GDRIVE_FOLDER_ID")
-	if err := sp.Validate(); err != nil {
-		t.Fatalf("validate: %v", err)
-	}
-	rendered, err := yaml.Marshal(sp)
-	if err != nil {
-		t.Fatalf("re-render spec: %v", err)
-	}
-	specPath := filepath.Join(t.TempDir(), "spec.yaml")
-	if err := os.WriteFile(specPath, rendered, 0o644); err != nil {
-		t.Fatalf("write spec: %v", err)
-	}
-
-	agentDir := sp.Agent.Image
-	if !filepath.IsAbs(agentDir) {
-		agentDir = filepath.Join(fixtureDir, agentDir)
-	}
-	buildContext := agentDir
-	if rel, err := filepath.Rel(fixtureDir, agentDir); err == nil && strings.HasPrefix(rel, "..") {
-		buildContext, err = filepath.Abs(moduleRoot)
-		if err != nil {
-			t.Fatalf("abs module root: %v", err)
-		}
-	}
-	agentImage := "sandbox-" + fixtureName + ":e2e"
-	setup.BuildImages(t, agentDir, buildContext, agentImage)
-	agentTar := setup.SaveAgentImage(t, agentImage)
-
-	pod := startMCPPod(t, agentTar, specPath)
+	pod, session, ctx, cancel := startMcpFixture(t)
 	defer pod.stop()
-
-	mcpURL := "http://127.0.0.1:8081/v1/mcp"
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	session := connectMCP(t, ctx, mcpURL, &pod.out)
 	defer session.Close()
 
 	t.Run("bash_ls_workspace", func(t *testing.T) {
@@ -170,6 +118,69 @@ func TestMcpServerE2E(t *testing.T) {
 	})
 }
 
+// startMcpFixture builds the mcp-server fixture, starts the pod, and
+// connects an MCP client session. Skips the test when the fixture's
+// gdrive credentials aren't in the env. The returned pod publishes
+// :8081 (MCP) and :8080 (sandboxd API); the caller is responsible for
+// stop(), cancel(), and session.Close().
+func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context, context.CancelFunc) {
+	t.Helper()
+	setup.RequireDocker(t)
+
+	token := setup.GetEnv("HIVE_GDRIVE_ACCESS_TOKEN")
+	if token == "" {
+		t.Skip("set HIVE_GDRIVE_ACCESS_TOKEN [+ HIVE_GDRIVE_FOLDER_ID] to run")
+	}
+
+	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures", fixtureName))
+	if err != nil {
+		t.Fatalf("abs fixture dir: %v", err)
+	}
+	sp, err := spec.Parse(filepath.Join(fixtureDir, "spec.yaml"))
+	if err != nil {
+		t.Fatalf("parse spec: %v", err)
+	}
+	gd := &sp.FS[0]
+	gd.GdriveAccessToken = token
+	gd.GdriveRefreshToken = setup.GetEnv("HIVE_GDRIVE_REFRESH_TOKEN")
+	gd.GdriveClientID = setup.GetEnv("HIVE_GDRIVE_CLIENT_ID")
+	gd.GdriveClientSecret = setup.GetEnv("HIVE_GDRIVE_CLIENT_SECRET")
+	gd.GdriveFolderID = setup.GetEnv("HIVE_GDRIVE_FOLDER_ID")
+	if err := sp.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	rendered, err := yaml.Marshal(sp)
+	if err != nil {
+		t.Fatalf("re-render spec: %v", err)
+	}
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	if err := os.WriteFile(specPath, rendered, 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	agentDir := sp.Agent.Image
+	if !filepath.IsAbs(agentDir) {
+		agentDir = filepath.Join(fixtureDir, agentDir)
+	}
+	buildContext := agentDir
+	if rel, err := filepath.Rel(fixtureDir, agentDir); err == nil && strings.HasPrefix(rel, "..") {
+		buildContext, err = filepath.Abs(moduleRoot)
+		if err != nil {
+			t.Fatalf("abs module root: %v", err)
+		}
+	}
+	agentImage := "sandbox-" + fixtureName + ":e2e"
+	setup.BuildImages(t, agentDir, buildContext, agentImage)
+	agentTar := setup.SaveAgentImage(t, agentImage)
+
+	pod := startMCPPod(t, agentTar, specPath)
+
+	mcpURL := "http://127.0.0.1:8081/v1/mcp"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	session := connectMCP(t, ctx, mcpURL, &pod.out)
+	return pod, session, ctx, cancel
+}
+
 // mcpPod is a running sandbox-pod whose agent is the MCP server. The
 // caller must invoke stop() at the end of the test.
 type mcpPod struct {
@@ -178,9 +189,10 @@ type mcpPod struct {
 }
 
 // startMCPPod runs sandbox-runtime with the MCP agent and publishes
-// 8081 to the host. Unlike runSandboxPod it doesn't wait for any
-// agent-side "DONE" marker — the readiness check is "MCP server
-// answers initialize", which the caller does via connectMCP.
+// :8081 (MCP) plus :8080 (sandboxd API) to the host. Unlike
+// runSandboxPod it doesn't wait for any agent-side "DONE" marker —
+// the readiness check is "MCP server answers initialize", which the
+// caller does via connectMCP.
 func startMCPPod(t *testing.T, agentTar, specPath string) *mcpPod {
 	t.Helper()
 
@@ -196,6 +208,7 @@ func startMCPPod(t *testing.T, agentTar, specPath string) *mcpPod {
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8081:8081",
+		"-p", "8080:8080",
 		"-v", agentTar + ":/mnt/agent.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
 		sandboxRuntimeImage,
