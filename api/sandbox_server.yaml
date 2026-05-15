@@ -1,12 +1,11 @@
 openapi: 3.0.0
 info:
-  title: Hive Sandbox API
+  title: Sandbox API
   version: 0.0.1
   summary: Manage a sandbox's file systems and network egress declaratively.
   description: |
-    The Hive API exposes a single declarative configuration
-    document — `SandboxConfig` — that fully describes what an agent
-    running inside the sandbox can see and reach. Submit the desired
+    The Sandbox API exposes a single declarative configuration
+    document — `SandboxConfig. Submit the desired
     configuration and the API computes the minimum set of changes
     required to converge the running sandbox to that state.
 

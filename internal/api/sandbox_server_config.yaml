@@ -4,7 +4,7 @@ generate:
   gin-server: true
   models: true
   embedded-spec: true
-output: ./gen/server.gen.go
+output: ./gen/sandbox_server.gen.go
 output-options:
   skip-prune: true
 import-mapping:

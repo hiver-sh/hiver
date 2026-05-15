@@ -307,6 +307,8 @@ type SandboxConfig struct {
 	Image *string `json:"image,omitempty"`
 
 	// Ttl Sandbox time to live in seconds. The client must ping the sandbox using the /v1/ping endpoint to reset the timer. Once a ping has not been received for as long as this value, the sandbox will receive a SIGTERM and begin shutdown.
+	// The default is 30 min or 1800 seconds.
+	// Use `0` to disable shutdown.
 	Ttl *int `json:"ttl,omitempty"`
 }
 
