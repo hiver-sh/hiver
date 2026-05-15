@@ -1,5 +1,4 @@
-agent:
-  image: .
+image: .
 
 fs:
   - backend: gdrive

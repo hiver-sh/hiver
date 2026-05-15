@@ -17,12 +17,13 @@ import (
 )
 
 type Handlers struct {
-	broker *events.Broker
-	store  *ConfigStore
+	broker   *events.Broker
+	store    *ConfigStore
+	lifetime *Lifetime
 }
 
-func NewHandlers(broker *events.Broker, store *ConfigStore) *Handlers {
-	return &Handlers{broker: broker, store: store}
+func NewHandlers(broker *events.Broker, store *ConfigStore, lifetime *Lifetime) *Handlers {
+	return &Handlers{broker: broker, store: store, lifetime: lifetime}
 }
 
 func (h *Handlers) GetConfig(c *gin.Context) {
@@ -296,6 +297,15 @@ func (h *Handlers) GetEvents(c *gin.Context, params gen.GetEventsParams) {
 			return
 		}
 	}
+}
+
+// Ping resets the sandbox shutdown timer. Once `ttl` seconds elapse
+// without a ping, sandboxd cancels its lifecycle context, which kicks
+// off the same graceful-shutdown chain a SIGTERM would (per the
+// /v1/config Ttl description).
+func (h *Handlers) Ping(c *gin.Context) {
+	h.lifetime.Reset()
+	c.Status(http.StatusOK)
 }
 
 // writeSSEFrame emits a single SSE event:

@@ -20,25 +20,11 @@ import (
 
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
-	Agent  Agent  `json:"agent"`
-	FS     []FS   `json:"fs"`
-	Egress Egress `json:"egress"`
-}
-
-// Agent describes the workload sandboxd will launch once the sidecars are up.
-//
-// image is the host-side directory containing the agent's Dockerfile.
-// It's the orchestrator's hint for where to build the agent image from
-// — sandboxd itself doesn't read it, since by the time sandboxd starts
-// the orchestrator has already built + saved the image to the fixed
-// in-container path [AgentImageTar]. Relative paths are resolved
-// against the directory of the spec file.
-//
-// Env are extra KEY=VAL entries appended to the env that comes from the
-// agent image's own config (image entrypoint + image env are honored).
-type Agent struct {
-	Image string   `json:"image,omitempty"`
-	Env   []string `json:"env,omitempty"`
+	Image  string   `json:"image,omitempty"`
+	Ttl    *int     `json:"ttl,omitempty"`
+	Env    []string `json:"env,omitempty"`
+	FS     []FS     `json:"fs"`
+	Egress Egress   `json:"egress"`
 }
 
 // AgentImageTar is the in-container path sandboxd reads the agent's

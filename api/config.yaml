@@ -6,8 +6,29 @@ components:
       required: [fs]
       additionalProperties: false
       properties:
-        agent:
-          $ref: '#/components/schemas/Agent'
+        image:
+          type: string
+          description: Reference to the agent image to launch.
+          example: my-agent:latest
+        env:
+          type: array
+          items:
+            type: string
+          description: Additional environment variables in `KEY=VALUE` form.
+          example: ["LOG_LEVEL=info", "REGION=us-east-1"]
+        ttl:
+          type: integer
+          minimum: 0
+          default: 1800
+          description: >
+            Sandbox time to live in seconds. The client must ping the sandbox using the
+            /v1/ping endpoint to reset the timer. Once a ping has not been received for
+            as long as this value, the sandbox will receive a SIGTERM and begin shutdown.
+
+            The default is 30 min or 1800 seconds.
+
+            Use `0` to disable shutdown.
+          example: 1800
         fs:
           type: array
           minItems: 1

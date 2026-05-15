@@ -1,5 +1,4 @@
-agent:
-  image: ../../../../cmd/mcpserver
+image: ../../../../cmd/mcpserver
 
 fs:
   - backend: gdrive

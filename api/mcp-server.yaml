@@ -8,7 +8,7 @@ info:
 
 servers:
   - url: http://localhost:8081
-    description: Default MCP server endpoint.
+    description: MCP server endpoint.
 
 paths:
   /v1/mcp:

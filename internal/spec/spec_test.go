@@ -23,7 +23,7 @@ func writeFile(p, body string) error {
 
 func TestLoadValid(t *testing.T) {
 	p := writeSpec(t, `{
-		"agent":  {"env": ["FOO=bar"]},
+		"env": ["FOO=bar"],
 		"fs":     [{"backend": "local", "mount": "/work",
 		            "acls": [{"path": "/work", "access": "rw"}]}],
 		"egress": {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]}
@@ -32,8 +32,8 @@ func TestLoadValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(s.Agent.Env) != 1 {
-		t.Errorf("agent: %+v", s.Agent)
+	if len(s.Env) != 1 {
+		t.Errorf("env: %+v", s.Env)
 	}
 	if len(s.FS) != 1 || s.FS[0].Mount != "/work" || len(s.FS[0].ACLs) != 1 {
 		t.Errorf("fs: %+v", s.FS)

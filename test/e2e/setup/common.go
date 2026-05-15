@@ -108,17 +108,17 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 		}
 		t.Logf("rendered spec at %s:\n%s", specPath, redactSecrets(string(rendered)))
 	}
-	agentDir := sp.Agent.Image
-	if !filepath.IsAbs(agentDir) {
-		agentDir = filepath.Join(fixtureDir, agentDir)
+	imageDir := sp.Image
+	if !filepath.IsAbs(imageDir) {
+		imageDir = filepath.Join(fixtureDir, imageDir)
 	}
 	// When the fixture points `image:` outside its own directory (e.g.
 	// `../../../cmd/mcp` to reuse a binary from the repo), the Dockerfile
 	// at that path likely needs the module root as its build context so
 	// it can see go.mod and the source tree. For self-contained fixtures
 	// (image: .) the fixture dir IS the build context, as before.
-	buildContext := agentDir
-	if rel, err := filepath.Rel(fixtureDir, agentDir); err == nil && strings.HasPrefix(rel, "..") {
+	buildContext := imageDir
+	if rel, err := filepath.Rel(fixtureDir, imageDir); err == nil && strings.HasPrefix(rel, "..") {
 		buildContext, err = filepath.Abs(moduleRoot)
 		if err != nil {
 			t.Fatalf("abs module root: %v", err)
@@ -126,7 +126,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	}
 
 	agentImage := "sandbox-" + fixtureName + ":e2e"
-	BuildImages(t, agentDir, buildContext, agentImage)
+	BuildImages(t, imageDir, buildContext, agentImage)
 	agentTar := SaveAgentImage(t, agentImage)
 
 	// Start the two host-side upstreams on the ports the fixture spec

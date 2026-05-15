@@ -39,7 +39,11 @@ import (
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
 )
 
-const mountReadTimout = 35 * time.Second
+const (
+	defaultTtl = 1800 * time.Second
+
+	mountReadTimout = 35 * time.Second
+)
 
 func main() {
 	var (
@@ -75,12 +79,36 @@ func main() {
 		log.Fatalf("write initial config %s: %v", configPath, err)
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	// The broker is the single fan-out point for the SSE `/v1/events`
 	// stream. Sidecar audit events arrive over the per-child socketpair
 	// (see startSidecar), get translated to SandboxEvent shape, and
 	// Publish'd here; api.NewServer hands subscribers to the SSE handler.
 	broker := events.New(events.DefaultCapacity, 0)
-	s := api.NewServer(*apiServerPort, broker, configPath)
+	store := api.NewConfigStore(configPath)
+	// Lifetime expires the sandbox if /v1/ping isn't called within
+	// SandboxConfig.Ttl seconds. ttlFn samples the current config on
+	// every tick so a /v1/config update changes the deadline without
+	// a restart; nil/0 disables the check, matching configs that omit
+	// Ttl. On expiry we cancel the lifecycle context — same shutdown
+	// path SIGTERM takes.
+	lifetime := api.NewLifetime(
+		func() time.Duration {
+			cfg, err := store.Get()
+			if err != nil || cfg.Ttl == nil {
+				return defaultTtl
+			}
+			return time.Duration(*cfg.Ttl) * time.Second
+		},
+		func() {
+			log.Println("sandboxd: TTL elapsed since last /v1/ping, shutting down")
+			cancel()
+		},
+	)
+	go lifetime.Run(ctx)
+	s := api.NewServer(*apiServerPort, broker, store, lifetime)
 	go s.ListenAndServe()
 
 	for i := range sp.FS {
@@ -92,9 +120,6 @@ func main() {
 			log.Fatalf("create backend %s: %v", f.BackendPath(), err)
 		}
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	proxyPort, err := freePort()
 	if err != nil {
@@ -283,7 +308,7 @@ func main() {
 	if err := runc.WriteConfig(runc.BundleParams{
 		BundleDir:   bundleDir,
 		ImageConfig: imgCfg,
-		ExtraEnv:    sp.Agent.Env,
+		ExtraEnv:    sp.Env,
 		Hostname:    "agent",
 		Mounts:      mounts,
 	}); err != nil {

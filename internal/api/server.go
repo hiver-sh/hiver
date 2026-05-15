@@ -12,7 +12,7 @@ import (
 	"github.com/sandbox-platform/agent-sandbox/internal/events"
 )
 
-func NewServer(port string, broker *events.Broker, configPath string) *http.Server {
+func NewServer(port string, broker *events.Broker, store *ConfigStore, lifetime *Lifetime) *http.Server {
 	swagger, err := gen.GetSpec()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading swagger spec: %s", err)
@@ -24,7 +24,7 @@ func NewServer(port string, broker *events.Broker, configPath string) *http.Serv
 	r.Use(allowAllCORS)
 	r.Use(middleware.OapiRequestValidator(swagger))
 
-	h := NewHandlers(broker, NewConfigStore(configPath))
+	h := NewHandlers(broker, store, lifetime)
 	gen.RegisterHandlers(r, h)
 
 	s := &http.Server{

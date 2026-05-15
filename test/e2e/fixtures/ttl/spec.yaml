@@ -1,0 +1,9 @@
+image: ../../../../cmd/mcpserver
+ttl: 5
+
+fs:
+  - backend: local
+    mount: /workspace
+    acls:
+      - { path: /workspace,    access: rw }
+      - { path: /workspace/**, access: rw }

@@ -12,7 +12,7 @@ info:
 
 servers:
   - url: http://localhost:8080
-    description: Default sandbox control endpoint.
+    description: Sandbox config endpoint.
 
 tags:
   - name: Configuration
@@ -91,7 +91,6 @@ paths:
           content:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
-
 
   /v1/file:
     get:
@@ -258,3 +257,13 @@ paths:
                 description: |
                   Server-Sent Events stream. Each `data:` payload is a
                   JSON-encoded `SandboxEvent`.
+
+  /v1/ping:
+    get:
+      tags: [Configuration]
+      summary: Send a ping to the sandbox.
+      operationId: Ping
+      description: Resets the sandbox shutdown timer.
+      responses:
+        '200':
+          description: Ping received.

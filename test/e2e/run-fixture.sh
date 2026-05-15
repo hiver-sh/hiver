@@ -48,14 +48,9 @@ if [[ ! -f "${fixture_dir}/spec.yaml" ]]; then
   exit 1
 fi
 
-# Resolve agent.image from spec.yaml. Defaults to "." (build the
-# fixture-local Dockerfile). When it points outside the fixture dir
-# (e.g. ../../../cmd/mcp), the Dockerfile at that path likely needs
-# the module root as build context — match common.go's rule.
+# Resolve image from spec.yaml.
 image_value="$(awk '
-  /^agent:/ { in_agent=1; next }
-  in_agent && /^[^ \t]/ { in_agent=0 }
-  in_agent && $1 == "image:" { print $2; exit }
+  /^image:/ { print $2; exit }
 ' "${fixture_dir}/spec.yaml")"
 image_value="${image_value:-.}"
 agent_dir="$(cd "${fixture_dir}/${image_value}" && pwd)"

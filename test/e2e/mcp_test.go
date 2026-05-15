@@ -158,7 +158,7 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 		t.Fatalf("write spec: %v", err)
 	}
 
-	agentDir := sp.Agent.Image
+	agentDir := sp.Image
 	if !filepath.IsAbs(agentDir) {
 		agentDir = filepath.Join(fixtureDir, agentDir)
 	}

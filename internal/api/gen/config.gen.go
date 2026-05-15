@@ -292,17 +292,22 @@ type LocalFileSystemBackend string
 
 // SandboxConfig A complete sandbox configuration.
 type SandboxConfig struct {
-	// Agent The workload that runs inside the sandbox. Defined at sandbox
-	// creation time and not modifiable through this API.
-	Agent *Agent `json:"agent,omitempty"`
-
 	// Egress Network egress configuration.
 	Egress *Egress `json:"egress,omitempty"`
+
+	// Env Additional environment variables in `KEY=VALUE` form.
+	Env *[]string `json:"env,omitempty"`
 
 	// Fs One or more file systems exposed to the agent. Mount paths
 	// must be unique and non-overlapping (a mount path may not
 	// be a parent directory of another mount path).
 	Fs []FileSystem `json:"fs"`
+
+	// Image Reference to the agent image to launch.
+	Image *string `json:"image,omitempty"`
+
+	// Ttl Sandbox time to live in seconds. The client must ping the sandbox using the /v1/ping endpoint to reset the timer. Once a ping has not been received for as long as this value, the sandbox will receive a SIGTERM and begin shutdown.
+	Ttl *int `json:"ttl,omitempty"`
 }
 
 // AsLocalFileSystem returns the union data inside the FileSystem as a LocalFileSystem
