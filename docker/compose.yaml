@@ -1,0 +1,9 @@
+name: hive
+
+services:
+  controller:
+    build:
+      context: ..
+      dockerfile: docker/controller.Dockerfile
+    ports:
+      - "9000:9000"

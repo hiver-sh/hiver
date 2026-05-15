@@ -12,7 +12,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sandbox-platform/agent-sandbox/internal/api"
-	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
+
+	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 )
 
 // TestConfigE2E exercises `GET /v1/config` and `PUT /v1/config`

@@ -48,22 +48,33 @@ if [[ ! -f "${fixture_dir}/spec.yaml" ]]; then
   exit 1
 fi
 
-# Resolve image from spec.yaml.
+# Resolve image from spec.yaml. `image:` may be either a directory
+# containing a Dockerfile (e.g. `.`) or the Dockerfile itself
+# (e.g. `../../../../docker/mcpserver.Dockerfile`).
 image_value="$(awk '
   /^image:/ { print $2; exit }
 ' "${fixture_dir}/spec.yaml")"
 image_value="${image_value:-.}"
-agent_dir="$(cd "${fixture_dir}/${image_value}" && pwd)"
-if [[ ! -f "${agent_dir}/Dockerfile" ]]; then
-  echo "agent image dir is missing Dockerfile: ${agent_dir}" >&2
+image_path="$(cd "${fixture_dir}" && cd "$(dirname "${image_value}")" && pwd)/$(basename "${image_value}")"
+if [[ -d "${image_path}" ]]; then
+  dockerfile="${image_path}/Dockerfile"
+elif [[ -f "${image_path}" ]]; then
+  dockerfile="${image_path}"
+else
+  echo "image path not found: ${image_path}" >&2
   exit 1
 fi
-build_context="${agent_dir}"
+if [[ ! -f "${dockerfile}" ]]; then
+  echo "sandbox Dockerfile not found: ${dockerfile}" >&2
+  exit 1
+fi
+sandbox_dir="$(dirname "${dockerfile}")"
+build_context="${sandbox_dir}"
 case "${image_value}" in
   ..*) build_context="${module_root}" ;;
 esac
 
-agent_image="sandbox-${fixture}:e2e"
+sandbox_image="sandbox-${fixture}:e2e"
 container_name="sandbox-pod-${fixture}"
 
 # Detect the FS backend from the fixture's spec. Cheap parse instead of
@@ -116,10 +127,11 @@ if [[ "${spec_backend}" == "gdrive" ]]; then
 fi
 
 echo "==> Building sandbox-runtime"
-docker build -t sandbox-runtime "${module_root}"
+docker build -t sandbox-runtime -f "${module_root}/docker/sandbox.Dockerfile" "${module_root}"
 
-echo "==> Building agent image: ${agent_image}"
-docker build -t "${agent_image}" -f "${agent_dir}/Dockerfile" "${build_context}"
+echo "==> Building sandbox image: ${sandbox_image}"
+
+docker build -t "${sandbox_image}" -f "${dockerfile}" "${build_context}"
 
 # Forward every port the agent's Dockerfile EXPOSEs to the host. Each
 # EXPOSE line may carry multiple ports, optionally suffixed /tcp or
@@ -133,13 +145,13 @@ done < <(awk '
   toupper($1) == "EXPOSE" {
     for (i=2; i<=NF; i++) print $i
   }
-' "${agent_dir}/Dockerfile")
+' "${dockerfile}")
 
 # docker save → tarball that sandboxd will unpack inside the pod.
 staging_dir="$(mktemp -d -t sandbox-staging-XXXXXX)"
-agent_tar="${staging_dir}/agent.tar"
-echo "==> Saving agent image to ${agent_tar}"
-docker save -o "${agent_tar}" "${agent_image}"
+sandbox_tar="${staging_dir}/sandbox.tar"
+echo "==> Saving sandbox image to ${sandbox_tar}"
+docker save -o "${sandbox_tar}" "${sandbox_image}"
 
 # Tear down any previous run of the same fixture.
 if docker inspect "${container_name}" >/dev/null 2>&1; then
@@ -170,7 +182,7 @@ docker run -d --rm \
   -p 8080:8080 \
   ${expose_args[@]+"${expose_args[@]}"} \
   ${docker_env_args[@]+"${docker_env_args[@]}"} \
-  -v "${agent_tar}:/mnt/agent.tar:ro" \
+  -v "${sandbox_tar}:/mnt/sandbox.tar:ro" \
   -v "${fixture_dir}/spec.yaml:/mnt/spec.yaml:ro" \
   sandbox-runtime \
   --spec /mnt/spec.yaml >/dev/null
@@ -224,7 +236,7 @@ sandbox-pod is still running.
   exec cmd      curl -d 'uname -a; ls /workspace' http://localhost:18000/exec
   stop          docker kill ${container_name}
 
-Host-side staging (agent.tar, ops log) lives in ${staging_dir}.
+Host-side staging (sandbox.tar, ops log) lives in ${staging_dir}.
 EOF
 
 if [[ "${fixture}" == "mcp-server" ]]; then

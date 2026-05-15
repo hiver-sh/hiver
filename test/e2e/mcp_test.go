@@ -158,20 +158,20 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 		t.Fatalf("write spec: %v", err)
 	}
 
-	agentDir := sp.Image
-	if !filepath.IsAbs(agentDir) {
-		agentDir = filepath.Join(fixtureDir, agentDir)
+	sandboxDir := sp.Image
+	if !filepath.IsAbs(sandboxDir) {
+		sandboxDir = filepath.Join(fixtureDir, sandboxDir)
 	}
-	buildContext := agentDir
-	if rel, err := filepath.Rel(fixtureDir, agentDir); err == nil && strings.HasPrefix(rel, "..") {
+	buildContext := sandboxDir
+	if rel, err := filepath.Rel(fixtureDir, sandboxDir); err == nil && strings.HasPrefix(rel, "..") {
 		buildContext, err = filepath.Abs(moduleRoot)
 		if err != nil {
 			t.Fatalf("abs module root: %v", err)
 		}
 	}
-	agentImage := "sandbox-" + fixtureName + ":e2e"
-	setup.BuildImages(t, agentDir, buildContext, agentImage)
-	agentTar := setup.SaveAgentImage(t, agentImage)
+	sandboxImage := "sandbox-" + fixtureName + ":e2e"
+	setup.BuildImages(t, sandboxDir, buildContext, sandboxImage)
+	agentTar := setup.SaveSandboxImage(t, sandboxImage)
 
 	pod := startMCPPod(t, agentTar, specPath)
 
@@ -193,7 +193,7 @@ type mcpPod struct {
 // runSandboxPod it doesn't wait for any agent-side "DONE" marker —
 // the readiness check is "MCP server answers initialize", which the
 // caller does via connectMCP.
-func startMCPPod(t *testing.T, agentTar, specPath string) *mcpPod {
+func startMCPPod(t *testing.T, sandboxTar, specPath string) *mcpPod {
 	t.Helper()
 
 	containerName := fmt.Sprintf("sandbox-pod-mcp-e2e-%d", time.Now().UnixNano())
@@ -209,7 +209,7 @@ func startMCPPod(t *testing.T, agentTar, specPath string) *mcpPod {
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8081:8081",
 		"-p", "8080:8080",
-		"-v", agentTar + ":/mnt/agent.tar:ro",
+		"-v", sandboxTar + ":/mnt/sandbox.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
 		sandboxRuntimeImage,
 		"--spec", "/mnt/spec.yaml",

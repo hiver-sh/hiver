@@ -1,4 +1,4 @@
-image: ../../../../cmd/mcpserver
+image: ../../../../docker/mcpserver.Dockerfile
 
 fs:
   - backend: gdrive

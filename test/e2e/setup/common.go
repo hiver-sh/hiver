@@ -108,26 +108,36 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 		}
 		t.Logf("rendered spec at %s:\n%s", specPath, redactSecrets(string(rendered)))
 	}
-	imageDir := sp.Image
-	if !filepath.IsAbs(imageDir) {
-		imageDir = filepath.Join(fixtureDir, imageDir)
+	// `image:` may name either a directory containing a Dockerfile
+	// (e.g. `.`) or the Dockerfile itself (e.g.
+	// `../../../../docker/mcpserver.Dockerfile`). Resolve both shapes
+	// to the actual Dockerfile path before building.
+	imagePath := sp.Image
+	if !filepath.IsAbs(imagePath) {
+		imagePath = filepath.Join(fixtureDir, imagePath)
 	}
-	// When the fixture points `image:` outside its own directory (e.g.
-	// `../../../cmd/mcp` to reuse a binary from the repo), the Dockerfile
-	// at that path likely needs the module root as its build context so
-	// it can see go.mod and the source tree. For self-contained fixtures
-	// (image: .) the fixture dir IS the build context, as before.
-	buildContext := imageDir
-	if rel, err := filepath.Rel(fixtureDir, imageDir); err == nil && strings.HasPrefix(rel, "..") {
+	dockerfile := imagePath
+	if info, err := os.Stat(imagePath); err != nil {
+		t.Fatalf("stat image %q: %v", imagePath, err)
+	} else if info.IsDir() {
+		dockerfile = filepath.Join(imagePath, "Dockerfile")
+	}
+	// When the Dockerfile lives outside the fixture directory (e.g.
+	// `../../../../docker/mcpserver.Dockerfile` to reuse an image from
+	// the repo), it likely needs the module root as its build context
+	// so it can see go.mod and the source tree. For self-contained
+	// fixtures (image: .) the fixture dir IS the build context.
+	buildContext := filepath.Dir(dockerfile)
+	if rel, err := filepath.Rel(fixtureDir, dockerfile); err == nil && strings.HasPrefix(rel, "..") {
 		buildContext, err = filepath.Abs(moduleRoot)
 		if err != nil {
 			t.Fatalf("abs module root: %v", err)
 		}
 	}
 
-	agentImage := "sandbox-" + fixtureName + ":e2e"
-	BuildImages(t, imageDir, buildContext, agentImage)
-	agentTar := SaveAgentImage(t, agentImage)
+	sandboxImage := "sandbox-" + fixtureName + ":e2e"
+	BuildImages(t, dockerfile, buildContext, sandboxImage)
+	sandboxTar := SaveSandboxImage(t, sandboxImage)
 
 	// Start the two host-side upstreams on the ports the fixture spec
 	// pins. One is allowlisted (host-aliased to "upstream-allowed"),
@@ -136,7 +146,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	stopUpstream := startUpstreams(t)
 	defer stopUpstream()
 
-	pod := runSandboxPod(t, agentTar, specPath, cfg.DuringLifetime)
+	pod := runSandboxPod(t, sandboxTar, specPath, cfg.DuringLifetime)
 
 	// (1) Substring assertions against the pod's combined stdout/stderr.
 	// Expected lines live in the fixture's expectations.yaml so the
@@ -301,11 +311,11 @@ func RequireDocker(t *testing.T) {
 
 // BuildImages builds the two independent images this test needs:
 // sandbox-runtime (the pod, always at the module root) and the agent
-// image. The agent image's Dockerfile lives at agentDir/Dockerfile and
-// is built with buildContext as the docker build context — usually
-// agentDir itself, but moduleRoot for fixtures that reuse a Dockerfile
-// from elsewhere in the repo (see runFixtureE2E for the rule).
-func BuildImages(t *testing.T, agentDir, buildContext, agentImage string) {
+// image. dockerfile is the absolute path to the agent image's
+// Dockerfile; buildContext is the docker build context — usually the
+// Dockerfile's directory, but moduleRoot for fixtures that reuse a
+// Dockerfile from elsewhere in the repo (see runFixtureE2E for the rule).
+func BuildImages(t *testing.T, dockerfile, buildContext, agentImage string) {
 	t.Helper()
 	build := func(tag, contextDir string, extraArgs ...string) {
 		t.Helper()
@@ -320,17 +330,17 @@ func BuildImages(t *testing.T, agentDir, buildContext, agentImage string) {
 			t.Fatalf("docker build %s: %v\n%s", tag, err, out.String())
 		}
 	}
-	build(sandboxRuntimeImage, moduleRoot)
-	build(agentImage, buildContext, "-f", filepath.Join(agentDir, "Dockerfile"))
+	build(sandboxRuntimeImage, moduleRoot, "-f", filepath.Join(moduleRoot, "docker/sandbox.Dockerfile"))
+	build(agentImage, buildContext, "-f", dockerfile)
 }
 
-// SaveAgentImage runs `docker save` to produce a docker-archive tarball
-// of the named agent image. sandboxd unpacks this tar into an OCI
+// SaveSandboxImage runs `docker save` to produce a docker-archive tarball
+// of the named sandbox image. sandboxd unpacks this tar into an OCI
 // rootfs at container start. The path is returned so the test can
 // bind-mount it.
-func SaveAgentImage(t *testing.T, agentImage string) string {
+func SaveSandboxImage(t *testing.T, agentImage string) string {
 	t.Helper()
-	tarPath := filepath.Join(t.TempDir(), "agent.tar")
+	tarPath := filepath.Join(t.TempDir(), "sandbox.tar")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "save", "-o", tarPath, agentImage)
@@ -410,10 +420,10 @@ type podRun struct {
 	events []map[string]any
 }
 
-func runSandboxPod(t *testing.T, agentTar, specPath string, duringLifetime FixtureHook) podRun {
+func runSandboxPod(t *testing.T, sandboxTar, specPath string, duringLifetime FixtureHook) podRun {
 	t.Helper()
 	// 2 min outer deadline. The graceful-shutdown path adds ~25 s
-	// (sbxfuse drain + sandboxd WaitDelay) on top of the agent's
+	// (sbxfuse drain + sandboxd WaitDelay) on top of the sandbox's
 	// own runtime, so the previous 90 s budget was tight.
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -486,7 +496,7 @@ func runSandboxPod(t *testing.T, agentTar, specPath string, duringLifetime Fixtu
 		// Publish sandboxd's API server so the host-side e2e harness can
 		// subscribe to /v1/events while the workload runs.
 		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),
-		"-v", agentTar + ":/mnt/agent.tar:ro",
+		"-v", sandboxTar + ":/mnt/sandbox.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
 		sandboxRuntimeImage,
 		"--spec", "/mnt/spec.yaml",

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
+	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 )
 
 // DefaultCapacity is the number of recent events the broker keeps for

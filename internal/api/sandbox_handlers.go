@@ -12,21 +12,21 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
+	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 	"github.com/sandbox-platform/agent-sandbox/internal/events"
 )
 
-type Handlers struct {
+type SandboxHandlers struct {
 	broker   *events.Broker
 	store    *ConfigStore
 	lifetime *Lifetime
 }
 
-func NewHandlers(broker *events.Broker, store *ConfigStore, lifetime *Lifetime) *Handlers {
-	return &Handlers{broker: broker, store: store, lifetime: lifetime}
+func NewSandboxHandlers(broker *events.Broker, store *ConfigStore, lifetime *Lifetime) *SandboxHandlers {
+	return &SandboxHandlers{broker: broker, store: store, lifetime: lifetime}
 }
 
-func (h *Handlers) GetConfig(c *gin.Context) {
+func (h *SandboxHandlers) GetConfig(c *gin.Context) {
 	cfg, err := h.store.Get()
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -44,7 +44,7 @@ func (h *Handlers) GetConfig(c *gin.Context) {
 // delta, and returns the post-apply state. Policy enforcers (sbxfuse,
 // sbxproxy) subscribe to the event stream and reconcile their in-memory
 // rules from the delta — this handler does not call them directly.
-func (h *Handlers) ApplyConfig(c *gin.Context) {
+func (h *SandboxHandlers) ApplyConfig(c *gin.Context) {
 	var desired gen.SandboxConfig
 	if err := c.ShouldBindJSON(&desired); err != nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
@@ -105,7 +105,7 @@ func (h *Handlers) ApplyConfig(c *gin.Context) {
 // NOT apply. The API is a higher-privilege control surface than the
 // workload — operators seeding inputs over /v1/file should not have
 // to grant the agent rw on the same path.
-func (h *Handlers) UploadFile(c *gin.Context) {
+func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	destination := c.PostForm("destination")
 	if destination == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing form field: destination"})
@@ -180,7 +180,7 @@ func mountConfigured(cfg gen.SandboxConfig, dest string) bool {
 // Like UploadFile, the read is served from the host-side backend
 // directory and bypasses sbxfuse — the per-mount ACLs that gate the
 // agent do not apply.
-func (h *Handlers) GetFile(c *gin.Context, params gen.GetFileParams) {
+func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 	if params.Path == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
 		return
@@ -254,7 +254,7 @@ func (h *Handlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 // Resume semantics: prefer the SSE-standard `Last-Event-ID` header
 // (browsers send it automatically on EventSource reconnect); fall back
 // to the `lastEventId` query param.
-func (h *Handlers) GetEvents(c *gin.Context, params gen.GetEventsParams) {
+func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) {
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -303,7 +303,7 @@ func (h *Handlers) GetEvents(c *gin.Context, params gen.GetEventsParams) {
 // without a ping, sandboxd cancels its lifecycle context, which kicks
 // off the same graceful-shutdown chain a SIGTERM would (per the
 // /v1/config Ttl description).
-func (h *Handlers) Ping(c *gin.Context) {
+func (h *SandboxHandlers) Ping(c *gin.Context) {
 	h.lifetime.Reset()
 	c.Status(http.StatusOK)
 }

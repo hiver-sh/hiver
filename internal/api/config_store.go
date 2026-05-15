@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
+	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 )
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still

@@ -1,9 +1,11 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/HEAD/configuration-schema.json
-package: sandbox
+package: controller
 generate:
+  gin-server: true
   models: true
-output: ./gen/sandbox/events.gen.go
+  embedded-spec: true
+output: ./gen/controller/server.gen.go
 output-options:
   skip-prune: true
 import-mapping:
-  ./config.yaml: "-"
+  ./config.yaml: "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"

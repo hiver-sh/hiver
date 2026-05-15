@@ -32,11 +32,12 @@ import (
 	"time"
 
 	"github.com/sandbox-platform/agent-sandbox/internal/api"
-	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
 	"github.com/sandbox-platform/agent-sandbox/internal/events"
 	"github.com/sandbox-platform/agent-sandbox/internal/runc"
 	"github.com/sandbox-platform/agent-sandbox/internal/sandboxd"
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
+
+	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 )
 
 const (
@@ -85,9 +86,10 @@ func main() {
 	// The broker is the single fan-out point for the SSE `/v1/events`
 	// stream. Sidecar audit events arrive over the per-child socketpair
 	// (see startSidecar), get translated to SandboxEvent shape, and
-	// Publish'd here; api.NewServer hands subscribers to the SSE handler.
+	// Publish'd here; api.NewSandboxServer hands subscribers to the SSE handler.
 	broker := events.New(events.DefaultCapacity, 0)
 	store := api.NewConfigStore(configPath)
+
 	// Lifetime expires the sandbox if /v1/ping isn't called within
 	// SandboxConfig.Ttl seconds. ttlFn samples the current config on
 	// every tick so a /v1/config update changes the deadline without
@@ -108,7 +110,8 @@ func main() {
 		},
 	)
 	go lifetime.Run(ctx)
-	s := api.NewServer(*apiServerPort, broker, store, lifetime)
+
+	s := api.NewSandboxServer(*apiServerPort, broker, store, lifetime)
 	go s.ListenAndServe()
 
 	for i := range sp.FS {
@@ -254,9 +257,9 @@ func main() {
 	defer os.RemoveAll(bundleDir)
 	rootfsDir := filepath.Join(bundleDir, "rootfs")
 
-	imgCfg, err := runc.ExtractDockerArchive(spec.AgentImageTar, rootfsDir)
+	imgCfg, err := runc.ExtractDockerArchive(spec.SandboxImageTar, rootfsDir)
 	if err != nil {
-		log.Fatalf("unpack agent image %s: %v", spec.AgentImageTar, err)
+		log.Fatalf("unpack agent image %s: %v", spec.SandboxImageTar, err)
 	}
 	log.Printf("sandboxd: agent image unpacked to %s (entrypoint=%v)", rootfsDir, imgCfg.Entrypoint)
 

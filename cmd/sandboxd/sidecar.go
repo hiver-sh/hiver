@@ -14,8 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
 	"github.com/sandbox-platform/agent-sandbox/internal/events"
+
+	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 )
 
 // newEventsPair makes a connected socketpair for streaming JSON-line
