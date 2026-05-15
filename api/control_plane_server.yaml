@@ -1,0 +1,97 @@
+openapi: 3.0.0
+info:
+  title: Sandbox Control Plane API
+  version: 0.0.1
+  summary: Provision sandboxes on demand.
+  description: |
+    The control plane is the host-side API that creates sandboxes. Each
+    sandbox runs in its own pod and exposes its own per-sandbox API.
+    The control plane's only job is to create that pod from a `SandboxConfig`
+    and hand the caller back enough information to reach it.
+
+servers:
+  - url: http://localhost:9000
+    description: Control plane endpoint.
+
+tags:
+  - name: Sandboxes
+    description: Provision sandboxes.
+
+paths:
+  /v1/sandboxes/{id}:
+    put:
+      tags: [Sandboxes]
+      summary: Get or create a sandbox.
+      operationId: getOrCreateSandbox
+      description: |
+        Idempotent provision. If a sandbox with `id` already exists, it
+        is returned unchanged (`200 OK`) and the request body is
+        ignored. If not, a new sandbox is created from the supplied
+        `SandboxConfig` (`201 Created`) and returned.
+
+        Two callers racing on the same id will both observe the same
+        sandbox: whichever request creates it returns `201`, the other
+        returns `200` against the now-existing record.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: Caller-chosen unique identifier.
+          example: tenant-acme-build-42
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+            examples:
+              minimal:
+                summary: Local-only workspace
+                value:
+                  fs:
+                    - mount: /workspace
+                      backend: local
+                      acls:
+                        - { path: /workspace, access: rw }
+                        - { path: /workspace/**, access: rw }
+      responses:
+        '200':
+          description: |
+            A sandbox with `id` already existed; the existing record is
+            returned and the request body was ignored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sandbox' }
+        '201':
+          description: A new sandbox was created from the supplied config.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sandbox' }
+        '400':
+          description: The `id` or `SandboxConfig` is malformed.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
+components:
+  schemas:
+    Sandbox:
+      type: object
+      description: A provisioned sandbox.
+      required: [id, config, endpoint]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: The id supplied at creation.
+          example: tenant-acme-build-42
+        endpoint:
+          type: string
+          format: uri
+          description: |
+            Base URL of this sandbox's own API server. Append the paths
+            documented in `sandbox_server.yaml` (e.g. `/v1/config`,
+            `/v1/ping`, `/v1/file`) to issue per-sandbox calls.
+          example: http://10.0.0.42:8080
