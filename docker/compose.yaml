@@ -7,3 +7,22 @@ services:
       dockerfile: docker/controller.Dockerfile
     ports:
       - "9000:9000"
+    # The controller spawns sandbox containers via `docker` CLI calls
+    # against the host daemon. Mount the socket read-write so it can
+    # create/start/cp into containers in the `hive` project.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  sandbox-runtime:
+    image: sandbox-runtime
+    profiles: ["build"]
+    build:
+      context: ..
+      dockerfile: docker/sandbox.Dockerfile
+
+  mcp-server:
+    image: mcp-server
+    profiles: ["build"]
+    build:
+      context: ..
+      dockerfile: docker/mcpserver.Dockerfile

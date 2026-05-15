@@ -8,6 +8,7 @@ RUN CGO_ENABLED=0 go build -o /out/controller ./cmd/controller
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/controller /usr/local/bin/controller

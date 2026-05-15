@@ -7,6 +7,9 @@ help:
 
 build: $(CMDS) ## Build all cmd binaries into bin/
 
+build-containers: ## Build docker contrainers
+	docker compose -f docker/compose.yaml --profile build build sandbox-runtime mcp-server
+
 up: ## Start services
 	docker compose -f docker/compose.yaml up -d
 
