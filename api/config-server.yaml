@@ -17,6 +17,8 @@ servers:
 tags:
   - name: Configuration
     description: Read and apply the sandbox's configuration document.
+  - name: Files
+    description: Move file contents into the sandbox.
 
 paths:
   /v1/config:
@@ -90,6 +92,124 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
+
+  /v1/file:
+    get:
+      tags: [Files]
+      summary: Download a file from a sandbox mount.
+      operationId: getFile
+      description: |
+        Stream the contents of a single file living under one of the
+        configured `SandboxConfig.fs` mounts. The `path` query
+        parameter is the agent-visible absolute path (e.g.
+        `/workspace/data.csv`) and must resolve to a regular file
+        beneath one of the configured mount roots.
+
+        Like `POST /v1/file`, the read bypasses the destination
+        mount's ACLs — the control-plane is higher privilege than
+        the workload.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: |
+            Agent-visible absolute path to read. Must be inside one
+            of the configured `fs[].mount` directories.
+          example: /workspace/data.csv
+      responses:
+        '200':
+          description: The file contents.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: |
+                `attachment; filename="<basename>"`, where `<basename>`
+                is the last path component of `path`.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: The request is malformed (missing `path`, traversal, …).
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+        '404':
+          description: |
+            `path` is not under any configured mount, or no regular
+            file exists at the resolved location.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
+    post:
+      tags: [Files]
+      summary: Upload a file into a sandbox mount.
+      operationId: uploadFile
+      description: |
+        Upload a single file to a configured file system mount. The
+        `destination` field must exactly match one of the `mount`
+        paths in the active `SandboxConfig.fs`. The file is written
+        at `<destination>/<filename>`, where `<filename>` is the
+        basename of the uploaded file's `Content-Disposition`
+        `filename` parameter.
+
+        The write bypasses the destination mount's ACLs, so the per-path
+        rules that govern the agent's own filesystem access do not apply
+        here.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [destination, file]
+              properties:
+                destination:
+                  type: string
+                  description: |
+                    Mount path to write into. Must match a configured
+                    `fs[].mount` exactly.
+                  example: /workspace
+                file:
+                  type: string
+                  format: binary
+                  description: File contents.
+            encoding:
+              file:
+                contentType: application/octet-stream
+      responses:
+        '200':
+          description: File written.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, bytes]
+                additionalProperties: false
+                properties:
+                  path:
+                    type: string
+                    description: Absolute path the file was written to.
+                    example: /workspace/data.csv
+                  bytes:
+                    type: integer
+                    format: int64
+                    description: Number of bytes written.
+        '400':
+          description: The request is malformed (missing fields, wrong content type, …).
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+        '404':
+          description: The `destination` does not match any configured mount.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
 
   /v1/events:
     get:

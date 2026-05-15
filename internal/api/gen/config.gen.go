@@ -169,7 +169,7 @@ type EgressRule struct {
 	// path.
 	Paths *[]string `json:"paths,omitempty"`
 
-	// Ports Optional ports otherwise default ports are used.
+	// Ports Optional ports otherwise no port enforcement is performed.
 	Ports *[]int `json:"ports,omitempty"`
 }
 

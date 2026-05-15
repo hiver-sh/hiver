@@ -2,10 +2,13 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -89,6 +92,161 @@ func (h *Handlers) ApplyConfig(c *gin.Context) {
 		result.Error = &msg
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// UploadFile writes a multipart-uploaded file under one of the
+// configured FUSE mounts. The `destination` form field must match a
+// configured `fs[].mount` exactly; the file lands at
+// `<destination>/<basename(filename)>` (the agent-visible path).
+//
+// The write bypasses the FUSE layer: we open the underlying backend
+// directory directly so the per-mount ACLs that gate the agent do
+// NOT apply. The API is a higher-privilege control surface than the
+// workload — operators seeding inputs over /v1/file should not have
+// to grant the agent rw on the same path.
+func (h *Handlers) UploadFile(c *gin.Context) {
+	destination := c.PostForm("destination")
+	if destination == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing form field: destination"})
+		return
+	}
+
+	cfg, err := h.store.Get()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	if !mountConfigured(cfg, destination) {
+		c.JSON(http.StatusNotFound, gen.Error{Error: fmt.Sprintf("destination %q does not match any configured mount", destination)})
+		return
+	}
+
+	header, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
+		return
+	}
+	name := filepath.Base(header.Filename)
+	if name == "." || name == "/" || name == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "invalid file filename"})
+		return
+	}
+	// Resolve to the host-side backend directory so the write lands on
+	// real disk and skips sbxfuse. Mirrors spec.FS.BackendPath: backend
+	// dir is always `<mount>-backend`, created by sandboxd at startup.
+	backendDir := destination + "-backend"
+	backendTarget := filepath.Join(backendDir, name)
+	agentTarget := filepath.Join(destination, name)
+
+	src, err := header.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(backendTarget, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	n, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		_ = os.Remove(backendTarget)
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: copyErr.Error()})
+		return
+	}
+	if closeErr != nil {
+		_ = os.Remove(backendTarget)
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: closeErr.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"path": agentTarget, "bytes": n})
+}
+
+func mountConfigured(cfg gen.SandboxConfig, dest string) bool {
+	for _, fs := range cfg.Fs {
+		if fs.Mount == dest {
+			return true
+		}
+	}
+	return false
+}
+
+// GetFile streams a file from beneath one of the configured mounts.
+// Like UploadFile, the read is served from the host-side backend
+// directory and bypasses sbxfuse — the per-mount ACLs that gate the
+// agent do not apply.
+func (h *Handlers) GetFile(c *gin.Context, params gen.GetFileParams) {
+	if params.Path == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
+		return
+	}
+	cleaned := filepath.Clean(params.Path)
+	if !strings.HasPrefix(cleaned, "/") {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must be absolute"})
+		return
+	}
+
+	cfg, err := h.store.Get()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+
+	// Longest-prefix-match on mount roots so /a and /a/b can coexist
+	// and `/a/b/x` resolves to the /a/b mount, not /a.
+	var matchedMount string
+	for _, fs := range cfg.Fs {
+		m := fs.Mount
+		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
+			if len(m) > len(matchedMount) {
+				matchedMount = m
+			}
+		}
+	}
+	if matchedMount == "" {
+		c.JSON(http.StatusNotFound, gen.Error{Error: fmt.Sprintf("path %q is not under any configured mount", params.Path)})
+		return
+	}
+
+	// Re-root onto the backend directory. filepath.Clean above already
+	// neutralised `..`; re-check the result is contained for defence in
+	// depth against any future path-construction change.
+	rel := strings.TrimPrefix(cleaned, matchedMount)
+	backendDir := matchedMount + "-backend"
+	target := filepath.Join(backendDir, rel)
+	if target != backendDir && !strings.HasPrefix(target, backendDir+string(filepath.Separator)) {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "path escapes the destination mount"})
+		return
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gen.Error{Error: err.Error()})
+		return
+	}
+	if !info.Mode().IsRegular() {
+		c.JSON(http.StatusNotFound, gen.Error{Error: "not a regular file"})
+		return
+	}
+
+	f, err := os.Open(target)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	defer f.Close()
+
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filepath.Base(cleaned)))
+	c.Header("Content-Length", strconv.FormatInt(info.Size(), 10))
+	c.DataFromReader(http.StatusOK, info.Size(), "application/octet-stream", f, nil)
 }
 
 // GetEvents implements the long-lived SSE stream at GET /v1/events.
