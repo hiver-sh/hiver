@@ -168,7 +168,7 @@ func (h *Handlers) UploadFile(c *gin.Context) {
 
 func mountConfigured(cfg gen.SandboxConfig, dest string) bool {
 	for _, fs := range cfg.Fs {
-		if fs.Mount == dest {
+		if FSBase(fs).Mount == dest {
 			return true
 		}
 	}
@@ -200,7 +200,7 @@ func (h *Handlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 	// and `/a/b/x` resolves to the /a/b mount, not /a.
 	var matchedMount string
 	for _, fs := range cfg.Fs {
-		m := fs.Mount
+		m := FSBase(fs).Mount
 		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
 			if len(m) > len(matchedMount) {
 				matchedMount = m

@@ -489,17 +489,18 @@ func reconcileSidecars(ctx context.Context, broker *events.Broker, proxyPID int,
 				log.Printf("sandboxd: SIGHUP sbxproxy (pid=%d): %v", proxyPID, err)
 			}
 			for _, fs := range cfg.Fs {
-				sc, ok := fsSidecars[fs.Mount]
+				base := api.FSBase(fs)
+				sc, ok := fsSidecars[base.Mount]
 				if !ok {
-					log.Printf("sandboxd: reconcile fs: no sidecar for mount %q (mount add/remove not supported)", fs.Mount)
+					log.Printf("sandboxd: reconcile fs: no sidecar for mount %q (mount add/remove not supported)", base.Mount)
 					continue
 				}
 				if err := writeACLsForMount(sc.aclPath, fs); err != nil {
-					log.Printf("sandboxd: reconcile acls (%s): %v", fs.Mount, err)
+					log.Printf("sandboxd: reconcile acls (%s): %v", base.Mount, err)
 					continue
 				}
 				if err := syscall.Kill(sc.pid, syscall.SIGHUP); err != nil {
-					log.Printf("sandboxd: SIGHUP sbxfuse (mount=%s pid=%d): %v", fs.Mount, sc.pid, err)
+					log.Printf("sandboxd: SIGHUP sbxfuse (mount=%s pid=%d): %v", base.Mount, sc.pid, err)
 					continue
 				}
 			}
@@ -541,8 +542,8 @@ func writeEgressRules(rulesPath string, cfg gen.SandboxConfig) error {
 // format.
 func writeACLsForMount(aclPath string, fs gen.FileSystem) error {
 	acls := []gen.ACLRule{}
-	if fs.Acls != nil {
-		acls = *fs.Acls
+	if a := api.FSBase(fs).Acls; a != nil {
+		acls = *a
 	}
 	return writeJSON(aclPath, acls)
 }

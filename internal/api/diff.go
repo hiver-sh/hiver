@@ -1,10 +1,21 @@
 package api
 
 import (
+	"encoding/json"
 	"reflect"
 
 	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
 )
+
+// FSBase decodes the variant-agnostic fields (mount, backend, acls)
+// shared by every FileSystem oneOf member.
+func FSBase(fs gen.FileSystem) gen.FileSystemBase {
+	var base gen.FileSystemBase
+	if b, err := fs.MarshalJSON(); err == nil {
+		_ = json.Unmarshal(b, &base)
+	}
+	return base
+}
 
 // diffConfig returns the additions and removals needed to converge
 // `current` to `desired`. FileSystems are keyed by mount path; changing
@@ -50,22 +61,39 @@ func diffFS(current, desired []gen.FileSystem) (added, removed []gen.FileSystem)
 	curByMount := indexFSByMount(current)
 	desByMount := indexFSByMount(desired)
 	for _, fs := range desired {
-		if cur, ok := curByMount[fs.Mount]; !ok || !reflect.DeepEqual(cur, fs) {
+		if cur, ok := curByMount[FSBase(fs).Mount]; !ok || !fsEqual(cur, fs) {
 			added = append(added, fs)
 		}
 	}
 	for _, fs := range current {
-		if des, ok := desByMount[fs.Mount]; !ok || !reflect.DeepEqual(des, fs) {
+		if des, ok := desByMount[FSBase(fs).Mount]; !ok || !fsEqual(des, fs) {
 			removed = append(removed, fs)
 		}
 	}
 	return
 }
 
+// fsEqual compares two FileSystem unions by semantic JSON content
+// rather than raw bytes — the bytes inside the union differ between
+// values that came in via json.Marshal (compact) and json.MarshalIndent
+// (re-indented at encode time), which would defeat reflect.DeepEqual.
+func fsEqual(a, b gen.FileSystem) bool {
+	ba, errA := a.MarshalJSON()
+	bb, errB := b.MarshalJSON()
+	if errA != nil || errB != nil {
+		return false
+	}
+	var ma, mb any
+	if json.Unmarshal(ba, &ma) != nil || json.Unmarshal(bb, &mb) != nil {
+		return false
+	}
+	return reflect.DeepEqual(ma, mb)
+}
+
 func indexFSByMount(fs []gen.FileSystem) map[string]gen.FileSystem {
 	m := make(map[string]gen.FileSystem, len(fs))
 	for _, f := range fs {
-		m[f.Mount] = f
+		m[FSBase(f).Mount] = f
 	}
 	return m
 }

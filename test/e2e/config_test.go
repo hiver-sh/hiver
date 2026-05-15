@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sandbox-platform/agent-sandbox/internal/api"
 	"github.com/sandbox-platform/agent-sandbox/internal/api/gen"
 )
 
@@ -33,8 +34,8 @@ func TestConfigE2E(t *testing.T) {
 	// the spec.Spec → gen.SandboxConfig round-trip sandboxd does on
 	// startup.
 	initial := getConfig(t, apiURL)
-	assertMountPresent(t, initial, "/workspace", gen.Gdrive)
-	assertMountPresent(t, initial, "/scratch", gen.Local)
+	assertMountPresent(t, initial, "/workspace", gen.BackendGdrive)
+	assertMountPresent(t, initial, "/scratch", gen.BackendLocal)
 	assertEgressHostPresent(t, initial, "go.dev")
 
 	// Default-deny: the agent can't curl the API because 127.0.0.1
@@ -136,15 +137,30 @@ func withScratchLockedDeny(cfg gen.SandboxConfig) gen.SandboxConfig {
 	out.Fs = make([]gen.FileSystem, len(cfg.Fs))
 	copy(out.Fs, cfg.Fs)
 	for i := range out.Fs {
-		if out.Fs[i].Mount != "/scratch" {
+		if api.FSBase(out.Fs[i]).Mount != "/scratch" {
+			continue
+		}
+		// /scratch is a local backend; unwrap, append the deny rule,
+		// then re-marshal. Don't use FromLocalFileSystem — without a
+		// discriminator mapping in the spec, oapi-codegen writes the
+		// schema name ("LocalFileSystem") into the backend field
+		// instead of the enum value "local", which would fail the
+		// server's request validator.
+		ls, err := out.Fs[i].AsLocalFileSystem()
+		if err != nil {
 			continue
 		}
 		var acls []gen.ACLRule
-		if out.Fs[i].Acls != nil {
-			acls = append(acls, *out.Fs[i].Acls...)
+		if ls.Acls != nil {
+			acls = append(acls, *ls.Acls...)
 		}
 		acls = append(acls, gen.ACLRule{Path: "/scratch/locked/**", Access: gen.Deny})
-		out.Fs[i].Acls = &acls
+		ls.Acls = &acls
+		b, err := json.Marshal(ls)
+		if err != nil {
+			continue
+		}
+		_ = out.Fs[i].UnmarshalJSON(b)
 	}
 	return out
 }
@@ -346,9 +362,10 @@ func withExtraEgressRule(cfg gen.SandboxConfig, rule gen.EgressRule) gen.Sandbox
 func assertMountPresent(t *testing.T, cfg gen.SandboxConfig, mount string, backend gen.Backend) {
 	t.Helper()
 	for _, f := range cfg.Fs {
-		if f.Mount == mount {
-			if f.Backend != backend {
-				t.Errorf("mount %q: backend=%q, want %q", mount, f.Backend, backend)
+		base := api.FSBase(f)
+		if base.Mount == mount {
+			if base.Backend != backend {
+				t.Errorf("mount %q: backend=%q, want %q", mount, base.Backend, backend)
 			}
 			return
 		}

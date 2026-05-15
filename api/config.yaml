@@ -38,13 +38,18 @@ components:
           example: ["LOG_LEVEL=info", "REGION=us-east-1"]
 
     FileSystem:
-      type: object
       description: |
         A file system exposed to the agent at `mount`. The `backend`
-        selects the storage type. Access is governed by `acls`,
-        evaluated longest-prefix-first with deny as the default.
+        selects the storage type and determines which variant applies.
+        Access is governed by `acls`, evaluated longest-prefix-first
+        with deny as the default.
+      oneOf:
+        - $ref: '#/components/schemas/LocalFileSystem'
+        - $ref: '#/components/schemas/GDriveFileSystem'
+
+    FileSystemBase:
+      type: object
       required: [mount, backend]
-      additionalProperties: false
       properties:
         mount:
           type: string
@@ -57,33 +62,52 @@ components:
           type: array
           description: Access control rules for paths under `mount`.
           items: { $ref: '#/components/schemas/ACLRule' }
-        gdrive_access_token:
-          type: string
-          format: password
-          description: OAuth access token. Only used when `backend = gdrive`.
-        gdrive_refresh_token:
-          type: string
-          format: password
-          description: OAuth refresh token. Only used when `backend = gdrive`.
-        gdrive_client_id:
-          type: string
-          description: OAuth client ID. Only used when `backend = gdrive`.
-        gdrive_client_secret:
-          type: string
-          format: password
-          description: OAuth client secret. Only used when `backend = gdrive`.
-        gdrive_service_account_json:
-          type: string
-          format: password
-          description: |
-            Service account credential JSON. Mutually exclusive with
-            the OAuth fields above. Only used when `backend = gdrive`.
-        gdrive_folder_id:
-          type: string
-          description: |
-            ID of the Drive folder the file system is scoped to. When
-            omitted, the account root is used. Only used when
-            `backend = gdrive`.
+
+    LocalFileSystem:
+      description: Sandbox-local storage with no external dependency.
+      allOf:
+        - $ref: '#/components/schemas/FileSystemBase'
+        - type: object
+          properties:
+            backend:
+              type: string
+              enum: [local]
+
+    GDriveFileSystem:
+      description: A file system backed by Google Drive.
+      allOf:
+        - $ref: '#/components/schemas/FileSystemBase'
+        - type: object
+          properties:
+            backend:
+              type: string
+              enum: [gdrive]
+            gdrive_access_token:
+              type: string
+              format: password
+              description: OAuth access token.
+            gdrive_refresh_token:
+              type: string
+              format: password
+              description: OAuth refresh token.
+            gdrive_client_id:
+              type: string
+              description: OAuth client ID.
+            gdrive_client_secret:
+              type: string
+              format: password
+              description: OAuth client secret.
+            gdrive_service_account_json:
+              type: string
+              format: password
+              description: |
+                Service account credential JSON. Mutually exclusive with
+                the OAuth fields above.
+            gdrive_folder_id:
+              type: string
+              description: |
+                ID of the Drive folder the file system is scoped to. When
+                omitted, the account root is used.
 
     Backend:
       type: string
