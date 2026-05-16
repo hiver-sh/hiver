@@ -10,13 +10,16 @@ import (
 )
 
 const (
-	name = "sandbox-mcp-server"
+	name              = "sandbox-mcp-server"
+	mcpRequestMessage = "MCP request"
 
 	toolCallLogMaxArgs = 100
 )
 
 var toolLogger = func() *zap.Logger {
-	l, err := zap.NewProduction()
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{"stdout"}
+	l, err := cfg.Build()
 	if err != nil {
 		return zap.NewNop()
 	}
@@ -65,20 +68,22 @@ func logToolCalls(h mcp.MethodHandler) mcp.MethodHandler {
 			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
 				args := json.RawMessage(p.Arguments)
 				if len(args) > toolCallLogMaxArgs {
-					toolLogger.Info("tools/call",
+					toolLogger.Info(mcpRequestMessage,
+						zap.String("method", "tools/call"),
 						zap.String("tool", p.Name),
 						zap.String("params", truncate(string(args), toolCallLogMaxArgs)),
 						zap.Bool("params_truncated", true),
 					)
 				} else {
-					toolLogger.Info("tools/call",
+					toolLogger.Info(mcpRequestMessage,
+						zap.String("method", "tools/call"),
 						zap.String("tool", p.Name),
 						zap.Any("params", args),
 					)
 				}
 			}
 		} else {
-			toolLogger.Debug("rpc", zap.String("method", method))
+			toolLogger.Info(mcpRequestMessage, zap.String("method", method))
 		}
 		return h(ctx, method, req)
 	}

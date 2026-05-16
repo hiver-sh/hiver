@@ -333,7 +333,7 @@ func main() {
 	}
 
 	containerID := fmt.Sprintf("agent-%d", os.Getpid())
-	agentCmd, agentStdioDone, err := startChild(ctx, &children, "agent", "runc",
+	agentCmd, agentStdioDone, err := startChild(ctx, &children, "sandbox", "runc",
 		[]string{"run", "-b", bundleDir, containerID}, nil, nil,
 		publishAgentStdio(broker))
 	if err != nil {
@@ -480,7 +480,7 @@ func streamPrefixed(prefix string, r io.Reader, onLine func(string)) {
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
-			fmt.Fprintf(os.Stderr, "[%s] %s", prefix, line)
+			fmt.Fprintf(os.Stdout, "[%s] %s", prefix, line)
 			if onLine != nil {
 				onLine(line)
 			}
