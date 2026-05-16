@@ -140,6 +140,8 @@ export class Sandbox {
       } catch (err) {
         if (opts.signal?.aborted) return;
         if (isAbortError(err)) return;
+
+        console.log('err', err);
       }
 
       await sleep(backoffMs, opts.signal).catch(() => {});
@@ -170,10 +172,10 @@ export class Sandbox {
       if (signal.aborted) ac.abort(signal.reason);
       else signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
     }
-    const firstEventTimeout = setTimeout(
-      () => ac.abort(new Error(`events: no frame within ${SANDBOX_FETCH_TIMEOUT_MS}ms`)),
-      SANDBOX_FETCH_TIMEOUT_MS,
-    );
+    // const firstEventTimeout = setTimeout(
+    //   () => ac.abort(new Error(`events: no frame within ${SANDBOX_FETCH_TIMEOUT_MS}ms`)),
+    //   SANDBOX_FETCH_TIMEOUT_MS,
+    // );
     try {
       const res = await this.fetchImpl(url, {
         headers: { accept: "text/event-stream" },
@@ -184,11 +186,11 @@ export class Sandbox {
         // First frame lands → the connection is alive; drop the
         // liveness guard so trailing silences (the server just isn't
         // emitting anything right now) don't terminate it.
-        clearTimeout(firstEventTimeout);
+        // clearTimeout(firstEventTimeout);
         yield SandboxEvent.parse(JSON.parse(frame.data));
       }
     } finally {
-      clearTimeout(firstEventTimeout);
+      // clearTimeout(firstEventTimeout);
     }
   }
 

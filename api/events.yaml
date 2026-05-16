@@ -103,6 +103,16 @@ components:
                 paths where no inner HTTP method is observed.
             path:
               type: string
+              description: |
+                URL path (no query string). Egress rule matching is
+                path-only.
+            query:
+              type: string
+              description: |
+                Raw URL query (no leading `?`). Empty when the
+                request had no query string, and omitted entirely
+                for CONNECT / raw-forward-TLS audits where there is
+                no inner HTTP request to parse.
       example:
         type: egress.request
         id: 186
@@ -110,7 +120,8 @@ components:
         access: denied
         host: registry.npmjs.org
         method: GET
-        path: /left-pad
+        path: /search
+        query: q=left-pad
 
     EgressResponseEvent:
       description: |

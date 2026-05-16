@@ -96,8 +96,17 @@ type EgressRequestEvent struct {
 	// Method HTTP method (`GET`, `POST`, …) for HTTP egress, or the
 	// protocol identifier (`TLS`, `CONNECT`) for transparent
 	// paths where no inner HTTP method is observed.
-	Method    string    `json:"method"`
-	Path      string    `json:"path"`
+	Method string `json:"method"`
+
+	// Path URL path (no query string). Egress rule matching is
+	// path-only.
+	Path string `json:"path"`
+
+	// Query Raw URL query (no leading `?`). Empty when the
+	// request had no query string, and omitted entirely
+	// for CONNECT / raw-forward-TLS audits where there is
+	// no inner HTTP request to parse.
+	Query     *string   `json:"query,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
 }

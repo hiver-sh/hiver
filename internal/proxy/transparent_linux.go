@@ -80,7 +80,7 @@ func (p *Proxy) handleTransparent(c *net.TCPConn) {
 	case protoTLS:
 		p.handleTransparentTLS(c, br, origDst)
 	default:
-		p.beginAudit("?", origDst, "").deny("unknown protocol", 0)
+		p.beginAudit("?", origDst, "", "").deny("unknown protocol", 0)
 	}
 }
 
@@ -135,7 +135,7 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	_, port := splitHostPort("", origDst, 0)
 	rule := MatchEgress(p.currentAllow(), "TLS", host, port, "")
 	if rule == nil {
-		p.beginAudit("TLS", host, "").deny("no matching rule", 0)
+		p.beginAudit("TLS", host, "", "").deny("no matching rule", 0)
 		// Send a fatal TLS Alert so the peer surfaces a concrete error
 		// ("tlsv1 alert access denied") instead of the bare connection
 		// close it would otherwise see as `SSL_ERROR_SYSCALL`.
@@ -154,7 +154,7 @@ func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst st
 	// to report, so the decision is the whole audit story. Dial failure
 	// before the tunnel exists is treated as a deny so consumers don't
 	// see an orphan allow.
-	ac := p.beginAudit("TLS", host, "")
+	ac := p.beginAudit("TLS", host, "", "")
 	upstream, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
 	if err != nil {
 		ac.deny("upstream dial: "+err.Error(), 0)
@@ -186,7 +186,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	// request, so the audit event is host-only (method "TLS"). The inner
 	// allowlist match — once we can read req.Method / req.URL.Path —
 	// opens a fresh auditCtx with the proper request/response pair.
-	tlsAC := p.beginAudit("TLS", host, "")
+	tlsAC := p.beginAudit("TLS", host, "", "")
 	clientTLS := tls.Server(&peekedConn{Conn: c, r: br}, innerCfg)
 	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
 		tlsAC.deny("inner handshake: "+err.Error(), 0)
@@ -214,7 +214,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	if err != nil {
 		return
 	}
-	ac := p.beginAudit(req.Method, host, req.URL.Path)
+	ac := p.beginAudit(req.Method, host, req.URL.Path, req.URL.RawQuery)
 	_, port := splitHostPort("", origDst, 0)
 	rule := MatchEgress(p.currentAllow(), req.Method, host, port, req.URL.Path)
 	if rule == nil {
@@ -277,7 +277,7 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	// the agent is being held to.
 	_, port := splitHostPort("", origDst, 0)
 
-	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path)
+	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path, req.URL.RawQuery)
 	rule := MatchEgress(p.currentAllow(), req.Method, hostOnly, port, req.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)

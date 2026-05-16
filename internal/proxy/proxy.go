@@ -92,7 +92,8 @@ type AuditEvent struct {
 	Method     string    `json:"method"`
 	Host       string    `json:"host"`
 	Path       string    `json:"path,omitempty"`
-	Verdict    string    `json:"verdict"` // "allow" | "deny" | "error"
+	Query      string    `json:"query,omitempty"` // raw URL query (no leading "?")
+	Verdict    string    `json:"verdict"`         // "allow" | "deny" | "error"
 	Status     int       `json:"status,omitempty"`
 	DurationMs int       `json:"duration_ms,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
@@ -233,7 +234,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		defPort = 443
 	}
 	host, port := splitHostPort(r.URL.Host, r.Host, defPort)
-	ac := p.beginAudit(r.Method, host, r.URL.Path)
+	ac := p.beginAudit(r.Method, host, r.URL.Path, r.URL.RawQuery)
 	rule := MatchEgress(p.currentAllow(), r.Method, host, port, r.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
@@ -282,7 +283,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// CONNECT always carries a port (e.g. "example.com:443"); 443 is
 	// only used as a safety net for malformed inputs.
 	host, port := splitHostPort("", r.Host, 443)
-	ac := p.beginAudit("CONNECT", host, "")
+	ac := p.beginAudit("CONNECT", host, "", "")
 	// CONNECT is host-only — body is opaque under TLS.
 	if MatchEgress(p.currentAllow(), "CONNECT", host, port, "") == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
@@ -435,9 +436,16 @@ type auditCtx struct {
 	method    string
 	host      string
 	path      string
+	query     string
 }
 
-func (p *Proxy) beginAudit(method, host, path string) *auditCtx {
+// beginAudit allocates an auditCtx for one request/response pair.
+// `query` is the raw URL query without the leading "?" — empty for
+// CONNECT, raw-forward TLS, and any request without a query string.
+// It rides alongside `path` to the audit event so the SSE
+// `egress.request` consumer gets `path` and `query` as separate
+// fields, while allowlist matching keeps using just `path`.
+func (p *Proxy) beginAudit(method, host, path, query string) *auditCtx {
 	n := p.requestSeq.Add(1)
 	return &auditCtx{
 		p:         p,
@@ -446,6 +454,7 @@ func (p *Proxy) beginAudit(method, host, path string) *auditCtx {
 		method:    method,
 		host:      host,
 		path:      path,
+		query:     query,
 	}
 }
 
@@ -457,7 +466,7 @@ func (a *auditCtx) deny(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "deny", Status: status, Reason: reason,
 	})
 }
@@ -471,7 +480,7 @@ func (a *auditCtx) allow() {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "allow",
 	})
 }
@@ -480,7 +489,7 @@ func (a *auditCtx) response(status int) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "allow", Status: status,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
 	})
@@ -490,7 +499,7 @@ func (a *auditCtx) responseError(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "error", Status: status, Reason: reason,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
 	})

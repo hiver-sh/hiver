@@ -126,6 +126,7 @@ export const EgressRequestEvent = SandboxEventBase.extend({
   host: z.string(),
   method: z.string(),
   path: z.string(),
+  query: z.string().optional(),
 });
 
 export const EgressResponseEvent = SandboxEventBase.extend({

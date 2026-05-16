@@ -16,26 +16,37 @@ const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
       mount: "/workspace",
       acls: [{ path: "/workspace/**", access: "ro" }],
     },
-  ]
+  ],
+  egress: {
+    allow: [
+      {
+        host: 'www.google.com'
+      }
+    ]
+  }
 });
 
 console.info("MCP inspector → ", sandbox.url);
 
-const child = spawn(
+const mcpInspector = spawn(
   "npx",
   ["@modelcontextprotocol/inspector", "--server-url", sandbox.url],
   { stdio: "inherit" },
 );
 
-// Forward Ctrl-C to the inspector so it can tear itself down before
-// we shut the sandbox.
-process.on("SIGINT", () => child.kill("SIGINT"));
+const ac = new AbortController();
+async function shutdown(code: number) {
+  if (ac.signal.aborted) return;
+  ac.abort();
+  mcpInspector.kill("SIGINT");
+  await hive.shutdown(sandbox);
+  process.exit(code);
+}
 
-child.on("exit", async (code: number) => {
-  void hive.shutdown(sandbox);
-  process.exit(code ?? 0);
-});
+process.once("SIGINT", () => shutdown(130));
+process.once("SIGTERM", () => shutdown(143));
+mcpInspector.on("exit", (code: number | null) => shutdown(code ?? 0));
 
-for await (const event of sandbox.getEventsStream()) {
+for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
   console.info("sandbox event", event);
 }

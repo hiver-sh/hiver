@@ -297,6 +297,10 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 	if path == "" {
 		path = "/"
 	}
+	var query *string
+	if q, ok := raw["query"].(string); ok && q != "" {
+		query = &q
+	}
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		_ = ev.FromEgressRequestEvent(gen.EgressRequestEvent{
@@ -306,6 +310,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 			Host:      host,
 			Method:    method,
 			Path:      path,
+			Query:     query,
 		})
 		return ev
 	}
