@@ -80,6 +80,7 @@ async function* prompts(): AsyncGenerator<SDKUserMessage> {
 const response = query({
   prompt: prompts(),
   options: {
+    model: 'claude-opus-4-7',
     abortController: ac,
     includePartialMessages: true,
     systemPrompt: `You are an expert quantitative trader. You build financial models, run regressions, design factor strategies, and explain your results in plain language a portfolio manager can act on.
@@ -157,6 +158,15 @@ async function shutdown(code: number) {
 
 process.once("SIGINT", () => shutdown(130));
 process.once("SIGTERM", () => shutdown(143));
+
+
+async function logEvents() {
+  for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
+    console.info("sandbox event", event);
+  }
+}
+
+void logEvents();
 
 try {
   for await (const msg of response) {
