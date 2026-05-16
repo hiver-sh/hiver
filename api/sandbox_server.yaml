@@ -18,6 +18,8 @@ tags:
     description: Read and apply the sandbox's configuration document.
   - name: Files
     description: Move file contents into the sandbox.
+  - name: Proxy
+    description: Reach the HTTP service exposed by the sandbox container.
 
 paths:
   /v1/config:
@@ -257,6 +259,21 @@ paths:
                   Server-Sent Events stream. Each `data:` payload is a
                   JSON-encoded `SandboxEvent`.
 
+  /v1/sandbox:
+    description: |
+      Reverse proxy to the HTTP service the sandbox image exposes (the
+      first TCP port in its `EXPOSED` directive). The request and
+      response — method, headers, body, status, trailers — are relayed
+      verbatim; streaming responses (chunked, SSE) are flushed without
+      buffering and `Upgrade` requests (WebSocket, h2c) pass through.
+
+      The path is rewritten: `/v1/sandbox/<rest>` maps to `/<rest>` on
+      the upstream service. `/v1/sandbox` with no trailing component
+      maps to `/`.
+
+      If the agent image declares no TCP port, this endpoint is not
+      mounted and requests fall through to a 404.
+    x-internal-proxy: true
   /v1/ping:
     get:
       tags: [Configuration]

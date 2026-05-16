@@ -133,19 +133,6 @@ echo "==> Building sandbox image: ${sandbox_image}"
 
 docker build -t "${sandbox_image}" -f "${dockerfile}" "${build_context}"
 
-# Forward every port the agent's Dockerfile EXPOSEs to the host. Each
-# EXPOSE line may carry multiple ports, optionally suffixed /tcp or
-# /udp. Sandboxd's own API port (8080) is always added below.
-expose_args=()
-while read -r port; do
-  port="${port%/*}"
-  [[ -z "${port}" ]] && continue
-  expose_args+=(-p "${port}:${port}")
-done < <(awk '
-  toupper($1) == "EXPOSE" {
-    for (i=2; i<=NF; i++) print $i
-  }
-' "${dockerfile}")
 
 # docker save → tarball that sandboxd will unpack inside the pod.
 staging_dir="$(mktemp -d -t sandbox-staging-XXXXXX)"
@@ -180,7 +167,6 @@ docker run -d --rm \
   --add-host upstream-allowed:host-gateway \
   --add-host upstream-denied:host-gateway \
   -p 8080:8080 \
-  ${expose_args[@]+"${expose_args[@]}"} \
   ${docker_env_args[@]+"${docker_env_args[@]}"} \
   -v "${sandbox_tar}:/mnt/sandbox.tar:ro" \
   -v "${fixture_dir}/spec.yaml:/mnt/spec.yaml:ro" \
@@ -232,15 +218,15 @@ sandbox-pod is still running.
   proxy audit   docker logs -f ${container_name} 2>&1 | grep 'agent op | proxy'
   fuse audit    docker logs -f ${container_name} 2>&1 | grep 'agent op | fuse'
   sandbox CA    docker exec ${container_name} cat /run/sandboxd/sandbox-ca.crt
-  ingress       curl -d 'hi from host' http://localhost:18000/hello
-  exec cmd      curl -d 'uname -a; ls /workspace' http://localhost:18000/exec
+  ingress       curl -d 'hi from host' http://localhost:8080/v1/sandbox/hello
+  exec cmd      curl -d 'uname -a; ls /workspace' http://localhost:8080/v1/sandbox/exec
   stop          docker kill ${container_name}
 
 Host-side staging (sandbox.tar, ops log) lives in ${staging_dir}.
 EOF
 
 if [[ "${fixture}" == "mcp-server" ]]; then
-  inspector_url="http://localhost:8081/v1/mcp"
+  inspector_url="http://localhost:8080/v1/sandbox"
   echo "==> Starting MCP inspector:"
   npx @modelcontextprotocol/inspector --server-url "${inspector_url}"
 fi

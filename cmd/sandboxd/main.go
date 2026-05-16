@@ -23,6 +23,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/sandbox-platform/agent-sandbox/internal/api"
 	"github.com/sandbox-platform/agent-sandbox/internal/events"
+	"github.com/sandbox-platform/agent-sandbox/internal/netmark"
 	"github.com/sandbox-platform/agent-sandbox/internal/runc"
 	"github.com/sandbox-platform/agent-sandbox/internal/sandboxd"
 	"github.com/sandbox-platform/agent-sandbox/internal/spec"
@@ -110,9 +112,6 @@ func main() {
 		},
 	)
 	go lifetime.Run(ctx)
-
-	s := api.NewSandboxServer(*apiServerPort, broker, store, lifetime)
-	go s.ListenAndServe()
 
 	for i := range sp.FS {
 		f := &sp.FS[i]
@@ -331,6 +330,31 @@ func main() {
 		log.Println("sandboxd: agent finished, shutting down sidecars")
 		cancel()
 	}()
+
+	// Start Sandbox API server. /v1/sandbox proxies to the agent's
+	// exposed port over loopback; the marked dialer keeps that traffic
+	// out of the iptables OUTPUT REDIRECT (otherwise it would loop
+	// through sbxproxy and get allowlist-checked against the
+	// workload's egress rules).
+	proxyTransport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 5 * time.Second,
+			Control: netmark.Control(soMark),
+		}).DialContext,
+		MaxIdleConns:        100,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 5 * time.Second,
+	}
+	s := api.NewSandboxServer(
+		*apiServerPort,
+		imgCfg.ExposedPort,
+		proxyTransport,
+		broker,
+		store,
+		lifetime)
+
+	go s.ListenAndServe()
+
 	<-ctx.Done()
 	children.Wait()
 }

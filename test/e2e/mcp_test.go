@@ -120,9 +120,7 @@ func TestMcpServerE2E(t *testing.T) {
 
 // startMcpFixture builds the mcp-server fixture, starts the pod, and
 // connects an MCP client session. Skips the test when the fixture's
-// gdrive credentials aren't in the env. The returned pod publishes
-// :8081 (MCP) and :8080 (sandboxd API); the caller is responsible for
-// stop(), cancel(), and session.Close().
+// gdrive credentials aren't in the env.
 func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context, context.CancelFunc) {
 	t.Helper()
 	setup.RequireDocker(t)
@@ -175,7 +173,7 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 
 	pod := startMCPPod(t, agentTar, specPath)
 
-	mcpURL := "http://127.0.0.1:8081/v1/mcp"
+	mcpURL := "http://127.0.0.1:8080/v1/sandbox"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	session := connectMCP(t, ctx, mcpURL, &pod.out)
 	return pod, session, ctx, cancel
@@ -189,7 +187,7 @@ type mcpPod struct {
 }
 
 // startMCPPod runs sandbox-runtime with the MCP agent and publishes
-// :8081 (MCP) plus :8080 (sandboxd API) to the host. Unlike
+// :8080 (sandboxd API) to the host. Unlike
 // runSandboxPod it doesn't wait for any agent-side "DONE" marker —
 // the readiness check is "MCP server answers initialize", which the
 // caller does via connectMCP.
@@ -207,7 +205,6 @@ func startMCPPod(t *testing.T, sandboxTar, specPath string) *mcpPod {
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-		"-p", "8081:8081",
 		"-p", "8080:8080",
 		"-v", sandboxTar + ":/mnt/sandbox.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",

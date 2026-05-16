@@ -490,9 +490,6 @@ func runSandboxPod(t *testing.T, sandboxTar, specPath string, duringLifetime Fix
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"--add-host", "upstream-allowed:host-gateway",
 		"--add-host", "upstream-denied:host-gateway",
-		// Publish the agent's ingress listener so the host can POST in.
-		// 18000:18000 is matched by agent.py's HTTPServer binding.
-		"-p", "18000:18000",
 		// Publish sandboxd's API server so the host-side e2e harness can
 		// subscribe to /v1/events while the workload runs.
 		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),

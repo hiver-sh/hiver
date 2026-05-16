@@ -23,10 +23,11 @@ import (
 // ImageConfig is the subset of the Docker / OCI image config that
 // sandboxd needs in order to build a runtime spec for the agent.
 type ImageConfig struct {
-	Entrypoint []string
-	Cmd        []string
-	Env        []string
-	WorkingDir string
+	Entrypoint  []string
+	Cmd         []string
+	Env         []string
+	WorkingDir  string
+	ExposedPort *string
 }
 
 // dockerArchiveManifest mirrors the top-level manifest.json that
@@ -38,10 +39,11 @@ type dockerArchiveManifest []struct {
 
 type dockerImageConfig struct {
 	Config struct {
-		Entrypoint []string `json:"Entrypoint"`
-		Cmd        []string `json:"Cmd"`
-		Env        []string `json:"Env"`
-		WorkingDir string   `json:"WorkingDir"`
+		ExposedPorts map[string]any `json:"ExposedPorts"`
+		Entrypoint   []string       `json:"Entrypoint"`
+		Cmd          []string       `json:"Cmd"`
+		Env          []string       `json:"Env"`
+		WorkingDir   string         `json:"WorkingDir"`
 	} `json:"config"`
 }
 
@@ -90,12 +92,30 @@ func ExtractDockerArchive(archivePath, rootfsDir string) (*ImageConfig, error) {
 		}
 	}
 
+	exposedPort := findExposedTcpPort(dic.Config.ExposedPorts)
+
 	return &ImageConfig{
-		Entrypoint: dic.Config.Entrypoint,
-		Cmd:        dic.Config.Cmd,
-		Env:        dic.Config.Env,
-		WorkingDir: dic.Config.WorkingDir,
+		Entrypoint:  dic.Config.Entrypoint,
+		Cmd:         dic.Config.Cmd,
+		Env:         dic.Config.Env,
+		WorkingDir:  dic.Config.WorkingDir,
+		ExposedPort: exposedPort,
 	}, nil
+}
+
+func findExposedTcpPort(exposedPorts map[string]any) *string {
+	if len(exposedPorts) == 0 {
+		return nil
+	}
+
+	for key, _ := range exposedPorts {
+		portParts := strings.Split(key, "/")
+		port, protocol := portParts[0], portParts[1]
+		if protocol == "tcp" {
+			return &port
+		}
+	}
+	return nil
 }
 
 func extractTarFile(tarPath, destDir string) error {

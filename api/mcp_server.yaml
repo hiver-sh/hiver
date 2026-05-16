@@ -11,7 +11,7 @@ servers:
     description: MCP server endpoint.
 
 paths:
-  /v1/mcp:
+  /:
     post:
       tags: [MCP]
       summary: Send an MCP request.
