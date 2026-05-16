@@ -20,4 +20,3 @@ egress:
     - host: go.dev
       methods: [GET]
       paths: [/solutions/case-studies/*]
-

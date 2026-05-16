@@ -19,7 +19,12 @@ export interface SandboxOptions {
 }
 
 export interface EventsStreamOptions {
-  /** Resume the stream after this event id (server replays everything later). */
+  /**
+   * Initial cursor: skip past this id on the first connect. After that
+   * the stream tracks the cursor itself — on a transient disconnect
+   * it reconnects with the latest id observed, so no events are
+   * missed across drops.
+   */
   lastEventId?: number;
   /** Abort the stream from the caller's side. */
   signal?: AbortSignal;
@@ -54,9 +59,9 @@ export class Sandbox {
   /**
    * URL of the HTTP service the sandbox image exposes (the first TCP
    * port from its EXPOSE directive). Append paths to it to reach the
-   * upstream — `${sandbox.getUrl()}/healthz`, etc.
+   * upstream — `${sandbox.url}/healthz`, etc.
    */
-  getUrl(): string {
+  get url(): string {
     return `${this.apiServerUrl}/v1/sandbox`;
   }
 
@@ -94,23 +99,59 @@ export class Sandbox {
   }
 
   /**
-   * Long-lived async iterator over `SandboxEvent`s. The HTTP request
-   * is opened lazily on first `next()` and closes when the consumer
-   * stops iterating or `signal` aborts.
+   * Long-lived async iterator over `SandboxEvent`s.
+   *
+   * Auto-resumes across disconnects: if the underlying SSE connection
+   * drops (server restart, transient network blip, etc.) the iterator
+   * silently reopens it with the last id observed, so the consumer
+   * never sees a gap. Reconnect uses exponential backoff up to 30s
+   * and runs forever — terminate the stream with `opts.signal`.
    */
   async *getEventsStream(
     opts: EventsStreamOptions = {},
   ): AsyncGenerator<SandboxEvent, void, void> {
+    let lastEventId = opts.lastEventId;
+    let backoffMs = 200;
+    while (!opts.signal?.aborted) {
+      try {
+        for await (const event of this.openEventsStream(lastEventId, opts.signal)) {
+          lastEventId = event.id;
+          backoffMs = 200;
+          yield event;
+        }
+        // Server closed the stream cleanly (e.g. shutdown). Fall
+        // through to the backoff + reconnect path; if it really is
+        // gone, subsequent attempts will keep failing until the
+        // caller aborts.
+      } catch (err) {
+        if (opts.signal?.aborted) return;
+        if (isAbortError(err)) return;
+        // Swallow and retry. The next openEventsStream call will
+        // surface a fresh error if the server is permanently gone,
+        // and the caller can abort to stop the loop.
+      }
+      await sleep(backoffMs, opts.signal).catch(() => {});
+      backoffMs = Math.min(backoffMs * 2, 30_000);
+    }
+  }
+
+  // openEventsStream is one connection attempt — opens /v1/events,
+  // parses SSE, yields events. Used by getEventsStream's reconnect
+  // loop; not part of the public API.
+  private async *openEventsStream(
+    lastEventId: number | undefined,
+    signal?: AbortSignal,
+  ): AsyncGenerator<SandboxEvent, void, void> {
     const url = new URL(`${this.apiServerUrl}/v1/events`);
-    if (opts.lastEventId !== undefined) {
-      url.searchParams.set("lastEventId", String(opts.lastEventId));
+    if (lastEventId !== undefined) {
+      url.searchParams.set("lastEventId", String(lastEventId));
     }
     const res = await this.fetchImpl(url, {
       headers: { accept: "text/event-stream" },
-      signal: opts.signal,
+      signal,
     });
     if (!res.ok || !res.body) throw await toError(res, "events");
-    for await (const frame of parseSSE(res.body, opts.signal)) {
+    for await (const frame of parseSSE(res.body, signal)) {
       yield SandboxEvent.parse(JSON.parse(frame.data));
     }
   }
@@ -149,6 +190,36 @@ export class Sandbox {
     const body = (await res.json()) as { path: string; bytes: number };
     return body;
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    err instanceof DOMException && err.name === "AbortError"
+  ) || (
+    err instanceof Error && err.name === "AbortError"
+  );
+}
+
+// sleep is cancellable: resolves after `ms`, or rejects with the
+// signal's reason as soon as `signal` aborts. The caller in the
+// reconnect loop wraps it in `.catch()` so an abort during backoff
+// just exits the loop on the next iteration check.
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const t = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(signal!.reason);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function toBlob(content: Blob | Uint8Array | ArrayBuffer | string): Blob {

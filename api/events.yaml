@@ -96,7 +96,11 @@ components:
             host:
               type: string
             method:
-              $ref: './config.yaml#/components/schemas/HttpMethod'
+              type: string
+              description: |
+                HTTP method (`GET`, `POST`, …) for HTTP egress, or the
+                protocol identifier (`TLS`, `CONNECT`) for transparent
+                paths where no inner HTTP method is observed.
             path:
               type: string
       example:

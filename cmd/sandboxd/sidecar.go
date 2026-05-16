@@ -284,7 +284,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 			Timestamp: ts,
 			Access:    access,
 			Host:      host,
-			Method:    gen.HttpMethod(method),
+			Method:    method,
 			Path:      path,
 		})
 		return ev

@@ -1,17 +1,13 @@
-// Track the last event id as we consume the stream, and on a
-// transient disconnect reopen the stream from that cursor. The server
-// replays every event with a greater id, then continues with new
-// ones, so nothing is missed.
-//
-// The cursor lives in memory — fine for a long-running process. If
-// the process itself can restart, persist `lastEventId` somewhere
-// durable instead (database, file, etc.) and seed it on boot.
+// Consume the sandbox event stream. `getEventsStream` handles
+// resume on its own: if the underlying SSE connection drops, it
+// reconnects with the last id observed, so no events are missed
+// across a transient blip. The caller doesn't track a cursor.
 //
 // Run with: npx tsx examples/resume-events.ts
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
-  image: 'mcp-server',
+  image: "mcp-server",
   fs: [
     {
       backend: "local",
@@ -21,21 +17,6 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", {
   ],
 });
 
-let lastEventId: number | undefined;
-
-// Retry forever, resuming from wherever we left off. A real consumer
-// would back off and give up after some bound; this loop is just here
-// to show the resume contract.
-while (true) {
-  try {
-    for await (const event of sandbox.getEventsStream({ lastEventId })) {
-      console.info('sandbox event', event);
-      lastEventId = event.id;
-    }
-    // Stream ended cleanly (server shut down) — stop.
-    break;
-  } catch (err) {
-    console.warn("stream dropped, resuming after id", lastEventId, err);
-    await new Promise((r) => setTimeout(r, 1_000));
-  }
+for await (const event of sandbox.getEventsStream()) {
+  console.info("sandbox event", event);
 }

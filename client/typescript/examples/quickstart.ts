@@ -27,7 +27,7 @@ const sandboxConfig: hive.SandboxConfig = {
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);
 console.info("sandbox API server URL:", sandbox.apiServerUrl);
-console.info("sandbox URL:", sandbox.getUrl());
+console.info("sandbox URL:", sandbox.url);
 
 const ac = new AbortController();
 const events = (async () => {

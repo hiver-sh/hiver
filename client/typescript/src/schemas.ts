@@ -124,7 +124,7 @@ export const EgressRequestEvent = SandboxEventBase.extend({
   type: z.literal("egress.request"),
   access: z.enum(["allowed", "denied"]),
   host: z.string(),
-  method: HttpMethod,
+  method: z.string(),
   path: z.string(),
 });
 

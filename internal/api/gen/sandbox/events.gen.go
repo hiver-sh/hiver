@@ -91,11 +91,15 @@ type EgressRequestEvent struct {
 
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
-	Id        int        `json:"id"`
-	Method    HttpMethod `json:"method"`
-	Path      string     `json:"path"`
-	Timestamp time.Time  `json:"timestamp"`
-	Type      string     `json:"type"`
+	Id int `json:"id"`
+
+	// Method HTTP method (`GET`, `POST`, …) for HTTP egress, or the
+	// protocol identifier (`TLS`, `CONNECT`) for transparent
+	// paths where no inner HTTP method is observed.
+	Method    string    `json:"method"`
+	Path      string    `json:"path"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
 }
 
 // EgressRequestEventAccess defines model for EgressRequestEvent.Access.

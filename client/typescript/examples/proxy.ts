@@ -1,5 +1,5 @@
 // Call into the HTTP service the sandbox image exposes via the
-// /v1/sandbox reverse proxy. `sandbox.getUrl()` is the base URL —
+// /v1/sandbox reverse proxy. `sandbox.url` is the base URL —
 // append paths to it and use any HTTP client (here: plain `fetch`).
 // SSE, streaming, and Upgrade (WebSocket) all pass through.
 //
@@ -17,7 +17,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", {
   ],
 });
 
-const base = sandbox.getUrl();
+const base = sandbox.url;
 
 // Plain GET — proxied verbatim to the agent service.
 const healthz = await fetch(`${base}/healthz`);

@@ -132,6 +132,10 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	rule := MatchEgress(p.currentAllow(), "TLS", host, port, "")
 	if rule == nil {
 		p.beginAudit("TLS", host, "").deny("no matching rule", 0)
+		// Send a fatal TLS Alert so the peer surfaces a concrete error
+		// ("tlsv1 alert access denied") instead of the bare connection
+		// close it would otherwise see as `SSL_ERROR_SYSCALL`.
+		writeTLSAlert(c, tlsAlertFatal, tlsAlertAccessDenied)
 		return
 	}
 	if needsInspection(rule) && p.minter != nil {
@@ -279,7 +283,7 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	rule := MatchEgress(p.currentAllow(), req.Method, hostOnly, port, req.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
-		_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
+		writeDenyHTTP(c, hostOnly)
 		return
 	}
 	ac.allow()
@@ -441,6 +445,25 @@ func parseSNI(b []byte) string {
 		p += extDataLen
 	}
 	return ""
+}
+
+// TLS Alert record fields (RFC 5246 §7.2). We hand-craft the bytes
+// instead of standing up a tls.Conn because the client's handshake
+// hasn't been processed — we don't have a cipher suite or version
+// negotiated, and don't need them: an Alert is the one TLS record a
+// peer parses without any prior handshake state.
+const (
+	tlsAlertFatal        byte = 2
+	tlsAlertAccessDenied byte = 49
+)
+
+func writeTLSAlert(c net.Conn, level, description byte) {
+	_, _ = c.Write([]byte{
+		0x15,       // ContentType: alert
+		0x03, 0x03, // ProtocolVersion: TLS 1.2 (max compatibility)
+		0x00, 0x02, // record length
+		level, description,
+	})
 }
 
 // suppress unused-import warning on platforms that don't pull in io.

@@ -19,7 +19,9 @@ func NewServer(port string) *http.Server {
 	}
 	swagger.Servers = nil
 
-	r := gin.Default()
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
 	r.Use(allowAllCORS)
 	r.Use(middleware.OapiRequestValidator(swagger))
 
@@ -33,6 +35,7 @@ func NewServer(port string) *http.Server {
 	return s
 }
 
+// Disable CORS to use the MCP web inspector
 func allowAllCORS(c *gin.Context) {
 	h := c.Writer.Header()
 	h.Set("Access-Control-Allow-Origin", "*")

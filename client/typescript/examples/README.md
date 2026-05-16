@@ -20,6 +20,7 @@ npx tsx examples/apply-config.ts
 npx tsx examples/files.ts
 npx tsx examples/proxy.ts
 npx tsx examples/resume-events.ts
+npx tsx examples/mcp-inspector.ts
 ```
 
 To point at a non-default controller, set its URL on each
@@ -38,5 +39,6 @@ await hive.getOrCreateSandbox(id, config, {
 | `quickstart.ts` | Provision a sandbox, stream events, keep it alive with `ping`. Mirrors the README. |
 | `apply-config.ts` | `GET /v1/config`, mutate, `PUT /v1/config`, and read back the diff the server applied. |
 | `files.ts` | Upload a file into a mount and read it back through `GET /v1/file`. |
-| `proxy.ts` | Use `sandbox.getUrl()` to talk to the HTTP service the sandbox image exposes. |
+| `proxy.ts` | Use `sandbox.url` to talk to the HTTP service the sandbox image exposes. |
 | `resume-events.ts` | Persist the last event id and resume the SSE stream after a restart. |
+| `mcp-inspector.ts` | Boot the `mcp-server` image and launch the MCP Inspector against `sandbox.url`. |

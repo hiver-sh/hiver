@@ -237,7 +237,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	rule := MatchEgress(p.currentAllow(), r.Method, host, port, r.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
-		http.Error(w, "egress denied: "+host, http.StatusForbidden)
+		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
 	}
 	ac.allow()
@@ -286,7 +286,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// CONNECT is host-only — body is opaque under TLS.
 	if MatchEgress(p.currentAllow(), "CONNECT", host, port, "") == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
-		http.Error(w, "egress denied: "+host, http.StatusForbidden)
+		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
 	}
 
@@ -494,6 +494,28 @@ func (a *auditCtx) responseError(reason string, status int) {
 		Verdict: "error", Status: status, Reason: reason,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
 	})
+}
+
+// denyHTTPBody is the plain-text 403 body sent on an egress deny.
+// Spelled out (vs. the original "egress denied: <host>") so an agent
+// reading the response sees actionable text: which host, why, what
+// to do about it.
+func denyHTTPBody(host string) string {
+	return fmt.Sprintf(
+		"egress denied: no allow rule matches %s. Add one under `egress.allow` in the sandbox config.",
+		host,
+	)
+}
+
+// writeDenyHTTP writes a 403 with that body straight to a hijacked /
+// raw net.Conn (the transparent HTTP path doesn't have an
+// http.ResponseWriter to hand to http.Error).
+func writeDenyHTTP(c net.Conn, host string) {
+	body := denyHTTPBody(host)
+	_, _ = fmt.Fprintf(c,
+		"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		len(body), body,
+	)
 }
 
 // splitHostPort returns the hostname and port from one of urlHost

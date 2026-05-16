@@ -1,15 +1,22 @@
 package mcp
 
 import (
+	"context"
+	"log"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sandbox-platform/agent-sandbox/internal/mcp/tools"
 )
+
+const toolCallLogMaxArgs = 100
 
 func newMCPServer() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "hive-sandbox",
 		Version: "1.0.0",
 	}, nil)
+
+	s.AddReceivingMiddleware(logToolCalls)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "bash",
@@ -37,4 +44,27 @@ func newMCPServer() *mcp.Server {
 	}, tools.Grep)
 
 	return s
+}
+
+func logToolCalls(h mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if method == "tools/call" {
+			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
+				log.Printf("mcp tool=%s params=%s", p.Name, truncate(string(p.Arguments), toolCallLogMaxArgs))
+			}
+		} else {
+			log.Printf("mcp method=%s", method)
+		}
+		return h(ctx, method, req)
+	}
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
