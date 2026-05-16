@@ -145,8 +145,8 @@ func TestMatchEgress(t *testing.T) {
 	rules := []proxy.EgressRule{
 		{Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/repos/*"}},
 		{Host: "*.pypi.org"}, // any method, any path, any port
-		{Host: "files.example.com", Headers: map[string]string{"X-Auth": "tok"}},
-		{Host: "127.0.0.1", Ports: []int{8080}},                   // port-pinned, host-only
+		{Host: "files.example.com", Override: &proxy.EgressOverride{Headers: map[string]string{"X-Auth": "tok"}}},
+		{Host: "127.0.0.1", Ports: []int{8080}},                    // port-pinned, host-only
 		{Host: "metrics.internal", Ports: []int{9090, 9091, 9092}}, // port set
 	}
 	cases := []struct {
@@ -184,7 +184,7 @@ func TestMatchEgress(t *testing.T) {
 				t.Fatalf("MatchEgress(%q,%q,%d,%q) match=%v, want %v", tc.method, tc.host, tc.port, tc.p, got != nil, tc.wantMatch)
 			}
 			if tc.wantHeaderInject != "" {
-				if got == nil || got.Headers["X-Auth"] != tc.wantHeaderInject {
+				if got == nil || got.Override == nil || got.Override.Headers["X-Auth"] != tc.wantHeaderInject {
 					t.Errorf("expected header X-Auth=%q on matched rule, got %+v", tc.wantHeaderInject, got)
 				}
 			}

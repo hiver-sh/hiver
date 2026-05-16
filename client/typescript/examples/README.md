@@ -42,3 +42,4 @@ await hive.getOrCreateSandbox(id, config, {
 | `proxy.ts` | Use `sandbox.url` to talk to the HTTP service the sandbox image exposes. |
 | `resume-events.ts` | Persist the last event id and resume the SSE stream after a restart. |
 | `mcp-inspector.ts` | Boot the `mcp-server` image and launch the MCP Inspector against `sandbox.url`. |
+| `claude-agent.ts` | Boot the `mcp-server` image, register `sandbox.url` as an MCP server with the Claude Agent SDK, take user turns from stdin, and stream tokens back. Requires `ANTHROPIC_API_KEY` and `ALPHAVANTAGE_API_KEY`. |

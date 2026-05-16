@@ -6,6 +6,7 @@ export {
   Changes,
   ConfigApplyEvent,
   Egress,
+  EgressOverride,
   EgressRequestEvent,
   EgressResponseEvent,
   EgressRule,

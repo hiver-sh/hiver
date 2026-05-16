@@ -190,16 +190,28 @@ type Egress struct {
 
 // EgressRule One egress allow rule.
 type EgressRule struct {
-	// Headers Headers added to outbound requests that match this rule.
-	// The agent cannot see or override these values.
-	Headers *map[string]string `json:"headers,omitempty"`
-
 	// Host Exact host (`api.github.com`) or wildcard suffix
 	// (`*.pypi.org`).
 	Host string `json:"host"`
 
 	// Methods HTTP methods allowed by this rule. Empty means any method.
 	Methods *[]HttpMethod `json:"methods,omitempty"`
+
+	// Override Values the proxy injects into outbound requests that match
+	// this rule. If the agent already set the same query parameter
+	// or header, the proxy overwrites it; otherwise the value is
+	// added. The agent cannot read these values back.
+	Override *struct {
+		// Headers HTTP headers to add or overwrite on the outbound
+		// request. Useful for injecting bearer tokens or tenant
+		// identifiers.
+		Headers *map[string]string `json:"headers,omitempty"`
+
+		// Query URL query parameters to add or overwrite on the outbound
+		// request. Useful for injecting API keys the agent should
+		// never see (e.g. `apikey=...`).
+		Query *map[string]string `json:"query,omitempty"`
+	} `json:"override,omitempty"`
 
 	// Paths Glob path patterns allowed by this rule. Empty means any
 	// path.

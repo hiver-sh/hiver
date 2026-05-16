@@ -18,8 +18,9 @@ egress:
     - host: upstream-allowed
       methods: [GET]
       paths: [/]
-      headers:
-        X-Sandbox-Agent: agent-python
+      override:
+        headers:
+          X-Sandbox-Agent: agent-python
     # TLS rule with path criteria: triggers TLS interception. sbxproxy
     # presents a leaf cert minted by the per-pod CA, decrypts the inner
     # request, enforces the path filter, then re-establishes TLS to

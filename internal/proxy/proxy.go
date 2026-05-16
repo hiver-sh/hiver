@@ -55,19 +55,31 @@ type Config struct {
 //
 // Host is required (exact, or "*.suffix" wildcard). Ports, Methods, and
 // Paths are optional filters — an empty list means "no enforcement on
-// this dimension" (any port / any method / any path matches). Headers,
-// when set, are merged into the forwarded HTTP request via Header.Set
-// (existing values are replaced).
+// this dimension" (any port / any method / any path matches). Override,
+// when set, lets the proxy inject URL query parameters and HTTP headers
+// into the forwarded request: any key in Override.Query is set on the
+// outbound URL via url.Values.Set (replacing any value the agent sent),
+// and any key in Override.Headers is set on the outbound headers via
+// Header.Set. The agent cannot read these values back from the proxy
+// response.
 //
 // For TLS in transparent mode, only Host and Ports are consulted (the
 // proxy can read SNI from the ClientHello and the destination port
 // from SO_ORIGINAL_DST, but not method/path under encryption);
-// Methods/Paths/Headers are ignored on those flows.
+// Methods/Paths/Override are ignored on those flows.
 type EgressRule struct {
-	Host    string            `json:"host"`
-	Ports   []int             `json:"ports,omitempty"`
-	Methods []string          `json:"methods,omitempty"`
-	Paths   []string          `json:"paths,omitempty"`
+	Host     string         `json:"host"`
+	Ports    []int          `json:"ports,omitempty"`
+	Methods  []string       `json:"methods,omitempty"`
+	Paths    []string       `json:"paths,omitempty"`
+	Override *EgressOverride `json:"override,omitempty"`
+}
+
+// EgressOverride bundles per-rule URL query and header injections.
+// Both maps are applied with Set semantics: an existing value (set by
+// the agent) is replaced; an absent value is added.
+type EgressOverride struct {
+	Query   map[string]string `json:"query,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
@@ -246,9 +258,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, h := range p.stripHeaders {
 		r.Header.Del(h)
 	}
-	for k, v := range rule.Headers {
-		r.Header.Set(k, v)
-	}
+	applyOverride(r, rule.Override)
 
 	// Rebuild the request for forwarding. http.DefaultTransport requires
 	// RequestURI to be empty and URL to have a scheme + host.
@@ -357,6 +367,30 @@ func MatchEgress(rules []EgressRule, method, host string, port int, path string)
 		return r
 	}
 	return nil
+}
+
+// applyOverride mutates r in-place to apply the rule's Override
+// directives. Query keys are written via url.Values.Set (replacing any
+// value the agent sent); header keys are written via Header.Set with
+// the same semantics. r.URL.RawQuery is re-encoded only when the query
+// override actually fires, so requests without an override pay no cost.
+//
+// Both maps are nil-safe: a nil Override, nil Query, or nil Headers is
+// a no-op.
+func applyOverride(r *http.Request, ov *EgressOverride) {
+	if ov == nil {
+		return
+	}
+	if len(ov.Query) > 0 && r.URL != nil {
+		q := r.URL.Query()
+		for k, v := range ov.Query {
+			q.Set(k, v)
+		}
+		r.URL.RawQuery = q.Encode()
+	}
+	for k, v := range ov.Headers {
+		r.Header.Set(k, v)
+	}
 }
 
 func matchHost(pat, host string) bool {

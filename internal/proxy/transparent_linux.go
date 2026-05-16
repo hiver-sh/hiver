@@ -226,9 +226,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	for _, h := range p.stripHeaders {
 		req.Header.Del(h)
 	}
-	for k, v := range rule.Headers {
-		req.Header.Set(k, v)
-	}
+	applyOverride(req, rule.Override)
 	req.RequestURI = ""
 	req.Header.Set("Connection", "close")
 
@@ -289,9 +287,7 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	for _, h := range p.stripHeaders {
 		req.Header.Del(h)
 	}
-	for k, v := range rule.Headers {
-		req.Header.Set(k, v)
-	}
+	applyOverride(req, rule.Override)
 	// http.ReadRequest leaves req.RequestURI set; req.Write picks origin
 	// form regardless, but clear it so it doesn't accidentally end up as
 	// proxy-form on the wire.

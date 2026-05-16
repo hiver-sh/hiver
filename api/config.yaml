@@ -200,14 +200,34 @@ components:
             Glob path patterns allowed by this rule. Empty means any
             path.
           example: ["/repos/*"]
-        headers:
+        override:
           type: object
-          additionalProperties: { type: string }
+          additionalProperties: false
           description: |
-            Headers added to outbound requests that match this rule.
-            The agent cannot see or override these values.
-          example:
-            X-Sandbox-Tenant: acme
+            Values the proxy injects into outbound requests that match
+            this rule. If the agent already set the same query parameter
+            or header, the proxy overwrites it; otherwise the value is
+            added. The agent cannot read these values back.
+          properties:
+            query:
+              type: object
+              additionalProperties: { type: string }
+              description: |
+                URL query parameters to add or overwrite on the outbound
+                request. Useful for injecting API keys the agent should
+                never see (e.g. `apikey=...`).
+              example:
+                apikey: sk-redacted
+            headers:
+              type: object
+              additionalProperties: { type: string }
+              description: |
+                HTTP headers to add or overwrite on the outbound
+                request. Useful for injecting bearer tokens or tenant
+                identifiers.
+              example:
+                Authorization: Bearer sk-redacted
+                X-Sandbox-Tenant: acme
 
     ApplyResult:
       type: object

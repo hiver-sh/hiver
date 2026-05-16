@@ -47,12 +47,18 @@ export const HttpMethod = z.enum([
 ]);
 export type HttpMethod = z.infer<typeof HttpMethod>;
 
+export const EgressOverride = z.object({
+  query: z.record(z.string(), z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+export type EgressOverride = z.infer<typeof EgressOverride>;
+
 export const EgressRule = z.object({
   host: z.string(),
   ports: z.array(z.number().int()).optional(),
   methods: z.array(HttpMethod).optional(),
   paths: z.array(z.string()).optional(),
-  headers: z.record(z.string(), z.string()).optional(),
+  override: EgressOverride.optional(),
 });
 export type EgressRule = z.infer<typeof EgressRule>;
 

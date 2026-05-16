@@ -28,6 +28,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.143",
     "@types/node": "^20.19.41",
     "googleapis": "^144.0.0",
     "tsup": "^8.3.0",

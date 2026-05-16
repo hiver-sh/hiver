@@ -2,17 +2,30 @@ package mcp
 
 import (
 	"context"
-	"log"
+	"encoding/json"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sandbox-platform/agent-sandbox/internal/mcp/tools"
+	"go.uber.org/zap"
 )
 
-const toolCallLogMaxArgs = 100
+const (
+	name = "sandbox-mcp-server"
+
+	toolCallLogMaxArgs = 100
+)
+
+var toolLogger = func() *zap.Logger {
+	l, err := zap.NewProduction()
+	if err != nil {
+		return zap.NewNop()
+	}
+	return l.Named(name)
+}()
 
 func newMCPServer() *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
-		Name:    "hive-sandbox",
+		Name:    name,
 		Version: "1.0.0",
 	}, nil)
 
@@ -50,10 +63,22 @@ func logToolCalls(h mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 		if method == "tools/call" {
 			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
-				log.Printf("mcp tool=%s params=%s", p.Name, truncate(string(p.Arguments), toolCallLogMaxArgs))
+				args := json.RawMessage(p.Arguments)
+				if len(args) > toolCallLogMaxArgs {
+					toolLogger.Info("tools/call",
+						zap.String("tool", p.Name),
+						zap.String("params", truncate(string(args), toolCallLogMaxArgs)),
+						zap.Bool("params_truncated", true),
+					)
+				} else {
+					toolLogger.Info("tools/call",
+						zap.String("tool", p.Name),
+						zap.Any("params", args),
+					)
+				}
 			}
 		} else {
-			log.Printf("mcp method=%s", method)
+			toolLogger.Debug("rpc", zap.String("method", method))
 		}
 		return h(ctx, method, req)
 	}
