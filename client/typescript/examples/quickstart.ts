@@ -40,6 +40,7 @@ const ping = setInterval(sandbox.ping, 10_000);
 
 // Stop after a minute so the example terminates cleanly.
 setTimeout(() => {
+  void sandbox.shutdown();
   clearInterval(ping);
   ac.abort();
 }, 60_000);

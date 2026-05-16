@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -306,6 +308,26 @@ func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) 
 func (h *SandboxHandlers) Ping(c *gin.Context) {
 	h.lifetime.Reset()
 	c.Status(http.StatusOK)
+}
+
+// Shutdown signals sandboxd to begin its graceful shutdown immediately
+// by self-delivering SIGTERM. We re-enter the same signal-driven path
+// SIGTERM-from-outside takes (signal.NotifyContext in main cancels the
+// lifecycle context) rather than reaching into an injected cancel func
+// — one shutdown cascade, one place to reason about it.
+//
+// The 200 is written before the kill so the caller observes success;
+// the signal is fired from a goroutine after a brief yield to let the
+// response flush. In-flight requests started after that point may be
+// cut short, which is expected for a shutdown endpoint.
+func (h *SandboxHandlers) Shutdown(c *gin.Context) {
+	c.Status(http.StatusOK)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			log.Printf("sandboxd: self-SIGTERM failed: %v", err)
+		}
+	}()
 }
 
 // writeSSEFrame emits a single SSE event:

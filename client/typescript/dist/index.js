@@ -196,6 +196,17 @@ var Sandbox = class {
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`);
     if (!res.ok) throw await toError(res, "ping");
   };
+  /**
+   * Shut the sandbox down now. The server acks before signalling
+   * itself, so this resolves on a clean `200`; subsequent calls
+   * against the same endpoint will fail as the API server tears down.
+   */
+  async shutdown() {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/shutdown`, {
+      method: "POST"
+    });
+    if (!res.ok) throw await toError(res, "shutdown");
+  }
   /** Read the current `SandboxConfig`. */
   async getConfig() {
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`);

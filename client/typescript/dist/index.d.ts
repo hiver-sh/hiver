@@ -3136,6 +3136,12 @@ declare class Sandbox {
      * `.bind(sandbox)`.
      */
     ping: () => Promise<void>;
+    /**
+     * Shut the sandbox down now. The server acks before signalling
+     * itself, so this resolves on a clean `200`; subsequent calls
+     * against the same endpoint will fail as the API server tears down.
+     */
+    shutdown(): Promise<void>;
     /** Read the current `SandboxConfig`. */
     getConfig(): Promise<SandboxConfig>;
     /**
