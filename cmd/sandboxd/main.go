@@ -421,7 +421,12 @@ func main() {
 // every line was processed (the agent flow has to publish trailing
 // stdio events before closing the broker) must wait on stdioDone in
 // addition to cmd.Wait().
-func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args, env []string, extraFiles []*os.File, onStdio func(stream, line string)) (cmd *exec.Cmd, stdioDone <-chan struct{}, err error) {
+func startChild(ctx context.Context,
+	wg *sync.WaitGroup,
+	name, bin string,
+	args, env []string,
+	extraFiles []*os.File,
+	onStdio func(stream, line string)) (cmd *exec.Cmd, stdioDone <-chan struct{}, err error) {
 	cmd = exec.CommandContext(ctx, bin, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
