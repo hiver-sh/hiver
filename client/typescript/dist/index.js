@@ -173,10 +173,14 @@ var Sandbox = class {
   id;
   /** Base URL of the per-sandbox API server (no trailing slash). */
   apiServerUrl;
+  /** Base URL of the controller that created this sandbox (no trailing slash). */
+  controllerUrl;
+  /** @internal — exposed so the controller module can share the dialer. */
   fetchImpl;
-  constructor(ref, opts = {}) {
+  constructor(ref, opts) {
     this.id = ref.id;
     this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
+    this.controllerUrl = opts.controllerUrl.replace(/\/+$/, "");
     this.fetchImpl = opts.fetch ?? fetch;
   }
   /**
@@ -196,17 +200,6 @@ var Sandbox = class {
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`);
     if (!res.ok) throw await toError(res, "ping");
   };
-  /**
-   * Shut the sandbox down now. The server acks before signalling
-   * itself, so this resolves on a clean `200`; subsequent calls
-   * against the same endpoint will fail as the API server tears down.
-   */
-  async shutdown() {
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/shutdown`, {
-      method: "POST"
-    });
-    if (!res.ok) throw await toError(res, "shutdown");
-  }
   /** Read the current `SandboxConfig`. */
   async getConfig() {
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`);
@@ -351,7 +344,25 @@ async function getOrCreateSandbox(id, config, opts = {}) {
     );
   }
   const ref = SandboxRef.parse(await res.json());
-  return new Sandbox(ref, { fetch: fetchImpl });
+  return new Sandbox(ref, { controllerUrl: base, fetch: fetchImpl });
+}
+async function shutdown(sandbox) {
+  const url = `${sandbox.controllerUrl}/v1/shutdown/${encodeURIComponent(sandbox.id)}`;
+  let res;
+  try {
+    res = await sandbox.fetchImpl(url, { method: "POST" });
+  } catch (err) {
+    if (isConnectionRefused(err)) {
+      throw new SandboxError(
+        "shutdown",
+        0,
+        `controller is not reachable at ${sandbox.controllerUrl} (connection refused). Is it running?`
+      );
+    }
+    throw err;
+  }
+  if (res.status === 204) return;
+  throw await toError(res, "shutdown");
 }
 function isConnectionRefused(err) {
   if (!(err instanceof Error)) return false;
@@ -389,6 +400,7 @@ export {
   SandboxEvent,
   SandboxRef,
   StdioEvent,
-  getOrCreateSandbox
+  getOrCreateSandbox,
+  shutdown
 };
 //# sourceMappingURL=index.js.map

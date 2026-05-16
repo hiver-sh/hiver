@@ -3100,6 +3100,12 @@ declare const SandboxEvent: z.ZodDiscriminatedUnion<"type", [z.ZodObject<{
 type SandboxEvent = z.infer<typeof SandboxEvent>;
 
 interface SandboxOptions {
+    /**
+     * Base URL of the controller that produced this handle. Stored so
+     * controller-side operations (e.g. `hive.shutdown`) can reach back
+     * without the caller having to remember it.
+     */
+    controllerUrl: string;
     /** Override the global fetch (e.g. for testing or proxying). */
     fetch?: typeof fetch;
 }
@@ -3122,8 +3128,11 @@ declare class Sandbox {
     readonly id: string;
     /** Base URL of the per-sandbox API server (no trailing slash). */
     readonly apiServerUrl: string;
-    private readonly fetchImpl;
-    constructor(ref: SandboxRef, opts?: SandboxOptions);
+    /** Base URL of the controller that created this sandbox (no trailing slash). */
+    readonly controllerUrl: string;
+    /** @internal — exposed so the controller module can share the dialer. */
+    readonly fetchImpl: typeof fetch;
+    constructor(ref: SandboxRef, opts: SandboxOptions);
     /**
      * URL of the HTTP service the sandbox image exposes (the first TCP
      * port from its EXPOSE directive). Append paths to it to reach the
@@ -3136,12 +3145,6 @@ declare class Sandbox {
      * `.bind(sandbox)`.
      */
     ping: () => Promise<void>;
-    /**
-     * Shut the sandbox down now. The server acks before signalling
-     * itself, so this resolves on a clean `200`; subsequent calls
-     * against the same endpoint will fail as the API server tears down.
-     */
-    shutdown(): Promise<void>;
     /** Read the current `SandboxConfig`. */
     getConfig(): Promise<SandboxConfig>;
     /**
@@ -3208,5 +3211,9 @@ interface ControllerOptions {
  * instead of producing a 400 from the controller.
  */
 declare function getOrCreateSandbox(id: string, config: SandboxConfig, opts?: ControllerOptions): Promise<Sandbox>;
+/**
+ * Stop the sandbox container and remove it.
+ */
+declare function shutdown(sandbox: Sandbox): Promise<void>;
 
-export { ACLRule, ApiError, ApplyResult, Backend, Changes, ConfigApplyEvent, type ControllerOptions, DEFAULT_CONTROLLER_URL, Egress, EgressRequestEvent, EgressResponseEvent, EgressRule, type EventsStreamOptions, FSRequestEvent, FSResponseEvent, FileSystem, GDriveFileSystem, HttpMethod, LocalFileSystem, Sandbox, SandboxConfig, SandboxError, SandboxEvent, type SandboxOptions, SandboxRef, StdioEvent, getOrCreateSandbox };
+export { ACLRule, ApiError, ApplyResult, Backend, Changes, ConfigApplyEvent, type ControllerOptions, DEFAULT_CONTROLLER_URL, Egress, EgressRequestEvent, EgressResponseEvent, EgressRule, type EventsStreamOptions, FSRequestEvent, FSResponseEvent, FileSystem, GDriveFileSystem, HttpMethod, LocalFileSystem, Sandbox, SandboxConfig, SandboxError, SandboxEvent, type SandboxOptions, SandboxRef, StdioEvent, getOrCreateSandbox, shutdown };

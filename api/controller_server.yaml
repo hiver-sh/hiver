@@ -75,6 +75,39 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
+  /v1/shutdown/{id}:
+    post:
+      tags: [Sandboxes]
+      summary: Shut down and remove a sandbox.
+      operationId: shutdownSandbox
+      description: |
+        Stops the sandbox container (sending SIGTERM, then SIGKILL after
+        the docker default grace period if needed) and removes it. The
+        sandbox-side graceful-shutdown cascade — sidecars, agent,
+        remote-backend drain — runs as part of the stop, then the
+        container is removed. The call blocks until both steps
+        complete.
+
+        Idempotent on already-stopped containers: an exited container
+        is simply removed. Unknown ids return `404`.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: The sandbox id.
+          example: tenant-acme-build-42
+      responses:
+        '204':
+          description: Sandbox stopped and removed.
+        '404':
+          description: No sandbox with that id exists.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
 components:
   schemas:
     Sandbox:

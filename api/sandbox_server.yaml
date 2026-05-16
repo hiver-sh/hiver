@@ -284,21 +284,3 @@ paths:
       responses:
         '200':
           description: Ping received.
-
-  /v1/shutdown:
-    post:
-      tags: [Configuration]
-      summary: Shut the sandbox down now.
-      operationId: Shutdown
-      description: |
-        Sends SIGTERM to the sandbox process immediately. The same
-        graceful-shutdown cascade a TTL expiry or an external SIGTERM
-        triggers runs: sidecars are signalled, the agent container is
-        stopped, and the API server stops accepting new requests.
-
-        The response is written before the signal is sent, so callers
-        observe `200 OK`; in-flight requests started after that
-        response may be cut short.
-      responses:
-        '200':
-          description: Shutdown initiated.

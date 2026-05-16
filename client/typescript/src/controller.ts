@@ -1,5 +1,5 @@
 import { ApiError, SandboxConfig, SandboxRef } from "./schemas";
-import { Sandbox, SandboxError } from "./sandbox";
+import { Sandbox, SandboxError, toError } from "./sandbox";
 
 export const DEFAULT_CONTROLLER_URL = "http://localhost:9000";
 
@@ -69,7 +69,29 @@ export async function getOrCreateSandbox(
     );
   }
   const ref = SandboxRef.parse(await res.json());
-  return new Sandbox(ref, { fetch: fetchImpl });
+  return new Sandbox(ref, { controllerUrl: base, fetch: fetchImpl });
+}
+
+/**
+ * Stop the sandbox container and remove it.
+ */
+export async function shutdown(sandbox: Sandbox): Promise<void> {
+  const url = `${sandbox.controllerUrl}/v1/shutdown/${encodeURIComponent(sandbox.id)}`;
+  let res: Response;
+  try {
+    res = await sandbox.fetchImpl(url, { method: "POST" });
+  } catch (err) {
+    if (isConnectionRefused(err)) {
+      throw new SandboxError(
+        "shutdown",
+        0,
+        `controller is not reachable at ${sandbox.controllerUrl} (connection refused). Is it running?`,
+      );
+    }
+    throw err;
+  }
+  if (res.status === 204) return;
+  throw await toError(res, "shutdown");
 }
 
 function isConnectionRefused(err: unknown): boolean {

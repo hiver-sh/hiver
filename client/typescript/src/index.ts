@@ -31,5 +31,6 @@ export {
 export {
   DEFAULT_CONTROLLER_URL,
   getOrCreateSandbox,
+  shutdown,
   type ControllerOptions,
 } from "./controller";

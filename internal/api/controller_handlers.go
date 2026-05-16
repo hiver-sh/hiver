@@ -1,7 +1,9 @@
 package api
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -24,28 +26,45 @@ const (
 )
 
 type ControllerHandlers struct {
-	mu        sync.Mutex
-	sandboxes map[string]gen.Sandbox
-	tars      *tarCache
+	// mu serializes container lifecycle operations so two requests for
+	// the same id can't both decide "not running" and race on
+	// `docker create`. Held for the whole handler — startSandbox is
+	// short and docker itself serializes the host's daemon anyway.
+	mu   sync.Mutex
+	tars *tarCache
 }
 
 func NewControllerHandlers() *ControllerHandlers {
 	return &ControllerHandlers{
-		sandboxes: make(map[string]gen.Sandbox),
-		tars:      newTarCache(os.TempDir(), tarCacheMaxBytes),
+		tars: newTarCache(os.TempDir(), tarCacheMaxBytes),
 	}
 }
 
-// GetOrCreateSandbox is idempotent on `id`: a known id returns the prior
-// record (200); a fresh id boots a new sandbox container in the `hive`
-// compose project and records it (201). Concurrent callers serialize on
-// the handler mutex so racers see a single creation.
+// GetOrCreateSandbox is idempotent on `id`: if a container for `id` is
+// running, its existing endpoint is returned (200); otherwise (no
+// container, or one that exited / was removed out-of-band) a new
+// sandbox is booted (201). Docker is the single source of truth — we
+// don't cache anything that could go stale.
 func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if sb, ok := h.sandboxes[id]; ok {
-		c.JSON(http.StatusOK, sb)
+	name := containerNameFor(id)
+	_, running, err := containerState(name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
+		return
+	}
+	if running {
+		hostPort, err := lookupHostPort(name, sandboxAPIPort)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gen.Sandbox{
+			Id:       id,
+			Endpoint: fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+		})
 		return
 	}
 
@@ -60,8 +79,60 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, id string) {
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
 		return
 	}
-	h.sandboxes[id] = sb
 	c.JSON(http.StatusCreated, sb)
+}
+
+func containerNameFor(id string) string {
+	return composeProject + "-sandbox-" + id
+}
+
+// containerState returns whether the named container exists at all and,
+// if so, whether it's running. A missing container is `(false, false, nil)`
+// rather than an error so callers can branch on "not found" vs "docker
+// is broken".
+func containerState(name string) (exists, running bool, err error) {
+	cmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name)
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "No such object") {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("docker inspect %s: %w", name, err)
+	}
+	return true, strings.TrimSpace(string(out)) == "true", nil
+}
+
+// ShutdownSandbox stops and removes the container backing `id`. The
+// stop uses docker's default graceful path (SIGTERM, then SIGKILL after
+// the timeout), giving sandboxd's signal handler room to run its own
+// shutdown cascade (sidecars → agent → drain) before the container is
+// torn down. An already-exited container is simply removed.
+func (h *ControllerHandlers) ShutdownSandbox(c *gin.Context, id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	name := containerNameFor(id)
+	exists, running, err := containerState(name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
+		return
+	}
+	if !exists {
+		c.JSON(http.StatusNotFound, sandboxgen.Error{Error: fmt.Sprintf("sandbox %q does not exist", id)})
+		return
+	}
+	if running {
+		if out, err := exec.Command("docker", "stop", name).CombinedOutput(); err != nil {
+			c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: fmt.Sprintf("docker stop %s: %v: %s", name, err, out)})
+			return
+		}
+	}
+	if out, err := exec.Command("docker", "rm", name).CombinedOutput(); err != nil {
+		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: fmt.Sprintf("docker rm %s: %v: %s", name, err, out)})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *ControllerHandlers) startSandbox(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
@@ -83,7 +154,13 @@ func (h *ControllerHandlers) startSandbox(id string, cfg sandboxgen.SandboxConfi
 		return gen.Sandbox{}, err
 	}
 
-	containerName := composeProject + "-sandbox-" + id
+	containerName := containerNameFor(id)
+	// Clear any lingering container of the same name (e.g. one that
+	// exited but wasn't auto-removed) so `docker create --name` below
+	// doesn't fail with a name conflict. No-op if nothing matches.
+	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+
+	log.Println("docker rm ", containerName)
 	serviceLabel := "sandbox-" + id
 	createArgs := []string{
 		"create",

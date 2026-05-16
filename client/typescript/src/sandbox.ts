@@ -8,6 +8,12 @@ import {
 import { parseSSE } from "./sse";
 
 export interface SandboxOptions {
+  /**
+   * Base URL of the controller that produced this handle. Stored so
+   * controller-side operations (e.g. `hive.shutdown`) can reach back
+   * without the caller having to remember it.
+   */
+  controllerUrl: string;
   /** Override the global fetch (e.g. for testing or proxying). */
   fetch?: typeof fetch;
 }
@@ -32,12 +38,16 @@ export class Sandbox {
   readonly id: string;
   /** Base URL of the per-sandbox API server (no trailing slash). */
   readonly apiServerUrl: string;
+  /** Base URL of the controller that created this sandbox (no trailing slash). */
+  readonly controllerUrl: string;
 
-  private readonly fetchImpl: typeof fetch;
+  /** @internal — exposed so the controller module can share the dialer. */
+  readonly fetchImpl: typeof fetch;
 
-  constructor(ref: SandboxRef, opts: SandboxOptions = {}) {
+  constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
+    this.controllerUrl = opts.controllerUrl.replace(/\/+$/, "");
     this.fetchImpl = opts.fetch ?? fetch;
   }
 
@@ -59,18 +69,6 @@ export class Sandbox {
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`);
     if (!res.ok) throw await toError(res, "ping");
   };
-
-  /**
-   * Shut the sandbox down now. The server acks before signalling
-   * itself, so this resolves on a clean `200`; subsequent calls
-   * against the same endpoint will fail as the API server tears down.
-   */
-  async shutdown(): Promise<void> {
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/shutdown`, {
-      method: "POST",
-    });
-    if (!res.ok) throw await toError(res, "shutdown");
-  }
 
   /** Read the current `SandboxConfig`. */
   async getConfig(): Promise<SandboxConfig> {
@@ -186,7 +184,7 @@ export class SandboxError extends Error {
   }
 }
 
-async function toError(res: Response, operation: string): Promise<SandboxError> {
+export async function toError(res: Response, operation: string): Promise<SandboxError> {
   const text = await res.text();
   let body: { error: string; details?: Record<string, unknown> } | undefined;
   try {

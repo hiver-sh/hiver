@@ -38,11 +38,11 @@ const events = (async () => {
 
 const ping = setInterval(sandbox.ping, 10_000);
 
-// Stop after a minute so the example terminates cleanly.
+// Stop after 30 seconds.
 setTimeout(() => {
-  void sandbox.shutdown();
+  void hive.shutdown(sandbox);
   clearInterval(ping);
   ac.abort();
-}, 60_000);
+}, 30_000);
 
 await events.catch(() => {});
