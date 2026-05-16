@@ -10,20 +10,12 @@ import (
 	"sync"
 )
 
-// tarCacheMaxBytes caps the total on-disk size of cached agent-image
-// tars. When inserting a new tar would push us over the cap we evict
-// LRU entries (and unlink their files) until it fits.
+// tarCacheMaxBytes caps the total on-disk size of cached sandbox-image tars.
 const tarCacheMaxBytes int64 = 1 << 30 // 1 GiB
 
-// tarCache memoizes `docker save` output keyed by image reference. The
-// `docker save` of a multi-hundred-MB image takes seconds; for a hot
-// image the cache hit collapses that to a single `docker cp`.
+// tarCache memoizes `docker save` output keyed by image reference.
 //
-// Eviction is strict LRU on total byte size. Files are owned by the
-// cache: hits return a path the caller can pass to `docker cp` but
-// must not delete or rename. The cache never evicts the entry it just
-// inserted (so a single tar larger than the cap still works — the cap
-// just stops being respected for that one entry).
+// Eviction is strict LRU on total byte size.
 type tarCache struct {
 	mu      sync.Mutex
 	dir     string
@@ -80,9 +72,7 @@ func (c *tarCache) getOrSave(image string) (string, error) {
 	c.index[image] = c.list.PushFront(entry)
 	c.size += entry.size
 
-	// Evict from the LRU end until we're back under the cap. Stop if
-	// the only remaining entry is the one we just inserted — see the
-	// type comment for why we tolerate over-cap in that degenerate case.
+	// Evict from the LRU end until we're back under the cap.
 	for c.size > c.maxSize && c.list.Len() > 1 {
 		victim := c.list.Back()
 		old := victim.Value.(*tarEntry)

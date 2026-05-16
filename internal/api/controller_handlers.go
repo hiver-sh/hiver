@@ -17,18 +17,11 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// composeProject groups every controller-spawned sandbox under the same
-// docker compose project as the controller itself, so they appear in
-// `docker compose -p hive ps` and share the project's default network.
-const composeProject = "hive"
-
-// sandboxImage is the runtime image sandbox containers boot from. Built
-// out-of-band by the docker compose stack (see docker/sandbox.Dockerfile).
-const sandboxImage = "sandbox-runtime"
-
-// sandboxAPIPort is the port sandboxd's per-sandbox API server binds
-// inside the pod. The endpoint we hand back uses this port verbatim.
-const sandboxAPIPort = 8080
+const (
+	composeProject = "hive"
+	sandboxImage   = "sandbox-runtime"
+	sandboxAPIPort = 8080
+)
 
 type ControllerHandlers struct {
 	mu        sync.Mutex
@@ -85,10 +78,6 @@ func (h *ControllerHandlers) startSandbox(id string, cfg sandboxgen.SandboxConfi
 	}
 	defer os.Remove(specPath)
 
-	// Materialize the agent image as a docker-archive tar. sandboxd
-	// unpacks this into the agent rootfs at container start. Tars are
-	// memoized per image ref by tarCache (LRU, 1 GiB cap) — a hot image
-	// skips the multi-second `docker save` and only pays the cp.
 	tarPath, err := h.tars.getOrSave(*cfg.Image)
 	if err != nil {
 		return gen.Sandbox{}, err
@@ -118,8 +107,6 @@ func (h *ControllerHandlers) startSandbox(id string, cfg sandboxgen.SandboxConfi
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-		// Publish sandboxd's API to a kernel-picked free host port so
-		// each sandbox is reachable from the host.
 		"-p", fmt.Sprintf("%d", sandboxAPIPort),
 	}
 	if cfg.Env != nil {
