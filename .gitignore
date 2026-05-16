@@ -1,5 +1,4 @@
-# Local environment overrides for run-fixture.sh and other dev tooling.
-# Holds OAuth tokens, registry creds, etc. Never commit.
+node_modules
 .env.local
 .env.*.local
 bin
