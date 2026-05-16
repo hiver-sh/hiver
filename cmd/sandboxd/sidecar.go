@@ -66,7 +66,7 @@ func startSidecar(
 	// nil onStdio: sidecar stdout/stderr is operational logging
 	// (mount messages, http request log), not workload output worth
 	// surfacing as a SandboxEvent.
-	cmd, err := startChild(ctx, wg, name, bin, args, env, []*os.File{child}, nil)
+	cmd, _, err := startChild(ctx, wg, name, bin, args, env, []*os.File{child}, nil)
 	if err != nil {
 		_ = parent.Close()
 		_ = child.Close()
@@ -185,6 +185,26 @@ func formatProxyEvent(ev map[string]any) string {
 	return fmt.Sprintf("proxy %-5s %s %s%s", verdict, method, host, path)
 }
 
+// requestIDKey normalises the `request_id` field of an audit event to
+// a stable string for the correlator. JSON decodes numbers as
+// float64, so int-typed RequestID fields (proxy.AuditEvent) need a
+// trip through strconv; string-typed ones (fusefs.AuditEvent) pass
+// through unchanged.
+func requestIDKey(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatInt(int64(t), 10)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	default:
+		return ""
+	}
+}
+
 func intField(ev map[string]any, key string) int {
 	switch v := ev[key].(type) {
 	case float64:
@@ -232,7 +252,7 @@ func newProxyTranslator(broker *events.Broker) *proxyTranslator {
 
 func (t *proxyTranslator) handle(raw map[string]any) {
 	phase, _ := raw["phase"].(string)
-	internalID, _ := raw["request_id"].(string)
+	internalID := requestIDKey(raw["request_id"])
 	switch phase {
 	case "request":
 		verdict, _ := raw["verdict"].(string)
@@ -253,7 +273,7 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 		if !ok {
 			return // paired request was filtered out (shouldn't happen for proxy)
 		}
-		f := proxyResponseFactory(raw, strconv.FormatInt(sseID, 10))
+		f := proxyResponseFactory(raw, sseID)
 		if f != nil {
 			t.broker.Publish(f)
 		}
@@ -291,7 +311,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 	}
 }
 
-func proxyResponseFactory(raw map[string]any, requestID string) events.Factory {
+func proxyResponseFactory(raw map[string]any, requestID int64) events.Factory {
 	status := intField(raw, "status")
 	durationMs := intField(raw, "duration_ms")
 	return func(id int64, ts time.Time) gen.SandboxEvent {
@@ -299,7 +319,7 @@ func proxyResponseFactory(raw map[string]any, requestID string) events.Factory {
 		_ = ev.FromEgressResponseEvent(gen.EgressResponseEvent{
 			Id:         int(id),
 			Timestamp:  ts,
-			RequestId:  requestID,
+			RequestId:  int(requestID),
 			Status:     status,
 			DurationMs: durationMs,
 		})

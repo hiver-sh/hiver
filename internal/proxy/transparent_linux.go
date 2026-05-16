@@ -110,18 +110,22 @@ func peekTLSRecord(br *bufio.Reader) ([]byte, error) {
 
 // handleTransparentTLS reads enough of the TLS ClientHello to extract
 // the SNI hostname and matches it host-only against the allowlist.
-// What happens next depends on the matched rule:
+// What happens next depends on whether the proxy was given a CA:
 //
-//   - If the rule has no method/path/header criteria (host-only intent),
-//     the proxy raw-forwards the byte stream both ways. The agent's TLS
-//     handshake goes end-to-end with the real upstream — no MITM.
+//   - With a CA, the proxy always terminates TLS: presents a leaf cert
+//     minted by the sandbox CA, reads the inner HTTP request, applies
+//     method/path/header rules from the matched rule, and proxies a
+//     separate TLS connection upstream. This gives the audit log full
+//     visibility (HTTP method, path, status, duration) for every
+//     allowed flow, not just rules that carry inspection criteria.
+//     The agent must trust the sandbox CA — sandboxd installs it into
+//     the agent rootfs at bundle prep time.
 //
-//   - If the rule has any inspection criteria AND the proxy was started
-//     with a CA, the proxy terminates TLS: presents a leaf cert minted
-//     by the sandbox CA, reads the inner HTTP request, applies
-//     method/path/header rules, and proxies a separate TLS connection
-//     to the upstream. The agent must trust the sandbox CA (sandboxd
-//     installs it into the agent rootfs at bundle prep time).
+//   - Without a CA, the proxy raw-forwards the byte stream end-to-end
+//     after the host-only allow decision. Audit visibility is reduced
+//     to host + port; no inner method/path/status. Pinning hosts that
+//     can't tolerate MITM also land here when an operator deliberately
+//     omits the CA.
 func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst string) {
 	hello, _ := peekTLSRecord(br)
 	host := parseSNI(hello)
@@ -138,17 +142,11 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 		writeTLSAlert(c, tlsAlertFatal, tlsAlertAccessDenied)
 		return
 	}
-	if needsInspection(rule) && p.minter != nil {
+	if p.minter != nil {
 		p.interceptTLS(c, br, host, origDst)
 		return
 	}
 	p.rawForwardTLS(c, br, host, origDst)
-}
-
-// needsInspection reports whether a rule's criteria can only be enforced
-// after TLS termination (i.e. requires reading the plaintext request).
-func needsInspection(r *EgressRule) bool {
-	return len(r.Methods) > 0 || len(r.Paths) > 0 || len(r.Headers) > 0
 }
 
 func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string) {

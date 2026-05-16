@@ -107,8 +107,8 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	if events[1].Phase != "response" || events[1].Verdict != "allow" || events[1].Status != 200 {
 		t.Errorf("response event mismatch: %+v", events[1])
 	}
-	if events[0].RequestID == "" || events[0].RequestID != events[1].RequestID {
-		t.Errorf("request_id should pair the two events: req=%q resp=%q", events[0].RequestID, events[1].RequestID)
+	if events[0].RequestID == 0 || events[0].RequestID != events[1].RequestID {
+		t.Errorf("request_id should pair the two events: req=%d resp=%d", events[0].RequestID, events[1].RequestID)
 	}
 }
 

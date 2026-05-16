@@ -7,6 +7,8 @@ import {
 } from "./schemas";
 import { parseSSE } from "./sse";
 
+const SANDBOX_FETCH_TIMEOUT_MS = 3_000;
+
 export interface SandboxOptions {
   /**
    * Base URL of the controller that produced this handle. Stored so
@@ -48,14 +50,18 @@ export class Sandbox {
   /** Base URL of the controller that created this sandbox (no trailing slash). */
   readonly controllerUrl: string;
 
-  /** @internal — exposed so the controller module can share the dialer. */
   readonly fetchImpl: typeof fetch;
 
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
     this.controllerUrl = opts.controllerUrl.replace(/\/+$/, "");
-    this.fetchImpl = opts.fetch ?? fetch;
+    const baseFetch = opts.fetch ?? fetch;
+
+    this.fetchImpl = (input, init) => {
+      const signal = init?.signal ?? AbortSignal.timeout(SANDBOX_FETCH_TIMEOUT_MS);
+      return baseFetch(input, { ...init, signal });
+    };
   }
 
   /**
@@ -134,10 +140,8 @@ export class Sandbox {
       } catch (err) {
         if (opts.signal?.aborted) return;
         if (isAbortError(err)) return;
-        // Swallow and retry. The next openEventsStream call will
-        // surface a fresh error if the server is permanently gone,
-        // and the caller can abort to stop the loop.
       }
+
       await sleep(backoffMs, opts.signal).catch(() => {});
       backoffMs = Math.min(backoffMs * 2, 30_000);
       retry++;
@@ -155,13 +159,36 @@ export class Sandbox {
     if (lastEventId !== undefined) {
       url.searchParams.set("lastEventId", String(lastEventId));
     }
-    const res = await this.fetchImpl(url, {
-      headers: { accept: "text/event-stream" },
-      signal,
-    });
-    if (!res.ok || !res.body) throw await toError(res, "events");
-    for await (const frame of parseSSE(res.body, signal)) {
-      yield SandboxEvent.parse(JSON.parse(frame.data));
+    // Timeout pattern for SSE: the first-event window matches the
+    // per-request timeout (sandbox should be reachable and have at
+    // least one event in the ring/about to publish within that
+    // budget). After the first frame the stream is known healthy
+    // and the timeout is cleared — the connection then stays open
+    // for as long as the server keeps writing.
+    const ac = new AbortController();
+    if (signal) {
+      if (signal.aborted) ac.abort(signal.reason);
+      else signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
+    }
+    const firstEventTimeout = setTimeout(
+      () => ac.abort(new Error(`events: no frame within ${SANDBOX_FETCH_TIMEOUT_MS}ms`)),
+      SANDBOX_FETCH_TIMEOUT_MS,
+    );
+    try {
+      const res = await this.fetchImpl(url, {
+        headers: { accept: "text/event-stream" },
+        signal: ac.signal,
+      });
+      if (!res.ok || !res.body) throw await toError(res, "events");
+      for await (const frame of parseSSE(res.body, ac.signal)) {
+        // First frame lands → the connection is alive; drop the
+        // liveness guard so trailing silences (the server just isn't
+        // emitting anything right now) don't terminate it.
+        clearTimeout(firstEventTimeout);
+        yield SandboxEvent.parse(JSON.parse(frame.data));
+      }
+    } finally {
+      clearTimeout(firstEventTimeout);
     }
   }
 

@@ -46,6 +46,21 @@ const (
 	defaultTtl = 1800 * time.Second
 
 	mountReadTimout = 35 * time.Second
+
+	// drainTimeout caps how long we'll wait for /v1/events subscribers
+	// to consume trailing events after the agent exits; drainQuietFor
+	// is the publish-quiet window the broker must see before declaring
+	// itself drained, sized to cover the sidecar→translator hop for
+	// last-moment audit events.
+	drainTimeout  = 5 * time.Second
+	drainQuietFor = 500 * time.Millisecond
+
+	// httpShutdownTimeout caps how long http.Server.Shutdown will
+	// wait for SSE handlers (and any other in-flight requests) to
+	// return after the broker has been closed. Generous because the
+	// kernel needs a moment to flush the trailing bytes + FIN to
+	// every subscriber over the docker bridge.
+	httpShutdownTimeout = 3 * time.Second
 )
 
 func main() {
@@ -318,18 +333,12 @@ func main() {
 	}
 
 	containerID := fmt.Sprintf("agent-%d", os.Getpid())
-	agentCmd, err := startChild(ctx, &children, "agent", "runc",
+	agentCmd, agentStdioDone, err := startChild(ctx, &children, "agent", "runc",
 		[]string{"run", "-b", bundleDir, containerID}, nil, nil,
 		publishAgentStdio(broker))
 	if err != nil {
 		log.Fatalf("start agent (runc): %v", err)
 	}
-
-	go func() {
-		_ = agentCmd.Wait()
-		log.Println("sandboxd: agent finished, shutting down sidecars")
-		cancel()
-	}()
 
 	// Start Sandbox API server. /v1/sandbox proxies to the agent's
 	// exposed port over loopback; the marked dialer keeps that traffic
@@ -355,6 +364,38 @@ func main() {
 
 	go s.ListenAndServe()
 
+	// Graceful shutdown chain triggered by the agent exiting:
+	//   1. wait for the audit pipeline to settle and SSE subscribers
+	//      to consume trailing events (drain)
+	//   2. close the broker, which closes every subscriber channel and
+	//      lets the SSE handlers fall through their receive loop
+	//   3. http.Server.Shutdown, which waits for those handlers (and
+	//      any other in-flight requests) to return — that's the only
+	//      point at which the kernel has actually sent the trailing
+	//      SSE bytes and FIN'd the TCP connection cleanly
+	//   4. cancel the lifecycle ctx, which SIGTERMs the sidecars
+	go func() {
+		<-agentStdioDone
+		_ = agentCmd.Wait()
+		log.Println("sandboxd: agent finished")
+		if n := broker.SubscriberCount(); n > 0 {
+			log.Printf("sandboxd: waiting for %d event subscriber(s) to drain", n)
+			drainCtx, cancelDrain := context.WithTimeout(context.Background(), drainTimeout)
+			if err := broker.WaitDrained(drainCtx, drainQuietFor); err != nil {
+				log.Printf("sandboxd: event drain timed out: %v", err)
+			}
+			cancelDrain()
+		}
+		broker.Close()
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		if err := s.Shutdown(shutdownCtx); err != nil {
+			log.Printf("sandboxd: http shutdown: %v", err)
+		}
+		cancelShutdown()
+		log.Println("sandboxd: shutting down sidecars")
+		cancel()
+	}()
+
 	<-ctx.Done()
 	children.Wait()
 }
@@ -372,8 +413,16 @@ func main() {
 // "stdout" or "stderr". Used by the agent spawn to publish StdioEvents
 // into the broker; sidecars pass nil because their stdout is
 // operational logging, not workload output.
-func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args, env []string, extraFiles []*os.File, onStdio func(stream, line string)) (*exec.Cmd, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
+//
+// stdioDone closes once both the stdout and stderr pipe readers have
+// seen EOF (i.e. every onStdio call for this child has returned).
+// cmd.Wait returns when the *process* exits — which can be before the
+// kernel pipe has been fully drained — so callers that need to be sure
+// every line was processed (the agent flow has to publish trailing
+// stdio events before closing the broker) must wait on stdioDone in
+// addition to cmd.Wait().
+func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args, env []string, extraFiles []*os.File, onStdio func(stream, line string)) (cmd *exec.Cmd, stdioDone <-chan struct{}, err error) {
+	cmd = exec.CommandContext(ctx, bin, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
 	if env != nil {
@@ -386,30 +435,39 @@ func startChild(ctx context.Context, wg *sync.WaitGroup, name, bin string, args,
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var outCb, errCb func(string)
 	if onStdio != nil {
 		outCb = func(line string) { onStdio("stdout", line) }
 		errCb = func(line string) { onStdio("stderr", line) }
 	}
+	done := make(chan struct{})
+	var stdioWg sync.WaitGroup
+	stdioWg.Add(2)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		defer stdioWg.Done()
 		streamPrefixed(name+":out", stdout, outCb)
 	}()
 	go func() {
 		defer wg.Done()
+		defer stdioWg.Done()
 		streamPrefixed(name+":err", stderr, errCb)
 	}()
-	return cmd, nil
+	go func() {
+		stdioWg.Wait()
+		close(done)
+	}()
+	return cmd, done, nil
 }
 
 func streamPrefixed(prefix string, r io.Reader, onLine func(string)) {

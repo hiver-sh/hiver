@@ -114,8 +114,8 @@ type EgressResponseEvent struct {
 	// parameter on `GET /v1/events` to resume after this event.
 	Id int `json:"id"`
 
-	// RequestId Unique identifier correlating this result to its `EgressEventRequest`.
-	RequestId string `json:"request_id"`
+	// RequestId Unique identifier correlating this result to its `EgressRequestEvent`.
+	RequestId int `json:"request_id"`
 
 	// Status HTTP status code returned by the upstream.
 	Status    int       `json:"status"`

@@ -6,7 +6,6 @@
 // Run with: npx tsx examples/events.ts
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
-import process from "node:process";
 import { fileURLToPath } from "node:url";
 import * as hive from "../src";
 
