@@ -10,7 +10,18 @@ export interface ControllerOptions {
   controllerUrl?: string;
   /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
+  /**
+   * How long `getOrCreateSandbox` waits for the sandbox's `/v1/ping`
+   * to succeed before giving up, in milliseconds. The controller
+   * returns as soon as the container starts; the API server inside
+   * needs another moment to bind. Defaults to 30s. Pass `0` to skip
+   * the readiness wait and return immediately.
+   */
+  readinessTimeoutMs?: number;
 }
+
+const DEFAULT_READINESS_TIMEOUT_MS = 30_000;
+const READINESS_POLL_INTERVAL_MS = 200;
 
 /**
  * Idempotent provision against `PUT /v1/sandboxes/{id}`. If a sandbox
@@ -69,7 +80,32 @@ export async function getOrCreateSandbox(
     );
   }
   const ref = SandboxRef.parse(await res.json());
-  return new Sandbox(ref, { controllerUrl: base, fetch: fetchImpl });
+  const sandbox = new Sandbox(ref, { controllerUrl: base, fetch: fetchImpl });
+  const timeout = opts.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
+  if (timeout > 0) await waitUntilReachable(sandbox, timeout);
+  return sandbox;
+}
+
+// waitUntilReachable polls /v1/ping until it returns 200 or the
+// deadline passes.
+async function waitUntilReachable(sandbox: Sandbox, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr: unknown;
+  while (Date.now() < deadline) {
+    try {
+      await sandbox.ping();
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, READINESS_POLL_INTERVAL_MS));
+  }
+  const detail = lastErr instanceof Error ? `: ${lastErr.message}` : "";
+  throw new SandboxError(
+    "getOrCreateSandbox",
+    0,
+    `sandbox ${sandbox.id} did not become reachable at ${sandbox.apiServerUrl} within ${timeoutMs}ms${detail}`,
+  );
 }
 
 /**

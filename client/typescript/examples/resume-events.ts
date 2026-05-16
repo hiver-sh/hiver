@@ -11,6 +11,7 @@
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
+  image: 'mcp-server',
   fs: [
     {
       backend: "local",
@@ -28,7 +29,7 @@ let lastEventId: number | undefined;
 while (true) {
   try {
     for await (const event of sandbox.getEventsStream({ lastEventId })) {
-      console.info(event.type, event.id, event.timestamp);
+      console.info('sandbox event', event);
       lastEventId = event.id;
     }
     // Stream ended cleanly (server shut down) — stop.
