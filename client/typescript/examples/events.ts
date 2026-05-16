@@ -1,0 +1,60 @@
+// Consume the sandbox event stream. `getEventsStream` handles
+// resume on its own: if the underlying SSE connection drops, it
+// reconnects with the last id observed, so no events are missed
+// across a transient blip. The caller doesn't track a cursor.
+//
+// Run with: npx tsx examples/events.ts
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+import * as hive from "../src";
+
+// Build the image the controller will spawn by tag. Each run gets a
+// fresh `:<timestamp>` tag so the sandbox always picks up the latest
+// build instead of a cached `:latest` from a previous run.
+const here = dirname(fileURLToPath(import.meta.url));
+const imageTag = `node-example-image:${Date.now()}`;
+
+console.log(`> Building image ${imageTag}`);
+await buildImage(imageTag, join(here, "node-example-image"));
+
+console.log('> Starting sandbox');
+const sandbox = await hive.getOrCreateSandbox("hive-example", {
+  image: imageTag,
+  fs: [
+    {
+      backend: "local",
+      mount: "/workspace",
+      acls: [{ path: "/workspace/**", access: "rw" }],
+    },
+  ],
+  egress: {
+    allow: [
+      {
+        host: 'www.npmjs.com'
+      }
+    ]
+  }
+});
+
+process.on("SIGINT", () => hive.shutdown(sandbox));
+
+console.log('> Streaming events');
+for await (const event of sandbox.getEventsStream()) {
+  console.info("sandbox event", event);
+}
+
+function buildImage(tag: string, contextDir: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", ["build", "-t", tag, contextDir], {
+      stdio: "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code: number | null) =>
+      code === 0
+        ? resolve()
+        : reject(new Error(`docker build ${tag}: exit ${code}`)),
+    );
+  });
+}

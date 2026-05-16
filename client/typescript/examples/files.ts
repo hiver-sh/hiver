@@ -6,6 +6,7 @@
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
+  image: 'mcp-server',
   fs: [
     {
       backend: "local",
@@ -24,3 +25,5 @@ console.info(`uploaded ${written.bytes} bytes → ${written.path}`);
 
 const bytes = await sandbox.downloadFile("/workspace/greeting.txt");
 console.info("downloaded:", new TextDecoder().decode(bytes));
+
+void hive.shutdown(sandbox);

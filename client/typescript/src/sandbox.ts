@@ -28,6 +28,8 @@ export interface EventsStreamOptions {
   lastEventId?: number;
   /** Abort the stream from the caller's side. */
   signal?: AbortSignal;
+  /** Max number of retries if the connection is lost. Defaults to `3`. */
+  maxRetries?: number;
 }
 
 /**
@@ -112,7 +114,13 @@ export class Sandbox {
   ): AsyncGenerator<SandboxEvent, void, void> {
     let lastEventId = opts.lastEventId;
     let backoffMs = 200;
+
+    const maxRetries = opts.maxRetries || 3;
+    let retry = 0;
     while (!opts.signal?.aborted) {
+      if (retry > maxRetries) {
+        return;
+      }
       try {
         for await (const event of this.openEventsStream(lastEventId, opts.signal)) {
           lastEventId = event.id;
@@ -132,6 +140,7 @@ export class Sandbox {
       }
       await sleep(backoffMs, opts.signal).catch(() => {});
       backoffMs = Math.min(backoffMs * 2, 30_000);
+      retry++;
     }
   }
 

@@ -5,8 +5,10 @@
 //
 // Run with: npx tsx examples/apply-config.ts
 import * as hive from "../src";
+import process from "node:process";
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
+  image: 'mcp-server',
   fs: [
     {
       backend: "local",
@@ -30,8 +32,11 @@ const desired: hive.SandboxConfig = {
 };
 
 const result = await sandbox.applyConfig(desired);
+void hive.shutdown(sandbox);
+
 if (!result.applied) {
   console.error("apply rolled back:", result.error);
   process.exit(1);
 }
 console.info("changes:", JSON.stringify(result.changes, null, 2));
+

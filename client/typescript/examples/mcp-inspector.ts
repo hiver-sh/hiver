@@ -31,8 +31,8 @@ const child = spawn(
 // we shut the sandbox.
 process.on("SIGINT", () => child.kill("SIGINT"));
 
-child.on("exit", async (code) => {
-  await hive.shutdown(sandbox);
+child.on("exit", async (code: number) => {
+  void hive.shutdown(sandbox);
   process.exit(code ?? 0);
 });
 
