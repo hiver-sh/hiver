@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.41",
+    "googleapis": "^144.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.5.4"
   }
