@@ -130,7 +130,7 @@ export const EgressRequestEvent = SandboxEventBase.extend({
 
 export const EgressResponseEvent = SandboxEventBase.extend({
   type: z.literal("egress.response"),
-  request_id: z.string(),
+  request_id: z.number(),
   status: z.number().int(),
   duration_ms: z.number().int(),
 });
@@ -146,7 +146,7 @@ export const FSRequestEvent = SandboxEventBase.extend({
 export const FSResponseEvent = SandboxEventBase.extend({
   type: z.literal("fs.response"),
   backend: Backend,
-  request_id: z.string(),
+  request_id: z.number(),
   duration_ms: z.number().int(),
   error: z.string().optional(),
 });

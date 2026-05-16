@@ -161,7 +161,7 @@ type FSResponseEvent struct {
 	Id int `json:"id"`
 
 	// RequestId Unique identifier correlating this result to its `FSRequestEvent`.
-	RequestId string    `json:"request_id"`
+	RequestId int       `json:"request_id"`
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
 }

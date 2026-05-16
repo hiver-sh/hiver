@@ -364,7 +364,7 @@ func (t *fuseTranslator) handle(raw map[string]any) {
 		if !ok {
 			return // paired request was filtered out
 		}
-		f := fuseResponseFactory(raw, t.backend, strconv.FormatInt(sseID, 10))
+		f := fuseResponseFactory(raw, t.backend, int(sseID))
 		if f != nil {
 			t.broker.Publish(f)
 		}
@@ -427,7 +427,7 @@ func fuseRequestFactory(raw map[string]any, mount string) events.Factory {
 // shape (request_id + backend + duration_ms, plus err on failure);
 // remote-HTTP backends would also carry method/url/status, which the
 // fuse audit shape doesn't surface today.
-func fuseResponseFactory(raw map[string]any, backend gen.Backend, requestID string) events.Factory {
+func fuseResponseFactory(raw map[string]any, backend gen.Backend, requestID int) events.Factory {
 	durationMs := intField(raw, "duration_ms")
 	errStr, _ := raw["err"].(string)
 	return func(id int64, ts time.Time) gen.SandboxEvent {

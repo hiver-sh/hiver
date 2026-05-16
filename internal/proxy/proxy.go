@@ -86,9 +86,9 @@ var DefaultStrippedAuthHeaders = []string{
 // TLS emit request only — there's no HTTP-level response to report.
 type AuditEvent struct {
 	At         time.Time `json:"at"`
-	Type       string    `json:"type"` // always "network"
-	Phase      string    `json:"phase"`           // "request" | "response"
-	RequestID  string    `json:"request_id"`
+	Type       string    `json:"type"`  // always "network"
+	Phase      string    `json:"phase"` // "request" | "response"
+	RequestID  int       `json:"request_id"`
 	Method     string    `json:"method"`
 	Host       string    `json:"host"`
 	Path       string    `json:"path,omitempty"`
@@ -429,19 +429,19 @@ func (p *Proxy) audit(e AuditEvent) {
 // the response side. Callers invoke .allow()/.deny() at decision time
 // and .response()/.responseError() once the upstream call finishes.
 type auditCtx struct {
-	p              *Proxy
-	requestID      string
-	start          time.Time
-	method         string
-	host           string
-	path           string
+	p         *Proxy
+	requestID int
+	start     time.Time
+	method    string
+	host      string
+	path      string
 }
 
 func (p *Proxy) beginAudit(method, host, path string) *auditCtx {
 	n := p.requestSeq.Add(1)
 	return &auditCtx{
 		p:         p,
-		requestID: strconv.FormatUint(n, 10),
+		requestID: int(n),
 		start:     time.Now(),
 		method:    method,
 		host:      host,

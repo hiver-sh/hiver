@@ -75,24 +75,14 @@ function fsRead(path) {
 }
 
 (async () => {
-  // Denied — no allow rule matches. Each should produce an
-  // `egress.request` event with `access: "denied"`.
-  //
-  // Use real, resolvable hosts. The proxy is transparent: it only
-  // sees TCP connections after the agent's DNS lookup succeeds. The
-  // e2e fixture uses `upstream-allowed` / `upstream-denied` because
-  // it wires them up with `--add-host`; a controller-spawned sandbox
-  // doesn't, so probes against those names fail at DNS and never
-  // reach the proxy (hence: no event).
+  // Denied — no allow rule matches.
   await httpGet("http://example.com/");
   await httpPost("http://example.com/submit");
   curlGet("https://www.google.com/search?q=Carmel,+California");
+  curlGet("https://github.com/blasten");
 
-  // Allowed — matches the `host: www.npmjs.com` rule the example
-  // installs. Raw-forward TLS emits one `egress.request` with
-  // `access: "allowed"`; no `egress.response` follows because the
-  // proxy never sees the inner HTTP status under raw-forward TLS.
-  curlGet("https://www.npmjs.com/");
+  // Allowed
+  curlGet("https://github.com/blasten/hive");
 
   fsWrite("/workspace/hello.txt", "hello from node");
   fsRead("/workspace/hello.txt");

@@ -32,18 +32,22 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", {
   egress: {
     allow: [
       {
-        host: 'www.npmjs.com'
+        host: 'github.com',
+        paths: ['/blasten/hive']
+      },
+      {
+        host: 'www.google.com'
       }
     ]
   }
 });
 
-process.on("SIGINT", () => hive.shutdown(sandbox));
-
 console.log('> Streaming events');
 for await (const event of sandbox.getEventsStream()) {
   console.info("sandbox event", event);
 }
+
+void hive.shutdown(sandbox);
 
 function buildImage(tag: string, contextDir: string): Promise<void> {
   return new Promise((resolve, reject) => {

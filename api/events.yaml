@@ -188,7 +188,7 @@ components:
             backend:
               $ref: './config.yaml#/components/schemas/Backend'
             request_id:
-              type: string
+              type: integer
               description: Unique identifier correlating this result to its `FSRequestEvent`.
             duration_ms:
               type: integer
