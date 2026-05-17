@@ -176,6 +176,13 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
           },
         },
       },
+      ...hive.allowedPythonPackages(
+        'numpy',
+        'pandas',
+        'statsmodels',
+        'scikit-learn',
+        'matplotlib',
+      ),
     ],
   },
 });

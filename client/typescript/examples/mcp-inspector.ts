@@ -21,7 +21,8 @@ const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
     allow: [
       {
         host: 'www.google.com'
-      }
+      },
+      ...hive.allowedPythonPackages('numpy'),
     ]
   }
 });

@@ -10,9 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         jq \
+        nodejs \
+        npm \
         python3 \
         python3-pip \
+        python3-venv \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 COPY --from=build /out/mcpserver /usr/local/bin/mcpserver
 

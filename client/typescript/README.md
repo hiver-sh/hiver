@@ -177,6 +177,40 @@ const bytes = await sandbox.downloadFile("/workspace/output.json");
 const text = new TextDecoder().decode(bytes);
 ```
 
+### Utils
+
+#### `allowedPythonPackages`
+
+A helper that generates the egress rules needed to let the sandbox install specific Python packages via pip.
+
+```ts
+import * as hive from "hive";
+
+const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
+  egress: {
+    allow: [...hive.allowedPythonPackages("numpy", "pandas", "matplotlib")],
+  },
+});
+```
+
+Only the packages you name are allowed through — any `pip install` for an unlisted package will be blocked by the egress policy.
+
+#### `allowedNpmPackages`
+
+A helper that generates the egress rules needed to let the sandbox install specific NPM packages.
+
+```ts
+import * as hive from "hive";
+
+const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
+  egress: {
+    allow: [...hive.allowedNpmPackages("lodash")],
+  },
+});
+```
+
+Only the packages you name are allowed through — any `pip install` for an unlisted package will be blocked by the egress policy.
+
 ---
 
 ## Examples

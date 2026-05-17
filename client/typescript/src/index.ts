@@ -35,3 +35,8 @@ export {
   shutdown,
   type ControllerOptions,
 } from "./controller";
+
+export {
+  allowedPythonPackages,
+  allowedNpmPackages,
+} from "./utils";
