@@ -4,6 +4,7 @@
 //
 // Run with: npx tsx examples/files.ts
 import * as hive from "../src";
+import { createShutdown } from "./shutdown.js";
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
   image: 'mcp-server',
@@ -16,6 +17,8 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", {
   ],
 });
 
+const { shutdown } = createShutdown(sandbox);
+
 const written = await sandbox.uploadFile(
   "/workspace",
   "greeting.txt",
@@ -26,4 +29,4 @@ console.info(`uploaded ${written.bytes} bytes → ${written.path}`);
 const bytes = await sandbox.downloadFile("/workspace/greeting.txt");
 console.info("downloaded:", new TextDecoder().decode(bytes));
 
-void hive.shutdown(sandbox);
+await shutdown();

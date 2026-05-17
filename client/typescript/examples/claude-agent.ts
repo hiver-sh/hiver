@@ -13,6 +13,7 @@ import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as hive from "../src";
+import { createShutdown } from "./shutdown.js";
 import chalk from "chalk";
 
 if (!process.env.ANTHROPIC_API_KEY) {
@@ -51,8 +52,8 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
   },
 });
 
-const ac = new AbortController();
 const rl = createInterface({ input: process.stdin, output: process.stdout });
+const { ac, shutdown } = createShutdown(sandbox, { cleanup: () => rl.close() });
 
 const YOU = chalk.green("you>");
 let currentMsgHasToolUse = false;
@@ -156,9 +157,6 @@ so the work is reproducible and inspectable, rather than running long one-liners
 });
 
 
-process.once("SIGINT", () => shutdown(130));
-process.once("SIGTERM", () => shutdown(143));
-
 try {
   for await (const msg of response) {
     if (msg.type === "stream_event") {
@@ -199,13 +197,5 @@ try {
     }
   }
 } finally {
-  await shutdown(0);
-}
-
-async function shutdown(code: number) {
-  if (ac.signal.aborted) return;
-  ac.abort();
-  rl.close();
-  await hive.shutdown(sandbox).catch(() => {});
-  process.exit(code);
+  await shutdown();
 }

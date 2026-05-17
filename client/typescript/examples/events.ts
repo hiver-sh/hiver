@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as hive from "../src";
+import { createShutdown } from "./shutdown.js";
 
 // Build the image the controller will spawn by tag. Each run gets a
 // fresh `:<timestamp>` tag so the sandbox always picks up the latest
@@ -41,12 +42,14 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", {
   }
 });
 
+const { ac, shutdown } = createShutdown(sandbox);
+
 console.log('> Streaming events');
-for await (const event of sandbox.getEventsStream()) {
+for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
   console.info("sandbox event", event);
 }
 
-void hive.shutdown(sandbox);
+await shutdown();
 
 function buildImage(tag: string, contextDir: string): Promise<void> {
   return new Promise((resolve, reject) => {

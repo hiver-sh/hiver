@@ -3,6 +3,7 @@
 //
 // Run with: npx tsx examples/quickstart.ts
 import * as hive from "../src";
+import { createShutdown } from "./shutdown.js";
 
 const sandboxConfig: hive.SandboxConfig = {
   image: "mcp-server",
@@ -26,23 +27,20 @@ const sandboxConfig: hive.SandboxConfig = {
 };
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);
-console.info("sandbox API server URL:", sandbox.apiServerUrl);
 console.info("sandbox URL:", sandbox.url);
 
-const ac = new AbortController();
+let ping: ReturnType<typeof setInterval>;
+const { ac, shutdown } = createShutdown(sandbox, { cleanup: () => clearInterval(ping) });
+
 const events = (async () => {
   for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
     console.info("sandbox event", event);
   }
 })();
 
-const ping = setInterval(sandbox.ping, 10_000);
+ping = setInterval(sandbox.ping, 10_000);
 
 // Stop after 30 seconds.
-setTimeout(() => {
-  void hive.shutdown(sandbox);
-  clearInterval(ping);
-  ac.abort();
-}, 30_000);
+setTimeout(() => shutdown(0), 30_000);
 
 await events.catch(() => {});
