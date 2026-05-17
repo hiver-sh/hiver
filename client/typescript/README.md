@@ -2,13 +2,32 @@
 
 TypeScript client for Hive sandboxes. Works in Node.js (≥18) and Bun.
 
-## Installation
+## Contents
+
+- [📦 Installation](#-installation)
+- [⚡ Quick start](#-quick-start)
+- [📖 API](#-api)
+  - [`getOrCreateSandbox`](#getorCreatesandboxid-config-opts)
+  - [`shutdown`](#shutdownsandbox)
+  - [`Sandbox`](#sandbox)
+    - [`sandbox.ping()`](#sandboxping)
+    - [`sandbox.getConfig()`](#sandboxgetconfig)
+    - [`sandbox.applyConfig()`](#sandboxapplyconfigconfig)
+    - [`sandbox.getEventsStream()`](#sandboxgeteventsstreamopts-)
+    - [`sandbox.uploadFile()`](#sandboxuploadfiledestination-filename-content)
+    - [`sandbox.downloadFile()`](#sandboxdownloadfilepath)
+  - [Egress overrides](#egress-overrides)
+  - [Filesystems](#filesystems)
+  - [Utils](#utils)
+- [🧪 Examples](#-examples)
+
+## 📦 Installation
 
 ```sh
 npm install hive
 ```
 
-## Quick start
+## ⚡ Quick start
 
 ```ts
 import * as hive from "hive";
@@ -43,7 +62,7 @@ clearInterval(ping);
 await hive.shutdown(sandbox);
 ```
 
-## API
+## 📖 API
 
 ### `getOrCreateSandbox(id, config, opts?)`
 
@@ -177,6 +196,110 @@ const bytes = await sandbox.downloadFile("/workspace/output.json");
 const text = new TextDecoder().decode(bytes);
 ```
 
+### Egress overrides
+
+The `override` field on an egress rule injects values into every outbound request that matches the rule — before the request leaves the sandbox. This is the recommended way to keep API keys out of agent-visible environment variables or command output.
+
+#### Inject a token as a request header
+
+```ts
+const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
+  egress: {
+    allow: [
+      {
+        host: "api.example.com",
+        paths: ["/v1/*"],
+        override: {
+          headers: {
+            Authorization: "Bearer sk-live-abc123",
+          },
+        },
+      },
+    ],
+  },
+});
+```
+
+The agent can call `curl https://api.example.com/v1/data` with no credentials — Hive appends the `Authorization` header transparently.
+
+#### Inject a token as a query parameter
+
+```ts
+const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
+  egress: {
+    allow: [
+      {
+        host: "api.example.com",
+        paths: ["/v1/*"],
+        override: {
+          query: {
+            api_key: "sk-live-abc123",
+          },
+        },
+      },
+    ],
+  },
+});
+```
+
+The agent calls `curl https://api.example.com/v1/data` and Hive appends `?api_key=sk-live-abc123` automatically.
+
+#### Both at once
+
+`headers` and `query` can be combined in a single rule:
+
+```ts
+override: {
+  headers: { "X-App-Id": "my-app" },
+  query:   { token: "sk-live-abc123" },
+}
+```
+
+---
+
+### Filesystems
+
+The `fs` array configures one or more mounts visible inside the sandbox.
+
+#### Local
+
+```ts
+fs: [
+  {
+    backend: "local",
+    mount: "/workspace",
+    acls: [{ path: "/workspace/**", access: "rw" }],
+  },
+]
+```
+
+Files live only for the lifetime of the sandbox.
+
+#### Google Drive
+
+Mount a Google Drive folder as `/workspace` so every file the agent writes is persisted to Drive and survives sandbox restarts.
+
+```ts
+fs: [
+  {
+    backend: "gdrive",
+    mount: "/workspace",
+    acls: [{ path: "/workspace/**", access: "rw" }],
+    gdrive_access_token:  "<oauth-access-token>",
+    gdrive_refresh_token: "<oauth-refresh-token>",
+    gdrive_client_id:     "<google-client-id>",
+    gdrive_client_secret: "<google-client-secret>",
+    gdrive_folder_id:     "<drive-folder-id>",
+  },
+]
+```
+
+**OAuth tokens** — obtain via the [Google OAuth 2.0 flow](https://developers.google.com/identity/protocols/oauth2) with the `https://www.googleapis.com/auth/drive` scope. `gdrive_refresh_token` is used to renew the access token automatically.
+
+**`gdrive_folder_id`** — the ID of the Drive folder to expose as the mount root. Find it in the folder's URL: `https://drive.google.com/drive/folders/<folder-id>`.
+
+---
+
 ### Utils
 
 #### `allowedPythonPackages`
@@ -209,11 +332,11 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
 });
 ```
 
-Only the packages you name are allowed through — any `pip install` for an unlisted package will be blocked by the egress policy.
+Only the packages you name are allowed through — any `npm install` for an unlisted package will be blocked by the egress policy.
 
 ---
 
-## Examples
+## 🧪 Examples
 
 ### Quickstart
 
