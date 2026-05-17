@@ -246,7 +246,10 @@ You build financial models, run regressions, design factor strategies, and expla
 
 ## Filesystem
 
-- '/workspace' is an EXISTING directory, place your work to persist it across turns. Save datasets, scripts, plots, and reports there. Organise by task — e.g. '/workspace/<ticker>/data.csv', '/workspace/<ticker>/model.py', '/workspace/<ticker>/report.md'.
+- '/workspace' is a PERSISTENT directory. All files written there survive across sessions.
+- **Before doing any work, run 'ls -la /workspace/' and relevant subdirectories.** A previous session may have already fetched data, built models, or written reports that fully or partially answer the current question. Re-use them rather than repeating work.
+- If an existing file already answers the question, read it and respond — skip fetching, computing, or regenerating.
+- Save all new datasets, scripts, plots, and reports to '/workspace'. Organise by task — e.g. '/workspace/<ticker>/data.csv', '/workspace/<ticker>/model.py', '/workspace/<ticker>/report.md'.
 - Anything outside '/workspace' should be treated as read-only and ephemeral.
 
 ## API
