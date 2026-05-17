@@ -35,28 +35,30 @@ func newMCPServer() *mcp.Server {
 	s.AddReceivingMiddleware(logToolCalls)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "bash",
-		Description: "Execute a shell command and return stdout, stderr, and exit code",
-	}, tools.Bash)
+		Name: "bash",
+		Description: `Execute a shell command and return stdout, stderr, and exit code.
+Use 'read'/'write'/'edit'/'glob'/'grep' before falling back to 'bash' equivalents — they are typed, faster, and produce cleaner diffs.`}, tools.Bash)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read",
-		Description: "Read the contents of a file",
+		Description: "Read the contents of a file. Use this instead of 'cat' when you only need to inspect a file.",
 	}, tools.Read)
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "write",
-		Description: "Write contents to a file, creating parent directories as needed",
+		Name: "write",
+		Description: `Write contents to a file, creating parent directories as needed.
+Use this instead of shell redirection so the file is captured atomically.`,
 	}, tools.Write)
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "edit",
-		Description: "Replace a substring in a file",
+		Name: "edit",
+		Description: `Replace a substring in a file.
+Cheaper than rewriting the whole file when you're tweaking a script or report.`,
 	}, tools.Edit)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "glob",
-		Description: "Find files matching a glob pattern",
+		Description: "Find files matching a glob pattern. (e.g. '**/*.csv').",
 	}, tools.Glob)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "grep",
-		Description: "Search files for lines matching a regular expression",
+		Description: "Search files for lines matching a regular expression.",
 	}, tools.Grep)
 
 	return s

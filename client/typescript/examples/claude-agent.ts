@@ -16,6 +16,7 @@ import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as hive from "../src";
+import chalk from "chalk";
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error("ANTHROPIC_API_KEY must be defined");
@@ -53,16 +54,28 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
   },
 });
 
-console.info("sandbox MCP URL:", sandbox.url);
-
 const ac = new AbortController();
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-// Turn stdin lines into the AsyncIterable<SDKUserMessage> the SDK
-// expects for streaming input mode. Closing stdin (Ctrl-D) ends the
-// loop and lets the agent exit cleanly.
+const YOU = chalk.green("you>");
+let currentMsgHasToolUse = false;
+let atLineStart = true;
+let currentToolName = "";
+let currentInputJson = "";
+
+process.stdout.write(
+  "\n" +
+  chalk.bold("Expert Quantitative Trader\n") +
+  "Build financial models, run regressions, design factor strategies, and explain your results in plain language a portfolio manager can act on.\n\n" +
+  chalk.gray("Example Prompts\n") + 
+  chalk.gray("* Compare the performance of google and nvidia over the last 12 months") +
+  "\n\n"
+);
+
+rl.setPrompt(YOU + " ");
+rl.prompt();
+
 async function* prompts(): AsyncGenerator<SDKUserMessage> {
-  process.stdout.write("you> ");
   for await (const line of rl) {
     const text = line.trim();
     if (text) {
@@ -71,8 +84,6 @@ async function* prompts(): AsyncGenerator<SDKUserMessage> {
         message: { role: "user", content: text },
         parent_tool_use_id: null,
       };
-    } else {
-      process.stdout.write("you> ");
     }
   }
 }
@@ -83,18 +94,19 @@ const response = query({
     model: 'claude-opus-4-7',
     abortController: ac,
     includePartialMessages: true,
+    tools: [],
+    mcpServers: {
+      sandbox: { type: "http", url: sandbox.url, alwaysLoad: true },
+    },
+    allowedTools: [
+      "mcp__sandbox__bash",
+      "mcp__sandbox__read",
+      "mcp__sandbox__write",
+      "mcp__sandbox__edit",
+      "mcp__sandbox__glob",
+      "mcp__sandbox__grep",
+    ],
     systemPrompt: `You are an expert quantitative trader. You build financial models, run regressions, design factor strategies, and explain your results in plain language a portfolio manager can act on.
-
-## Tools to use:
-
-- 'bash' — execute a shell command; returns stdout, stderr, and exit code. Use this for 'curl', 'python3', 'pip install', 'git', and any other CLI. The shell is non-interactive, so prefer one-shot commands or pipe scripts through 'bash -c'.
-- 'read' — read the contents of a file inside the sandbox. Use this instead of 'cat' when you only need to inspect a file.
-- 'write' — write contents to a file, creating parent directories as needed. Use this instead of shell redirection so the file is captured atomically.
-- 'edit' — replace a substring in an existing file. Cheaper than rewriting the whole file when you're tweaking a script or report.
-- 'glob' — find files matching a glob pattern (e.g. '/workspace/**/*.csv').
-- 'grep' — search files for lines matching a regular expression.
-
-Reach for 'read'/'write'/'edit'/'glob'/'grep' before falling back to 'bash' equivalents — they are typed, faster, and produce cleaner diffs.
 
 ## Filesystem
 
@@ -141,12 +153,56 @@ Use 'python3' for anything quantitative. Standard scientific libraries ('numpy',
 3. Show the key numbers (coefficients, t-stats, R², residual diagnostics, Sharpe, drawdown) and call out what they imply for the trade.
 4. Be explicit about assumptions, lookback windows, transaction costs, and survivorship / look-ahead bias when relevant.
 5. Never invent prices, fundamentals, or results. If the data isn't reachable via the whitelisted egress, say so and stop.
-6. Save a short markdown summary of each analysis to '/workspace/<task>/report.md' so the user has something to take away.`,
-    mcpServers: {
-      sandbox: { type: "http", url: sandbox.url },
-    },
+6. Save a short markdown summary of each analysis to '/workspace/<task>/report.md' so the user has something to take away.
+
+## Response
+Don't use markdown to respond. You are in a terminal, so your responses must be correct in the terminal.
+Don't use ANSI escape codes to style the response.
+Use emojis where possible.
+`,
   },
 });
+
+
+process.once("SIGINT", () => shutdown(130));
+process.once("SIGTERM", () => shutdown(143));
+
+try {
+  for await (const msg of response) {
+    if (msg.type === "stream_event") {
+      const ev = msg.event;
+      if (ev.type === "message_start") {
+        currentMsgHasToolUse = false;
+      } else if (ev.type === "content_block_start" && ev.content_block.type === "tool_use") {
+        currentMsgHasToolUse = true;
+        currentToolName = ev.content_block.name;
+        currentInputJson = "";
+      } else if (ev.type === "content_block_delta" && ev.delta.type === "input_json_delta") {
+        currentInputJson += (ev.delta as any).partial_json ?? "";
+      } else if (ev.type === "content_block_stop" && currentToolName) {
+        let label = currentToolName;
+        try {
+          const input = JSON.parse(currentInputJson);
+          const arg = input.command ?? input.path ?? input.file_path ?? input.pattern ?? input.glob ?? "";
+          if (arg) label += `: ${arg}`;
+        } catch {}
+        if (!atLineStart) process.stdout.write("\n");
+        process.stdout.write(chalk.gray(`→ ${label}\n`));
+        atLineStart = true;
+        currentToolName = "";
+      } else if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
+        process.stdout.write(ev.delta.text);
+        atLineStart = ev.delta.text.endsWith("\n");
+      } else if (ev.type === "message_stop" && !currentMsgHasToolUse) {
+        if (!atLineStart) process.stdout.write("\n");
+        rl.prompt();
+        atLineStart = false;
+      }
+    }
+  }
+} finally {
+  await shutdown(0);
+}
 
 async function shutdown(code: number) {
   if (ac.signal.aborted) return;
@@ -154,34 +210,4 @@ async function shutdown(code: number) {
   rl.close();
   await hive.shutdown(sandbox).catch(() => {});
   process.exit(code);
-}
-
-process.once("SIGINT", () => shutdown(130));
-process.once("SIGTERM", () => shutdown(143));
-
-
-async function logEvents() {
-  for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
-    console.info("sandbox event", event);
-  }
-}
-
-void logEvents();
-
-try {
-  for await (const msg of response) {
-    if (msg.type === "stream_event") {
-      const ev = msg.event;
-      if (
-        ev.type === "content_block_delta" &&
-        ev.delta.type === "text_delta"
-      ) {
-        process.stdout.write(ev.delta.text);
-      } else if (ev.type === "message_stop") {
-        process.stdout.write("\nyou> ");
-      }
-    }
-  }
-} finally {
-  await shutdown(0);
 }
