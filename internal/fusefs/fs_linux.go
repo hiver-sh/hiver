@@ -78,8 +78,8 @@ const defaultRemoteStatTTL = 30 * time.Second
 // fs.request and fs.response SandboxEvents.
 type AuditEvent struct {
 	At         time.Time `json:"at"`
-	Type       string    `json:"type"` // "filesystem"
-	Phase      string    `json:"phase"`           // "request" | "response"
+	Type       string    `json:"type"`  // "filesystem"
+	Phase      string    `json:"phase"` // "request" | "response"
 	RequestID  string    `json:"request_id"`
 	Op         string    `json:"op"`
 	Path       string    `json:"path"`
@@ -497,6 +497,8 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 			t := fuse.DT_File
 			if e.IsDir() {
 				t = fuse.DT_Dir
+			} else if e.Type()&os.ModeSymlink != 0 {
+				t = fuse.DT_Link
 			}
 			seen[e.Name()] = t
 		}
@@ -724,7 +726,11 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 		ac.responseError(err)
 		return nil, nil, mapErr(err)
 	}
-	f, err := os.OpenFile(child.hostPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	mode := req.Mode.Perm()
+	if mode == 0 {
+		mode = 0o644
+	}
+	f, err := os.OpenFile(child.hostPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		ac.responseError(err)
 		return nil, nil, mapErr(err)
@@ -887,6 +893,46 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	return nil
 }
 
+// Symlink creates a symbolic link named req.NewName inside this directory
+// pointing at req.Target.
+func (n *node) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (bazilfs.Node, error) {
+	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.NewName)}
+	ac := n.s.beginAudit("symlink", child.absPath())
+	if child.access() != AccessRW {
+		ac.deny()
+		return nil, syscall.EROFS
+	}
+	ac.allow()
+	if err := os.MkdirAll(filepath.Dir(child.hostPath()), 0o755); err != nil {
+		ac.responseError(err)
+		return nil, mapErr(err)
+	}
+	if err := os.Symlink(req.Target, child.hostPath()); err != nil {
+		ac.responseError(err)
+		return nil, mapErr(err)
+	}
+	ac.response()
+	n.s.statCache.invalidate(child.absPath())
+	return child, nil
+}
+
+// Readlink returns the target of the symbolic link at this node's path.
+func (n *node) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
+	ac := n.s.beginAudit("readlink", n.absPath())
+	if n.access() == AccessDeny {
+		ac.deny()
+		return "", syscall.ENOENT
+	}
+	ac.allow()
+	target, err := os.Readlink(n.hostPath())
+	if err != nil {
+		ac.responseError(err)
+		return "", mapErr(err)
+	}
+	ac.response()
+	return target, nil
+}
+
 // Fsync is a no-op (we write through to the host file).
 func (n *node) Fsync(ctx context.Context, req *fuse.FsyncRequest) error { return nil }
 
@@ -896,10 +942,24 @@ func (n *node) Fsync(ctx context.Context, req *fuse.FsyncRequest) error { return
 // would silently no-op, and a subsequent `>>` append would see no
 // difference from `>`. The kernel issues SETATTR(size=N) for those.
 //
-// Other Setattr fields (mode, uid, gid, atimes) are accepted as
-// no-ops — the FUSE ACL is the access boundary, POSIX bits don't
-// need to be authoritative.
+// uid, gid, and atimes are accepted as no-ops — the FUSE ACL is the
+// access boundary, not POSIX uid bits. Mode (execute bit) must be
+// honoured so `chmod +x` on venv binaries actually takes effect.
 func (n *node) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
+	if req.Valid.Mode() {
+		ac := n.s.beginAudit("chmod", n.absPath())
+		if n.access() != AccessRW {
+			ac.deny()
+			return syscall.EROFS
+		}
+		ac.allow()
+		if err := os.Chmod(n.hostPath(), req.Mode.Perm()); err != nil {
+			ac.responseError(err)
+			return mapErr(err)
+		}
+		ac.response()
+		n.s.statCache.invalidate(n.absPath())
+	}
 	if req.Valid.Size() {
 		ac := n.s.beginAudit("truncate", n.absPath())
 		if n.access() != AccessRW {

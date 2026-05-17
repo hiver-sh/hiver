@@ -197,6 +197,44 @@ func TestFUSEReadOnlyRejectsWrites(t *testing.T) {
 	}
 }
 
+func TestFUSESymlink(t *testing.T) {
+	mp, _, _, stop := startFUSE(t, []fusefs.Rule{
+		{Path: "/", Access: fusefs.AccessRW},
+		{Path: "/**", Access: fusefs.AccessRW},
+	})
+	defer stop()
+
+	linkPath := filepath.Join(mp, "lib")
+	target := "lib64"
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	got, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if got != target {
+		t.Fatalf("Readlink = %q, want %q", got, target)
+	}
+	// Confirm it appears in directory listing as a symlink.
+	entries, err := os.ReadDir(filepath.Dir(linkPath))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name() == "lib" {
+			found = true
+			if e.Type()&os.ModeSymlink == 0 {
+				t.Errorf("entry type = %v, want symlink", e.Type())
+			}
+		}
+	}
+	if !found {
+		t.Error("symlink not found in directory listing")
+	}
+}
+
 func TestFUSEDeniedDirEntriesHidden(t *testing.T) {
 	mp, backend, _, stop := startFUSE(t, []fusefs.Rule{
 		{Path: "/", Access: fusefs.AccessRW},
