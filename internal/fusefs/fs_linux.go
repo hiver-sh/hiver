@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -109,6 +110,14 @@ type Server struct {
 	statCache *statCache
 
 	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
+
+	// liveNodes tracks every node returned from Lookup/Create so that
+	// Rename can find the *node object and update its vp. Without this,
+	// after a rename the kernel's inode for the old path calls
+	// FUSE_GETATTR on the same *node, whose hostPath() still resolves to
+	// the pre-rename backend path — causing ENOENT on the new name.
+	nodesMu   sync.Mutex
+	liveNodes map[string]*node // virt-path → live node
 }
 
 // SetACLs atomically replaces the live ACL policy. Safe to call from
@@ -148,7 +157,7 @@ func Mount(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fusefs: mount %s: %w", cfg.MountPoint, err)
 	}
-	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit)}
+	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit), liveNodes: make(map[string]*node)}
 	s.SetACLs(cfg.ACLs)
 	if cfg.Remote != nil {
 		ttl := cfg.RemoteStatTTL
@@ -276,6 +285,15 @@ func (s *Server) cachePut(p string, info remotefs.FileInfo) {
 	s.statCache.put(p, info)
 }
 
+// trackNode registers n in liveNodes so Rename can find it by virt-path
+// and update n.vp when the file is moved. Called from Lookup, Create,
+// Mkdir, and Symlink after the node is confirmed to exist.
+func (s *Server) trackNode(n *node) {
+	s.nodesMu.Lock()
+	s.liveNodes[n.virtPath()] = n
+	s.nodesMu.Unlock()
+}
+
 // enqueuePut / enqueueDelete / enqueueMove are no-ops when no journal
 // is configured. They run on the FUSE handler's goroutine; if the
 // queue is full Enqueue blocks, applying back-pressure to the agent.
@@ -304,29 +322,48 @@ func (s *Server) enqueueMove(srcAbs, dstAbs string) {
 type fileSystem struct{ s *Server }
 
 func (f *fileSystem) Root() (bazilfs.Node, error) {
-	return &node{s: f.s, virtPath: "/"}, nil
+	return &node{s: f.s, vp: "/"}, nil
 }
 
-// node represents a FUSE node — a directory or file. virtPath is the
+// node represents a FUSE node — a directory or file. vp is the
 // agent-visible path (rooted at /); hostPath is computed by joining the
 // backend.
+//
+// vp is mutable: after a Rename the kernel reuses the same inode for
+// the new path, so FUSE_GETATTR arrives on this node with vp still
+// pointing at the old name. Rename updates vp (and the server's
+// liveNodes registry) so subsequent Attr/Read/Write calls derive the
+// correct hostPath.
 type node struct {
-	s        *Server
-	virtPath string
+	s    *Server
+	vpMu sync.RWMutex
+	vp   string
+}
+
+func (n *node) virtPath() string {
+	n.vpMu.RLock()
+	v := n.vp
+	n.vpMu.RUnlock()
+	return v
+}
+
+func (n *node) setVirtPath(p string) {
+	n.vpMu.Lock()
+	n.vp = p
+	n.vpMu.Unlock()
 }
 
 func (n *node) hostPath() string {
-	rel := path.Clean(n.virtPath)
+	rel := path.Clean(n.virtPath())
 	rel = filepath.FromSlash(rel)
 	return filepath.Join(n.s.cfg.Backend, filepath.Clean(string(filepath.Separator)+rel))
 }
 
 // absPath returns the agent-visible absolute path: the mount point
-// prefixed onto virtPath. This is what ACL rules in spec.yaml are
-// expressed against (e.g. "/workspace/secret/**") and what audit
-// events surface so the path matches what the agent itself sees.
+// prefixed onto vp. This is what ACL rules in spec.yaml are expressed
+// against (e.g. "/workspace/secret/**") and what audit events surface.
 func (n *node) absPath() string {
-	return path.Clean(n.s.cfg.MountPoint + "/" + n.virtPath)
+	return path.Clean(n.s.cfg.MountPoint + "/" + n.virtPath())
 }
 
 func (n *node) access() Access {
@@ -405,7 +442,7 @@ func (n *node) isDirty() bool {
 // thin air — if neither source confirms the child exists, return
 // ENOENT so the kernel doesn't cache a phantom inode.
 func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
-	child := &node{s: n.s, virtPath: path.Join(n.virtPath, name)}
+	child := &node{s: n.s, vp: path.Join(n.virtPath(), name)}
 	ac := n.s.beginAudit("lookup", child.absPath())
 	if child.access() == AccessDeny {
 		ac.deny()
@@ -415,12 +452,14 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 	if n.s.cfg.Remote != nil && !child.isDirty() {
 		if _, ok := n.s.statCache.get(child.absPath()); ok {
 			ac.response()
+			n.s.trackNode(child)
 			return child, nil
 		}
 		info, err := n.s.cfg.Remote.Stat(ctx, child.absPath())
 		if err == nil {
 			n.s.cachePut(child.absPath(), info)
 			ac.response()
+			n.s.trackNode(child)
 			return child, nil
 		}
 		// Remote ErrNotExist or transient failure → fall through to local
@@ -433,6 +472,7 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 		return nil, mapErr(err)
 	}
 	ac.response()
+	n.s.trackNode(child)
 	return child, nil
 }
 
@@ -715,7 +755,7 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 // gone — the local buffer holds writes only). The remote-side parent
 // hierarchy is created lazily by the Store on Put.
 func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (bazilfs.Node, bazilfs.Handle, error) {
-	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.Name)}
+	child := &node{s: n.s, vp: path.Join(n.virtPath(), req.Name)}
 	ac := n.s.beginAudit("create", child.absPath())
 	if child.access() != AccessRW {
 		ac.deny()
@@ -738,6 +778,7 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 	_ = f.Close()
 	ac.response()
 	n.s.statCache.invalidate(child.absPath())
+	n.s.trackNode(child)
 	// We deliberately do NOT enqueue a Put here. The common
 	// "open(O_CREAT|O_TRUNC) + Write + Close" sequence would double-
 	// enqueue (once empty from Create, once with content from Write),
@@ -805,7 +846,7 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 
 // Mkdir creates a subdirectory.
 func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node, error) {
-	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.Name)}
+	child := &node{s: n.s, vp: path.Join(n.virtPath(), req.Name)}
 	ac := n.s.beginAudit("mkdir", child.absPath())
 	if child.access() != AccessRW {
 		ac.deny()
@@ -818,6 +859,7 @@ func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node,
 	}
 	ac.response()
 	n.s.statCache.invalidate(child.absPath())
+	n.s.trackNode(child)
 	return child, nil
 }
 
@@ -865,6 +907,43 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	n.s.statCache.invalidate(oldAbs)
 	n.s.statCache.invalidate(newAbs)
 
+	// Update the node registry so FUSE_GETATTR on the renamed inode
+	// derives the correct hostPath. After rename the kernel reuses the
+	// old inode (d_move), so the *node object that was returned from
+	// Lookup/Create for the old name will keep receiving Attr calls —
+	// with a stale vp, hostPath() points at the pre-rename backend path
+	// (which no longer exists) and Attr returns ENOENT. Updating vp here
+	// fixes that. We also update descendants in case a directory was
+	// renamed (all children's virt paths have the old prefix).
+	oldVirt := path.Join(n.virtPath(), req.OldName)
+	newVirt := path.Join(dst.virtPath(), req.NewName)
+	n.s.nodesMu.Lock()
+	var toUpdate []struct {
+		n              *node
+		oldVP, newVP   string
+	}
+	oldVirtPrefix := oldVirt + "/"
+	for vp, tracked := range n.s.liveNodes {
+		if vp == oldVirt {
+			toUpdate = append(toUpdate, struct {
+				n            *node
+				oldVP, newVP string
+			}{tracked, vp, newVirt})
+		} else if strings.HasPrefix(vp, oldVirtPrefix) {
+			updated := newVirt + vp[len(oldVirt):]
+			toUpdate = append(toUpdate, struct {
+				n            *node
+				oldVP, newVP string
+			}{tracked, vp, updated})
+		}
+	}
+	for _, u := range toUpdate {
+		delete(n.s.liveNodes, u.oldVP)
+		u.n.setVirtPath(u.newVP)
+		n.s.liveNodes[u.newVP] = u.n
+	}
+	n.s.nodesMu.Unlock()
+
 	if n.s.cfg.Remote != nil {
 		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(oldAbs)
 		if dirty {
@@ -896,7 +975,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 // Symlink creates a symbolic link named req.NewName inside this directory
 // pointing at req.Target.
 func (n *node) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (bazilfs.Node, error) {
-	child := &node{s: n.s, virtPath: path.Join(n.virtPath, req.NewName)}
+	child := &node{s: n.s, vp: path.Join(n.virtPath(), req.NewName)}
 	ac := n.s.beginAudit("symlink", child.absPath())
 	if child.access() != AccessRW {
 		ac.deny()
@@ -913,6 +992,7 @@ func (n *node) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (bazilfs.N
 	}
 	ac.response()
 	n.s.statCache.invalidate(child.absPath())
+	n.s.trackNode(child)
 	return child, nil
 }
 
