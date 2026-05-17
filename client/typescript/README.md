@@ -215,8 +215,25 @@ npx tsx examples/events.ts
 
 ### Claude Agent
 
-A Claude agent running inside a Hive sandbox, with a financial data API injected via egress overrides and files persisted to a network filesystem.
+The agent uses a Swagger spec to discover endpoints, then the sandbox uses CURL to fetch data, Python to build financial models, and Google drive to persist files over a fuse mount.
+
+The Hive Sandbox keeps the API tokens secure and generated files persisted to Google drive all while using basic Bash commands.
+The next time this agent runs, all the files are available, so they can be re-used to save tokens and increase learnings.
+
+For example, the agent can store markdown, json files and use them next time this agent runs.
 
 ```sh
-ANTHROPIC_API_KEY='<token>' FINNHUB_API_KEY='<token>' npx tsx examples/claude-agent.ts
+ANTHROPIC_API_KEY='<token>' \
+FINNHUB_API_KEY='<token>' \
+GOOGLE_CLIENT_ID='<client-id>' \
+GOOGLE_CLIENT_SECRET='<client-secret>' \
+npx tsx client/typescript/examples/claude-agent-gdrive-filesystem.ts
+```
+
+There's also a version of this agent with a local file system:
+
+```sh
+ANTHROPIC_API_KEY='<token>' \
+FINNHUB_API_KEY='<token>' \
+npx tsx client/typescript/examples/claude-agent-gdrive-filesystem.ts
 ```

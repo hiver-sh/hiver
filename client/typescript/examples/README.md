@@ -2,10 +2,9 @@
 
 ## Claude Agent: Expert Quantitative Trade
 
-The agent uses a Swagger spec to discover endpoints, then the sandbox to fetch data with CURL, Python to build models,
-and Google drive to persist files.
+The agent uses a Swagger spec to discover endpoints, then the sandbox uses CURL to fetch data, Python to build financial models, and Google drive to persist files over a fuse mount.
 
-The Hive Sandbox keeps the API tokens secure and generated files persisted to Google drive all while using basic Bash commands. 
+The Hive Sandbox keeps the API tokens secure and generated files persisted to Google drive all while using basic Bash commands.
 The next time this agent runs, all the files are available, so they can be re-used to save tokens and increase learnings.
 
 For example, the agent can store markdown, json files and use them next time this agent runs.
@@ -13,12 +12,6 @@ For example, the agent can store markdown, json files and use them next time thi
 Run with: `ANTHROPIC_API_KEY='<token>' FINNHUB_API_KEY='<token>' GOOGLE_CLIENT_ID='<client-id>' GOOGLE_CLIENT_SECRET='<client-secret>' npx tsx client/typescript/examples/claude-agent-gdrive-filesystem.ts`
 
 ```txt
-
-Expert Quantitative Trader
-Build financial models, run regressions, design factor strategies, and explain your results in plain language a portfolio manager can act on.
-
-Example Prompts
-* Compare the performance of google and nvidia over the last 12 months
 
 you> Compare the performance of google and nvidia over the last 12 months
 
