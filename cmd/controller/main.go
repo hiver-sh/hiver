@@ -3,13 +3,13 @@ package main
 import (
 	"flag"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/api"
+	"github.com/sandbox-platform/agent-sandbox/internal/api/controller"
 )
 
 func main() {
 	var serverPort = flag.String("server-port", "9000", "port of the controller server")
 	flag.Parse()
 
-	s := api.NewControllerServer(*serverPort)
+	s := controller.NewControllerServer(*serverPort)
 	s.ListenAndServe()
 }
