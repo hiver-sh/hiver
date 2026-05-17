@@ -2,14 +2,18 @@
 
 ## Claude Agent: Expert Quantitative Trade
 
-The agent is given the Swagger spec to a financial data provider,
-then uses the sandbox to discover endpoints, make requests, generate to build models, and responde to the user.
+The agent uses a Swagger spec to discover endpoints, then the sandbox to fetch data with CURL, Python to build models,
+and Google drive to persist files.
 
-The Hive sandbox keeps the API token secure and files persisted to a network file system.
+The Hive Sandbox keeps the API tokens secure and generated files persisted to Google drive all while using basic Bash commands. 
+The next time this agent runs, all the files are available, so they can be re-used to save tokens and increase learnings.
 
-Run with: `ANTHROPIC_API_KEY='<token>' FINNHUB_API_KEY='<token>' npx tsx client/typescript/examples/claude-agent.ts`
+For example, the agent can store markdown, json files and use them next time this agent runs.
+
+Run with: `ANTHROPIC_API_KEY='<token>' FINNHUB_API_KEY='<token>' GOOGLE_CLIENT_ID='<client-id>' GOOGLE_CLIENT_SECRET='<client-secret>' npx tsx client/typescript/examples/claude-agent-gdrive-filesystem.ts`
 
 ```txt
+
 Expert Quantitative Trader
 Build financial models, run regressions, design factor strategies, and explain your results in plain language a portfolio manager can act on.
 
@@ -18,66 +22,79 @@ Example Prompts
 
 you> Compare the performance of google and nvidia over the last 12 months
 
-→ mcp__sandbox__bash {"cmd":"ls /workspace/ && test -f /workspace/swagger.json && echo \"swagger exists\""}
-→ mcp__sandbox__bash {"cmd":"mkdir -p /workspace && ls -la /workspace/"}
+→ mcp__sandbox__bash {"cmd":"ls /workspace/ 2>&1 | head -20"}
+→ mcp__sandbox__bash {"cmd":"ls -la /workspace/"}
 → mcp__sandbox__bash {"cmd":"curl -s -o /workspace/swagger.json https://finnhub.io/static/swagger.json && ls -la /work…
-→ mcp__sandbox__bash {"cmd":"jq '.paths | keys[]' /workspace/swagger.json | head -50"}
-→ mcp__sandbox__bash {"cmd":"jq '.paths.\"/stock/candle\"' /workspace/swagger.json"}
-→ mcp__sandbox__bash {"cmd":"jq '.paths | keys[]' /workspace/swagger.json | grep -i -E \"stock|quote|metric|price\""}
-→ mcp__sandbox__bash {"cmd":"jq '.paths.\"/stock/price-metric\"' /workspace/swagger.json | head -40\necho \"---\"\njq …
-→ mcp__sandbox__bash {"cmd":"# Check the quote endpoint, this is free\ncurl -s -G \"https://finnhub.io/api/v1/quote\" …
-→ mcp__sandbox__bash {"cmd":"curl -s -G \"https://finnhub.io/api/v1/stock/metric\" \\\n  --data-urlencode \"symbol=GOO…
-→ mcp__sandbox__bash {"cmd":"jq '.metric | to_entries[] | select(.key|test(\"52|Return|Performance|YTD|beta|Volatility…
-→ mcp__sandbox__bash {"cmd":"jq '.metric | to_entries[] | select(.key|test(\"beta|Volatility\";\"i\")) | \"\\(.key): \…
-→ mcp__sandbox__bash {"cmd":"jq '.metric | to_entries[] | select(.key|test(\"revenueGrowth|grossMargin|netProfit|roe|r…
-→ mcp__sandbox__bash {"cmd":"# Try to backfill historical price one year ago using the metric - we have 52W return so …
-→ mcp__sandbox__write {"path":"/workspace/goog_nvda/report.md","content":"# GOOGL vs NVDA — 12-Month Performance Compar…
+→ mcp__sandbox__bash {"cmd":"jq '.paths | keys' /workspace/swagger.json | head -60"}
+→ mcp__sandbox__bash {"cmd":"jq '.paths.\"/stock/candle\"' /workspace/swagger.json | head -50"}
+→ mcp__sandbox__bash {"cmd":"jq '.paths | keys[]' /workspace/swagger.json | grep -i -E \"stock|price|metric|quote\""}
+→ mcp__sandbox__bash {"cmd":"jq '.paths.\"/stock/price-metric\"' /workspace/swagger.json | head -30\necho \"---\"\njq …
+→ mcp__sandbox__bash {"cmd":"jq '.paths.\"/stock/historical-market-cap\"' /workspace/swagger.json | head -20\necho \"-…
+→ mcp__sandbox__bash {"cmd":"mkdir -p /workspace/compare\n# Get quote and basic financials for both stocks\nfor sym in…
+→ mcp__sandbox__bash {"cmd":"cat /workspace/compare/GOOGL_quote.json | python3 -m json.tool\necho \"---\"\ncat /worksp…
+→ mcp__sandbox__bash {"cmd":"jq '.metric | with_entries(select(.key | test(\"52|Return|Beta|volatility|Volatility|Dail…
+→ mcp__sandbox__bash {"cmd":"jq '.metric | with_entries(select(.key | test(\"52|Return|Beta|volatility|Volatility|Dail…
+→ mcp__sandbox__bash {"cmd":"jq '.metric | with_entries(select(.key | test(\"marketCap|pe|peNorm|pbAnnual|psAnnual|cur…
+→ mcp__sandbox__bash {"cmd":"pip install --quiet matplotlib pandas numpy 2>&1 | tail -3"}
+→ mcp__sandbox__bash {"cmd":"python3 -c \"import matplotlib, pandas, numpy; print('ok')\""}
+→ mcp__sandbox__bash {"cmd":"pip install --quiet --break-system-packages matplotlib pandas numpy 2>&1 | tail -3"}
+→ mcp__sandbox__write {"path":"/workspace/compare/analyze.py","content":"#!/usr/bin/env python3\n\"\"\"Compare GOOGL vs…
+→ mcp__sandbox__bash {"cmd":"python3 /workspace/compare/analyze.py"}
+→ mcp__sandbox__write {"path":"/workspace/compare/report.md","content":"# GOOGL vs NVDA — Trailing 12-Month Performance…
 
-Comparison of 📈 **GOOGL** vs 📈 **NVDA** over the trailing 12 months (as of 2026-05-17, last close 2026-05-16):
+Here is the side-by-side over the last 12 months (as of 2026-05-17) — pulled from cached Finnhub Basic Financials and the latest quote 📊
 
-Headline returns 🏁
+Metric                                       GOOGL           NVDA
+-----------------------------------------------------------------
+Current price ($)                           396.80         225.34
+52-week high ($)                            403.70         236.54
+52-week low ($)                             162.00         129.16
+52-week return (%)                          142.00          67.11
+26-week return (%)                           42.30          19.76
+13-week return (%)                           28.41          20.53
+YTD return (%)                               26.77          20.82
+Rel. to S&P 500 52w (pp)                    116.81          41.93
+3M annualised vol (%)                        34.33          37.71
+Beta (vs S&P 500)                             1.27           2.26
+Return/Vol ratio (12m)                        4.14           1.78
+Drawdown from 52w high (%)                   -1.71          -4.73
+Market cap ($ M)                      4,799,847.50   5,475,276.00
+TTM P/E                                      29.96          45.60
+Forward P/E                                  28.60          22.05
+P/S (annual)                                 11.92          25.36
+PEG (TTM)                                     1.73           1.03
+Gross margin TTM (%)                         60.37          71.23
+Operating margin TTM (%)                     32.69          60.38
+ROE (RFY) (%)                                31.83          76.33
+Revenue growth YoY TTM (%)                   17.45          65.47
+EPS growth YoY TTM (%)                       48.51          66.76
 
-Window              GOOGL       NVDA     Winner
-52-week return    +142.0 %    +67.1 %    🟢 GOOGL  (~75 pp gap)
-6-month (26W)      +42.3 %    +19.8 %    🟢 GOOGL
-3-month (13W)      +28.4 %    +20.5 %    🟢 GOOGL
-YTD 2026           +26.8 %    +20.8 %    🟢 GOOGL
-Excess vs S&P 500 +116.8 %    +41.9 %    🟢 GOOGL
+🏆 Price performance over the trailing 12 months
+- GOOGL +142.0% vs NVDA +67.1%. Google more than doubled NVIDIA's return and beat the S&P 500 by ~117 pp; NVIDIA beat it by ~42 pp.
+- The gap is consistent across windows: GOOGL also wins 26w (+42% vs +20%), 13w (+28% vs +21%) and YTD (+27% vs +21%).
+- Both names are within ~5% of their 52-week high — momentum is alive on both sides — but GOOGL is the more "extended" of the two.
 
-GOOGL implied price ~12 months ago: ≈ $164 → $396.8 today.
-NVDA  implied price ~12 months ago: ≈ $135 → $225.3 today.
-Both made fresh 52-week highs this week (GOOGL 2026-05-13 at $403.7, NVDA 2026-05-14 at $236.5).
+⚖️ Risk-adjusted
+- 12-month return / 3-month annualised vol: **GOOGL 4.14 vs NVDA 1.78** — Google delivered a much better return per unit of risk.
+- GOOGL beta 1.27 vs NVDA 2.26 — NVDA still moves roughly 2x the index, so it carried more market-risk to earn the smaller return.
 
-Risk profile ⚖️
-              GOOGL    NVDA
-3M annualised vol      34.3 %   37.7 %
-Beta (5Y monthly)       1.27     2.26
-Return / vol (52W)      4.14     1.78
+🏭 Fundamentals (still in NVDA's favor)
+- NVDA: gross margin 71%, op margin 60%, ROE 76%, revenue +65% YoY, EPS +67% YoY.
+- GOOGL: gross 60%, op 33%, ROE 32%, revenue +17% YoY, EPS +49% YoY.
+- NVIDIA is unambiguously the higher-quality compounder; Google is the more diversified, lower-volatility business.
 
-GOOGL delivered ~2× the absolute return with **lower vol and roughly half the beta** — risk-adjusted, the dominance is even larger.
+💰 Valuation
+- TTM P/E: GOOGL 30 vs NVDA 46 — NVDA is richer on trailing earnings.
+- Forward P/E: GOOGL 28.6 vs NVDA 22.0 — analyst forecasts make NVDA optically cheaper on forward earnings.
+- PEG TTM: NVDA 1.03 vs GOOGL 1.73 — growth-adjusted, NVDA is the cheaper of the two.
 
-Valuation 💰
-                  GOOGL     NVDA
-Market cap        $4.80 T   $5.48 T   (NVDA is still the biggest cap)
-P/E TTM           30.0      45.6
-Forward P/E       28.6      22.0      ⬅ NVDA cheaper on forward
-PEG TTM           1.73      1.03      ⬅ NVDA cheaper on growth
+🎯 PM takeaway
+- Pure 12-month tape: **GOOGL won**, and on a risk-adjusted basis it wasn't close.
+- NVDA's underperformance is multiple compression after its 2024-25 megarun, not earnings deterioration — the fundamentals are actually getting better.
+- If you're momentum/quality-of-tape oriented, stay long GOOGL; if you're rotating into growth-at-a-reasonable-price (PEG ~1) with a 12-month horizon, NVDA looks like the more interesting set-up from here.
 
-Fundamentals (TTM) 🧪
-                  GOOGL     NVDA
-Revenue growth    +17.5 %   +65.5 %
-EPS growth YoY    +48.5 %   +66.8 %
-Gross margin      60.4 %    71.2 %
-Operating margin  32.7 %    60.4 %
-Net margin        37.9 %    55.6 %
-ROE / ROA         39 / 27 % 104 / 76 %
-NVDA still prints the better growth and margin profile; GOOGL’s engine is excellent but materially behind on growth.
-
-Bottom line for a PM 🧭
-- 🥇 Past-12M winner: **GOOGL** — bigger return, lower vol, lower beta, *and* a cheaper forward multiple than NVDA.
-- 🚀 Forward growth/PEG winner: **NVDA** — margins, ROE >100 %, PEG ~1.0; the market is still paying up for AI capex growth.
-- 🔁 Pair-trade implication: after GOOGL’s big re-rating, long-NVDA / short-GOOGL is the cheaper-on-forward-PE basket today, but it doubles your beta exposure (~2.3) and concentrates you on hyperscaler capex.
-- ⚠️ Caveats: numbers are derived from vendor summary statistics (daily candle data wasn’t accessible on this tier), so intraday/drawdown stats are approximations. Returns are price-only — GOOGL’s dividend yield (<0.25 %) makes the total-return picture essentially identical.
-
-Full write-up saved to `/workspace/goog_nvda/report.md` and raw metric snapshots to `/workspace/goog_nvda/googl_metric.json` and `/workspace/goog_nvda/nvda_metric.json`. 🗂️
+Full write-up saved to /workspace/compare/report.md; raw data and the analysis script are in /workspace/compare/.
 ```
+
+If you prefer to use the local file system, use the `claude-agent.ts` example:
+`ANTHROPIC_API_KEY='<token>' FINNHUB_API_KEY='<token>' npx tsx client/typescript/examples/claude-agent.ts`
