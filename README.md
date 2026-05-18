@@ -36,10 +36,24 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
 
 Find a complete example [Stateful claude agent](client/typescript/examples/README.md).
 
-## 📚 Documentation
+## Documentation
 
 - [TypeScript](client/typescript/README.md)
 - Python (WIP)
+
+## How it works
+
+<img src="./docs/hive-diagram.svg" width="500">
+
+A Hive sandbox is composed of an orchestrator (sbxd), 2 sidecar processes, and an agent container run via runc.
+
+### Components
+
+* sbxd: The orchestrator. Provides the API server and manages the lifecycle of the sidecars and agent container.
+* sbxfuse: A FUSE filesystem sidecar that mediates and logs all file access. One instance runs per configured mount.
+* sbxproxy: A transparent TCP proxy sidecar that enforces egress ACLs and logs all outbound requests.
+* Agent container: Runs in an isolated OCI container via [runc](https://github.com/opencontainers/runc). By default the image runs an MCP server that provides tools like `Bash` and `Read` to agents.
+
 
 ### Supported File Systems
 * Google Drive
