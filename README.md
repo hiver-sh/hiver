@@ -53,7 +53,7 @@ A Hive sandbox is composed of an orchestrator (sbxd), 2 sidecar processes, and a
 
 * **sbxd**: The orchestrator. Provides the API server and manages the lifecycle of the sidecars and agent container.
 * **sbxfuse**: A FUSE filesystem sidecar that mediates and logs all file access. One instance runs per configured mount.
-* **sbxproxy**: A transparent TCP proxy sidecar that enforces egress ACLs and logs all outbound requests.
+* **sbxproxy**: A transparent TCP proxy sidecar that enforces egress ACLs and logs all outbound requests. The agent does not need to set `HTTP_PROXY` — the kernel redirects all outbound TCP to sbxproxy transparently, so no changes to agent code are required.
 * **Agent container**: Runs in an isolated OCI container via [runc](https://github.com/opencontainers/runc). By default the image runs an MCP server that provides tools like `Bash` and `Read` to agents.
 * **Controller**: Creates and destroys a sandbox.
 
