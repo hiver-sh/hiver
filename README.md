@@ -1,9 +1,9 @@
 <p align="center">
-<img src="./docs/hive.svg" width="100" align="center">
+<img src="./docs/hive.svg" width="100">
 </p>
 <h1 align="center">Hive Sandbox</h1>
 
-Hive gives an agent a stateful sandbox with its own file system _(Google Drive, OneDrive, S3, GCS, Azure Blob Storage, or local)_ and network access — with every read, write, and outbound request mediated and logged. The agent runs unmodified: it executes standard bash commands, and Hive handles the rest.
+Hive gives an agent a stateful sandbox with its own file system _(Google Drive, OneDrive, S3, GCS, Azure Blob Storage, or local)_ and network access. Every read, write, and outbound request mediated and logged. The agent runs unmodified: it executes standard bash commands, and Hive handles the rest.
 
 Give the agent APIs and it will write code, analyze data, and produce reports — accumulating skills, findings, and artifacts over time. Public data sources and private or user-specific ones can be combined freely. Work is never lost: the persistent file system doubles as a checkpoint store.
 
@@ -43,7 +43,9 @@ Find a complete example [Stateful claude agent](client/typescript/examples/READM
 
 ## How it works
 
+<p align="center">
 <img src="./docs/hive-diagram.svg" width="500">
+</p>
 
 A Hive sandbox is composed of an orchestrator (sbxd), 2 sidecar processes, and an agent container run via runc.
 
@@ -54,6 +56,11 @@ A Hive sandbox is composed of an orchestrator (sbxd), 2 sidecar processes, and a
 * sbxproxy: A transparent TCP proxy sidecar that enforces egress ACLs and logs all outbound requests.
 * Agent container: Runs in an isolated OCI container via [runc](https://github.com/opencontainers/runc). By default the image runs an MCP server that provides tools like `Bash` and `Read` to agents.
 
+Beyond security and ease of use, this architecture lets agents share a persistent file system. Each agent can accumulate its own findings, and a coordinating agent can read across all of them to synthesize global insights. This applies to skills, reports, or any other artifacts worth sharing.
+
+<p align="center">
+<img src="./docs/multi-agent.svg" width="300">
+</p>
 
 ### Supported File Systems
 * Google Drive
