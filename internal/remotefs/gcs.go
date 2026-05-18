@@ -9,37 +9,37 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
-	"cloud.google.com/go/storage"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	"google.golang.org/api/iterator"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
+	storagev1 "google.golang.org/api/storage/v1"
 )
 
 // gcsScopes are the OAuth scopes requested for GCS read/write access.
-var gcsScopes = []string{storage.ScopeReadWrite}
+var gcsScopes = []string{storagev1.DevstorageReadWriteScope}
 
 // GoogleCloudStorageConfig is the JSON the user passes via fs.backend_config.
 //
-// Auth: if ServiceAccountJSON is set it is used directly (server-to-server,
-// recommended for production). Otherwise Application Default Credentials are
-// used — GOOGLE_APPLICATION_CREDENTIALS env var, gcloud user credentials, or
-// the GCE/GKE metadata server, whichever is found first.
-//
-// Bucket is required. Prefix, when set, scopes every Store path to that
-// sub-tree within the bucket (e.g. "workspace/session-42").
+// Auth: ServiceAccountJSON is used directly (server-to-server). Bucket is
+// required. Prefix, when set, scopes every Store path to that sub-tree within
+// the bucket (e.g. "workspace/session-42").
 type GoogleCloudStorageConfig struct {
 	Bucket             string `json:"bucket"`
 	Prefix             string `json:"prefix,omitempty"`
 	ServiceAccountJSON string `json:"service_account_json,omitempty"`
 }
 
-// GoogleCloudStorage is a [Store] backed by a GCS bucket. All object keys
-// are formed by joining the optional Prefix with the caller-supplied path.
+// GoogleCloudStorage is a [Store] backed by a GCS bucket. Uses the same
+// google.golang.org/api transport layer as [GoogleDrive] so all traffic —
+// API calls and token refresh — travels through the marked HTTP client and
+// never touches [http.DefaultClient] or the GCE metadata server.
 // GCS has no native rename; [Move] is implemented as copy-then-delete.
 type GoogleCloudStorage struct {
-	bucket *storage.BucketHandle
+	svc    *storagev1.ObjectsService
+	bucket string
 	prefix string // without leading or trailing slash; empty = bucket root
 }
 
@@ -57,12 +57,13 @@ func NewGoogleCloudStorage(ctx context.Context, cfg GoogleCloudStorageConfig, ou
 	if err != nil {
 		return nil, fmt.Errorf("gcs: auth: %w", err)
 	}
-	client, err := storage.NewClient(ctx, option.WithHTTPClient(httpClient))
+	svc, err := storagev1.NewService(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {
-		return nil, fmt.Errorf("gcs: storage.NewClient: %w", err)
+		return nil, fmt.Errorf("gcs: storagev1.NewService: %w", err)
 	}
 	return &GoogleCloudStorage{
-		bucket: client.Bucket(cfg.Bucket),
+		svc:    svc.Objects,
+		bucket: cfg.Bucket,
 		prefix: strings.Trim(cfg.Prefix, "/"),
 	}, nil
 }
@@ -109,22 +110,17 @@ func (g *GoogleCloudStorage) storePath(k string) string {
 // List returns every non-directory object whose key falls under prefix.
 // Directory marker objects (name ending in "/") are omitted.
 func (g *GoogleCloudStorage) List(ctx context.Context, prefix string) ([]string, error) {
-	it := g.bucket.Objects(ctx, &storage.Query{Prefix: g.key(prefix)})
 	var out []string
-	for {
-		attrs, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if strings.HasSuffix(attrs.Name, "/") {
-			continue // directory marker — not a real file
-		}
-		out = append(out, g.storePath(attrs.Name))
-	}
-	return out, nil
+	err := g.svc.List(g.bucket).Prefix(g.key(prefix)).Context(ctx).
+		Pages(ctx, func(page *storagev1.Objects) error {
+			for _, obj := range page.Items {
+				if !strings.HasSuffix(obj.Name, "/") {
+					out = append(out, g.storePath(obj.Name))
+				}
+			}
+			return nil
+		})
+	return out, err
 }
 
 // ListDir returns the immediate children of dir. A "/" delimiter gives GCS
@@ -135,30 +131,26 @@ func (g *GoogleCloudStorage) ListDir(ctx context.Context, dir string) ([]FileInf
 	if dirKey != "" && !strings.HasSuffix(dirKey, "/") {
 		dirKey += "/"
 	}
-	it := g.bucket.Objects(ctx, &storage.Query{Prefix: dirKey, Delimiter: "/"})
 	var out []FileInfo
-	for {
-		attrs, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if attrs.Prefix != "" {
-			out = append(out, FileInfo{Path: g.storePath(attrs.Prefix), IsDir: true})
-			continue
-		}
-		if strings.HasSuffix(attrs.Name, "/") {
-			continue // directory marker object
-		}
-		out = append(out, FileInfo{
-			Path:  g.storePath(attrs.Name),
-			Size:  attrs.Size,
-			Mtime: attrs.Updated,
+	err := g.svc.List(g.bucket).Prefix(dirKey).Delimiter("/").Context(ctx).
+		Pages(ctx, func(page *storagev1.Objects) error {
+			for _, p := range page.Prefixes {
+				out = append(out, FileInfo{Path: g.storePath(p), IsDir: true})
+			}
+			for _, obj := range page.Items {
+				if strings.HasSuffix(obj.Name, "/") {
+					continue // directory marker
+				}
+				mtime, _ := time.Parse(time.RFC3339, obj.Updated)
+				out = append(out, FileInfo{
+					Path:  g.storePath(obj.Name),
+					Size:  int64(obj.Size),
+					Mtime: mtime,
+				})
+			}
+			return nil
 		})
-	}
-	return out, nil
+	return out, err
 }
 
 // Stat returns metadata for the object at p. GCS has no native directory
@@ -166,11 +158,13 @@ func (g *GoogleCloudStorage) ListDir(ctx context.Context, dir string) ([]FileInf
 // and returns a synthetic IsDir FileInfo when one exists.
 func (g *GoogleCloudStorage) Stat(ctx context.Context, p string) (FileInfo, error) {
 	canon := path.Clean("/" + strings.TrimPrefix(p, "/"))
-	attrs, err := g.bucket.Object(g.key(p)).Attrs(ctx)
+	obj, err := g.svc.Get(g.bucket, g.key(p)).Context(ctx).Do()
 	if err == nil {
-		return FileInfo{Path: canon, Size: attrs.Size, Mtime: attrs.Updated}, nil
+		mtime, _ := time.Parse(time.RFC3339, obj.Updated)
+		return FileInfo{Path: canon, Size: int64(obj.Size), Mtime: mtime}, nil
 	}
-	if !errors.Is(err, storage.ErrObjectNotExist) {
+	var ge *googleapi.Error
+	if !errors.As(err, &ge) || ge.Code != http.StatusNotFound {
 		return FileInfo{}, err
 	}
 	// Not a direct object — check for children to detect a directory prefix.
@@ -178,37 +172,40 @@ func (g *GoogleCloudStorage) Stat(ctx context.Context, p string) (FileInfo, erro
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-	it := g.bucket.Objects(ctx, &storage.Query{Prefix: prefix, Delimiter: "/"})
-	_, next := it.Next()
-	if errors.Is(next, iterator.Done) {
-		return FileInfo{}, ErrNotExist
+	page, err := g.svc.List(g.bucket).Prefix(prefix).Delimiter("/").MaxResults(1).Context(ctx).Do()
+	if err != nil {
+		return FileInfo{}, err
 	}
-	if next != nil {
-		return FileInfo{}, next
+	if len(page.Items) == 0 && len(page.Prefixes) == 0 {
+		return FileInfo{}, ErrNotExist
 	}
 	return FileInfo{Path: canon, IsDir: true}, nil
 }
 
 func (g *GoogleCloudStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) {
-	rc, err := g.bucket.Object(g.key(p)).NewReader(ctx)
-	if errors.Is(err, storage.ErrObjectNotExist) {
-		return nil, ErrNotExist
+	resp, err := g.svc.Get(g.bucket, g.key(p)).Context(ctx).Download()
+	if err != nil {
+		var ge *googleapi.Error
+		if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
+			return nil, ErrNotExist
+		}
+		return nil, err
 	}
-	return rc, err
+	return resp.Body, nil
 }
 
 func (g *GoogleCloudStorage) Put(ctx context.Context, p string, content io.Reader) error {
-	wc := g.bucket.Object(g.key(p)).NewWriter(ctx)
-	if _, err := io.Copy(wc, content); err != nil {
-		_ = wc.Close()
-		return err
-	}
-	return wc.Close()
+	_, err := g.svc.Insert(g.bucket, &storagev1.Object{Name: g.key(p)}).
+		Context(ctx).
+		Media(content).
+		Do()
+	return err
 }
 
 func (g *GoogleCloudStorage) Delete(ctx context.Context, p string) error {
-	err := g.bucket.Object(g.key(p)).Delete(ctx)
-	if errors.Is(err, storage.ErrObjectNotExist) {
+	err := g.svc.Delete(g.bucket, g.key(p)).Context(ctx).Do()
+	var ge *googleapi.Error
+	if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
 		return nil
 	}
 	return err
@@ -216,16 +213,20 @@ func (g *GoogleCloudStorage) Delete(ctx context.Context, p string) error {
 
 // Move copies src to dst then deletes the source. GCS has no native rename.
 func (g *GoogleCloudStorage) Move(ctx context.Context, src, dst string) error {
-	srcObj := g.bucket.Object(g.key(src))
-	dstObj := g.bucket.Object(g.key(dst))
-	if _, err := dstObj.CopierFrom(srcObj).Run(ctx); err != nil {
-		if errors.Is(err, storage.ErrObjectNotExist) {
+	_, err := g.svc.Copy(g.bucket, g.key(src), g.bucket, g.key(dst), &storagev1.Object{}).
+		Context(ctx).Do()
+	if err != nil {
+		var ge *googleapi.Error
+		if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
 			return ErrNotExist
 		}
 		return fmt.Errorf("gcs move copy: %w", err)
 	}
-	if err := srcObj.Delete(ctx); err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
-		return fmt.Errorf("gcs move delete src: %w", err)
+	if err := g.svc.Delete(g.bucket, g.key(src)).Context(ctx).Do(); err != nil {
+		var ge *googleapi.Error
+		if !errors.As(err, &ge) || ge.Code != http.StatusNotFound {
+			return fmt.Errorf("gcs move delete src: %w", err)
+		}
 	}
 	return nil
 }

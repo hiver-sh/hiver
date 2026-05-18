@@ -40,3 +40,12 @@ Find a complete example [Stateful claude agent](client/typescript/examples/READM
 
 - [TypeScript](client/typescript/README.md)
 - Python (WIP)
+
+### Supported File Systems
+* Google Drive
+* Google Cloud Storage
+* Local
+* Microsoft OneDrive (WIP)
+* Azure Blob Storage (WIP)
+* AWS S3 (WIP)
+* Your own K/V store (WIP)
