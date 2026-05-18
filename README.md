@@ -5,8 +5,6 @@
 
 Hive gives an agent a stateful sandbox with its own file system _(Google Drive, OneDrive, S3, GCS, Azure Blob Storage, or local)_ and network access. Every read, write, and outbound request mediated and logged. The agent runs unmodified: it executes standard bash commands, and Hive handles the rest.
 
-Give the agent APIs and it will write code, analyze data, and produce reports — accumulating skills, findings, and artifacts over time. Public data sources and private or user-specific ones can be combined freely. Work is never lost: the persistent file system doubles as a checkpoint store.
-
 ## 🚀 Getting Started
 
 Start the controller locally:
@@ -35,6 +33,10 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
 ```
 
 Find a complete example [Stateful claude agent](client/typescript/examples/README.md).
+
+## Why
+
+Give the agent APIs and it will write code, analyze data, and produce reports — accumulating skills, findings, and artifacts over time. Public data sources and private or user-specific ones can be combined freely. Work is never lost: the persistent file system doubles as a checkpoint store.
 
 ## Documentation
 
