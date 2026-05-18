@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const Backend = z.enum(["local", "gdrive"]);
+export const Backend = z.enum(["local", "gdrive", "gcs"]);
 export type Backend = z.infer<typeof Backend>;
 
 export const ACLRule = z.object({
@@ -30,9 +30,18 @@ export const GDriveFileSystem = FileSystemBase.extend({
 });
 export type GDriveFileSystem = z.infer<typeof GDriveFileSystem>;
 
+export const GCSFileSystem = FileSystemBase.extend({
+  backend: z.literal("gcs"),
+  gcs_bucket: z.string(),
+  gcs_prefix: z.string().optional(),
+  gcs_service_account_json: z.string(),
+});
+export type GCSFileSystem = z.infer<typeof GCSFileSystem>;
+
 export const FileSystem = z.discriminatedUnion("backend", [
   LocalFileSystem,
   GDriveFileSystem,
+  GCSFileSystem,
 ]);
 export type FileSystem = z.infer<typeof FileSystem>;
 

@@ -40,24 +40,6 @@ components:
         egress:
           $ref: '#/components/schemas/Egress'
 
-    Agent:
-      type: object
-      description: |
-        The workload that runs inside the sandbox. Defined at sandbox
-        creation time and not modifiable through this API.
-      additionalProperties: false
-      properties:
-        image:
-          type: string
-          description: Reference to the agent image to launch.
-          example: my-agent:latest
-        env:
-          type: array
-          items:
-            type: string
-          description: Additional environment variables in `KEY=VALUE` form.
-          example: ["LOG_LEVEL=info", "REGION=us-east-1"]
-
     FileSystem:
       description: |
         A file system exposed to the agent at `mount`. The `backend`
@@ -67,6 +49,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/LocalFileSystem'
         - $ref: '#/components/schemas/GDriveFileSystem'
+        - $ref: '#/components/schemas/GCSFileSystem'
 
     FileSystemBase:
       type: object
@@ -130,13 +113,42 @@ components:
                 ID of the Drive folder the file system is scoped to. When
                 omitted, the account root is used.
 
+    GCSFileSystem:
+      description: A file system backed by Google Cloud Storage.
+      allOf:
+        - $ref: '#/components/schemas/FileSystemBase'
+        - type: object
+          required: [gcs_bucket, gcs_service_account_json]
+          properties:
+            backend:
+              type: string
+              enum: [gcs]
+            gcs_bucket:
+              type: string
+              description: GCS bucket name.
+            gcs_prefix:
+              type: string
+              description: |
+                Optional key prefix within the bucket that the file system
+                is scoped to (e.g. `workspace/session-42`). When omitted,
+                the bucket root is used.
+            gcs_service_account_json:
+              type: string
+              format: password
+              description: |
+                Service account credential JSON. When omitted, Application
+                Default Credentials are used (GOOGLE_APPLICATION_CREDENTIALS
+                env var, gcloud user credentials, or the GCE/GKE metadata
+                server).
+
     Backend:
       type: string
-      enum: [local, gdrive]
+      enum: [local, gdrive, gcs]
       description: |
         Storage type for a file system.
           * `local`  — sandbox-local storage with no external dependency.
           * `gdrive` — backed by Google Drive.
+          * `gcs`    — backed by Google Cloud Storage.
 
     ACLRule:
       type: object

@@ -4,4 +4,5 @@ package remotefs
 var (
 	_ Store = (*FileStore)(nil)
 	_ Store = (*GoogleDrive)(nil)
+	_ Store = (*GoogleCloudStorage)(nil)
 )

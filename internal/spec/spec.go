@@ -63,6 +63,11 @@ type FS struct {
 	GdriveClientSecret       string `json:"gdrive_client_secret,omitempty"`
 	GdriveServiceAccountJSON string `json:"gdrive_service_account_json,omitempty"`
 	GdriveFolderID           string `json:"gdrive_folder_id,omitempty"`
+
+	// gcs only — bucket, optional key prefix, and optional service account.
+	GcsBucket             string `json:"gcs_bucket,omitempty"`
+	GcsPrefix             string `json:"gcs_prefix,omitempty"`
+	GcsServiceAccountJSON string `json:"gcs_service_account_json,omitempty"`
 }
 
 // Backend names a workspace storage type. New backends extend this
@@ -88,14 +93,15 @@ type FS struct {
 type Backend string
 
 const (
-	BackendLocal       Backend = "local"
-	BackendGoogleDrive Backend = "gdrive"
+	BackendLocal              Backend = "local"
+	BackendGoogleDrive        Backend = "gdrive"
+	BackendGoogleCloudStorage Backend = "gcs"
 )
 
 // Valid reports whether the backend is one sandboxd knows how to wire up.
 func (b Backend) Valid() bool {
 	switch b {
-	case BackendLocal, BackendGoogleDrive:
+	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage:
 		return true
 	}
 	return false
@@ -105,7 +111,7 @@ func (b Backend) Valid() bool {
 // store via the oplog. Local is the only non-remote backend today.
 func (b Backend) IsRemote() bool {
 	switch b {
-	case BackendGoogleDrive:
+	case BackendGoogleDrive, BackendGoogleCloudStorage:
 		return true
 	}
 	return false
@@ -141,6 +147,13 @@ const (
 	envGdriveFolderID           = "HIVE_GDRIVE_FOLDER_ID"
 )
 
+// Env-var fallbacks for gcs credentials.
+const (
+	envGcsBucket             = "HIVE_GCS_BUCKET"
+	envGcsPrefix             = "HIVE_GCS_PREFIX"
+	envGcsServiceAccountJSON = "HIVE_GCS_SERVICE_ACCOUNT_JSON"
+)
+
 func or(value, envKey string) string {
 	if value != "" {
 		return value
@@ -159,6 +172,13 @@ func (f *FS) gdriveResolved() (accessToken, refreshToken, clientID, clientSecret
 		or(f.GdriveClientSecret, envGdriveClientSecret),
 		or(f.GdriveServiceAccountJSON, envGdriveServiceAccountJSON),
 		or(f.GdriveFolderID, envGdriveFolderID)
+}
+
+// gcsResolved returns the effective gcs config — spec fields with env-var fallback.
+func (f *FS) gcsResolved() (bucket, prefix, serviceAccountJSON string) {
+	return or(f.GcsBucket, envGcsBucket),
+		or(f.GcsPrefix, envGcsPrefix),
+		or(f.GcsServiceAccountJSON, envGcsServiceAccountJSON)
 }
 
 // BackendConfigJSON returns the per-backend config sandboxd should hand
@@ -184,6 +204,17 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			ClientSecret:       clientSecret,
 			ServiceAccountJSON: sa,
 			FolderID:           folder,
+		})
+	case BackendGoogleCloudStorage:
+		bucket, prefix, sa := f.gcsResolved()
+		return json.Marshal(struct {
+			Bucket             string `json:"bucket"`
+			Prefix             string `json:"prefix,omitempty"`
+			ServiceAccountJSON string `json:"service_account_json,omitempty"`
+		}{
+			Bucket:             bucket,
+			Prefix:             prefix,
+			ServiceAccountJSON: sa,
 		})
 	}
 	return nil, nil
@@ -236,12 +267,21 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("%s.backend is required", ctx)
 		}
 		if !f.Backend.Valid() {
-			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive)
+			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage)
 		}
 		if f.Backend == BackendGoogleDrive {
 			access, _, _, _, sa, _ := f.gdriveResolved()
 			if access == "" && sa == "" {
 				return fmt.Errorf("%s.backend gdrive: one of gdrive_access_token / gdrive_service_account_json is required (or env %s / %s)", ctx, envGdriveAccessToken, envGdriveServiceAccountJSON)
+			}
+		}
+		if f.Backend == BackendGoogleCloudStorage {
+			bucket, _, sa := f.gcsResolved()
+			if bucket == "" {
+				return fmt.Errorf("%s.backend gcs: gcs_bucket is required (or env %s)", ctx, envGcsBucket)
+			}
+			if sa == "" {
+				return fmt.Errorf("%s.backend gcs: gcs_service_account_json is required (or env %s)", ctx, envGcsServiceAccountJSON)
 			}
 		}
 		if f.Mount == "" {

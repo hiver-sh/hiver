@@ -32,6 +32,7 @@ func (e ACLRuleAccess) Valid() bool {
 
 // Defines values for Backend.
 const (
+	BackendGcs    Backend = "gcs"
 	BackendGdrive Backend = "gdrive"
 	BackendLocal  Backend = "local"
 )
@@ -39,6 +40,8 @@ const (
 // Valid indicates whether the value is a known member of the Backend enum.
 func (e Backend) Valid() bool {
 	switch e {
+	case BackendGcs:
+		return true
 	case BackendGdrive:
 		return true
 	case BackendLocal:
@@ -48,15 +51,30 @@ func (e Backend) Valid() bool {
 	}
 }
 
+// Defines values for GCSFileSystemBackend.
+const (
+	GCSFileSystemBackendGcs GCSFileSystemBackend = "gcs"
+)
+
+// Valid indicates whether the value is a known member of the GCSFileSystemBackend enum.
+func (e GCSFileSystemBackend) Valid() bool {
+	switch e {
+	case GCSFileSystemBackendGcs:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GDriveFileSystemBackend.
 const (
-	GDriveFileSystemBackendGdrive GDriveFileSystemBackend = "gdrive"
+	Gdrive GDriveFileSystemBackend = "gdrive"
 )
 
 // Valid indicates whether the value is a known member of the GDriveFileSystemBackend enum.
 func (e GDriveFileSystemBackend) Valid() bool {
 	switch e {
-	case GDriveFileSystemBackendGdrive:
+	case Gdrive:
 		return true
 	default:
 		return false
@@ -126,16 +144,6 @@ type ACLRule struct {
 // ACLRuleAccess Read-write, read-only, or fully denied.
 type ACLRuleAccess string
 
-// Agent The workload that runs inside the sandbox. Defined at sandbox
-// creation time and not modifiable through this API.
-type Agent struct {
-	// Env Additional environment variables in `KEY=VALUE` form.
-	Env *[]string `json:"env,omitempty"`
-
-	// Image Reference to the agent image to launch.
-	Image *string `json:"image,omitempty"`
-}
-
 // ApplyResult The outcome of an apply call.
 type ApplyResult struct {
 	// Applied `true` if every change was applied successfully. `false`
@@ -149,7 +157,7 @@ type ApplyResult struct {
 	// re-diffing the request.
 	Changes Changes `json:"changes"`
 
-	// Config A complete sandbox configuration.
+	// Config Hive sandbox configuration.
 	Config SandboxConfig `json:"config"`
 
 	// Error Human-readable failure reason. Set only when `applied` is `false`.
@@ -159,6 +167,7 @@ type ApplyResult struct {
 // Backend Storage type for a file system.
 //   - `local`  — sandbox-local storage with no external dependency.
 //   - `gdrive` — backed by Google Drive.
+//   - `gcs`    — backed by Google Cloud Storage.
 type Backend string
 
 // Changes Concrete additions and removals carried out by the apply. Each
@@ -247,11 +256,39 @@ type FileSystemBase struct {
 	// Backend Storage type for a file system.
 	//   * `local`  — sandbox-local storage with no external dependency.
 	//   * `gdrive` — backed by Google Drive.
+	//   * `gcs`    — backed by Google Cloud Storage.
 	Backend Backend `json:"backend"`
 
 	// Mount Absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
 }
+
+// GCSFileSystem defines model for GCSFileSystem.
+type GCSFileSystem struct {
+	// Acls Access control rules for paths under `mount`.
+	Acls    *[]ACLRule           `json:"acls,omitempty"`
+	Backend GCSFileSystemBackend `json:"backend"`
+
+	// GcsBucket GCS bucket name.
+	GcsBucket string `json:"gcs_bucket"`
+
+	// GcsPrefix Optional key prefix within the bucket that the file system
+	// is scoped to (e.g. `workspace/session-42`). When omitted,
+	// the bucket root is used.
+	GcsPrefix *string `json:"gcs_prefix,omitempty"`
+
+	// GcsServiceAccountJson Service account credential JSON. When omitted, Application
+	// Default Credentials are used (GOOGLE_APPLICATION_CREDENTIALS
+	// env var, gcloud user credentials, or the GCE/GKE metadata
+	// server).
+	GcsServiceAccountJson string `json:"gcs_service_account_json"`
+
+	// Mount Absolute path at which the file system appears to the agent.
+	Mount string `json:"mount"`
+}
+
+// GCSFileSystemBackend defines model for GCSFileSystem.Backend.
+type GCSFileSystemBackend string
 
 // GDriveFileSystem defines model for GDriveFileSystem.
 type GDriveFileSystem struct {
@@ -302,7 +339,7 @@ type LocalFileSystem struct {
 // LocalFileSystemBackend defines model for LocalFileSystem.Backend.
 type LocalFileSystemBackend string
 
-// SandboxConfig A complete sandbox configuration.
+// SandboxConfig Hive sandbox configuration.
 type SandboxConfig struct {
 	// Egress Network egress configuration.
 	Egress *Egress `json:"egress,omitempty"`
@@ -366,6 +403,32 @@ func (t *FileSystem) FromGDriveFileSystem(v GDriveFileSystem) error {
 
 // MergeGDriveFileSystem performs a merge with any union data inside the FileSystem, using the provided GDriveFileSystem
 func (t *FileSystem) MergeGDriveFileSystem(v GDriveFileSystem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsGCSFileSystem returns the union data inside the FileSystem as a GCSFileSystem
+func (t FileSystem) AsGCSFileSystem() (GCSFileSystem, error) {
+	var body GCSFileSystem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromGCSFileSystem overwrites any union data inside the FileSystem as the provided GCSFileSystem
+func (t *FileSystem) FromGCSFileSystem(v GCSFileSystem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeGCSFileSystem performs a merge with any union data inside the FileSystem, using the provided GCSFileSystem
+func (t *FileSystem) MergeGCSFileSystem(v GCSFileSystem) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
