@@ -126,8 +126,6 @@ func main() {
 			cancel()
 		},
 	)
-	go lifetime.Run(ctx)
-
 	for i := range sp.FS {
 		f := &sp.FS[i]
 		if err := os.MkdirAll(f.Mount, 0o755); err != nil {
@@ -362,6 +360,10 @@ func main() {
 		store,
 		lifetime)
 
+	// Start the TTL countdown from when the API is reachable, not from
+	// sandboxd startup. Image unpacking can take several seconds, which
+	// would otherwise eat into the client's ping window.
+	go lifetime.Run(ctx)
 	go s.ListenAndServe()
 
 	// Graceful shutdown chain triggered by the agent exiting:

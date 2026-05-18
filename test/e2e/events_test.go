@@ -157,11 +157,10 @@ func assertEventTypes(t *testing.T, events []map[string]any) {
 		t.Errorf("egress.request: expected ≥1 denied; got %v", accessCount)
 	}
 
-	// egress.response: schema-required fields. The proxy's request_id
-	// is its own atomic counter (stringified), independent of the
-	// broker's monotonic event id, so we only check presence/shape.
+	// egress.response: schema-required fields. request_id is the
+	// broker's monotonic event id of the paired egress.request event.
 	for _, e := range byType["egress.response"] {
-		if v, ok := e["request_id"].(string); !ok || v == "" {
+		if v, ok := e["request_id"].(float64); !ok || v <= 0 {
 			t.Errorf("egress.response missing/empty request_id: %v", e)
 		}
 		if _, ok := e["status"].(float64); !ok {

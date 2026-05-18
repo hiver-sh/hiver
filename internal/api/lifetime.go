@@ -30,8 +30,11 @@ func (l *Lifetime) Reset() {
 }
 
 // Run blocks until ctx is cancelled or the deadline elapses; on elapse
-// it invokes onExpire exactly once and returns.
+// it invokes onExpire exactly once and returns. The TTL countdown starts
+// from when Run is called, not from when NewLifetime was constructed, so
+// callers should call Run only once the API server is ready to accept pings.
 func (l *Lifetime) Run(ctx context.Context) {
+	l.Reset() // start the countdown from now, not from construction time
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
