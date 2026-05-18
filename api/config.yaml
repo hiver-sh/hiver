@@ -2,7 +2,7 @@ components:
   schemas:
     SandboxConfig:
       type: object
-      description: A complete sandbox configuration.
+      description: Hive sandbox configuration.
       required: [fs]
       additionalProperties: false
       properties:
