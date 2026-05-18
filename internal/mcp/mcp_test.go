@@ -16,7 +16,7 @@ func TestListTools(t *testing.T) {
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint: ts.URL + "/v1/mcp",
+		Endpoint: ts.URL + "/",
 	}, nil)
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
