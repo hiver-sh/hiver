@@ -298,6 +298,29 @@ fs: [
 
 **`gdrive_folder_id`** — the ID of the Drive folder to expose as the mount root. Find it in the folder's URL: `https://drive.google.com/drive/folders/<folder-id>`.
 
+#### Google Cloud Storage
+
+Mount a GCS bucket (or a prefix within one) as `/workspace` so files persist beyond sandbox lifetime.
+
+```ts
+fs: [
+  {
+    backend: "gcs",
+    mount: "/workspace",
+    acls: [{ path: "/workspace/**", access: "rw" }],
+    gcs_bucket:               "<bucket-name>",
+    gcs_prefix:               "optional/key/prefix", // optional
+    gcs_service_account_json: JSON.stringify(serviceAccountKey),
+  },
+]
+```
+
+**`gcs_bucket`** — the GCS bucket name (required). Can also be set via `HIVE_GCS_BUCKET`.
+
+**`gcs_prefix`** — an optional key prefix that scopes the mount to a sub-path within the bucket. Can also be set via `HIVE_GCS_PREFIX`.
+
+**`gcs_service_account_json`** — service account credential JSON. When omitted, [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials) are used (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud user credentials, or the GCE/GKE metadata server). Can also be set via `HIVE_GCS_SERVICE_ACCOUNT_JSON`.
+
 ---
 
 ### Utils

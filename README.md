@@ -51,10 +51,11 @@ A Hive sandbox is composed of an orchestrator (sbxd), 2 sidecar processes, and a
 
 ### Components
 
-* sbxd: The orchestrator. Provides the API server and manages the lifecycle of the sidecars and agent container.
-* sbxfuse: A FUSE filesystem sidecar that mediates and logs all file access. One instance runs per configured mount.
-* sbxproxy: A transparent TCP proxy sidecar that enforces egress ACLs and logs all outbound requests.
-* Agent container: Runs in an isolated OCI container via [runc](https://github.com/opencontainers/runc). By default the image runs an MCP server that provides tools like `Bash` and `Read` to agents.
+* **sbxd**: The orchestrator. Provides the API server and manages the lifecycle of the sidecars and agent container.
+* **sbxfuse**: A FUSE filesystem sidecar that mediates and logs all file access. One instance runs per configured mount.
+* **sbxproxy**: A transparent TCP proxy sidecar that enforces egress ACLs and logs all outbound requests.
+* **Agent container**: Runs in an isolated OCI container via [runc](https://github.com/opencontainers/runc). By default the image runs an MCP server that provides tools like `Bash` and `Read` to agents.
+* **Controller**: Creates and destroys a sandbox.
 
 Beyond security and ease of use, this architecture lets agents share a persistent file system. Each agent can accumulate its own findings, and a coordinating agent can read across all of them to synthesize global insights. This applies to skills, reports, or any other artifacts worth sharing.
 
