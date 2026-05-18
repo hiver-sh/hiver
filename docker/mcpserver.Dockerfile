@@ -19,6 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
+RUN npm install -g playwright \
+    && playwright install --with-deps chromium
+
 COPY --from=build /out/mcpserver /usr/local/bin/mcpserver
 
 EXPOSE 8081
