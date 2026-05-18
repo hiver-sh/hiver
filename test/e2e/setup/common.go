@@ -152,7 +152,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	// Expected lines live in the fixture's expectations.yaml so the
 	// fixture is self-describing (Dockerfile + agent.py + spec.yaml +
 	// expectations.yaml all in one directory). Most entries assert
-	// agent-printed "[agent:out] …" lines, but any substring of the
+	// agent-printed "[sandbox:out] …" lines, but any substring of the
 	// container output is fair game (sandboxd lifecycle, audit-tail
 	// "agent op | …", etc.).
 	expectationsPath := filepath.Join(fixtureDir, "expectations.yaml")
@@ -493,6 +493,7 @@ func runSandboxPod(t *testing.T, sandboxTar, specPath string, duringLifetime Fix
 		// Publish sandboxd's API server so the host-side e2e harness can
 		// subscribe to /v1/events while the workload runs.
 		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),
+		"-p", "18000:18000",
 		"-v", sandboxTar + ":/mnt/sandbox.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
 		sandboxRuntimeImage,
@@ -520,7 +521,7 @@ func runSandboxPod(t *testing.T, sandboxTar, specPath string, duringLifetime Fix
 		out: &out,
 		// agent.py prints "DONE" once it has completed every probe (just
 		// before entering its sleep loop). Wait for that one line.
-		marker:   []byte("[agent:out] DONE"),
+		marker:   []byte("[sandbox:out] DONE"),
 		minCount: 1,
 		fired:    idleSeen,
 	}

@@ -1,31 +1,31 @@
 # Expectations for the gdrive-fs fixture.
 #
 # Only two probes (write + read), each asserted twice: once on the
-# agent's own [agent:out] intent line, once on sandboxd's audit-tail
+# agent's own [sandbox:out] intent line, once on sandboxd's audit-tail
 # view of the FUSE op (which fires regardless of whether the Drive
 # uploader keeps up — the cache write is what we care about). DONE
 # pins the sentinel that the runner waits for before tearing the pod
 # down.
 ops:
   - desc: "agent emits FS write intent (gdrive)"
-    substring: "[agent:out] WRITE /workspace/note.txt"
+    substring: "[sandbox:out] WRITE /workspace/note.txt"
   - desc: "FUSE allows write to /workspace/note.txt"
     substring: "sandboxd: agent op | fuse  allow write      /workspace/note.txt"
 
   - desc: "agent emits FS read intent (gdrive)"
-    substring: "[agent:out] READ /workspace/note.txt"
+    substring: "[sandbox:out] READ /workspace/note.txt"
   - desc: "FUSE allows read on /workspace/note.txt"
     substring: "sandboxd: agent op | fuse  allow read       /workspace/note.txt"
 
   - desc: "agent emits FS write intent (local scratch)"
-    substring: "[agent:out] WRITE /scratch/scratch.txt"
+    substring: "[sandbox:out] WRITE /scratch/scratch.txt"
   - desc: "FUSE allows write to /scratch/scratch.txt"
     substring: "sandboxd: agent op | fuse  allow write      /scratch/scratch.txt"
 
   - desc: "agent emits FS read intent (local scratch)"
-    substring: "[agent:out] READ /scratch/scratch.txt"
+    substring: "[sandbox:out] READ /scratch/scratch.txt"
   - desc: "FUSE allows read on /scratch/scratch.txt"
     substring: "sandboxd: agent op | fuse  allow read       /scratch/scratch.txt"
 
   - desc: "agent reaches idle"
-    substring: "[agent:out] DONE"
+    substring: "[sandbox:out] DONE"

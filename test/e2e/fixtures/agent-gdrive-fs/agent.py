@@ -45,7 +45,7 @@ class _IngressHandler(BaseHTTPRequestHandler):
             payload = {
                 "exit_code": -1,
                 "stdout": e.stdout or "",
-                "stderr": (e.stderr or "") + "\n[agent: command timed out]",
+                "stderr": (e.stderr or "") + "\n[sandbox: command timed out]",
             }
         except Exception as e:
             payload = {"exit_code": -1, "stdout": "", "stderr": str(e)}
