@@ -34,10 +34,6 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
 
 Find a complete example [Stateful claude agent](client/typescript/examples/README.md).
 
-## Why
-
-Give the agent APIs and it will write code, analyze data, and produce reports — accumulating skills, findings, and artifacts over time. Public data sources and private or user-specific ones can be combined freely. Work is never lost: the persistent file system doubles as a checkpoint store.
-
 ## Documentation
 
 - [TypeScript](client/typescript/README.md)
@@ -71,5 +67,13 @@ Beyond security and ease of use, this architecture lets agents share a persisten
 * Local
 * Microsoft OneDrive (WIP)
 * Azure Blob Storage (WIP)
-* AWS S3 (WIP)
+* Amazon S3 (WIP)
 * Your own K/V store (WIP)
+
+## Why
+
+Give the agent APIs and it will write code, analyze data, and produce reports — accumulating skills, findings, and artifacts over time. Public data sources and private or user-specific ones can be combined freely. Work is never lost: the persistent file system doubles as a checkpoint store. Hive not only saves on repeative work and tokens, but also increases the agent intelligence while providing enterprise-level security.
+
+## License
+
+Apache 2.0
