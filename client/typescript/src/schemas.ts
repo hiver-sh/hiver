@@ -16,6 +16,7 @@ const FileSystemBase = z.object({
 
 export const LocalFileSystem = FileSystemBase.extend({
   backend: z.literal("local"),
+  origin: z.string().optional(),
 });
 export type LocalFileSystem = z.infer<typeof LocalFileSystem>;
 

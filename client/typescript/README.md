@@ -390,7 +390,7 @@ npx tsx examples/files.ts
 Build a Docker image, provision a sandbox from it, and consume all events until the container exits.
 
 ```sh
-npx tsx examples/custom-image.ts
+npx tsx examples/custom-image
 ```
 
 ### Claude Agent
@@ -416,4 +416,13 @@ There's also a version of this agent with a local file system:
 ANTHROPIC_API_KEY='<token>' \
 FINNHUB_API_KEY='<token>' \
 npx tsx client/typescript/examples/claude-agent-gdrive-filesystem.ts
+```
+
+### Local directory mount
+
+During local development, it can be helpful to mount a local directory into the sandbox.
+For example, an agent skills directory. This way, it's seamless to make changes to the skills.
+
+```sh
+npx tsx examples/local-filesystem-mount
 ```

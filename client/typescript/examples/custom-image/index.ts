@@ -4,21 +4,21 @@
 // so no events are missed across a transient blip. The caller
 // doesn't track a cursor.
 //
-// Run with: npx tsx examples/custom-image.ts
+// Run with: npx tsx examples/custom-image
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as hive from "../src";
-import { createShutdown } from "./shutdown.js";
+import * as hive from "../../src";
+import { createShutdown } from "../shutdown.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ts = Date.now();
 const sourceImage = `node-example-image:${ts}`;
 const imageTag = `node-example-image-bundle:${ts}`;
-const scriptPath = join(here, "../../../scripts/bundle-images.sh");
+const scriptPath = join(here, "../../../../scripts/bundle-images.sh");
 
 console.log(`> Building image ${sourceImage}`);
-await buildImage(sourceImage, join(here, "node-example-image"));
+await buildImage(sourceImage, join(here, "image"));
 
 console.log(`> Building sandbox bundle ${imageTag}`);
 await buildBundle(scriptPath, sourceImage, imageTag);

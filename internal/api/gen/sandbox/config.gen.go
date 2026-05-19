@@ -334,6 +334,9 @@ type LocalFileSystem struct {
 
 	// Mount Absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
+
+	// Origin The local path to mount into this sandbox. Local origins are only supported locally with the Docker runtime. It's helpful for local development. e.g. mounting local skill files into the sandbox.
+	Origin *string `json:"origin,omitempty"`
 }
 
 // LocalFileSystemBackend defines model for LocalFileSystem.Backend.
@@ -344,7 +347,7 @@ type SandboxConfig struct {
 	// Egress Network egress configuration.
 	Egress *Egress `json:"egress,omitempty"`
 
-	// Env Additional environment variables in `KEY=VALUE` form.
+	// Env Additional environment variables in `KEY=VALUE` form. This cannot be changed after the sandbox is initialized.
 	Env *[]string `json:"env,omitempty"`
 
 	// Fs One or more file systems exposed to the agent. Mount paths
@@ -352,7 +355,7 @@ type SandboxConfig struct {
 	// be a parent directory of another mount path).
 	Fs []FileSystem `json:"fs"`
 
-	// Image Reference to the agent image to launch.
+	// Image Reference to the agent image to launch. This cannot be changed after the sandbox is initialized.
 	Image *string `json:"image,omitempty"`
 
 	// Ttl Sandbox time to live in seconds. The client must ping the sandbox using the /v1/ping endpoint to reset the timer. Once a ping has not been received for as long as this value, the sandbox will receive a SIGTERM and begin shutdown.

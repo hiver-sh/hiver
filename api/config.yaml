@@ -80,6 +80,12 @@ components:
             backend:
               type: string
               enum: [local]
+            origin:
+              type: string
+              description: >
+                The local path to mount into this sandbox.
+                Local origins are only supported locally with the Docker runtime.
+                It's helpful for local development. e.g. mounting local skill files into the sandbox.
 
     GDriveFileSystem:
       description: A file system backed by Google Drive.

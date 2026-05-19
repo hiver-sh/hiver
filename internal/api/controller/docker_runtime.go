@@ -3,7 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -61,7 +60,6 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 	// with a name conflict. No-op if nothing matches.
 	_ = exec.Command("docker", "rm", "-f", containerName).Run()
 
-	log.Println("docker rm ", containerName)
 	serviceLabel := "sandbox-" + id
 	createArgs := []string{
 		"create",
@@ -84,13 +82,22 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--cap-add", "CHOWN",
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
-		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", fmt.Sprintf("%d", sandboxAPIPort),
 	}
 	if cfg.Env != nil {
 		for _, kv := range *cfg.Env {
 			createArgs = append(createArgs, "-e", kv)
 		}
+	}
+
+	// Mount volumes
+	createArgs = append(createArgs, "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw")
+	for _, fs := range cfg.Fs {
+		local, err := fs.AsLocalFileSystem()
+		if err != nil || local.Origin == nil {
+			continue
+		}
+		createArgs = append(createArgs, "-v", *local.Origin+":"+local.Mount+"-backend")
 	}
 
 	var image = defaultSandboxImage
@@ -172,7 +179,7 @@ func lookupHostPort(container string, containerPort int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("docker port %s: %v: %s", container, err, out)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if !strings.HasPrefix(line, "0.0.0.0:") {
 			continue
 		}
