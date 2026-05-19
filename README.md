@@ -65,6 +65,8 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
 // `sandbox.url` points to the port `:8080`
 ```
 
+</details>
+
 ## Documentation
 
 - [TypeScript](client/typescript/README.md)
@@ -100,6 +102,10 @@ Beyond security and ease of use, this architecture lets agents share a persisten
 * Azure Blob Storage (WIP)
 * Amazon S3 (WIP)
 * Your own K/V store (WIP)
+
+### Supported Platforms
+* Docker
+* k8s
 
 ## Why
 
