@@ -251,29 +251,11 @@ func main() {
 	go reconcileSidecars(ctx, broker, proxyCmd.Process.Pid, configPath, rulesTmp, fsSidecars)
 
 	// 3. Agent. Egress + workspace are now mediated.
-	//
-	// Per DESIGN.md §3.3, the agent runs in its OWN container, not as a
-	// child process of sandboxd. We unpack the agent image's docker-archive
-	// tarball into an OCI rootfs, generate a runtime spec, and hand it to
-	// runc. The agent container shares the sandbox-pod's network namespace
-	// (so the iptables REDIRECT above applies to it too) and bind-mounts
-	// /workspace from the FUSE mount.
-	//
-	// We deliberately do NOT inject HTTP_PROXY / HTTPS_PROXY: the agent
-	// makes plain TCP and the kernel transparently redirects it to
-	// sbxproxy. No agent cooperation, no language-specific proxy quirks.
-	bundleDir, err := os.MkdirTemp("", "agent-bundle-*")
-	if err != nil {
-		log.Fatalf("create bundle dir: %v", err)
-	}
-	defer os.RemoveAll(bundleDir)
-	rootfsDir := filepath.Join(bundleDir, "rootfs")
 
-	imgCfg, err := runc.ExtractDockerArchive(spec.SandboxImageTar, rootfsDir)
+	imgCfg, err := runc.ExtractImageConfig()
 	if err != nil {
-		log.Fatalf("unpack agent image %s: %v", spec.SandboxImageTar, err)
+		log.Fatalf("unpack sandbox config: %v", err)
 	}
-	log.Printf("sandboxd: agent image unpacked to %s (entrypoint=%v)", rootfsDir, imgCfg.Entrypoint)
 
 	// Seed each FUSE backend from the agent image's own rootfs: any
 	// content the image carries at the mount path (e.g. `COPY inputs/
@@ -282,26 +264,36 @@ func main() {
 	// whatever access the ACLs grant. Move (not copy) so we don't
 	// keep two copies — runc's bind mount over the mount will hide
 	// whatever's left at <rootfs><mount> at runtime anyway.
+	log.Printf("sandboxd: agent image unpacked to %s", runc.RootfsDir)
+
 	for i := range sp.FS {
 		f := &sp.FS[i]
-		entries, err := os.ReadDir(filepath.Join(rootfsDir, f.Mount))
+		entries, err := os.ReadDir(filepath.Join(runc.RootfsDir, f.Mount))
 		if err != nil {
 			continue
 		}
 		for _, e := range entries {
-			src := filepath.Join(rootfsDir, f.Mount, e.Name())
+			src := filepath.Join(runc.RootfsDir, f.Mount, e.Name())
 			dst := filepath.Join(f.BackendPath(), e.Name())
 			if err := os.Rename(src, dst); err != nil {
-				log.Fatalf("seed from agent rootfs %s → %s: %v", src, dst, err)
+				if !errors.Is(err, syscall.EXDEV) {
+					log.Fatalf("seed from agent rootfs %s → %s: %v", src, dst, err)
+				}
+				if out, err := exec.Command("cp", "-a", src, dst).CombinedOutput(); err != nil {
+					log.Fatalf("seed from agent rootfs cp %s → %s: %v: %s", src, dst, err, out)
+				}
+				if err := os.RemoveAll(src); err != nil {
+					log.Fatalf("seed from agent rootfs rm %s: %v", src, err)
+				}
 			}
 		}
 		if len(entries) > 0 {
 			log.Printf("sandboxd: seeded %s from agent rootfs %s (%d entries)",
-				f.BackendPath(), filepath.Join(rootfsDir, f.Mount), len(entries))
+				f.BackendPath(), filepath.Join(runc.RootfsDir, f.Mount), len(entries))
 		}
 	}
 
-	sandboxd.AddCA(rootfsDir, caCert)
+	sandboxd.AddCA(runc.RootfsDir, caCert)
 
 	mounts := make([]runc.BindMount, 0, len(sp.FS)+2)
 	for i := range sp.FS {
@@ -321,7 +313,7 @@ func main() {
 	)
 
 	if err := runc.WriteConfig(runc.BundleParams{
-		BundleDir:   bundleDir,
+		BundleDir:   runc.MntDir,
 		ImageConfig: imgCfg,
 		ExtraEnv:    sp.Env,
 		Hostname:    "agent",
@@ -332,7 +324,7 @@ func main() {
 
 	containerID := fmt.Sprintf("agent-%d", os.Getpid())
 	agentCmd, agentStdioDone, err := startChild(ctx, &children, "sandbox", "runc",
-		[]string{"run", "-b", bundleDir, containerID}, nil, nil,
+		[]string{"run", "-b", runc.MntDir, containerID}, nil, nil,
 		publishAgentStdio(broker))
 	if err != nil {
 		log.Fatalf("start agent (runc): %v", err)

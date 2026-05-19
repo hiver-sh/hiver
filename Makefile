@@ -1,20 +1,23 @@
 CMDS := sandboxd sbxfuse sbxproxy mcpserver controller
 
-.PHONY: help build up down test-e2e test-unit gen fmt $(CMDS)
+.PHONY: help build up down test test-e2e test-unit gen fmt $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: $(CMDS) ## Build all cmd binaries into bin/
 
-build-images: ## Build docker image
-	docker compose -f docker/compose.yaml --profile build build controller sandbox-runtime mcp-server
+build-images: ## Build docker images
+	docker compose -f docker/compose.yaml --profile build build hive-controller hive-sandbox-runtime hive-mcp-server
+	bash ./scripts/bundle-images.sh
 
 up: ## Start services
 	docker compose -f docker/compose.yaml up -d
 
 down: ## Stop services
 	docker compose -f docker/compose.yaml down
+
+test: test-unit ## Run tests
 
 test-e2e: ## Run e2e tests
 	go test -v -count=1 ./test/e2e/... 2>&1

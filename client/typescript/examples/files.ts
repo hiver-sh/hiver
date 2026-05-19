@@ -7,7 +7,6 @@ import * as hive from "../src";
 import { createShutdown } from "./shutdown.js";
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
-  image: 'mcp-server',
   fs: [
     {
       backend: "local",

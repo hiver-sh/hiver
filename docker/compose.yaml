@@ -1,7 +1,7 @@
 name: hive
 
 services:
-  controller:
+  hive-controller:
     build:
       context: ..
       dockerfile: docker/controller.Dockerfile
@@ -13,16 +13,23 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
-  sandbox-runtime:
-    image: sandbox-runtime
+  hive-sandbox-runtime:
+    image: hive-sandbox-runtime
     profiles: ["build"]
     build:
       context: ..
-      dockerfile: docker/sandbox.Dockerfile
+      dockerfile: docker/sandbox-runtime.Dockerfile
 
-  mcp-server:
-    image: mcp-server
+  hive-mcp-server:
+    image: hive-mcp-server
     profiles: ["build"]
     build:
       context: ..
       dockerfile: docker/mcpserver.Dockerfile
+
+  hive-sandbox-bundle:
+    image: hive-sandbox-bundle
+    profiles: ["build"]
+    build:
+      context: ..
+      dockerfile: docker/sandbox-bundle.Dockerfile

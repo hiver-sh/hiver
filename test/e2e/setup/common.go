@@ -23,7 +23,7 @@ import (
 
 const (
 	moduleRoot          = "../.."
-	sandboxRuntimeImage = "sandbox-runtime" // :latest — sandboxd + sidecars + runc
+	sandboxRuntimeImage = "hive-sandbox-runtime" // :latest — sandboxd + sidecars + runc
 	// Pinned ports for the host-side upstream HTTP servers. They have
 	// to be fixed because the spec.yaml fixture references them
 	// literally (no template substitution). Picked high enough to
@@ -135,9 +135,10 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 		}
 	}
 
-	sandboxImage := "sandbox-" + fixtureName + ":e2e"
-	BuildImages(t, dockerfile, buildContext, sandboxImage)
-	sandboxTar := SaveSandboxImage(t, sandboxImage)
+	agentImage := "sandbox-" + fixtureName + ":e2e"
+	bundleImage := "sandbox-bundle-" + fixtureName + ":e2e"
+	BuildImages(t, dockerfile, buildContext, agentImage)
+	BuildSandboxBundle(t, agentImage, bundleImage)
 
 	// Start the two host-side upstreams on the ports the fixture spec
 	// pins. One is allowlisted (host-aliased to "upstream-allowed"),
@@ -146,7 +147,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	stopUpstream := startUpstreams(t)
 	defer stopUpstream()
 
-	pod := runSandboxPod(t, sandboxTar, specPath, cfg.DuringLifetime)
+	pod := runSandboxPod(t, bundleImage, specPath, cfg.DuringLifetime)
 
 	// (1) Substring assertions against the pod's combined stdout/stderr.
 	// Expected lines live in the fixture's expectations.yaml so the
@@ -330,26 +331,29 @@ func BuildImages(t *testing.T, dockerfile, buildContext, agentImage string) {
 			t.Fatalf("docker build %s: %v\n%s", tag, err, out.String())
 		}
 	}
-	build(sandboxRuntimeImage, moduleRoot, "-f", filepath.Join(moduleRoot, "docker/sandbox.Dockerfile"))
+	build(sandboxRuntimeImage, moduleRoot, "-f", filepath.Join(moduleRoot, "docker/sandbox-runtime.Dockerfile"))
 	build(agentImage, buildContext, "-f", dockerfile)
 }
 
-// SaveSandboxImage runs `docker save` to produce a docker-archive tarball
-// of the named sandbox image. sandboxd unpacks this tar into an OCI
-// rootfs at container start. The path is returned so the test can
-// bind-mount it.
-func SaveSandboxImage(t *testing.T, agentImage string) string {
+// BuildSandboxBundle calls bundle-images.sh to package agentImage
+// into a sandbox-bundle image tagged bundleTag. The bundle has the agent
+// rootfs pre-extracted at /mnt so sandboxd can skip the runtime unpack.
+func BuildSandboxBundle(t *testing.T, agentImage, bundleTag string) {
 	t.Helper()
-	tarPath := filepath.Join(t.TempDir(), "sandbox.tar")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	absRoot, err := filepath.Abs(moduleRoot)
+	if err != nil {
+		t.Fatalf("abs module root: %v", err)
+	}
+	scriptPath := filepath.Join(absRoot, "scripts/bundle-images.sh")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "save", "-o", tarPath, agentImage)
+	cmd := exec.CommandContext(ctx, "bash", scriptPath, agentImage, bundleTag)
+	cmd.Dir = absRoot
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("docker save %s: %v\n%s", agentImage, err, out.String())
+		t.Fatalf("bundle-images.sh %s: %v\n%s", agentImage, err, out.String())
 	}
-	return tarPath
 }
 
 // startUpstreams spins up two HTTP servers on the host on the ports the
@@ -420,7 +424,7 @@ type podRun struct {
 	events []map[string]any
 }
 
-func runSandboxPod(t *testing.T, sandboxTar, specPath string, duringLifetime FixtureHook) podRun {
+func runSandboxPod(t *testing.T, bundleImage, specPath string, duringLifetime FixtureHook) podRun {
 	t.Helper()
 	// 2 min outer deadline. The graceful-shutdown path adds ~25 s
 	// (sbxfuse drain + sandboxd WaitDelay) on top of the sandbox's
@@ -494,9 +498,8 @@ func runSandboxPod(t *testing.T, sandboxTar, specPath string, duringLifetime Fix
 		// subscribe to /v1/events while the workload runs.
 		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),
 		"-p", "18000:18000",
-		"-v", sandboxTar + ":/mnt/sandbox.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
-		sandboxRuntimeImage,
+		bundleImage,
 		"--spec", "/mnt/spec.yaml",
 	}
 	// Start the pod detached. With -d, `docker run` returns once the

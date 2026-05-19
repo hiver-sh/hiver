@@ -47,9 +47,10 @@ func TestTTLE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abs module root: %v", err)
 	}
-	sandboxImage := "sandbox-ttl:e2e"
-	setup.BuildImages(t, agentDir, moduleAbs, sandboxImage)
-	sandboxTar := setup.SaveSandboxImage(t, sandboxImage)
+	agentImage := "sandbox-ttl:e2e"
+	bundleImage := "sandbox-bundle-ttl:e2e"
+	setup.BuildImages(t, agentDir, moduleAbs, agentImage)
+	setup.BuildSandboxBundle(t, agentImage, bundleImage)
 
 	containerName := fmt.Sprintf("sandbox-pod-ttl-e2e-%d", time.Now().UnixNano())
 	args := []string{
@@ -63,9 +64,8 @@ func TestTTLE2E(t *testing.T) {
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8080:8080",
-		"-v", sandboxTar + ":/mnt/sandbox.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
-		sandboxRuntimeImage,
+		bundleImage,
 		"--spec", "/mnt/spec.yaml",
 	}
 

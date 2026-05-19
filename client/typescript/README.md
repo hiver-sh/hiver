@@ -385,12 +385,12 @@ Upload a file into a sandbox mount and read it back out.
 npx tsx examples/files.ts
 ```
 
-### Event streaming
+### Custom Docker image
 
 Build a Docker image, provision a sandbox from it, and consume all events until the container exits.
 
 ```sh
-npx tsx examples/events.ts
+npx tsx examples/custom-image.ts
 ```
 
 ### Claude Agent

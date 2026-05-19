@@ -167,11 +167,12 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 			t.Fatalf("abs module root: %v", err)
 		}
 	}
-	sandboxImage := "sandbox-" + fixtureName + ":e2e"
-	setup.BuildImages(t, sandboxDir, buildContext, sandboxImage)
-	agentTar := setup.SaveSandboxImage(t, sandboxImage)
+	agentImage := "sandbox-" + fixtureName + ":e2e"
+	bundleImage := "sandbox-bundle-" + fixtureName + ":e2e"
+	setup.BuildImages(t, sandboxDir, buildContext, agentImage)
+	setup.BuildSandboxBundle(t, agentImage, bundleImage)
 
-	pod := startMCPPod(t, agentTar, specPath)
+	pod := startMCPPod(t, bundleImage, specPath)
 
 	mcpURL := "http://127.0.0.1:8080/v1/sandbox"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -191,7 +192,7 @@ type mcpPod struct {
 // runSandboxPod it doesn't wait for any agent-side "DONE" marker —
 // the readiness check is "MCP server answers initialize", which the
 // caller does via connectMCP.
-func startMCPPod(t *testing.T, sandboxTar, specPath string) *mcpPod {
+func startMCPPod(t *testing.T, bundleImage, specPath string) *mcpPod {
 	t.Helper()
 
 	containerName := fmt.Sprintf("sandbox-pod-mcp-e2e-%d", time.Now().UnixNano())
@@ -206,9 +207,8 @@ func startMCPPod(t *testing.T, sandboxTar, specPath string) *mcpPod {
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8080:8080",
-		"-v", sandboxTar + ":/mnt/sandbox.tar:ro",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
-		sandboxRuntimeImage,
+		bundleImage,
 		"--spec", "/mnt/spec.yaml",
 	}
 

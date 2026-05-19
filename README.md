@@ -51,7 +51,7 @@ Then build and bundle the image:
 
 ```sh
 docker build -t custom-node:latest .
-./scripts/build-sandbox-bundle.sh custom-node:latest custom-node-hive-bundle:latest
+./scripts/bundle-images.sh custom-node:latest custom-node-hive-bundle:latest
 ```
 
 Finally, set `image`:

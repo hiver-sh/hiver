@@ -16,20 +16,16 @@ import (
 )
 
 const (
-	composeProject = "hive"
-	sandboxImage   = "sandbox-runtime"
-	sandboxAPIPort = 8080
+	composeProject      = "hive"
+	defaultSandboxImage = "hive-sandbox-bundle"
+	sandboxAPIPort      = 8080
 )
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.
-type DockerRuntime struct {
-	tars *tarCache
-}
+type DockerRuntime struct{}
 
 func newDockerRuntime() *DockerRuntime {
-	return &DockerRuntime{
-		tars: newTarCache(os.TempDir(), tarCacheMaxBytes),
-	}
+	return &DockerRuntime{}
 }
 
 func (r *DockerRuntime) Lookup(id string) (bool, string, error) {
@@ -49,9 +45,6 @@ func (r *DockerRuntime) Lookup(id string) (bool, string, error) {
 }
 
 func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
-	if cfg.Image == nil || *cfg.Image == "" {
-		return gen.Sandbox{}, fmt.Errorf("image is required")
-	}
 	specBytes, err := yaml.Marshal(cfg)
 	if err != nil {
 		return gen.Sandbox{}, fmt.Errorf("marshal spec: %w", err)
@@ -61,11 +54,6 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		return gen.Sandbox{}, fmt.Errorf("write spec: %w", err)
 	}
 	defer os.Remove(specPath)
-
-	tarPath, err := r.tars.getOrSave(*cfg.Image)
-	if err != nil {
-		return gen.Sandbox{}, err
-	}
 
 	containerName := containerNameFor(id)
 	// Clear any lingering container of the same name (e.g. one that exited
@@ -104,8 +92,14 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 			createArgs = append(createArgs, "-e", kv)
 		}
 	}
+
+	var image = defaultSandboxImage
+	if cfg.Image != nil && *cfg.Image != "" {
+		image = *cfg.Image
+	}
+
 	createArgs = append(createArgs,
-		sandboxImage,
+		image,
 		"--spec", "/mnt/spec.yaml",
 	)
 	if out, err := exec.Command("docker", createArgs...).CombinedOutput(); err != nil {
@@ -115,11 +109,6 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 	if out, err := exec.Command("docker", "cp", specPath, containerName+":/mnt/spec.yaml").CombinedOutput(); err != nil {
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
 		return gen.Sandbox{}, fmt.Errorf("docker cp spec: %v: %s", err, out)
-	}
-
-	if out, err := exec.Command("docker", "cp", tarPath, containerName+":/mnt/sandbox.tar").CombinedOutput(); err != nil {
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
-		return gen.Sandbox{}, fmt.Errorf("docker cp tar: %v: %s", err, out)
 	}
 
 	if out, err := exec.Command("docker", "start", containerName).CombinedOutput(); err != nil {

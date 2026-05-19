@@ -18,7 +18,7 @@ import (
 const (
 	composeFile      = "../../docker/compose.yaml"
 	controllerURL    = "http://127.0.0.1:9000"
-	sandboxImage     = "mcp-server"
+	sandboxImage     = "hive-sandbox-bundle"
 	composeProjectID = "hive"
 )
 
@@ -35,15 +35,15 @@ const (
 func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 	setup.RequireDocker(t)
 
-	// Build sandbox-runtime + the agent image we'll reference. Both
-	// live in the `build` profile so they aren't started by `up`.
-	dockerCompose(t, "--profile", "build", "build", "sandbox-runtime", sandboxImage)
+	// Build the component images then package them into the sandbox bundle.
+	dockerCompose(t, "--profile", "build", "build", "hive-sandbox-runtime", "hive-mcp-server")
+	setup.BuildSandboxBundle(t, "hive-mcp-server", sandboxImage)
 
 	// Bring up the controller (only service in the default profile).
 	// `up -d --build` rebuilds the controller image so this test
 	// reflects the current source even when the developer hasn't
 	// run `make up` recently.
-	dockerCompose(t, "up", "-d", "--build", "controller")
+	dockerCompose(t, "up", "-d", "--build", "hive-controller")
 	t.Cleanup(func() {
 		// Sweep sandbox containers first: `compose down --remove-orphans`
 		// only stops services declared in compose.yaml plus orphans that

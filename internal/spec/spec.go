@@ -27,10 +27,6 @@ type Spec struct {
 	Egress Egress   `json:"egress"`
 }
 
-// SandboxImageTar is the in-container path sandboxd reads the agent's
-// docker-archive tarball from.
-const SandboxImageTar = "/mnt/sandbox.tar"
-
 // FS defines one FUSE workspace. A spec carries a list of these so
 // agents can mount multiple workspaces side-by-side (e.g. a local
 // scratch dir plus a write-through gdrive mount). Mount is where it

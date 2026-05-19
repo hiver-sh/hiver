@@ -134,7 +134,6 @@ const folderId = await (async () => {
 rl.close();
 
 const sandbox = await hive.getOrCreateSandbox("hive-gdrive", {
-  image: "mcp-server",
   fs: [
     {
       backend: "gdrive",

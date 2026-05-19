@@ -8,13 +8,17 @@ components:
       properties:
         image:
           type: string
-          description: Reference to the agent image to launch.
+          description: >
+            Reference to the agent image to launch.
+            This cannot be changed after the sandbox is initialized.
           example: my-agent:latest
         env:
           type: array
           items:
             type: string
-          description: Additional environment variables in `KEY=VALUE` form.
+          description: >
+            Additional environment variables in `KEY=VALUE` form.
+            This cannot be changed after the sandbox is initialized.
           example: ["LOG_LEVEL=info", "REGION=us-east-1"]
         ttl:
           type: integer

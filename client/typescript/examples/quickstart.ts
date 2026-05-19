@@ -6,7 +6,6 @@ import * as hive from "../src";
 import { createShutdown } from "./shutdown.js";
 
 const sandboxConfig: hive.SandboxConfig = {
-  image: "mcp-server",
   ttl: 1800,
   fs: [
     {

@@ -92,3 +92,7 @@ function fsRead(path) {
 
   console.log("DONE");
 })();
+
+setInterval(() =>{
+  console.log("tick");
+}, 1000);
