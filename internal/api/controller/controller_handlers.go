@@ -3,7 +3,9 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -20,9 +22,18 @@ type ControllerHandlers struct {
 }
 
 func NewControllerHandlers() *ControllerHandlers {
-	return &ControllerHandlers{
-		runtime: newDockerRuntime(),
+	var rt SandboxRuntime
+	runtime := os.Getenv("HIVE_RUNTIME")
+	if runtime == "k8s" {
+		k, err := newK8sRuntime()
+		if err != nil {
+			log.Fatalf("k8s runtime: %v", err)
+		}
+		rt = k
+	} else {
+		rt = newDockerRuntime()
 	}
+	return &ControllerHandlers{runtime: rt}
 }
 
 // GetOrCreateSandbox is idempotent on id: if a sandbox for id is already
