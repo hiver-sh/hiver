@@ -3,7 +3,7 @@
 </p>
 <h1 align="center">Hive Sandbox</h1>
 
-Hive gives an agent a stateful sandbox with its own file system _(Google Drive, OneDrive, S3, GCS, Azure Blob Storage, or local)_ and network access. Every read, write, and outbound request mediated and logged. The agent runs unmodified: it executes standard bash commands, and Hive handles the rest.
+Hive provides each agent with a persistent, governed workspace — its own virtual filesystem and controlled network environment. Storage can be backed by _Google Drive_, _OneDrive_, _S3_, _GCS_, _Azure Blob Storage_, or local disks, allowing agents to work directly over real user and enterprise data.
 
 ## 🚀 Getting Started
 
@@ -17,8 +17,6 @@ Example client:
 import * as hive from "hive";
 
 const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  image: "mcp-server",
-  ttl: 1800,
   fs: [
     {
       backend: "local",
@@ -33,6 +31,40 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
 ```
 
 Find a complete example [Stateful claude agent](client/typescript/examples/README.md).
+
+### Custom Images
+
+By default, an MCP server with `Bash`, and file operations tools is available via `sandbox.url`.
+
+You can also use a custom Docker image:
+
+Dockerfile:
+
+```Dockerfile
+FROM node:20-slim
+# ....
+
+EXPOSE 8080
+ENTRYPOINT ["node", "index.js"]
+```
+
+Then build and bundle the image:
+
+```sh
+docker build -t custom-node:latest .
+./scripts/build-sandbox-bundle.sh custom-node:latest custom-node-hive-bundle:latest
+```
+
+Finally, set `image`:
+
+```ts
+const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
+  image: 'custom-node-hive-bundle:latest'
+  // the rest
+});
+
+// `sandbox.url` points to the port `:8080`
+```
 
 ## Documentation
 
@@ -72,7 +104,9 @@ Beyond security and ease of use, this architecture lets agents share a persisten
 
 ## Why
 
-Give the agent APIs and it will write code, analyze data, and produce reports — accumulating skills, findings, and artifacts over time. Public data sources and private or user-specific ones can be combined freely. Work is never lost: the persistent file system doubles as a checkpoint store. Hive not only saves on repeative work and tokens, but also increases the agent intelligence while providing enterprise-level security.
+Give an agent APIs and a persistent workspace, and it can write code, analyze data, generate reports, and accumulate artifacts across runs. Public and private data sources can be combined seamlessly within the same environment.
+
+The filesystem doubles as durable state and a checkpoint store, allowing agents to resume work without rebuilding context each session. By persisting intermediate artifacts, caches, and outputs, Hive reduces redundant computation and token usage while enforcing auditable filesystem and network boundaries.
 
 ## License
 
