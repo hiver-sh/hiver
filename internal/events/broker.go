@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
+	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
 
 // DefaultCapacity is the number of recent events the broker keeps for

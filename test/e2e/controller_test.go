@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	controllergen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/controller"
-	"github.com/sandbox-platform/agent-sandbox/test/e2e/setup"
+	controllergen "github.com/blasten/hive/internal/api/gen/controller"
+	"github.com/blasten/hive/test/e2e/setup"
 )
 
 const (

@@ -8,10 +8,10 @@ import (
 	"os"
 	"sync"
 
+	gen "github.com/blasten/hive/internal/api/gen/controller"
+	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/controller"
-	sandboxgen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 )
 
 type ControllerHandlers struct {

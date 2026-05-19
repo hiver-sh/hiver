@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 // TestFileStoreRoundTrip exercises the full Store contract against the

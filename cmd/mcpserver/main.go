@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/mcp"
+	"github.com/blasten/hive/internal/mcp"
 )
 
 func main() {

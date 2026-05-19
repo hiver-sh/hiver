@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"os"
 
+	gen "github.com/blasten/hive/internal/api/gen/controller"
 	"github.com/gin-gonic/gin"
 	middleware "github.com/oapi-codegen/gin-middleware"
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/controller"
 )
 
 func NewControllerServer(port string) *http.Server {

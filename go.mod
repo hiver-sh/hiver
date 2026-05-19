@@ -1,4 +1,4 @@
-module github.com/sandbox-platform/agent-sandbox
+module github.com/blasten/hive
 
 go 1.26.0
 

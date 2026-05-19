@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/events"
+	"github.com/blasten/hive/internal/events"
 
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
+	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
 
 // newEventsPair makes a connected socketpair for streaming JSON-line

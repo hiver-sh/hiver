@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/blasten/hive/internal/mcp/gen"
 	"github.com/gin-gonic/gin"
 	middleware "github.com/oapi-codegen/gin-middleware"
-	"github.com/sandbox-platform/agent-sandbox/internal/mcp/gen"
 )
 
 func NewServer(port string) *http.Server {

@@ -3,9 +3,9 @@ package mcp
 import (
 	"net/http"
 
+	"github.com/blasten/hive/internal/mcp/gen"
 	"github.com/gin-gonic/gin"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sandbox-platform/agent-sandbox/internal/mcp/gen"
 )
 
 type Handlers struct {

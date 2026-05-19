@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 // OpType names the kind of mutation an [OplogEntry] encodes.

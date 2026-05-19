@@ -9,10 +9,10 @@ import (
 	"os"
 	"strings"
 
+	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	"github.com/blasten/hive/internal/events"
 	"github.com/gin-gonic/gin"
 	middleware "github.com/oapi-codegen/gin-middleware"
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
-	"github.com/sandbox-platform/agent-sandbox/internal/events"
 )
 
 const sandboxProxyPrefix = "/v1/sandbox"

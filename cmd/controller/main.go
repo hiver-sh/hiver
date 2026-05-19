@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/api/controller"
+	"github.com/blasten/hive/internal/api/controller"
 )
 
 func main() {

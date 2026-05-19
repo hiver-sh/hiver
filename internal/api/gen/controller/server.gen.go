@@ -13,10 +13,10 @@ import (
 	"path"
 	"strings"
 
+	externalRef0 "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gin-gonic/gin"
 	"github.com/oapi-codegen/runtime"
-	externalRef0 "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
 )
 
 // Sandbox A provisioned sandbox.

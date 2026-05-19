@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/proxy"
+	"github.com/blasten/hive/internal/proxy"
 )
 
 // startProxy boots a proxy on a random port and returns the HTTP client

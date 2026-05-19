@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/fusefs"
+	"github.com/blasten/hive/internal/fusefs"
 )
 
 // requiresFUSE skips a test when /dev/fuse isn't available (CI without

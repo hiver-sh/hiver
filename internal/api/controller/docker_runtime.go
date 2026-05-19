@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/controller"
-	sandboxgen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
+	gen "github.com/blasten/hive/internal/api/gen/controller"
+	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"sigs.k8s.io/yaml"
 )
 

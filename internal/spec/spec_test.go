@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/spec"
+	"github.com/blasten/hive/internal/spec"
 )
 
 func writeSpec(t *testing.T, body string) string {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/blasten/hive/internal/mcp/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sandbox-platform/agent-sandbox/internal/mcp/tools"
 	"go.uber.org/zap"
 )
 

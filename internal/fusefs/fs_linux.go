@@ -21,7 +21,7 @@ import (
 	"bazil.org/fuse"
 	bazilfs "bazil.org/fuse/fs"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 // Config drives a [Server]. MountPoint is where the FUSE filesystem appears
@@ -919,8 +919,8 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	newVirt := path.Join(dst.virtPath(), req.NewName)
 	n.s.nodesMu.Lock()
 	var toUpdate []struct {
-		n              *node
-		oldVP, newVP   string
+		n            *node
+		oldVP, newVP string
 	}
 	oldVirtPrefix := oldVirt + "/"
 	for vp, tracked := range n.s.liveNodes {

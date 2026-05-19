@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 // statCache memoizes remotefs.FileInfo for a short window so an

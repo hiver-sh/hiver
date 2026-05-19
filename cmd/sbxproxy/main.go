@@ -22,7 +22,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/proxy"
+	"github.com/blasten/hive/internal/proxy"
 )
 
 func main() {

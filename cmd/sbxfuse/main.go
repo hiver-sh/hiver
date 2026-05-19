@@ -19,8 +19,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/fusefs"
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/fusefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 func main() {

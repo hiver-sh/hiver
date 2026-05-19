@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/proxy"
+	"github.com/blasten/hive/internal/proxy"
 )
 
 // Generate a per-pod CA. sbxproxy uses it to mint leaf certs for

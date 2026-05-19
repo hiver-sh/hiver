@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blasten/hive/internal/spec"
+	"github.com/blasten/hive/test/e2e/setup"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sandbox-platform/agent-sandbox/internal/spec"
-	"github.com/sandbox-platform/agent-sandbox/test/e2e/setup"
 	"sigs.k8s.io/yaml"
 )
 

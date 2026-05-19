@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 func TestStatCacheHitMissExpiry(t *testing.T) {

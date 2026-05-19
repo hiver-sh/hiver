@@ -32,14 +32,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/api"
-	"github.com/sandbox-platform/agent-sandbox/internal/events"
-	"github.com/sandbox-platform/agent-sandbox/internal/netmark"
-	"github.com/sandbox-platform/agent-sandbox/internal/runc"
-	"github.com/sandbox-platform/agent-sandbox/internal/sandboxd"
-	"github.com/sandbox-platform/agent-sandbox/internal/spec"
+	"github.com/blasten/hive/internal/api"
+	"github.com/blasten/hive/internal/events"
+	"github.com/blasten/hive/internal/netmark"
+	"github.com/blasten/hive/internal/runc"
+	"github.com/blasten/hive/internal/sandboxd"
+	"github.com/blasten/hive/internal/spec"
 
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
+	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
 
 const (

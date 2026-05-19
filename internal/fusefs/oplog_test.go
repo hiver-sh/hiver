@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/fusefs"
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/fusefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 // TestOplogReplaysFsMutations writes / renames / removes through a

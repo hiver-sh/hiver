@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
+	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still

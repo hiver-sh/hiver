@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/spec"
+	"github.com/blasten/hive/internal/spec"
 	"sigs.k8s.io/yaml"
 )
 

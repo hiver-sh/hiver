@@ -14,8 +14,8 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/fusefs"
-	"github.com/sandbox-platform/agent-sandbox/internal/proxy"
+	"github.com/blasten/hive/internal/fusefs"
+	"github.com/blasten/hive/internal/proxy"
 )
 
 // Spec is the root document. Loaded by sandboxd via [Load].

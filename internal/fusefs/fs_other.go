@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/sandbox-platform/agent-sandbox/internal/remotefs"
+	"github.com/blasten/hive/internal/remotefs"
 )
 
 // Config drives a [Server]. See fs_linux.go for the real implementation.

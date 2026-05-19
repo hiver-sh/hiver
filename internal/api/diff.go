@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 
-	gen "github.com/sandbox-platform/agent-sandbox/internal/api/gen/sandbox"
+	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
 
 // FSBase decodes the variant-agnostic fields (mount, backend, acls)
