@@ -1,11 +1,3 @@
-// Package runc converts a docker-archive tarball (the output of
-// `docker save`) into an OCI runtime bundle and runs it under runc.
-//
-// Why no skopeo / umoci dependency? We only need to consume
-// images produced by the local Docker daemon, and `docker save` emits a
-// well-defined archive format we can parse in ~150 lines. Pulling in
-// skopeo+umoci would mean ~80 MB of apt packages and a multi-step
-// pipeline (skopeo copy → umoci unpack) for no functional gain.
 package runc
 
 import (
