@@ -1,4 +1,6 @@
 node_modules
+.venv
+.pytest_cache
 .env.local
 .env.*.local
 bin
