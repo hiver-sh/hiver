@@ -34,9 +34,8 @@ Find a complete example [Stateful claude agent](client/typescript/examples/READM
 
 ### Custom Images
 
-By default, an MCP server with `Bash`, and file operations tools is available via `sandbox.url`.
-
-You can also use a custom Docker image:
+By default, an MCP server with `Bash`, and file operations tools is available via `sandbox.url`. That said,
+but you can also use a custom Docker image.
 
 Dockerfile:
 
