@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -295,6 +296,24 @@ func main() {
 
 	sandboxd.AddCA(runc.RootfsDir, caCert)
 
+	// Write the sandbox CA to a dedicated file in the agent rootfs so
+	// NODE_EXTRA_CA_CERTS can point at it. Node.js uses a bundled Mozilla
+	// root store and does not read the system CA bundle by default, so
+	// AddCA alone is not enough for TLS interception to succeed.
+	const agentCACertPath = "/etc/ssl/certs/sandbox-ca.crt"
+	if caData, err := os.ReadFile(caCertPath); err == nil {
+		dest := filepath.Join(runc.RootfsDir, agentCACertPath)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err == nil {
+			if err := os.WriteFile(dest, caData, 0o644); err != nil {
+				log.Printf("sandboxd: install sandbox CA for Node.js (%s): %v", dest, err)
+			}
+		}
+	}
+
+	agentEnv := make(map[string]string, len(sp.Env)+1)
+	maps.Copy(agentEnv, sp.Env)
+	agentEnv["NODE_EXTRA_CA_CERTS"] = agentCACertPath
+
 	mounts := make([]runc.BindMount, 0, len(sp.FS)+2)
 	for i := range sp.FS {
 		mounts = append(mounts, runc.BindMount{
@@ -315,7 +334,7 @@ func main() {
 	if err := runc.WriteConfig(runc.BundleParams{
 		BundleDir:   runc.MntDir,
 		ImageConfig: imgCfg,
-		ExtraEnv:    sp.Env,
+		ExtraEnv:    agentEnv,
 		Hostname:    "agent",
 		Mounts:      mounts,
 	}); err != nil {

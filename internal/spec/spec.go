@@ -20,11 +20,11 @@ import (
 
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
-	Image  string   `json:"image,omitempty"`
-	Ttl    *int     `json:"ttl,omitempty"`
-	Env    []string `json:"env,omitempty"`
-	FS     []FS     `json:"fs"`
-	Egress Egress   `json:"egress"`
+	Image  string            `json:"image,omitempty"`
+	Ttl    *int              `json:"ttl,omitempty"`
+	Env    map[string]string `json:"env,omitempty"`
+	FS     []FS              `json:"fs"`
+	Egress Egress            `json:"egress"`
 }
 
 // FS defines one FUSE workspace. A spec carries a list of these so

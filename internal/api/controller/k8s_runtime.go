@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-
 	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	corev1 "k8s.io/api/core/v1"
@@ -170,10 +168,8 @@ func (r *K8sRuntime) envVars(cfg sandboxgen.SandboxConfig) []corev1.EnvVar {
 		return nil
 	}
 	vars := make([]corev1.EnvVar, 0, len(*cfg.Env))
-	for _, kv := range *cfg.Env {
-		if idx := strings.IndexByte(kv, '='); idx > 0 {
-			vars = append(vars, corev1.EnvVar{Name: kv[:idx], Value: kv[idx+1:]})
-		}
+	for k, v := range *cfg.Env {
+		vars = append(vars, corev1.EnvVar{Name: k, Value: v})
 	}
 	return vars
 }

@@ -347,8 +347,8 @@ type SandboxConfig struct {
 	// Egress Network egress configuration.
 	Egress *Egress `json:"egress,omitempty"`
 
-	// Env Additional environment variables in `KEY=VALUE` form. This cannot be changed after the sandbox is initialized.
-	Env *[]string `json:"env,omitempty"`
+	// Env Additional environment variables as a key/value map. This cannot be changed after the sandbox is initialized.
+	Env *map[string]string `json:"env,omitempty"`
 
 	// Fs One or more file systems exposed to the agent. Mount paths
 	// must be unique and non-overlapping (a mount path may not

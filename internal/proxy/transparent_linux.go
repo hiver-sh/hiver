@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -188,7 +189,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	// opens a fresh auditCtx with the proper request/response pair.
 	tlsAC := p.beginAudit("TLS", host, "", "")
 	clientTLS := tls.Server(&peekedConn{Conn: c, r: br}, innerCfg)
-	if err := clientTLS.HandshakeContext(context.Background()); err != nil {
+	if err := clientTLS.HandshakeContext(context.Background()); err != nil && err != io.EOF {
 		tlsAC.deny("inner handshake: "+err.Error(), 0)
 		return
 	}
@@ -215,6 +216,12 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		return
 	}
 	ac := p.beginAudit(req.Method, host, req.URL.Path, req.URL.RawQuery)
+	if req.Body != nil {
+		if b, err := io.ReadAll(req.Body); err == nil && len(b) > 0 {
+			ac.requestBody = string(b)
+			req.Body = io.NopCloser(bytes.NewReader(b))
+		}
+	}
 	_, port := splitHostPort("", origDst, 0)
 	rule := MatchEgress(p.currentAllow(), req.Method, host, port, req.URL.Path)
 	if rule == nil {
@@ -240,7 +247,21 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		return
 	}
 	defer resp.Body.Close()
+
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		src := unwrapBody(resp)
+		if err := writeResponseHeaders(clientTLS, resp); err != nil {
+			return
+		}
+		p.sseForward(src, clientTLS, nil, ac)
+		ac.response(resp.StatusCode)
+		return
+	}
+
+	respBody, _ := io.ReadAll(unwrapBody(resp))
+	ac.responseBody = string(respBody)
 	ac.response(resp.StatusCode)
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 	_ = resp.Write(clientTLS)
 }
 
@@ -254,6 +275,28 @@ type peekedConn struct {
 }
 
 func (p *peekedConn) Read(b []byte) (int, error) { return p.r.Read(b) }
+
+// writeResponseHeaders writes the HTTP status line and headers of resp to w,
+// followed by the blank line that separates headers from body. Used when the
+// caller needs to stream the body separately (e.g. SSE).
+func writeResponseHeaders(w io.Writer, resp *http.Response) error {
+	statusText := http.StatusText(resp.StatusCode)
+	if statusText == "" {
+		statusText = "Unknown"
+	}
+	if _, err := fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText); err != nil {
+		return err
+	}
+	// Forward upstream headers verbatim except Transfer-Encoding: the body
+	// we're about to stream is already decoded by Go's http.ReadResponse.
+	hdrs := resp.Header.Clone()
+	hdrs.Del("Transfer-Encoding")
+	if err := hdrs.Write(w); err != nil {
+		return err
+	}
+	_, err := fmt.Fprint(w, "\r\n")
+	return err
+}
 
 // handleTransparentHTTP serves one origin-form HTTP request. The Host
 // header carries the agent's intended hostname (used for allowlist
@@ -276,6 +319,12 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	_, port := splitHostPort("", origDst, 0)
 
 	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path, req.URL.RawQuery)
+	if req.Body != nil {
+		if b, err := io.ReadAll(req.Body); err == nil && len(b) > 0 {
+			ac.requestBody = string(b)
+			req.Body = io.NopCloser(bytes.NewReader(b))
+		}
+	}
 	rule := MatchEgress(p.currentAllow(), req.Method, hostOnly, port, req.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
@@ -311,9 +360,23 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
+	defer resp.Body.Close()
+
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		src := unwrapBody(resp)
+		if err := writeResponseHeaders(c, resp); err != nil {
+			return
+		}
+		p.sseForward(src, c, nil, ac)
+		ac.response(resp.StatusCode)
+		return
+	}
+
+	respBody, _ := io.ReadAll(unwrapBody(resp))
+	ac.responseBody = string(respBody)
 	ac.response(resp.StatusCode)
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 	_ = resp.Write(c)
-	_ = resp.Body.Close()
 }
 
 type protocol int

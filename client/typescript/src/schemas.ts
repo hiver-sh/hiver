@@ -135,7 +135,7 @@ export const SandboxConfig = z.object({
   /** Reference to the agent image to launch. This cannot be changed after the sandbox is initialized. */
   image: z.string().optional(),
   /** Additional environment variables in `KEY=VALUE` form. This cannot be changed after the sandbox is initialized. */
-  env: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
   /**
    * Sandbox time to live in seconds. The client must ping `/v1/ping` to reset the timer;
    * once a ping has not been received for this long the sandbox receives SIGTERM.
@@ -225,6 +225,7 @@ export const EgressRequestEvent = SandboxEventBase.extend({
   method: z.string(),
   path: z.string(),
   query: z.string().optional(),
+  body: z.string().optional(),
 });
 
 export const EgressResponseEvent = SandboxEventBase.extend({
@@ -232,6 +233,13 @@ export const EgressResponseEvent = SandboxEventBase.extend({
   request_id: z.number(),
   status: z.number().int(),
   duration_ms: z.number().int(),
+  body: z.string().optional(),
+});
+
+export const EgressStreamChunkEvent = SandboxEventBase.extend({
+  type: z.literal("egress.stream_chunk"),
+  request_id: z.number(),
+  body: z.string(),
 });
 
 export const FSRequestEvent = SandboxEventBase.extend({
@@ -260,6 +268,7 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
   EgressRequestEvent,
   EgressResponseEvent,
+  EgressStreamChunkEvent,
   FSRequestEvent,
   FSResponseEvent,
   StdioEvent,

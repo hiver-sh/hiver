@@ -11,10 +11,10 @@ import (
 // agent container. The bundle layout matches what `runc run -b <dir>`
 // expects: <dir>/config.json + <dir>/rootfs/.
 type BundleParams struct {
-	BundleDir   string       // bundle root — must already contain rootfs/
-	ImageConfig *ImageConfig // image-supplied entrypoint/cmd/env/cwd
-	ExtraEnv    []string     // sandboxd-injected KEY=VAL entries
-	Mounts      []BindMount  // additional host bind mounts (e.g. /workspace)
+	BundleDir   string            // bundle root — must already contain rootfs/
+	ImageConfig *ImageConfig      // image-supplied entrypoint/cmd/env/cwd
+	ExtraEnv    map[string]string // sandboxd-injected KEY=VAL entries
+	Mounts      []BindMount       // additional host bind mounts (e.g. /workspace)
 	Hostname    string
 }
 
@@ -38,8 +38,12 @@ func WriteConfig(p BundleParams) error {
 	if len(args) == 0 {
 		return fmt.Errorf("agent image has no entrypoint or cmd")
 	}
+
 	env := append([]string{}, p.ImageConfig.Env...)
-	env = append(env, p.ExtraEnv...)
+	for name, value := range p.ExtraEnv {
+		env = append(env, name+"="+value)
+	}
+
 	cwd := p.ImageConfig.WorkingDir
 	if cwd == "" {
 		cwd = "/"

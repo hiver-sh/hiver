@@ -85,8 +85,8 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"-p", fmt.Sprintf("%d", sandboxAPIPort),
 	}
 	if cfg.Env != nil {
-		for _, kv := range *cfg.Env {
-			createArgs = append(createArgs, "-e", kv)
+		for k, v := range *cfg.Env {
+			createArgs = append(createArgs, "-e", k+"="+v)
 		}
 	}
 

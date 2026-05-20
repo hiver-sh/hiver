@@ -12,9 +12,8 @@ import * as hive from "../../src";
 import { createShutdown } from "../shutdown.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const ts = Date.now();
-const sourceImage = `node-example-image:${ts}`;
-const imageTag = `node-example-image-bundle:${ts}`;
+const sourceImage = 'hive-node-example-image';
+const imageTag = 'node-example-image-bundle';
 const scriptPath = join(here, "../../../../scripts/bundle-images.sh");
 
 console.log(`> Building image ${sourceImage}`);

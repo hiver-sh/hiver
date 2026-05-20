@@ -23,7 +23,7 @@ func writeFile(p, body string) error {
 
 func TestLoadValid(t *testing.T) {
 	p := writeSpec(t, `{
-		"env": ["FOO=bar"],
+		"env": {"FOO": "bar"},
 		"fs":     [{"backend": "local", "mount": "/work",
 		            "acls": [{"path": "/work", "access": "rw"}]}],
 		"egress": {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]}

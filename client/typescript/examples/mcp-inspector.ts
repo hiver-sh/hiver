@@ -21,6 +21,9 @@ const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
       {
         host: 'www.google.com'
       },
+      {
+        host: 'api.anthropic.com'
+      },
       ...hive.allowedPythonPackages('numpy'),
     ]
   }

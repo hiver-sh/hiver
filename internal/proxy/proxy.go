@@ -7,6 +7,9 @@
 package proxy
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -68,10 +71,10 @@ type Config struct {
 // from SO_ORIGINAL_DST, but not method/path under encryption);
 // Methods/Paths/Override are ignored on those flows.
 type EgressRule struct {
-	Host     string         `json:"host"`
-	Ports    []int          `json:"ports,omitempty"`
-	Methods  []string       `json:"methods,omitempty"`
-	Paths    []string       `json:"paths,omitempty"`
+	Host     string          `json:"host"`
+	Ports    []int           `json:"ports,omitempty"`
+	Methods  []string        `json:"methods,omitempty"`
+	Paths    []string        `json:"paths,omitempty"`
 	Override *EgressOverride `json:"override,omitempty"`
 }
 
@@ -99,12 +102,13 @@ var DefaultStrippedAuthHeaders = []string{
 type AuditEvent struct {
 	At         time.Time `json:"at"`
 	Type       string    `json:"type"`  // always "network"
-	Phase      string    `json:"phase"` // "request" | "response"
+	Phase      string    `json:"phase"` // "request" | "response" | "stream_chunk"
 	RequestID  int       `json:"request_id"`
 	Method     string    `json:"method"`
 	Host       string    `json:"host"`
 	Path       string    `json:"path,omitempty"`
 	Query      string    `json:"query,omitempty"` // raw URL query (no leading "?")
+	Body       string    `json:"body,omitempty"`  // request body; empty for TLS/CONNECT
 	Verdict    string    `json:"verdict"`         // "allow" | "deny" | "error"
 	Status     int       `json:"status,omitempty"`
 	DurationMs int       `json:"duration_ms,omitempty"`
@@ -247,6 +251,12 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	host, port := splitHostPort(r.URL.Host, r.Host, defPort)
 	ac := p.beginAudit(r.Method, host, r.URL.Path, r.URL.RawQuery)
+	if r.Body != nil {
+		if b, err := io.ReadAll(r.Body); err == nil && len(b) > 0 {
+			ac.requestBody = string(b)
+			r.Body = io.NopCloser(bytes.NewReader(b))
+		}
+	}
 	rule := MatchEgress(p.currentAllow(), r.Method, host, port, r.URL.Path)
 	if rule == nil {
 		ac.deny("no matching rule", http.StatusForbidden)
@@ -278,15 +288,79 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer out.Body.Close()
 
+	if strings.Contains(out.Header.Get("Content-Type"), "text/event-stream") {
+		p.serveSSE(w, ac, out)
+		return
+	}
+
+	respBody, _ := io.ReadAll(unwrapBody(out))
+	ac.responseBody = string(respBody)
+
 	for k, vs := range out.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
 	w.WriteHeader(out.StatusCode)
-	_, _ = io.Copy(w, out.Body)
+	_, _ = w.Write(respBody)
 
 	ac.response(out.StatusCode)
+}
+
+// unwrapBody returns an io.Reader for the SSE body, decompressing gzip if
+// the response carries Content-Encoding: gzip. It deletes that header (and
+// Content-Length, which becomes invalid) so the caller can forward the
+// response without advertising compression to the client.
+func unwrapBody(resp *http.Response) io.Reader {
+	if !strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		return resp.Body
+	}
+	gr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return resp.Body
+	}
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
+	return gr
+}
+
+// serveSSE handles a text/event-stream response for the forward-proxy path.
+func (p *Proxy) serveSSE(w http.ResponseWriter, ac *auditCtx, out *http.Response) {
+	src := unwrapBody(out)
+	for k, vs := range out.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(out.StatusCode)
+	var flush func()
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+		flush = flusher.Flush
+	}
+	p.sseForward(src, w, flush, ac)
+	ac.response(out.StatusCode)
+}
+
+// sseForward reads SSE frames from src line-by-line, writes each line to dst,
+// calls flush after every write (flush may be nil), and emits a stream_chunk
+// audit event per line.
+func (p *Proxy) sseForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx) {
+	br := bufio.NewReader(src)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			_, _ = dst.Write(line)
+			if flush != nil {
+				flush()
+			}
+			ac.streamChunk(string(line[:len(line)-1]))
+		}
+		if err != nil {
+			break
+		}
+	}
 }
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +376,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upstream, err := p.dialer.DialContext(r.Context(), "tcp", r.Host)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		// Tunnel dial failed before we ever allowed the tunnel: surface
 		// as a deny so consumers don't see an orphan response event.
 		ac.deny("upstream dial: "+err.Error(), http.StatusBadGateway)
@@ -464,13 +538,15 @@ func (p *Proxy) audit(e AuditEvent) {
 // the response side. Callers invoke .allow()/.deny() at decision time
 // and .response()/.responseError() once the upstream call finishes.
 type auditCtx struct {
-	p         *Proxy
-	requestID int
-	start     time.Time
-	method    string
-	host      string
-	path      string
-	query     string
+	p            *Proxy
+	requestID    int
+	start        time.Time
+	method       string
+	host         string
+	path         string
+	query        string
+	requestBody  string // request body
+	responseBody string // response body (non-SSE only)
 }
 
 // beginAudit allocates an auditCtx for one request/response pair.
@@ -500,7 +576,7 @@ func (a *auditCtx) deny(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query, Body: a.requestBody,
 		Verdict: "deny", Status: status, Reason: reason,
 	})
 }
@@ -514,7 +590,7 @@ func (a *auditCtx) allow() {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query, Body: a.responseBody,
 		Verdict: "allow",
 	})
 }
@@ -524,8 +600,18 @@ func (a *auditCtx) response(status int) {
 		At: time.Now(), Type: "network", Phase: "response",
 		RequestID: a.requestID,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Body:    a.responseBody,
 		Verdict: "allow", Status: status,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
+	})
+}
+
+func (a *auditCtx) streamChunk(body string) {
+	a.p.audit(AuditEvent{
+		At: time.Now(), Type: "network", Phase: "stream_chunk",
+		RequestID: a.requestID,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Body: body, Verdict: "allow",
 	})
 }
 

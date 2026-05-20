@@ -133,6 +133,14 @@ func (c *correlator) put(internalID string, sseID int64) {
 	c.mu.Unlock()
 }
 
+// peek returns the SSE id for internalID without removing it.
+func (c *correlator) peek(internalID string) (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sseID, ok := c.m[internalID]
+	return sseID, ok
+}
+
 // take returns the SSE id for internalID and removes the entry —
 // pair-once semantics.
 func (c *correlator) take(internalID string) (int64, bool) {
@@ -181,6 +189,13 @@ func formatProxyEvent(ev map[string]any) string {
 		status := intField(ev, "status")
 		durMs := intField(ev, "duration_ms")
 		return fmt.Sprintf("proxy resp  %d %dms %s %s%s", status, durMs, method, host, path)
+	}
+	if phase == "stream_chunk" {
+		body, _ := ev["body"].(string)
+		if len(body) > 60 {
+			body = body[:60] + "…"
+		}
+		return fmt.Sprintf("proxy chunk %s %s%s %q", method, host, path, body)
 	}
 	return fmt.Sprintf("proxy %-5s %s %s%s", verdict, method, host, path)
 }
@@ -265,6 +280,15 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 		if verdict == "allow" {
 			t.corr.put(internalID, sseID)
 		}
+	case "stream_chunk":
+		sseID, ok := t.corr.peek(internalID)
+		if !ok {
+			return
+		}
+		f := proxyStreamChunkFactory(raw, sseID)
+		if f != nil {
+			t.broker.Publish(f)
+		}
 	case "response":
 		if v, _ := raw["verdict"].(string); v != "allow" {
 			return
@@ -277,6 +301,23 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 		if f != nil {
 			t.broker.Publish(f)
 		}
+	}
+}
+
+func proxyStreamChunkFactory(raw map[string]any, requestID int64) events.Factory {
+	body, _ := raw["body"].(string)
+	if body == "" {
+		return nil
+	}
+	return func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromEgressStreamChunkEvent(gen.EgressStreamChunkEvent{
+			Id:        int(id),
+			Timestamp: ts,
+			RequestId: int(requestID),
+			Body:      body,
+		})
+		return ev
 	}
 }
 
@@ -301,6 +342,10 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 	if q, ok := raw["query"].(string); ok && q != "" {
 		query = &q
 	}
+	var body *string
+	if b, ok := raw["body"].(string); ok && b != "" {
+		body = &b
+	}
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		_ = ev.FromEgressRequestEvent(gen.EgressRequestEvent{
@@ -311,6 +356,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 			Method:    method,
 			Path:      path,
 			Query:     query,
+			Body:      body,
 		})
 		return ev
 	}
@@ -319,6 +365,10 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 func proxyResponseFactory(raw map[string]any, requestID int64) events.Factory {
 	status := intField(raw, "status")
 	durationMs := intField(raw, "duration_ms")
+	var body *string
+	if b, ok := raw["body"].(string); ok && b != "" {
+		body = &b
+	}
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		_ = ev.FromEgressResponseEvent(gen.EgressResponseEvent{
@@ -327,6 +377,7 @@ func proxyResponseFactory(raw map[string]any, requestID int64) events.Factory {
 			RequestId:  int(requestID),
 			Status:     status,
 			DurationMs: durationMs,
+			Body:       body,
 		})
 		return ev
 	}

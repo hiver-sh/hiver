@@ -70,7 +70,7 @@ class Egress(BaseModel):
 
 class SandboxConfig(BaseModel):
     image: Optional[str] = None
-    env: Optional[list[str]] = None
+    env: Optional[dict[str, str]] = None
     ttl: Optional[int] = Field(None, ge=0)
     fs: list[FileSystem] = Field(min_length=1)
     egress: Optional[Egress] = None

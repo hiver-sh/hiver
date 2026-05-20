@@ -13,13 +13,15 @@ components:
             This cannot be changed after the sandbox is initialized.
           example: my-agent:latest
         env:
-          type: array
-          items:
+          type: object
+          additionalProperties:
             type: string
           description: >
-            Additional environment variables in `KEY=VALUE` form.
+            Additional environment variables as a key/value map.
             This cannot be changed after the sandbox is initialized.
-          example: ["LOG_LEVEL=info", "REGION=us-east-1"]
+          example:
+            LOG_LEVEL: info
+            REGION: us-east-1
         ttl:
           type: integer
           minimum: 0
