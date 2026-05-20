@@ -35,13 +35,7 @@ export interface EventsStreamOptions {
 }
 
 /**
- * A handle to a provisioned sandbox. Returned by `getOrCreateSandbox`;
- * not constructed directly by callers.
- *
- * The handle holds the per-sandbox API base URL and exposes the
- * operations against the endpoints described in `api/sandbox_server.yaml`:
- * config, ping, events, and the reverse proxy to the sandboxed
- * service.
+ * A handle to a provisioned sandbox.
  */
 export class Sandbox {
   readonly id: string;
@@ -59,7 +53,8 @@ export class Sandbox {
     const baseFetch = opts.fetch ?? fetch;
 
     this.fetchImpl = (input, init) => {
-      const signal = init?.signal ?? AbortSignal.timeout(SANDBOX_FETCH_TIMEOUT_MS);
+      const signal =
+        init?.signal ?? AbortSignal.timeout(SANDBOX_FETCH_TIMEOUT_MS);
       return baseFetch(input, { ...init, signal });
     };
   }
@@ -128,7 +123,10 @@ export class Sandbox {
         return;
       }
       try {
-        for await (const event of this.openEventsStream(lastEventId, opts.signal)) {
+        for await (const event of this.openEventsStream(
+          lastEventId,
+          opts.signal,
+        )) {
           lastEventId = event.id;
           backoffMs = 200;
           yield event;
@@ -141,7 +139,7 @@ export class Sandbox {
         if (opts.signal?.aborted) return;
         if (isAbortError(err)) return;
 
-        console.log('err', err);
+        console.log("err", err);
       }
 
       await sleep(backoffMs, opts.signal).catch(() => {});
@@ -170,27 +168,18 @@ export class Sandbox {
     const ac = new AbortController();
     if (signal) {
       if (signal.aborted) ac.abort(signal.reason);
-      else signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
+      else
+        signal.addEventListener("abort", () => ac.abort(signal.reason), {
+          once: true,
+        });
     }
-    // const firstEventTimeout = setTimeout(
-    //   () => ac.abort(new Error(`events: no frame within ${SANDBOX_FETCH_TIMEOUT_MS}ms`)),
-    //   SANDBOX_FETCH_TIMEOUT_MS,
-    // );
-    try {
-      const res = await this.fetchImpl(url, {
-        headers: { accept: "text/event-stream" },
-        signal: ac.signal,
-      });
-      if (!res.ok || !res.body) throw await toError(res, "events");
-      for await (const frame of parseSSE(res.body, ac.signal)) {
-        // First frame lands → the connection is alive; drop the
-        // liveness guard so trailing silences (the server just isn't
-        // emitting anything right now) don't terminate it.
-        // clearTimeout(firstEventTimeout);
-        yield SandboxEvent.parse(JSON.parse(frame.data));
-      }
-    } finally {
-      // clearTimeout(firstEventTimeout);
+    const res = await this.fetchImpl(url, {
+      headers: { accept: "text/event-stream" },
+      signal: ac.signal,
+    });
+    if (!res.ok || !res.body) throw await toError(res, "events");
+    for await (const frame of parseSSE(res.body, ac.signal)) {
+      yield SandboxEvent.parse(JSON.parse(frame.data));
     }
   }
 
@@ -232,9 +221,8 @@ export class Sandbox {
 
 function isAbortError(err: unknown): boolean {
   return (
-    err instanceof DOMException && err.name === "AbortError"
-  ) || (
-    err instanceof Error && err.name === "AbortError"
+    (err instanceof DOMException && err.name === "AbortError") ||
+    (err instanceof Error && err.name === "AbortError")
   );
 }
 
@@ -293,7 +281,10 @@ export class SandboxError extends Error {
   }
 }
 
-export async function toError(res: Response, operation: string): Promise<SandboxError> {
+export async function toError(
+  res: Response,
+  operation: string,
+): Promise<SandboxError> {
   const text = await res.text();
   let body: { error: string; details?: Record<string, unknown> } | undefined;
   try {

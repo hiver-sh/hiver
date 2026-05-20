@@ -270,7 +270,7 @@ fs: [
     mount: "/workspace",
     acls: [{ path: "/workspace/**", access: "rw" }],
   },
-]
+];
 ```
 
 Files live only for the lifetime of the sandbox.
@@ -285,13 +285,13 @@ fs: [
     backend: "gdrive",
     mount: "/workspace",
     acls: [{ path: "/workspace/**", access: "rw" }],
-    gdrive_access_token:  "<oauth-access-token>",
+    gdrive_access_token: "<oauth-access-token>",
     gdrive_refresh_token: "<oauth-refresh-token>",
-    gdrive_client_id:     "<google-client-id>",
+    gdrive_client_id: "<google-client-id>",
     gdrive_client_secret: "<google-client-secret>",
-    gdrive_folder_id:     "<drive-folder-id>",
+    gdrive_folder_id: "<drive-folder-id>",
   },
-]
+];
 ```
 
 **OAuth tokens** — obtain via the [Google OAuth 2.0 flow](https://developers.google.com/identity/protocols/oauth2) with the `https://www.googleapis.com/auth/drive` scope. `gdrive_refresh_token` is used to renew the access token automatically.
@@ -308,11 +308,11 @@ fs: [
     backend: "gcs",
     mount: "/workspace",
     acls: [{ path: "/workspace/**", access: "rw" }],
-    gcs_bucket:               "<bucket-name>",
-    gcs_prefix:               "optional/key/prefix", // optional
+    gcs_bucket: "<bucket-name>",
+    gcs_prefix: "optional/key/prefix", // optional
     gcs_service_account_json: JSON.stringify(serviceAccountKey),
   },
-]
+];
 ```
 
 **`gcs_bucket`** — the GCS bucket name (required). Can also be set via `HIVE_GCS_BUCKET`.

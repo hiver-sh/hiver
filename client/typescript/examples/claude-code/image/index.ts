@@ -25,14 +25,11 @@ import { z } from "zod";
 
 const execAsync = promisify(exec);
 
-
 const PORT = Number(process.env.PORT ?? 3000);
 const MODEL = "claude-sonnet-4-6";
 
-
 type Session = { server: McpServer; transport: StreamableHTTPServerTransport };
 const sessions = new Map<string, Session>();
-
 
 const CLAUDE_TOOLS: Anthropic.Messages.ToolUnion[] = [
   { type: "web_search_20260209", name: "web_search" },
@@ -56,7 +53,6 @@ const CLAUDE_TOOLS: Anthropic.Messages.ToolUnion[] = [
 
 const claude = new Anthropic();
 
-
 type TextEditorInput =
   | { command: "view"; path: string; view_range?: [number, number] }
   | { command: "str_replace"; path: string; old_str: string; new_str: string }
@@ -69,9 +65,11 @@ async function runBash(command: string): Promise<string> {
     return stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
   } catch (e: unknown) {
     const err = e as { stdout?: string; stderr?: string; message: string };
-    return (err.stdout ?? "") +
+    return (
+      (err.stdout ?? "") +
       (err.stderr ? `\n[stderr]\n${err.stderr}` : "") +
-      `\n[error]\n${err.message}`;
+      `\n[error]\n${err.message}`
+    );
   }
 }
 
@@ -81,13 +79,20 @@ async function runTextEditor(input: TextEditorInput): Promise<string> {
       const text = await readFile(input.path, "utf-8");
       if (!input.view_range) return text;
       const [start, end] = input.view_range;
-      return text.split("\n").slice(start - 1, end).join("\n");
+      return text
+        .split("\n")
+        .slice(start - 1, end)
+        .join("\n");
     }
     case "str_replace": {
       const text = await readFile(input.path, "utf-8");
       if (!text.includes(input.old_str))
         throw new Error(`str not found in ${input.path}`);
-      await writeFile(input.path, text.replace(input.old_str, input.new_str), "utf-8");
+      await writeFile(
+        input.path,
+        text.replace(input.old_str, input.new_str),
+        "utf-8",
+      );
       return "OK";
     }
     case "create": {
@@ -155,7 +160,11 @@ async function agenticLoop(
       if (block.name === "bash") {
         const { command } = block.input as { command: string };
         const content = await runBash(command);
-        toolResults.push({ type: "tool_result", tool_use_id: block.id, content });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content,
+        });
         continue;
       }
 
@@ -166,7 +175,11 @@ async function agenticLoop(
         } catch (e: unknown) {
           content = `Error: ${(e as Error).message}`;
         }
-        toolResults.push({ type: "tool_result", tool_use_id: block.id, content });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content,
+        });
         continue;
       }
 
@@ -189,10 +202,14 @@ async function agenticLoop(
 
         const answer =
           elicit.action === "accept"
-            ? (elicit.content?.["answer"] as string | undefined) ?? ""
+            ? ((elicit.content?.["answer"] as string | undefined) ?? "")
             : `Orchestrator ${elicit.action}d the request.`;
 
-        toolResults.push({ type: "tool_result", tool_use_id: block.id, content: answer });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: answer,
+        });
       }
       // web_search / web_fetch are server-side — their results flow back
       // to Claude automatically; no tool_result needed from us.
@@ -203,7 +220,6 @@ async function agenticLoop(
     }
   }
 }
-
 
 function makeServer(): McpServer {
   const server = new McpServer({ name: "worker-agent", version: "0.1.0" });
@@ -218,7 +234,10 @@ function makeServer(): McpServer {
         "it has no memory across calls.",
       inputSchema: {
         task: z.string().describe("The task to complete."),
-        context: z.string().optional().describe("Background context the worker needs."),
+        context: z
+          .string()
+          .optional()
+          .describe("Background context the worker needs."),
       },
     },
     async ({ task, context = "" }) => {
@@ -230,14 +249,18 @@ function makeServer(): McpServer {
   return server;
 }
 
-
 async function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let raw = "";
-    req.on("data", (chunk: Buffer) => { raw += chunk; });
+    req.on("data", (chunk: Buffer) => {
+      raw += chunk;
+    });
     req.on("end", () => {
-      try { resolve(raw ? JSON.parse(raw) : undefined); }
-      catch (e) { reject(e); }
+      try {
+        resolve(raw ? JSON.parse(raw) : undefined);
+      } catch (e) {
+        reject(e);
+      }
     });
     req.on("error", reject);
   });
@@ -268,44 +291,59 @@ function setCors(res: ServerResponse) {
   };
 }
 
-const httpServer = http.createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  if (req.method === "OPTIONS") {
+const httpServer = http.createServer(
+  async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.method === "OPTIONS") {
+      setCors(res);
+      res.writeHead(204).end();
+      return;
+    }
     setCors(res);
-    res.writeHead(204).end();
-    return;
-  }
-  setCors(res);
-  if (req.url !== "/") { res.writeHead(404).end(); return; }
+    if (req.url !== "/") {
+      res.writeHead(404).end();
+      return;
+    }
 
-  const body = req.method === "POST" ? await readBody(req) : undefined;
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  const session = sessionId ? sessions.get(sessionId) : undefined;
-  const isInit = body != null && typeof body === "object" &&
-    (body as Record<string, unknown>)["method"] === "initialize";
+    const body = req.method === "POST" ? await readBody(req) : undefined;
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const session = sessionId ? sessions.get(sessionId) : undefined;
+    const isInit =
+      body != null &&
+      typeof body === "object" &&
+      (body as Record<string, unknown>)["method"] === "initialize";
 
-  if (session && !isInit) {
-    await session.transport.handleRequest(req, res, body);
-    return;
-  }
+    if (session && !isInit) {
+      await session.transport.handleRequest(req, res, body);
+      return;
+    }
 
-  // Re-initialize: tear down stale session before creating a new one.
-  // Clear onclose first to avoid close → onclose → close → … recursion.
-  if (session) {
-    session.transport.onclose = undefined;
-    sessions.delete(sessionId!);
-    session.server.close().catch(() => {});
-  }
+    // Re-initialize: tear down stale session before creating a new one.
+    // Clear onclose first to avoid close → onclose → close → … recursion.
+    if (session) {
+      session.transport.onclose = undefined;
+      sessions.delete(sessionId!);
+      session.server.close().catch(() => {});
+    }
 
-  if (req.method !== "POST") { res.writeHead(400).end(); return; }
+    if (req.method !== "POST") {
+      res.writeHead(400).end();
+      return;
+    }
 
-  const id = randomUUID();
-  const server = makeServer();
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => id });
-  transport.onclose = () => { sessions.delete(id); server.close(); };
-  sessions.set(id, { server, transport });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, body);
-});
+    const id = randomUUID();
+    const server = makeServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => id,
+    });
+    transport.onclose = () => {
+      sessions.delete(id);
+      server.close();
+    };
+    sessions.set(id, { server, transport });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, body);
+  },
+);
 
 httpServer.listen(PORT, () => {
   console.log(`worker-agent MCP server listening on http://0.0.0.0:${PORT}`);

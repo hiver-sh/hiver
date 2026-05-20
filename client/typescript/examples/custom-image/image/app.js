@@ -3,7 +3,6 @@ const https = require("https");
 const fs = require("fs");
 const { spawnSync } = require("child_process");
 
-
 function httpGet(url) {
   console.log(`GET ${url}`);
   return new Promise((resolve) => {
@@ -93,6 +92,6 @@ function fsRead(path) {
   console.log("DONE");
 })();
 
-setInterval(() =>{
+setInterval(() => {
   console.log("tick");
 }, 1000);

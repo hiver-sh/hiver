@@ -1,5 +1,9 @@
 import { expect, it, vi } from "vitest";
-import { getOrCreateSandbox, shutdown, DEFAULT_CONTROLLER_URL } from "./controller";
+import {
+  getOrCreateSandbox,
+  shutdown,
+  DEFAULT_CONTROLLER_URL,
+} from "./controller";
 import { Sandbox, SandboxError } from "./sandbox";
 import type { SandboxConfig } from "./schemas";
 
@@ -35,7 +39,9 @@ it("getOrCreateSandbox sends PUT /v1/sandboxes/{id} with JSON body", async () =>
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
   expect(url).toBe(`${DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox`);
   expect(init.method).toBe("PUT");
-  expect((init.headers as Record<string, string>)["content-type"]).toBe("application/json");
+  expect((init.headers as Record<string, string>)["content-type"]).toBe(
+    "application/json",
+  );
   expect(JSON.parse(init.body as string)).toMatchObject(BASE_CONFIG);
 });
 
@@ -77,17 +83,25 @@ it("getOrCreateSandbox throws Error for id that does not match pattern", async (
 });
 
 it("getOrCreateSandbox throws SandboxError on 4xx response", async () => {
-  const mockFetch = vi.fn().mockResolvedValue(jsonResp({ error: "conflict" }, 409));
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(jsonResp({ error: "conflict" }, 409));
   await expect(
     getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
       fetch: mockFetch as unknown as typeof fetch,
       readinessTimeoutMs: 0,
     }),
-  ).rejects.toMatchObject({ name: "SandboxError", status: 409, operation: "getOrCreateSandbox" });
+  ).rejects.toMatchObject({
+    name: "SandboxError",
+    status: 409,
+    operation: "getOrCreateSandbox",
+  });
 });
 
 it("getOrCreateSandbox throws SandboxError with 'connection refused' on ECONNREFUSED", async () => {
-  const err = Object.assign(new Error("connect failed"), { cause: { code: "ECONNREFUSED" } });
+  const err = Object.assign(new Error("connect failed"), {
+    cause: { code: "ECONNREFUSED" },
+  });
   const mockFetch = vi.fn().mockRejectedValue(err);
   await expect(
     getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
@@ -114,14 +128,18 @@ it("getOrCreateSandbox polls /v1/ping before resolving when readinessTimeoutMs >
 
   expect(sandbox).toBeInstanceOf(Sandbox);
   expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
-  const pingCall = mockFetch.mock.calls.find(([url]: [string]) => url.includes("/v1/ping"));
+  const pingCall = mockFetch.mock.calls.find((args) =>
+    (args[0] as string).includes("/v1/ping"),
+  );
   expect(pingCall).toBeDefined();
 });
 
 // shutdown
 
 it("shutdown sends POST /v1/shutdown/{id}", async () => {
-  const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(new Response(null, { status: 204 }));
   await shutdown(mockSandbox(mockFetch));
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
   expect(url).toBe(`${DEFAULT_CONTROLLER_URL}/v1/shutdown/test-sandbox`);
@@ -129,12 +147,16 @@ it("shutdown sends POST /v1/shutdown/{id}", async () => {
 });
 
 it("shutdown resolves on 204", async () => {
-  const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(new Response(null, { status: 204 }));
   await expect(shutdown(mockSandbox(mockFetch))).resolves.toBeUndefined();
 });
 
 it("shutdown throws SandboxError on non-204 response", async () => {
-  const mockFetch = vi.fn().mockResolvedValue(jsonResp({ error: "not found" }, 404));
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(jsonResp({ error: "not found" }, 404));
   await expect(shutdown(mockSandbox(mockFetch))).rejects.toMatchObject({
     name: "SandboxError",
     status: 404,
@@ -143,7 +165,9 @@ it("shutdown throws SandboxError on non-204 response", async () => {
 });
 
 it("shutdown throws SandboxError with 'connection refused' on ECONNREFUSED", async () => {
-  const err = Object.assign(new Error("connect failed"), { cause: { code: "ECONNREFUSED" } });
+  const err = Object.assign(new Error("connect failed"), {
+    cause: { code: "ECONNREFUSED" },
+  });
   const mockFetch = vi.fn().mockRejectedValue(err);
   await expect(shutdown(mockSandbox(mockFetch))).rejects.toMatchObject({
     name: "SandboxError",

@@ -12,8 +12,8 @@ import * as hive from "../../src";
 import { createShutdown } from "../shutdown.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const sourceImage = 'hive-node-example-image';
-const imageTag = 'node-example-image-bundle';
+const sourceImage = "hive-node-example-image";
+const imageTag = "node-example-image-bundle";
 const scriptPath = join(here, "../../../../scripts/bundle-images.sh");
 
 console.log(`> Building image ${sourceImage}`);
@@ -22,7 +22,7 @@ await buildImage(sourceImage, join(here, "image"));
 console.log(`> Building sandbox bundle ${imageTag}`);
 await buildBundle(scriptPath, sourceImage, imageTag);
 
-console.log('> Starting sandbox');
+console.log("> Starting sandbox");
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
   image: imageTag,
   fs: [
@@ -35,19 +35,19 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", {
   egress: {
     allow: [
       {
-        host: 'github.com',
-        paths: ['/blasten/hive']
+        host: "github.com",
+        paths: ["/blasten/hive"],
       },
       {
-        host: 'www.google.com'
-      }
-    ]
-  }
+        host: "www.google.com",
+      },
+    ],
+  },
 });
 
 const { ac, shutdown } = createShutdown(sandbox);
 
-console.log('> Streaming events');
+console.log("> Streaming events");
 for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
   console.info("sandbox event", event);
 }
@@ -58,7 +58,11 @@ function buildImage(tag: string, contextDir: string): Promise<void> {
   return spawnOk("docker", ["build", "-t", tag, contextDir]);
 }
 
-function buildBundle(scriptPath: string, sandboxImage: string, bundleTag: string): Promise<void> {
+function buildBundle(
+  scriptPath: string,
+  sandboxImage: string,
+  bundleTag: string,
+): Promise<void> {
   return spawnOk("bash", [scriptPath, sandboxImage, bundleTag]);
 }
 

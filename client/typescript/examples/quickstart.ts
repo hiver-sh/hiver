@@ -29,7 +29,9 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);
 console.info("sandbox URL:", sandbox.url);
 
 let ping: ReturnType<typeof setInterval>;
-const { ac, shutdown } = createShutdown(sandbox, { cleanup: () => clearInterval(ping) });
+const { ac, shutdown } = createShutdown(sandbox, {
+  cleanup: () => clearInterval(ping),
+});
 
 const events = (async () => {
   for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {

@@ -44,7 +44,10 @@ export async function getOrCreateSandbox(
     );
   }
   const validated = SandboxConfig.parse(config);
-  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(/\/+$/, "");
+  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(
+    /\/+$/,
+    "",
+  );
   const fetchImpl = opts.fetch ?? fetch;
 
   let res: Response;
@@ -88,7 +91,10 @@ export async function getOrCreateSandbox(
 
 // waitUntilReachable polls /v1/ping until it returns 200 or the
 // deadline passes.
-async function waitUntilReachable(sandbox: Sandbox, timeoutMs: number): Promise<void> {
+async function waitUntilReachable(
+  sandbox: Sandbox,
+  timeoutMs: number,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
   while (Date.now() < deadline) {
@@ -105,6 +111,42 @@ async function waitUntilReachable(sandbox: Sandbox, timeoutMs: number): Promise<
     "getOrCreateSandbox",
     0,
     `sandbox ${sandbox.id} did not become reachable at ${sandbox.apiServerUrl} within ${timeoutMs}ms${detail}`,
+  );
+}
+
+/**
+ * List all currently running sandboxes.
+ */
+export async function listSandboxes(
+  opts: ControllerOptions = {},
+): Promise<Sandbox[]> {
+  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(
+    /\/+$/,
+    "",
+  );
+  const fetchImpl = opts.fetch ?? fetch;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/v1/sandboxes`);
+  } catch (err) {
+    if (isConnectionRefused(err)) {
+      throw new SandboxError(
+        "listSandboxes",
+        0,
+        `controller is not reachable at ${base} (connection refused). Is it running?`,
+      );
+    }
+    throw err;
+  }
+  if (res.status !== 200) {
+    throw await toError(res, "listSandboxes");
+  }
+  const refs = ((await res.json()) as unknown[]).map((r) =>
+    SandboxRef.parse(r),
+  );
+  return refs.map(
+    (ref) => new Sandbox(ref, { controllerUrl: base, fetch: fetchImpl }),
   );
 }
 

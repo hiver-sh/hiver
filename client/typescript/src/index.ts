@@ -32,11 +32,9 @@ export {
 export {
   DEFAULT_CONTROLLER_URL,
   getOrCreateSandbox,
+  listSandboxes,
   shutdown,
   type ControllerOptions,
 } from "./controller";
 
-export {
-  allowedPythonPackages,
-  allowedNpmPackages,
-} from "./utils";
+export { allowedPythonPackages, allowedNpmPackages } from "./utils";

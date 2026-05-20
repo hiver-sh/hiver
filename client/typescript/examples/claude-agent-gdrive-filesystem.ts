@@ -45,7 +45,7 @@ if (!googleClientId) {
   process.exit(1);
 }
 
-const googleClientSecret= process.env.GOOGLE_CLIENT_SECRET;
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 if (!googleClientSecret) {
   console.error(
     "GOOGLE_CLIENT_SECRET must be defined (get it on: https://console.cloud.google.com/apis/credentials)",
@@ -54,7 +54,6 @@ if (!googleClientSecret) {
 }
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
-
 
 // Bind a one-shot HTTP listener for the OAuth callback. Random port
 // is fine — Desktop-app OAuth clients trust any 127.0.0.1:* redirect.
@@ -94,7 +93,11 @@ const callback = await new Promise<{
 });
 
 const redirectUri = `http://127.0.0.1:${callback.port}/oauth/callback`;
-const oauth2Client = new google.auth.OAuth2(googleClientId, googleClientSecret, redirectUri);
+const oauth2Client = new google.auth.OAuth2(
+  googleClientId,
+  googleClientSecret,
+  redirectUri,
+);
 const state = randomBytes(16).toString("hex");
 const authUrl = oauth2Client.generateAuthUrl({
   access_type: "offline",
@@ -169,24 +172,23 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
     allow: [
       {
         host: "finnhub.io",
-        paths: [ "/api/v1/*", "/static/swagger.json"],
+        paths: ["/api/v1/*", "/static/swagger.json"],
         override: {
           headers: {
-            'X-Finnhub-Token': finnhubKey
+            "X-Finnhub-Token": finnhubKey,
           },
         },
       },
       ...hive.allowedPythonPackages(
-        'numpy',
-        'pandas',
-        'statsmodels',
-        'scikit-learn',
-        'matplotlib',
+        "numpy",
+        "pandas",
+        "statsmodels",
+        "scikit-learn",
+        "matplotlib",
       ),
     ],
   },
 });
-
 
 const { ac, shutdown } = createShutdown(sandbox, { cleanup: () => rl.close() });
 
@@ -198,12 +200,14 @@ let currentInputJson = "";
 
 process.stdout.write(
   "\n" +
-  chalk.bold("Expert Quantitative Trader\n") +
-  "Build financial models, run regressions, design factor strategies, and explain your results in plain language a "+
-  "portfolio manager can act on.\n\n" +
-  chalk.gray("Example Prompts\n") + 
-  chalk.gray("* Compare the performance of google and nvidia over the last 12 months") +
-  "\n\n"
+    chalk.bold("Expert Quantitative Trader\n") +
+    "Build financial models, run regressions, design factor strategies, and explain your results in plain language a " +
+    "portfolio manager can act on.\n\n" +
+    chalk.gray("Example Prompts\n") +
+    chalk.gray(
+      "* Compare the performance of google and nvidia over the last 12 months",
+    ) +
+    "\n\n",
 );
 
 rl.setPrompt(YOU + " ");
@@ -226,7 +230,7 @@ async function* prompts(): AsyncGenerator<SDKUserMessage> {
 const response = query({
   prompt: prompts(),
   options: {
-    model: 'claude-opus-4-7',
+    model: "claude-opus-4-7",
     abortController: ac,
     includePartialMessages: true,
     tools: [],
@@ -294,7 +298,6 @@ so the work is reproducible and inspectable, rather than running long one-liners
   },
 });
 
-
 try {
   for await (const msg of response) {
     if (msg.type === "stream_event") {
@@ -302,12 +305,18 @@ try {
       if (ev.type === "message_start") {
         // New assistant message — reset tool-use flag for this turn.
         currentMsgHasToolUse = false;
-      } else if (ev.type === "content_block_start" && ev.content_block.type === "tool_use") {
+      } else if (
+        ev.type === "content_block_start" &&
+        ev.content_block.type === "tool_use"
+      ) {
         // Model is about to call a tool — record its name and start collecting the input JSON.
         currentMsgHasToolUse = true;
         currentToolName = ev.content_block.name;
         currentInputJson = "";
-      } else if (ev.type === "content_block_delta" && ev.delta.type === "input_json_delta") {
+      } else if (
+        ev.type === "content_block_delta" &&
+        ev.delta.type === "input_json_delta"
+      ) {
         // Stream the tool's input JSON incrementally.
         currentInputJson += (ev.delta as any).partial_json ?? "";
       } else if (ev.type === "content_block_stop" && currentToolName) {
@@ -315,14 +324,18 @@ try {
         let label = currentToolName;
         try {
           const params = JSON.stringify(JSON.parse(currentInputJson));
-          const suffix = params.length > 100 ? params.slice(0, 97) + "…" : params;
+          const suffix =
+            params.length > 100 ? params.slice(0, 97) + "…" : params;
           label += ` ${suffix}`;
         } catch {}
         if (!atLineStart) process.stdout.write("\n");
         process.stdout.write(chalk.gray(`→ ${label}\n\n`));
         atLineStart = true;
         currentToolName = "";
-      } else if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
+      } else if (
+        ev.type === "content_block_delta" &&
+        ev.delta.type === "text_delta"
+      ) {
         // Stream text tokens directly to stdout as they arrive.
         process.stdout.write(ev.delta.text);
         atLineStart = ev.delta.text.endsWith("\n");

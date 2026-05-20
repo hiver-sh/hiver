@@ -20,7 +20,8 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist",
-    "test": "vitest run"
+    "test": "vitest run",
+    "format": "prettier --write ."
   },
   "engines": {
     "node": ">=18"
@@ -33,6 +34,7 @@
     "@types/node": "^20.19.41",
     "chalk": "^5.6.2",
     "googleapis": "^144.0.0",
+    "prettier": "^3.8.3",
     "tsup": "^8.3.0",
     "typescript": "^5.5.4",
     "vitest": "^4.1.6"

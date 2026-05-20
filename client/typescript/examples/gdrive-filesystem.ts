@@ -75,7 +75,11 @@ const callback = await new Promise<{
 });
 
 const redirectUri = `http://127.0.0.1:${callback.port}/oauth/callback`;
-const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+const oauth2Client = new google.auth.OAuth2(
+  clientId,
+  clientSecret,
+  redirectUri,
+);
 const state = randomBytes(16).toString("hex");
 const authUrl = oauth2Client.generateAuthUrl({
   access_type: "offline",
@@ -145,7 +149,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-gdrive", {
       gdrive_client_secret: clientSecret,
       gdrive_folder_id: folderId,
     },
-  ]
+  ],
 });
 
 console.info("MCP inspector → ", sandbox.url);

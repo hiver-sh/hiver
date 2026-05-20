@@ -19,14 +19,14 @@ const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
   egress: {
     allow: [
       {
-        host: 'www.google.com'
+        host: "www.google.com",
       },
       {
-        host: 'api.anthropic.com'
+        host: "api.anthropic.com",
       },
-      ...hive.allowedPythonPackages('numpy'),
-    ]
-  }
+      ...hive.allowedPythonPackages("numpy"),
+    ],
+  },
 });
 
 console.info("MCP inspector → ", sandbox.url);

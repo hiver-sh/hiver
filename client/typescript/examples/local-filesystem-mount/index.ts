@@ -15,7 +15,7 @@ const sandboxConfig: hive.SandboxConfig = {
     {
       backend: "local",
       mount: "/workspace",
-      origin: path.resolve(__dirname, 'skills'),
+      origin: path.resolve(__dirname, "skills"),
       acls: [{ path: "/workspace/**", access: "ro" }],
     },
   ],
@@ -24,13 +24,13 @@ const sandboxConfig: hive.SandboxConfig = {
 const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);
 
 const readFile = async (file: string) => {
-    const bytes = await sandbox.downloadFile(file);
-    console.log('\n');
-    console.log(`reading file: ${file}`);
-    console.log(new TextDecoder().decode(bytes));
-}
+  const bytes = await sandbox.downloadFile(file);
+  console.log("\n");
+  console.log(`reading file: ${file}`);
+  console.log(new TextDecoder().decode(bytes));
+};
 
-await readFile('/workspace/echo/SKILL.md');
-await readFile('/workspace/echo/echo.sh');
+await readFile("/workspace/echo/SKILL.md");
+await readFile("/workspace/echo/echo.sh");
 
 await hive.shutdown(sandbox);
