@@ -86,6 +86,38 @@ async def get_or_create_sandbox(
         raise
 
 
+async def list_sandboxes(
+    controller_url: str = DEFAULT_CONTROLLER_URL,
+    client: Optional[httpx.AsyncClient] = None,
+) -> list[Sandbox]:
+    """Return all currently running sandboxes."""
+    base = controller_url.rstrip("/")
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
+
+    try:
+        try:
+            res = await http.get(f"{base}/v1/sandboxes")
+        except httpx.ConnectError as err:
+            if _is_connection_refused(err):
+                raise SandboxError(
+                    "list_sandboxes",
+                    0,
+                    f"controller is not reachable at {base} (connection refused). Is it running?",
+                ) from err
+            raise
+
+        if res.status_code != 200:
+            raise _to_error(res, "list_sandboxes")
+
+        refs = [SandboxRef.model_validate(r) for r in res.json()]
+        return [Sandbox(ref, base, client=http if not owns_client else None) for ref in refs]
+    except Exception:
+        if owns_client:
+            await http.aclose()
+        raise
+
+
 async def shutdown(sandbox: Sandbox) -> None:
     """Stop the sandbox container and remove it."""
     url = f"{sandbox.controller_url}/v1/shutdown/{sandbox.id}"

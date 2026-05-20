@@ -16,8 +16,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const labelSandboxID = "hive.sandbox.id"
-
 // K8sRuntime implements SandboxRuntime using the Kubernetes API.
 type K8sRuntime struct {
 	client    kubernetes.Interface
@@ -60,6 +58,24 @@ func (r *K8sRuntime) Lookup(id string) (bool, string, error) {
 		return false, "", nil
 	}
 	return true, r.endpointFor(name), nil
+}
+
+func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
+	pods, err := r.client.CoreV1().Pods(r.namespace).List(context.Background(), metav1.ListOptions{
+		LabelSelector: labelSandboxID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list pods: %w", err)
+	}
+	sandboxes := make([]gen.Sandbox, 0, len(pods.Items))
+	for _, pod := range pods.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		id := pod.Labels[labelSandboxID]
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id, Endpoint: r.endpointFor(pod.Name)})
+	}
+	return sandboxes, nil
 }
 
 func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {

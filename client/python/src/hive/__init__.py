@@ -1,4 +1,4 @@
-from .controller import DEFAULT_CONTROLLER_URL, get_or_create_sandbox, shutdown
+from .controller import DEFAULT_CONTROLLER_URL, get_or_create_sandbox, list_sandboxes, shutdown
 from .sandbox import Sandbox, SandboxError
 from .schemas import (
     ACLRule,
@@ -28,6 +28,7 @@ __all__ = [
     # controller
     "DEFAULT_CONTROLLER_URL",
     "get_or_create_sandbox",
+    "list_sandboxes",
     "shutdown",
     # sandbox
     "Sandbox",

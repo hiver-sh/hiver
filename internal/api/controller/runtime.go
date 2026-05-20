@@ -20,6 +20,9 @@ type SandboxRuntime interface {
 	// Start creates and starts a new sandbox from cfg, returning its descriptor.
 	Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error)
 
+	// List returns all currently running sandboxes.
+	List() ([]gen.Sandbox, error)
+
 	// Shutdown stops and removes the sandbox for id.
 	// Returns ErrSandboxNotFound if no sandbox exists for id.
 	Shutdown(id string) error

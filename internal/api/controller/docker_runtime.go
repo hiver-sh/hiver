@@ -18,6 +18,7 @@ const (
 	composeProject      = "hive"
 	defaultSandboxImage = "hive-sandbox-bundle"
 	sandboxAPIPort      = 8080
+	labelSandboxID      = "hive.sandbox.id"
 )
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.
@@ -43,6 +44,28 @@ func (r *DockerRuntime) Lookup(id string) (bool, string, error) {
 	return true, fmt.Sprintf("http://127.0.0.1:%s", hostPort), nil
 }
 
+func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
+	out, err := exec.Command("docker", "ps", "--filter", "label="+labelSandboxID, "--format", "{{.Names}}").Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w", err)
+	}
+	names := strings.Fields(strings.TrimSpace(string(out)))
+	prefix := composeProject + "-sandbox-"
+	sandboxes := make([]gen.Sandbox, 0, len(names))
+	for _, name := range names {
+		id := strings.TrimPrefix(name, prefix)
+		hostPort, err := lookupHostPort(name, sandboxAPIPort)
+		if err != nil {
+			return nil, err
+		}
+		sandboxes = append(sandboxes, gen.Sandbox{
+			Id:       id,
+			Endpoint: fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+		})
+	}
+	return sandboxes, nil
+}
+
 func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	specBytes, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -66,7 +89,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--name", containerName,
 		"--label", "com.docker.compose.project=" + composeProject,
 		"--label", "com.docker.compose.service=" + serviceLabel,
-		"--label", "hive.sandbox.id=" + id,
+		"--label", labelSandboxID+"="+id,
 		"--network", composeProject + "_default",
 		"--device", "/dev/fuse",
 		"--cap-add", "SYS_ADMIN",

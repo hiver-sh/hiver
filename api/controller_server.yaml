@@ -18,6 +18,21 @@ tags:
     description: Provision sandboxes.
 
 paths:
+  /v1/sandboxes:
+    get:
+      tags: [Sandboxes]
+      summary: List all sandboxes.
+      operationId: listSandboxes
+      description: Returns all currently provisioned sandboxes.
+      responses:
+        '200':
+          description: The list of sandboxes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Sandbox' }
+
   /v1/sandboxes/{id}:
     put:
       tags: [Sandboxes]

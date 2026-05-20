@@ -36,6 +36,16 @@ func NewControllerHandlers() *ControllerHandlers {
 	return &ControllerHandlers{runtime: rt}
 }
 
+// ListSandboxes returns all currently running sandboxes.
+func (h *ControllerHandlers) ListSandboxes(c *gin.Context) {
+	sandboxes, err := h.runtime.List()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, sandboxes)
+}
+
 // GetOrCreateSandbox is idempotent on id: if a sandbox for id is already
 // running its existing endpoint is returned (200); otherwise a new sandbox
 // is booted from the request body (201).
