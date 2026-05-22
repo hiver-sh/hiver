@@ -590,7 +590,7 @@ type fsSidecar struct {
 // conservative ("don't quietly change something we can't enforce")
 // rather than try to start/stop sbxfuse processes mid-flight.
 func reconcileSidecars(ctx context.Context, broker *events.Broker, proxyPID int, configPath, rulesPath string, fsSidecars map[string]fsSidecar) {
-	ch, cancel := broker.Subscribe(0)
+	_, ch, cancel := broker.Subscribe(0)
 	defer cancel()
 	for {
 		select {

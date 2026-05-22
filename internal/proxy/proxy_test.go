@@ -69,10 +69,7 @@ func decodeAudit(t *testing.T, b *bytes.Buffer) []proxy.AuditEvent {
 
 func TestHTTPAllowedForwarded(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Confirm the auth header was stripped before forwarding.
-		if got := r.Header.Get("Authorization"); got != "" {
-			t.Errorf("expected Authorization stripped; got %q", got)
-		}
+		// Auth header passes through — no stripping by default.
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("hello"))
 	}))
@@ -133,11 +130,14 @@ func TestHTTPDeniedReturns403(t *testing.T) {
 	}
 
 	events := decodeAudit(t, audit)
-	if len(events) != 1 {
-		t.Fatalf("audit events: got %d, want 1 (deny is request-only): %+v", len(events), events)
+	if len(events) != 2 {
+		t.Fatalf("audit events: got %d, want 2 (deny request+response): %+v", len(events), events)
 	}
 	if events[0].Phase != "request" || events[0].Verdict != "deny" {
 		t.Errorf("expected request-deny event; got %+v", events[0])
+	}
+	if events[1].Phase != "response" || events[1].Verdict != "deny" {
+		t.Errorf("expected response-deny event; got %+v", events[1])
 	}
 }
 
@@ -201,8 +201,25 @@ func TestStripDefaultAuthHeaders(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
-	client, _, stop := startProxy(t, []proxy.EgressRule{{Host: upstreamHost}})
-	defer stop()
+	// Explicitly opt into the default auth-header strip list.
+	audit := &bytes.Buffer{}
+	p, err := proxy.New(proxy.Config{
+		Addr:         "127.0.0.1:0",
+		Allow:        []proxy.EgressRule{{Host: upstreamHost}},
+		Audit:        audit,
+		StripHeaders: proxy.DefaultStrippedAuthHeaders,
+	})
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	if err := p.Listen(); err != nil {
+		t.Fatalf("proxy.Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go p.Run(ctx) //nolint:errcheck
+	addr := p.Addr()
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: addr})}}
+	defer cancel()
 
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
 	req.Header.Set("Authorization", "Bearer leaked")

@@ -231,12 +231,18 @@ func (s *Server) beginAudit(op, path string) *auditCtx {
 	}
 }
 
-// deny emits the request-phase event for an ACL denial. No response
-// event follows — the backend was never touched.
+// deny emits the request-phase event for an ACL denial followed immediately
+// by a paired response event so every fs.request has a corresponding fs.response.
 func (a *auditCtx) deny() {
+	now := time.Now()
 	a.s.audit(AuditEvent{
-		At: time.Now(), Type: "filesystem", Phase: "request",
+		At: now, Type: "filesystem", Phase: "request",
 		RequestID: a.requestID, Op: a.op, Path: a.path, Verdict: "deny",
+	})
+	a.s.audit(AuditEvent{
+		At: now, Type: "filesystem", Phase: "response",
+		RequestID: a.requestID, Op: a.op, Path: a.path, Verdict: "deny",
+		DurationMs: int(time.Since(a.start) / time.Millisecond),
 	})
 }
 

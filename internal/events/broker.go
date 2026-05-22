@@ -90,12 +90,13 @@ func (b *Broker) Publish(build Factory) int64 {
 	return b.nextID
 }
 
-// Subscribe returns a channel that receives every Publish after the
-// call, plus a replay of every buffered entry with id > after. The
-// returned cancel func unsubscribes and closes the channel.
+// Subscribe returns all buffered entries with id > after as a replay
+// slice, plus a live channel that receives every subsequent Publish.
+// The returned cancel func unsubscribes and closes the channel.
 //
-// Replay is bounded by the ring capacity; older events are lost.
-func (b *Broker) Subscribe(after int64) (<-chan Entry, func()) {
+// Replay is returned as a plain slice (not through the bounded channel)
+// so callers always receive every buffered event regardless of subDepth.
+func (b *Broker) Subscribe(after int64) ([]Entry, <-chan Entry, func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan Entry, b.subDepth)
@@ -103,22 +104,18 @@ func (b *Broker) Subscribe(after int64) (<-chan Entry, func()) {
 		// Broker is down — replay nothing, hand back a closed channel
 		// so the caller exits its receive loop immediately.
 		close(ch)
-		return ch, func() {}
+		return nil, ch, func() {}
 	}
+	var replay []Entry
 	for _, e := range b.ring {
 		if e.ID > after {
-			select {
-			case ch <- e:
-			default:
-				// Channel filled by replay alone; remaining buffered
-				// events fall off but the live stream continues.
-			}
+			replay = append(replay, e)
 		}
 	}
 	id := b.nextSub
 	b.nextSub++
 	b.subs[id] = ch
-	return ch, func() { b.unsubscribe(id, ch) }
+	return replay, ch, func() { b.unsubscribe(id, ch) }
 }
 
 // SubscriberCount returns the number of live subscribers. Useful to

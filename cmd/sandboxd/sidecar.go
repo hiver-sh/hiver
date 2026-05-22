@@ -197,6 +197,13 @@ func formatProxyEvent(ev map[string]any) string {
 		}
 		return fmt.Sprintf("proxy chunk %s %s%s %q", method, host, path, body)
 	}
+	body, _ := ev["body"].(string)
+	if body != "" {
+		if len(body) > 60 {
+			body = body[:60] + "…"
+		}
+		return fmt.Sprintf("proxy %-5s %s %s%s %q", verdict, method, host, path, body)
+	}
 	return fmt.Sprintf("proxy %-5s %s %s%s", verdict, method, host, path)
 }
 
@@ -250,12 +257,14 @@ func formatFuseEvent(ev map[string]any) string {
 // egress.response SandboxEvents and publishes them to the broker.
 //
 // Phase semantics:
-//   - phase=request, verdict in {allow, deny} → egress.request
-//   - phase=response, verdict=allow           → egress.response with
-//     `request_id` set to the SSE event id of the paired request
-//     (looked up via the correlator).
-//   - phase=response, verdict=error           → dropped (no upstream
-//     status to report).
+//   - phase=request, verdict in {allow, deny} → egress.request; the
+//     SSE event id is stored in the correlator for both verdicts.
+//   - phase=response, verdict in {allow, error, deny} → egress.response
+//     with `request_id` set to the SSE event id of the paired request
+//     (looked up via the correlator). The proxy emits a synthetic
+//     phase=response immediately after every deny so consumers always
+//     see a paired egress.response regardless of verdict or upstream
+//     failure.
 type proxyTranslator struct {
 	broker *events.Broker
 	corr   *correlator
@@ -276,8 +285,9 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 			return
 		}
 		sseID := t.broker.Publish(f)
-		// Only allowed requests get a response.
-		if verdict == "allow" {
+		// Both allow and deny requests get a paired response event from
+		// the proxy, so store the SSE id for both.
+		if verdict == "allow" || verdict == "deny" {
 			t.corr.put(internalID, sseID)
 		}
 	case "stream_chunk":
@@ -290,7 +300,7 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 			t.broker.Publish(f)
 		}
 	case "response":
-		if v, _ := raw["verdict"].(string); v != "allow" {
+		if v, _ := raw["verdict"].(string); v != "allow" && v != "error" && v != "deny" {
 			return
 		}
 		sseID, ok := t.corr.take(internalID)
@@ -429,11 +439,16 @@ func (t *fuseTranslator) handle(raw map[string]any) {
 			return
 		}
 		sseID := t.broker.Publish(f)
-		if verdict == "allow" {
+		if verdict == "allow" || verdict == "deny" {
 			t.corr.put(internalID, sseID)
 		}
 	case "response":
-		if !isConcreteFuseOp(op) {
+		verdict, _ := raw["verdict"].(string)
+		// allow responses: only concrete ops are surfaced (non-concrete request
+		// events were filtered out above, so their correlator entries are absent).
+		// deny responses: always pass through — the request was published for
+		// every denied op regardless of concrete/non-concrete.
+		if verdict != "deny" && !isConcreteFuseOp(op) {
 			return
 		}
 		sseID, ok := t.corr.take(internalID)

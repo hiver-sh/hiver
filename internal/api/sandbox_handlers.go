@@ -279,8 +279,17 @@ func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) 
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ch, cancel := h.broker.Subscribe(after)
+	replay, ch, cancel := h.broker.Subscribe(after)
 	defer cancel()
+
+	for _, entry := range replay {
+		if err := writeSSEFrame(w, entry); err != nil {
+			return
+		}
+	}
+	if len(replay) > 0 {
+		flusher.Flush()
+	}
 
 	notify := c.Request.Context().Done()
 	for {

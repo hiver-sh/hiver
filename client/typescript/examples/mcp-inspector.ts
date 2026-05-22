@@ -9,6 +9,7 @@ import process from "node:process";
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
+  ttl: 0,
   fs: [
     {
       backend: "local",

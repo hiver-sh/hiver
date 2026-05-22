@@ -89,7 +89,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--name", containerName,
 		"--label", "com.docker.compose.project=" + composeProject,
 		"--label", "com.docker.compose.service=" + serviceLabel,
-		"--label", labelSandboxID+"="+id,
+		"--label", labelSandboxID + "=" + id,
 		"--network", composeProject + "_default",
 		"--device", "/dev/fuse",
 		"--cap-add", "SYS_ADMIN",
@@ -106,6 +106,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
 		"-p", fmt.Sprintf("%d", sandboxAPIPort),
+		"-p", "22",
 	}
 	if cfg.Env != nil {
 		for k, v := range *cfg.Env {

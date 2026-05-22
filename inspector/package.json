@@ -1,0 +1,13 @@
+{
+  "name": "sandbox-inspector",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "inspector": "./cli/bin.js"
+  },
+  "workspaces": ["cli", "client", "server"],
+  "scripts": {
+    "start": "node cli/bin.js"
+  }
+}

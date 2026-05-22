@@ -1,0 +1,13 @@
+{
+  "name": "sandbox-inspector-cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "tsx": "^4.19.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.41",
+    "typescript": "^5.5.4"
+  }
+}

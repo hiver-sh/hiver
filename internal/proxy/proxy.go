@@ -37,7 +37,8 @@ type Config struct {
 	// Required; tests pass *bytes.Buffer, prod passes os.Stderr.
 	Audit io.Writer
 	// Headers to strip from outbound requests before forwarding.
-	// Empty = use [DefaultStrippedAuthHeaders].
+	// Nil (default) means no stripping. Pass [DefaultStrippedAuthHeaders]
+	// explicitly to enable the default auth-header strip.
 	StripHeaders []string
 	// OutboundMark, when non-zero, sets SO_MARK on every upstream socket
 	// the proxy opens. sandboxd uses this in transparent mode so that
@@ -96,9 +97,9 @@ var DefaultStrippedAuthHeaders = []string{
 //
 // Each user-level request produces a pair of events sharing the same
 // RequestID: a `phase:"request"` carrying the access decision, then
-// (for allowed HTTP flows that reach upstream) a `phase:"response"`
-// carrying the upstream Status and DurationMs. CONNECT and raw-forward
-// TLS emit request only — there's no HTTP-level response to report.
+// a `phase:"response"` carrying the result. For HTTP flows the response
+// carries the upstream Status and DurationMs; for CONNECT and raw-forward
+// TLS it carries Status=200/0 respectively at tunnel close.
 type AuditEvent struct {
 	At         time.Time `json:"at"`
 	Type       string    `json:"type"`  // always "network"
@@ -162,9 +163,6 @@ func New(cfg Config) (*Proxy, error) {
 		return nil, errors.New("proxy: Audit sink required")
 	}
 	strip := cfg.StripHeaders
-	if len(strip) == 0 {
-		strip = DefaultStrippedAuthHeaders
-	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	if cfg.OutboundMark != 0 {
 		dialer.Control = soMarkControl(cfg.OutboundMark)
@@ -384,24 +382,27 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ac.allow()
+
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		_ = upstream.Close()
+		ac.responseError("no hijacker", http.StatusInternalServerError)
 		http.Error(w, "no hijacker", http.StatusInternalServerError)
 		return
 	}
 	client, _, err := hj.Hijack()
 	if err != nil {
 		_ = upstream.Close()
+		ac.responseError(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		_ = client.Close()
 		_ = upstream.Close()
+		ac.responseError(err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	ac.allow()
 
 	// Bidi tunnel until either side closes.
 	done := make(chan struct{}, 2)
@@ -410,6 +411,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	<-done
 	_ = client.Close()
 	_ = upstream.Close()
+	ac.response(http.StatusOK)
 }
 
 // MatchEgress finds the first rule that matches a request, or nil if
@@ -568,29 +570,36 @@ func (p *Proxy) beginAudit(method, host, path, query string) *auditCtx {
 	}
 }
 
-// deny emits a request event with verdict="deny". `status` is the HTTP
-// status the proxy will return to the client (typically 403), and is
-// surfaced for human debugging — it isn't part of the SSE
-// egress.request shape.
+// deny emits a request event with verdict="deny" followed immediately by a
+// paired response event. The proxy never reaches an upstream for denied
+// requests, so the response is synthetic — Status carries the HTTP status
+// the proxy returns to the client (typically 403), and DurationMs is the
+// wall-clock time spent before the decision was made.
 func (a *auditCtx) deny(reason string, status int) {
+	now := time.Now()
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query, Body: a.requestBody,
 		Verdict: "deny", Status: status, Reason: reason,
 	})
+	a.p.audit(AuditEvent{
+		At: now, Type: "network", Phase: "response",
+		RequestID: a.requestID,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Verdict: "deny", Status: status, Reason: reason,
+		DurationMs: int(now.Sub(a.start) / time.Millisecond),
+	})
 }
 
-// allow emits a request event with verdict="allow". Callers must
-// follow up with response()/responseError() if the request reaches an
-// upstream that returns an HTTP status (i.e. HTTP and intercepted-TLS
-// paths). CONNECT and raw-forward TLS skip response — the schema's
-// egress.response is HTTP-status-shaped.
+// allow emits the phase:"request" audit event immediately. It must be
+// called before any stream_chunk events so the sidecar correlator has
+// the SSE request id in place when chunks arrive.
 func (a *auditCtx) allow() {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query, Body: a.responseBody,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query, Body: a.requestBody,
 		Verdict: "allow",
 	})
 }

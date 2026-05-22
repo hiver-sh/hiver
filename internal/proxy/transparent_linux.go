@@ -151,22 +151,19 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 }
 
 func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string) {
-	// Raw-forward TLS is host-only: there's no HTTP-level response shape
-	// to report, so the decision is the whole audit story. Dial failure
-	// before the tunnel exists is treated as a deny so consumers don't
-	// see an orphan allow.
 	ac := p.beginAudit("TLS", host, "", "")
+	ac.allow()
 	upstream, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
 	if err != nil {
-		ac.deny("upstream dial: "+err.Error(), 0)
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer upstream.Close()
-	ac.allow()
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(upstream, br); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(c, upstream); done <- struct{}{} }()
 	<-done
+	ac.response(0)
 }
 
 // interceptTLS terminates TLS, applies HTTP-level rules to the inner
@@ -211,6 +208,12 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	}
 	defer upstreamTLS.Close()
 
+	// Both TLS handshakes succeeded: the connection is accepted. Emit the
+	// allow event now so there is always a paired egress.response — the
+	// deferred response fires at every subsequent return path.
+	tlsAC.allow()
+	defer tlsAC.response(0)
+
 	req, err := http.ReadRequest(bufio.NewReader(clientTLS))
 	if err != nil {
 		return
@@ -251,6 +254,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		src := unwrapBody(resp)
 		if err := writeResponseHeaders(clientTLS, resp); err != nil {
+			ac.responseError(err.Error(), http.StatusBadGateway)
 			return
 		}
 		p.sseForward(src, clientTLS, nil, ac)
@@ -365,6 +369,7 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		src := unwrapBody(resp)
 		if err := writeResponseHeaders(c, resp); err != nil {
+			ac.responseError(err.Error(), http.StatusBadGateway)
 			return
 		}
 		p.sseForward(src, c, nil, ac)
