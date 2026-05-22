@@ -174,7 +174,7 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 
 	pod := startMCPPod(t, bundleImage, specPath)
 
-	mcpURL := "http://127.0.0.1:8080/v1/sandbox"
+	mcpURL := "http://127.0.0.1:8081"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	session := connectMCP(t, ctx, mcpURL, &pod.out)
 	return pod, session, ctx, cancel
@@ -188,10 +188,10 @@ type mcpPod struct {
 }
 
 // startMCPPod runs sandbox-runtime with the MCP agent and publishes
-// :8080 (sandboxd API) to the host. Unlike
-// runSandboxPod it doesn't wait for any agent-side "DONE" marker —
-// the readiness check is "MCP server answers initialize", which the
-// caller does via connectMCP.
+// :8080 (sandboxd API) and :8081 (sandboxd TCP proxy → MCP server) to
+// the host. Unlike runSandboxPod it doesn't wait for any agent-side
+// "DONE" marker — the readiness check is "MCP server answers initialize",
+// which the caller does via connectMCP.
 func startMCPPod(t *testing.T, bundleImage, specPath string) *mcpPod {
 	t.Helper()
 
@@ -207,6 +207,7 @@ func startMCPPod(t *testing.T, bundleImage, specPath string) *mcpPod {
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8080:8080",
+		"-p", "8081:8081",
 		"-v", specPath + ":/mnt/spec.yaml:ro",
 		bundleImage,
 		"--spec", "/mnt/spec.yaml",

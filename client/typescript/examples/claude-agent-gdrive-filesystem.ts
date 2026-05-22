@@ -1,5 +1,5 @@
 // Hook the Claude Agent SDK up to a Hive-managed MCP server. The
-// sandbox boots the `mcp-server` image, and `sandbox.url` is handed to
+// sandbox boots the `mcp-server` image, and `sandbox.exposedEndpoint` is handed to
 // the SDK as an HTTP MCP server so every tool call the model makes is
 // mediated by sandboxd's egress + FUSE policies.
 //
@@ -235,7 +235,7 @@ const response = query({
     includePartialMessages: true,
     tools: [],
     mcpServers: {
-      sandbox: { type: "http", url: sandbox.url, alwaysLoad: true },
+      sandbox: { type: "http", url: `http://${sandbox.exposedEndpoint!}`, alwaysLoad: true },
     },
     allowedTools: [
       "mcp__sandbox__bash",

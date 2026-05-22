@@ -43,6 +43,12 @@ export class Sandbox {
   readonly apiServerUrl: string;
   /** Base URL of the controller that created this sandbox (no trailing slash). */
   readonly controllerUrl: string;
+  /**
+   * Host and port of the HTTP service the sandbox image exposes (the first
+   * TCP port from its EXPOSE directive), e.g. `"localhost:32768"`.
+   * `undefined` when the image declares no EXPOSE port.
+   */
+  readonly exposedEndpoint: string | undefined;
 
   readonly fetchImpl: typeof fetch;
 
@@ -50,6 +56,7 @@ export class Sandbox {
     this.id = ref.id;
     this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
     this.controllerUrl = opts.controllerUrl.replace(/\/+$/, "");
+    this.exposedEndpoint = ref.exposed_endpoint;
     const baseFetch = opts.fetch ?? fetch;
 
     this.fetchImpl = (input, init) => {
@@ -57,15 +64,6 @@ export class Sandbox {
         init?.signal ?? AbortSignal.timeout(SANDBOX_FETCH_TIMEOUT_MS);
       return baseFetch(input, { ...init, signal });
     };
-  }
-
-  /**
-   * URL of the HTTP service the sandbox image exposes (the first TCP
-   * port from its EXPOSE directive). Append paths to it to reach the
-   * upstream — `${sandbox.url}/healthz`, etc.
-   */
-  get url(): string {
-    return `${this.apiServerUrl}/v1/sandbox`;
   }
 
   /**

@@ -107,6 +107,7 @@ class ApiError(BaseModel):
 class SandboxRef(BaseModel):
     id: str
     endpoint: str
+    exposed_endpoint: Optional[str] = None
 
 
 class _SandboxEventBase(BaseModel):

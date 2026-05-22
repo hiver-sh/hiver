@@ -22,10 +22,10 @@ const imageTag = "hive-example-claude-worker-bundle";
 const scriptPath = join(here, "../../../../scripts/bundle-images.sh");
 
 console.log(`> Building image ${sourceImage}`);
-await buildImage(sourceImage, join(here, "image"));
+// await buildImage(sourceImage, join(here, "image"));
 
 console.log(`> Building sandbox bundle ${imageTag}`);
-await buildBundle(scriptPath, sourceImage, imageTag);
+// await buildBundle(scriptPath, sourceImage, imageTag);
 
 console.log("> Starting sandbox");
 const sandbox = await hive.getOrCreateSandbox("hive-claude-code-worker-1", {
@@ -55,15 +55,15 @@ const { shutdown } = createShutdown(sandbox);
 
 const containerName = `hive-sandbox-${sandbox.id}`;
 console.log(`> Looking up SSH port for ${containerName}`);
-const sshPort = await lookupDockerPort(containerName, 22);
 
-console.log(`> Waiting for sshd on port ${sshPort}`);
-await waitForSsh("127.0.0.1", sshPort);
+console.log(`> Waiting for sshd on ${sandbox.exposedEndpoint}`);
+const sshPortParts = sandbox.exposedEndpoint!.split(':');
+await waitForSsh(sshPortParts[0]!, sshPortParts[1]!);
 
 await shutdown();
 
 async function waitForSsh(host: string, port: string): Promise<void> {
-  for (let attempt = 1; attempt <= 15; attempt++) {
+  for (let attempt = 1; attempt <= 1000; attempt++) {
     try {
       return await sshConnect(host, port);
     } catch (err) {
@@ -75,6 +75,7 @@ async function waitForSsh(host: string, port: string): Promise<void> {
 }
 
 async function sshConnect(host: string, port: string): Promise<void> {
+  console.log('connecting', host, port)
   const askpass = join(tmpdir(), "hive-askpass.sh");
   await writeFile(askpass, "#!/bin/sh\necho root\n", { mode: 0o700 });
   try {
@@ -108,23 +109,6 @@ async function sshConnect(host: string, port: string): Promise<void> {
   } finally {
     await unlink(askpass).catch(() => {});
   }
-}
-
-function lookupDockerPort(container: string, port: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("docker", ["port", container, `${port}/tcp`], {
-      stdio: ["inherit", "pipe", "inherit"],
-    });
-    let out = "";
-    child.stdout?.on("data", (d: Buffer) => (out += d.toString()));
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code !== 0) return reject(new Error(`docker port exit ${code}`));
-      const line = out.trim().split("\n").find((l) => l.startsWith("0.0.0.0:"));
-      if (!line) return reject(new Error(`no IPv4 mapping for port ${port}`));
-      resolve(line.split(":")[1]!.trim());
-    });
-  });
 }
 
 function buildImage(tag: string, contextDir: string): Promise<void> {

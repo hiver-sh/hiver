@@ -24,7 +24,6 @@ import (
 	"log"
 	"maps"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -35,7 +34,6 @@ import (
 
 	"github.com/blasten/hive/internal/api"
 	"github.com/blasten/hive/internal/events"
-	"github.com/blasten/hive/internal/netmark"
 	"github.com/blasten/hive/internal/runc"
 	"github.com/blasten/hive/internal/sandboxd"
 	"github.com/blasten/hive/internal/spec"
@@ -45,6 +43,12 @@ import (
 
 const (
 	defaultTtl = 1800 * time.Second
+
+	// sandboxTCPProxyPort is the well-known port sandboxd listens on as a TCP
+	// proxy, forwarding to the agent image's declared service port. The
+	// controller always publishes this port so it never has to inspect the
+	// image itself.
+	sandboxTCPProxyPort = "8081"
 
 	mountReadTimout = 35 * time.Second
 
@@ -349,27 +353,28 @@ func main() {
 		log.Fatalf("start agent (runc): %v", err)
 	}
 
-	// Start Sandbox API server. /v1/sandbox proxies to the agent's
-	// exposed port over loopback; the marked dialer keeps that traffic
-	// out of the iptables OUTPUT REDIRECT (otherwise it would loop
-	// through sbxproxy and get allowlist-checked against the
-	// workload's egress rules).
-	proxyTransport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout: 5 * time.Second,
-			Control: netmark.Control(soMark),
-		}).DialContext,
-		MaxIdleConns:        100,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 5 * time.Second,
-	}
 	s := api.NewSandboxServer(
 		*apiServerPort,
-		imgCfg.ExposedPort,
-		proxyTransport,
 		broker,
 		store,
 		lifetime)
+
+	// If the agent image exposes a service port (other than our own proxy
+	// port), start a TCP proxy at sandboxTCPProxyPort so the controller can
+	// publish one stable port (8081) without inspecting each image.
+	if imgCfg.ExposedPort != nil && *imgCfg.ExposedPort != sandboxTCPProxyPort {
+		tcpProxy := api.NewTCPProxy(
+			net.JoinHostPort("0.0.0.0", sandboxTCPProxyPort),
+			net.JoinHostPort("127.0.0.1", *imgCfg.ExposedPort),
+			soMark,
+		)
+		go func() {
+			log.Printf("sandboxd: tcp proxy :%s → 127.0.0.1:%s", sandboxTCPProxyPort, *imgCfg.ExposedPort)
+			if err := tcpProxy.Run(ctx); err != nil {
+				log.Printf("sandboxd: tcp proxy: %v", err)
+			}
+		}()
+	}
 
 	// Start the TTL countdown from when the API is reachable, not from
 	// sandboxd startup. Image unpacking can take several seconds, which

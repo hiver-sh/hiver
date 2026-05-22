@@ -1,7 +1,6 @@
 import cors from "cors";
 import express, { type Request, type Response } from "express";
 import { createServer } from "http";
-import { spawn } from "child_process";
 import { WebSocketServer, type WebSocket } from "ws";
 import { Client as SshClient } from "ssh2";
 import {
@@ -34,7 +33,7 @@ app.get("/api/sandboxes", async (req: Request, res: Response) => {
   try {
     const sandboxes = await listSandboxes({ controllerUrl: controllerUrl(req) });
     res.json(
-      sandboxes.map((s) => ({ id: s.id, endpoint: s.apiServerUrl })),
+      sandboxes.map((s) => ({ id: s.id, endpoint: s.apiServerUrl, exposed_endpoint: s.exposedEndpoint })),
     );
   } catch (err) {
     res.status(502).json({ error: String(err) });
@@ -49,7 +48,7 @@ app.put("/api/sandboxes/:id", async (req: Request, res: Response) => {
       req.body as SandboxConfig,
       { controllerUrl: controllerUrl(req) },
     );
-    res.json({ id: sandbox.id, endpoint: sandbox.apiServerUrl });
+    res.json({ id: sandbox.id, endpoint: sandbox.apiServerUrl, exposed_endpoint: sandbox.exposedEndpoint });
   } catch (err) {
     res.status(502).json({ error: String(err) });
   }
@@ -141,41 +140,23 @@ httpServer.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
+
+  const host = url.searchParams.get("host");
+  const portStr = url.searchParams.get("port");
+  if (!host || !portStr) {
+    socket.destroy();
+    return;
+  }
+
   wss.handleUpgrade(req, socket, head, (ws) => {
-    handleTerminal(ws, decodeURIComponent(match[1]), url.searchParams);
+    handleTerminal(ws, host, parseInt(portStr), url.searchParams);
   });
 });
 
-function lookupDockerPort(container: string, port: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("docker", ["port", container, `${port}/tcp`], {
-      stdio: ["inherit", "pipe", "inherit"],
-    });
-    let out = "";
-    child.stdout?.on("data", (d: Buffer) => (out += d.toString()));
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code !== 0) return reject(new Error(`docker port exit ${code}`));
-      const line = out.trim().split("\n").find((l) => l.startsWith("0.0.0.0:"));
-      if (!line) return reject(new Error(`no IPv4 mapping for port ${port}`));
-      resolve(line.split(":")[1]!.trim());
-    });
-  });
-}
 
-async function handleTerminal(ws: WebSocket, id: string, params: URLSearchParams) {
+async function handleTerminal(ws: WebSocket, host: string, port: number, params: URLSearchParams) {
   let cols = Math.max(1, parseInt(params.get("cols") ?? "80"));
   let rows = Math.max(1, parseInt(params.get("rows") ?? "24"));
-
-  const containerName = `hive-sandbox-${id}`;
-  let sshPort: string;
-  try {
-    sshPort = await lookupDockerPort(containerName, 22);
-  } catch (err) {
-    ws.send(`\r\nError: could not find SSH port for ${containerName}: ${err}\r\n`);
-    ws.close();
-    return;
-  }
 
   // Buffer messages that arrive before the SSH shell is open.
   const pending: string[] = [];
@@ -237,8 +218,8 @@ async function handleTerminal(ws: WebSocket, id: string, params: URLSearchParams
   });
 
   conn.connect({
-    host: "127.0.0.1",
-    port: parseInt(sshPort),
+    host,
+    port,
     username: "claude-agent",
     password: "root",
     readyTimeout: 10000,

@@ -18,6 +18,7 @@ const (
 	composeProject      = "hive"
 	defaultSandboxImage = "hive-sandbox-bundle"
 	sandboxAPIPort      = 8080
+	sandboxTCPProxyPort = 8081
 	labelSandboxID      = "hive.sandbox.id"
 )
 
@@ -28,20 +29,25 @@ func newDockerRuntime() *DockerRuntime {
 	return &DockerRuntime{}
 }
 
-func (r *DockerRuntime) Lookup(id string) (bool, string, error) {
+func (r *DockerRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	name := containerNameFor(id)
 	_, running, err := containerState(name)
 	if err != nil {
-		return false, "", err
+		return false, gen.Sandbox{}, err
 	}
 	if !running {
-		return false, "", nil
+		return false, gen.Sandbox{}, nil
 	}
 	hostPort, err := lookupHostPort(name, sandboxAPIPort)
 	if err != nil {
-		return false, "", err
+		return false, gen.Sandbox{}, err
 	}
-	return true, fmt.Sprintf("http://127.0.0.1:%s", hostPort), nil
+	sb := gen.Sandbox{
+		Id:              id,
+		Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+		ExposedEndpoint: lookupTCPProxyEndpoint(name),
+	}
+	return true, sb, nil
 }
 
 func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
@@ -59,8 +65,9 @@ func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
 			return nil, err
 		}
 		sandboxes = append(sandboxes, gen.Sandbox{
-			Id:       id,
-			Endpoint: fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+			Id:              id,
+			Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+			ExposedEndpoint: lookupTCPProxyEndpoint(name),
 		})
 	}
 	return sandboxes, nil
@@ -82,6 +89,11 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 	// but wasn't auto-removed) so `docker create --name` below doesn't fail
 	// with a name conflict. No-op if nothing matches.
 	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+
+	var image = defaultSandboxImage
+	if cfg.Image != nil && *cfg.Image != "" {
+		image = *cfg.Image
+	}
 
 	serviceLabel := "sandbox-" + id
 	createArgs := []string{
@@ -106,7 +118,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
 		"-p", fmt.Sprintf("%d", sandboxAPIPort),
-		"-p", "22",
+		"-p", fmt.Sprintf("%d", sandboxTCPProxyPort),
 	}
 	if cfg.Env != nil {
 		for k, v := range *cfg.Env {
@@ -122,11 +134,6 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 			continue
 		}
 		createArgs = append(createArgs, "-v", *local.Origin+":"+local.Mount+"-backend")
-	}
-
-	var image = defaultSandboxImage
-	if cfg.Image != nil && *cfg.Image != "" {
-		image = *cfg.Image
 	}
 
 	createArgs = append(createArgs,
@@ -153,8 +160,9 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		return gen.Sandbox{}, err
 	}
 	return gen.Sandbox{
-		Id:       id,
-		Endpoint: fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+		Id:              id,
+		Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+		ExposedEndpoint: lookupTCPProxyEndpoint(containerName),
 	}, nil
 }
 
@@ -214,4 +222,15 @@ func lookupHostPort(container string, containerPort int) (string, error) {
 		return port, nil
 	}
 	return "", fmt.Errorf("no IPv4 host mapping for %s:%d in %q", container, containerPort, out)
+}
+
+// lookupTCPProxyEndpoint returns "localhost:<hostPort>" for the container's
+// published sandboxTCPProxyPort, or nil if the port isn't mapped yet.
+func lookupTCPProxyEndpoint(container string) *string {
+	port, err := lookupHostPort(container, sandboxTCPProxyPort)
+	if err != nil {
+		return nil
+	}
+	s := "localhost:" + port
+	return &s
 }

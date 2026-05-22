@@ -14,8 +14,8 @@ var ErrSandboxNotFound = errors.New("sandbox not found")
 // keeping the HTTP layer independent of the container platform.
 type SandboxRuntime interface {
 	// Lookup reports whether the sandbox for id is running and returns its
-	// base endpoint URL. Returns (false, "", nil) when no sandbox exists for id.
-	Lookup(id string) (running bool, endpoint string, err error)
+	// descriptor. Returns (false, gen.Sandbox{}, nil) when no sandbox exists.
+	Lookup(id string) (running bool, sandbox gen.Sandbox, err error)
 
 	// Start creates and starts a new sandbox from cfg, returning its descriptor.
 	Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error)

@@ -34,7 +34,7 @@ Find a complete example [Stateful claude agent](client/typescript/examples/READM
 
 ### Custom Images
 
-By default, an MCP server with `Bash`, and file operations tools is available via `sandbox.url`. That said,
+By default, an MCP server with `Bash`, and file operations tools is available via `sandbox.exposedEndpoint`. That said,
 but you can also use a custom Docker image.
 
 Dockerfile:
@@ -62,7 +62,7 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
   // the rest
 });
 
-// `sandbox.url` points to the port `:8080`
+// `sandbox.exposedEndpoint` points to the port `:8080`
 ```
 
 </details>

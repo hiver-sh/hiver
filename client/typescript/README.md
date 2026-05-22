@@ -47,7 +47,7 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
   },
 });
 
-console.log("sandbox URL:", sandbox.url);
+console.log("sandbox endpoint:", sandbox.exposedEndpoint);
 
 // Keep the sandbox alive.
 const ping = setInterval(sandbox.ping, 10_000);

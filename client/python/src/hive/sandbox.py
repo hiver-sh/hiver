@@ -60,13 +60,9 @@ class Sandbox:
         self.id = ref.id
         self.api_server_url = ref.endpoint.rstrip("/")
         self.controller_url = controller_url.rstrip("/")
+        self.exposed_endpoint: Optional[str] = ref.exposed_endpoint
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
-
-    @property
-    def url(self) -> str:
-        """URL of the HTTP service the sandbox image exposes."""
-        return f"{self.api_server_url}/v1/sandbox"
 
     async def aclose(self) -> None:
         if self._owns_client:

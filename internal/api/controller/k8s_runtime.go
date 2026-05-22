@@ -45,19 +45,20 @@ func newK8sRuntime() (*K8sRuntime, error) {
 	return &K8sRuntime{client: client, namespace: ns}, nil
 }
 
-func (r *K8sRuntime) Lookup(id string) (bool, string, error) {
+func (r *K8sRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	name := containerNameFor(id)
 	pod, err := r.client.CoreV1().Pods(r.namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
-			return false, "", nil
+			return false, gen.Sandbox{}, nil
 		}
-		return false, "", fmt.Errorf("get pod %s: %w", name, err)
+		return false, gen.Sandbox{}, fmt.Errorf("get pod %s: %w", name, err)
 	}
 	if pod.Status.Phase != corev1.PodRunning {
-		return false, "", nil
+		return false, gen.Sandbox{}, nil
 	}
-	return true, r.endpointFor(name), nil
+	ep := r.tcpProxyEndpoint(name)
+	return true, gen.Sandbox{Id: id, Endpoint: r.endpointFor(name), ExposedEndpoint: &ep}, nil
 }
 
 func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
@@ -73,7 +74,8 @@ func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 			continue
 		}
 		id := pod.Labels[labelSandboxID]
-		sandboxes = append(sandboxes, gen.Sandbox{Id: id, Endpoint: r.endpointFor(pod.Name)})
+		ep := r.tcpProxyEndpoint(pod.Name)
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id, Endpoint: r.endpointFor(pod.Name), ExposedEndpoint: &ep})
 	}
 	return sandboxes, nil
 }
@@ -81,6 +83,7 @@ func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	ctx := context.Background()
 	name := containerNameFor(id)
+
 	labels := map[string]string{labelSandboxID: id}
 
 	specBytes, err := yaml.Marshal(cfg)
@@ -106,8 +109,11 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 					Name:  "sandbox",
 					Image: r.imageFor(cfg),
 					Args:  []string{"--spec", "/mnt/spec.yaml"},
-					Ports: []corev1.ContainerPort{{ContainerPort: sandboxAPIPort}},
-					Env:   r.envVars(cfg),
+					Ports: []corev1.ContainerPort{
+						{ContainerPort: sandboxAPIPort},
+						{ContainerPort: sandboxTCPProxyPort},
+					},
+					Env: r.envVars(cfg),
 					SecurityContext: &corev1.SecurityContext{
 						Privileged: &privileged,
 					},
@@ -137,7 +143,10 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.namespace, Labels: labels},
 		Spec: corev1.ServiceSpec{
 			Selector: labels,
-			Ports:    []corev1.ServicePort{{Port: sandboxAPIPort, Protocol: corev1.ProtocolTCP}},
+			Ports: []corev1.ServicePort{
+				{Port: sandboxAPIPort, Protocol: corev1.ProtocolTCP},
+				{Port: sandboxTCPProxyPort, Protocol: corev1.ProtocolTCP},
+			},
 		},
 	}
 	if _, err := r.client.CoreV1().Services(r.namespace).Create(ctx, svc, metav1.CreateOptions{}); err != nil {
@@ -146,7 +155,8 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 		return gen.Sandbox{}, fmt.Errorf("create service: %w", err)
 	}
 
-	return gen.Sandbox{Id: id, Endpoint: r.endpointFor(name)}, nil
+	ep := r.tcpProxyEndpoint(name)
+	return gen.Sandbox{Id: id, Endpoint: r.endpointFor(name), ExposedEndpoint: &ep}, nil
 }
 
 func (r *K8sRuntime) Shutdown(id string) error {
@@ -170,6 +180,10 @@ func (r *K8sRuntime) Shutdown(id string) error {
 
 func (r *K8sRuntime) endpointFor(name string) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", name, r.namespace, sandboxAPIPort)
+}
+
+func (r *K8sRuntime) tcpProxyEndpoint(svcName string) string {
+	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", svcName, r.namespace, sandboxTCPProxyPort)
 }
 
 func (r *K8sRuntime) imageFor(cfg sandboxgen.SandboxConfig) string {

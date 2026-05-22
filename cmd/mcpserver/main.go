@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	var serverPort = flag.String("server-port", "8081", "port of the MCP server")
+	var serverPort = flag.String("server-port", "8082", "port of the MCP server")
 	flag.Parse()
 
 	s := mcp.NewServer(*serverPort)

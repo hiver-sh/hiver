@@ -1,7 +1,6 @@
 // Spin up a sandbox running the `mcp-server` image and hand its
-// `/v1/sandbox` URL to the MCP Inspector. The inspector connects to
-// the MCP server through the sandbox's reverse proxy, so every call
-// is mediated by sandboxd's egress + FUSE policies.
+// exposed endpoint URL to the MCP Inspector. The inspector connects
+// directly to the MCP server's published port.
 //
 // Run with: npx tsx examples/mcp-inspector.ts
 import { spawn } from "node:child_process";
@@ -30,11 +29,16 @@ const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
   },
 });
 
-console.info("MCP inspector → ", sandbox.url);
+if (!sandbox.exposedEndpoint) {
+  console.error("sandbox image has no EXPOSE port; cannot connect MCP Inspector");
+  process.exit(1);
+}
+const mcpURL = `http://${sandbox.exposedEndpoint}`;
+console.info("MCP inspector → ", mcpURL);
 
 const mcpInspector = spawn(
   "npx",
-  ["@modelcontextprotocol/inspector", "--server-url", sandbox.url],
+  ["@modelcontextprotocol/inspector", "--server-url", mcpURL],
   { stdio: "inherit" },
 );
 

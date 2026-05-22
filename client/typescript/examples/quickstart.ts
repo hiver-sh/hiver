@@ -26,7 +26,7 @@ const sandboxConfig: hive.SandboxConfig = {
 };
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);
-console.info("sandbox URL:", sandbox.url);
+console.info("sandbox endpoint:", `http://${sandbox.exposedEndpoint}`);
 
 let ping: ReturnType<typeof setInterval>;
 const { ac, shutdown } = createShutdown(sandbox, {

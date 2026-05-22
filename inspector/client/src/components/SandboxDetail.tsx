@@ -272,7 +272,12 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }:
               onMouseDown={startDrag}
             />
             <div className="shrink-0 overflow-hidden" style={{ width: terminalWidth }}>
-              <Terminal sandboxId={sandbox.id} serverUrl={serverUrl} />
+              <Terminal
+                sandboxId={sandbox.id}
+                serverUrl={serverUrl}
+                sshHost={sandbox.exposed_endpoint?.split(":")[0] ?? "127.0.0.1"}
+                sshPort={parseInt(sandbox.exposed_endpoint?.split(":")[1] ?? "22")}
+              />
             </div>
           </>
         )}

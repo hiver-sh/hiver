@@ -9,10 +9,6 @@ info:
     The control plane's only job is to create that pod from a `SandboxConfig`
     and hand the caller back enough information to reach it.
 
-servers:
-  - url: http://localhost:9000
-    description: Control plane endpoint.
-
 tags:
   - name: Sandboxes
     description: Provision sandboxes.
@@ -143,3 +139,9 @@ components:
             documented in `sandbox_server.yaml` (e.g. `/v1/config`,
             `/v1/ping`, `/v1/file`) to issue per-sandbox calls.
           example: http://10.0.0.42:8080
+        exposed_endpoint:
+          type: string
+          description: |
+            Host and port of the sandbox's exposed port on the host network,
+            if the sandbox has an exposed port. Absent when no port is exposed.
+          example: localhost:32768

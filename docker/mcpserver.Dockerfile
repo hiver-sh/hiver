@@ -24,5 +24,5 @@ RUN npm install -g playwright \
 
 COPY --from=build /out/mcpserver /usr/local/bin/mcpserver
 
-EXPOSE 8081
+EXPOSE 8082
 ENTRYPOINT ["/usr/local/bin/mcpserver"]

@@ -7,11 +7,13 @@ import "@xterm/xterm/css/xterm.css";
 interface Props {
   sandboxId: string;
   serverUrl: string;
+  sshHost: string;
+  sshPort: number;
 }
 
 const FONT_FAMILY = '"MesloLGM Nerd Font Mono", Monaco, monospace';
 
-export function Terminal({ sandboxId, serverUrl }: Props) {
+export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -78,6 +80,8 @@ export function Terminal({ sandboxId, serverUrl }: Props) {
           `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal`,
           wsBase,
         );
+        url.searchParams.set("host", sshHost);
+        url.searchParams.set("port", String(sshPort));
         url.searchParams.set("cols", String(term.cols));
         url.searchParams.set("rows", String(term.rows));
 
@@ -112,7 +116,7 @@ export function Terminal({ sandboxId, serverUrl }: Props) {
       disposed = true;
       cleanup();
     };
-  }, [sandboxId, serverUrl]);
+  }, [sandboxId, serverUrl, sshHost, sshPort]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden bg-[#000000] p-1" />;
 }

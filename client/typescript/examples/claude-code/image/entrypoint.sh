@@ -59,6 +59,6 @@ done
 chown claude-agent:claude-agent /home/claude-agent/.ssh/environment
 chmod 600 /home/claude-agent/.ssh/environment
 
-su -s /bin/bash claude-agent -c 'tmux new-session -d -s claude "cd /workspace && claude"'
+su -s /bin/bash claude-agent -c 'tmux new-session -d -s claude -x 220 -y 50 "cd /workspace && claude"'
 
 exec /usr/sbin/sshd -D

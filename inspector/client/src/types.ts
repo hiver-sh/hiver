@@ -3,6 +3,7 @@ import { z } from "zod";
 export const SandboxRef = z.object({
   id: z.string(),
   endpoint: z.string(),
+  exposed_endpoint: z.string().optional(),
 });
 export type SandboxRef = z.infer<typeof SandboxRef>;
 

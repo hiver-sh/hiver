@@ -152,11 +152,11 @@ const sandbox = await hive.getOrCreateSandbox("hive-gdrive", {
   ],
 });
 
-console.info("MCP inspector → ", sandbox.url);
+console.info("MCP inspector → ", sandbox.exposedEndpoint);
 
 const mcpInspector = spawn(
   "npx",
-  ["@modelcontextprotocol/inspector", "--server-url", sandbox.url],
+  ["@modelcontextprotocol/inspector", "--server-url", `http://${sandbox.exposedEndpoint}`],
   { stdio: "inherit" },
 );
 
