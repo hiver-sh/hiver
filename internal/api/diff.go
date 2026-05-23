@@ -37,7 +37,7 @@ func diffConfig(current, desired gen.SandboxConfig) gen.Changes {
 		}
 	}
 
-	addedE, removedE := diffEgress(egressRules(current.Egress), egressRules(desired.Egress))
+	addedE, removedE := diffEgress(derefEgress(current.Egress), derefEgress(desired.Egress))
 	if len(addedE) > 0 || len(removedE) > 0 {
 		ch.Egress = &struct {
 			Added   *[]gen.EgressRule `json:"added,omitempty"`
@@ -50,11 +50,11 @@ func diffConfig(current, desired gen.SandboxConfig) gen.Changes {
 	return ch
 }
 
-func egressRules(e *gen.Egress) []gen.EgressRule {
-	if e == nil || e.Allow == nil {
+func derefEgress(e *[]gen.EgressRule) []gen.EgressRule {
+	if e == nil {
 		return nil
 	}
-	return *e.Allow
+	return *e
 }
 
 func diffFS(current, desired []gen.FileSystem) (added, removed []gen.FileSystem) {

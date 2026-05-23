@@ -14,15 +14,14 @@ const sandboxConfig: hive.SandboxConfig = {
       acls: [{ path: "/workspace/**", access: "rw" }],
     },
   ],
-  egress: {
-    allow: [
-      {
-        host: "go.dev",
-        methods: ["GET"],
-        paths: ["/solutions/case-studies/*"],
-      },
-    ],
-  },
+  egress: [
+    {
+      access: "allow",
+      host: "go.dev",
+      methods: ["GET"],
+      paths: ["/solutions/case-studies/*"],
+    },
+  ],
 };
 
 const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);

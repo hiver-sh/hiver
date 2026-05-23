@@ -16,7 +16,7 @@ fs:
       - { path: /scratch/**, access: rw }
 
 egress:
-  allow:
-    - host: go.dev
-      methods: [GET]
-      paths: [/solutions/case-studies/*]
+  - access: allow
+    host: go.dev
+    methods: [GET]
+    paths: [/solutions/case-studies/*]

@@ -361,7 +361,7 @@ func BuildSandboxBundle(t *testing.T, agentImage, bundleTag string) {
 // reach them via the host-gateway alias). They're aliased inside the
 // container as:
 //
-//	upstream-allowed → host  (matches the spec.egress.allow list)
+//	upstream-allowed → host  (matches an allow rule in spec.egress)
 //	upstream-denied  → host  (does NOT match; proxy 403s)
 func startUpstreams(t *testing.T) (stop func()) {
 	t.Helper()

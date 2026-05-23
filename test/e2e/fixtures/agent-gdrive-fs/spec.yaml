@@ -13,6 +13,5 @@ fs:
       - { path: /scratch,    access: rw }
       - { path: /scratch/**, access: rw }
 
-egress:
-  allow: []
+egress: []
 

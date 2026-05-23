@@ -10,23 +10,24 @@ fs:
       - { path: /workspace/secret/**, access: deny }
 
 egress:
-  # Each entry is an EgressRule. host is required; methods, paths, and
-  # headers are optional. An omitted methods/paths list means "any". The
-  # headers map is merged onto the forwarded request via Header.Set —
-  # the agent doesn't see (or get to override) these values.
-  allow:
-    - host: upstream-allowed
-      methods: [GET]
-      paths: [/]
-      override:
-        headers:
-          X-Sandbox-Agent: agent-python
-    # TLS rule with path criteria: triggers TLS interception. sbxproxy
-    # presents a leaf cert minted by the per-pod CA, decrypts the inner
-    # request, enforces the path filter, then re-establishes TLS to
-    # the real upstream. The agent trusts the CA via the bundle that
-    # sandboxd splices into its rootfs at startup.
-    - host: go.dev
-      methods: [GET]
-      paths: [/solutions/case-studies/*]
+  # Each entry is an EgressRule. host and access are required; methods,
+  # paths, and override are optional. An omitted methods/paths list means
+  # "any". Override headers are merged onto the forwarded request via
+  # Header.Set — the agent doesn't see (or get to override) these values.
+  - access: allow
+    host: upstream-allowed
+    methods: [GET]
+    paths: [/]
+    override:
+      headers:
+        X-Sandbox-Agent: agent-python
+  # TLS rule with path criteria: triggers TLS interception. sbxproxy
+  # presents a leaf cert minted by the per-pod CA, decrypts the inner
+  # request, enforces the path filter, then re-establishes TLS to
+  # the real upstream. The agent trusts the CA via the bundle that
+  # sandboxd splices into its rootfs at startup.
+  - access: allow
+    host: go.dev
+    methods: [GET]
+    paths: [/solutions/case-studies/*]
 

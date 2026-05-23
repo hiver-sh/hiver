@@ -30,9 +30,9 @@ import (
 type Config struct {
 	// Listen address (e.g. "127.0.0.1:3128"). Required.
 	Addr string
-	// Allow lists rules evaluated top-to-bottom; the first match wins.
+	// Rules lists egress rules evaluated top-to-bottom; the first match wins.
 	// An empty list denies everything.
-	Allow []EgressRule
+	Rules []EgressRule
 	// Audit sink. Each event is encoded as one JSON line.
 	// Required; tests pass *bytes.Buffer, prod passes os.Stderr.
 	Audit io.Writer
@@ -55,23 +55,22 @@ type Config struct {
 	CAKey  *ecdsa.PrivateKey
 }
 
-// EgressRule is one allow entry for outbound traffic.
+// EgressRule is one egress rule for outbound traffic.
 //
+// Access ("allow" or "deny") is required and decides the outcome when this
+// rule matches. Rules are evaluated top-to-bottom; the first match wins.
 // Host is required (exact, or "*.suffix" wildcard). Ports, Methods, and
 // Paths are optional filters — an empty list means "no enforcement on
 // this dimension" (any port / any method / any path matches). Override,
 // when set, lets the proxy inject URL query parameters and HTTP headers
-// into the forwarded request: any key in Override.Query is set on the
-// outbound URL via url.Values.Set (replacing any value the agent sent),
-// and any key in Override.Headers is set on the outbound headers via
-// Header.Set. The agent cannot read these values back from the proxy
-// response.
+// into the forwarded request; it is only applied for allow rules.
 //
 // For TLS in transparent mode, only Host and Ports are consulted (the
 // proxy can read SNI from the ClientHello and the destination port
 // from SO_ORIGINAL_DST, but not method/path under encryption);
 // Methods/Paths/Override are ignored on those flows.
 type EgressRule struct {
+	Access   string          `json:"access"` // "allow" | "deny"
 	Host     string          `json:"host"`
 	Ports    []int           `json:"ports,omitempty"`
 	Methods  []string        `json:"methods,omitempty"`
@@ -125,10 +124,10 @@ type Proxy struct {
 	transport    *http.Transport
 	minter       *CertMinter // nil unless TLS termination is enabled
 
-	// allow holds the current allowlist, swappable at runtime via
-	// SetAllow so sandboxd can reconcile after a /v1/config PUT
+	// rules holds the current egress rules, swappable at runtime via
+	// SetRules so sandboxd can reconcile after a /v1/config PUT
 	// without restarting the proxy.
-	allow atomic.Pointer[[]EgressRule]
+	rules atomic.Pointer[[]EgressRule]
 
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
@@ -136,19 +135,19 @@ type Proxy struct {
 	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
 }
 
-// SetAllow atomically replaces the egress allowlist. Safe to call from
+// SetRules atomically replaces the egress rules. Safe to call from
 // any goroutine; in-flight matches see either the old or the new list,
 // never a torn read.
-func (p *Proxy) SetAllow(rules []EgressRule) {
+func (p *Proxy) SetRules(rules []EgressRule) {
 	cp := make([]EgressRule, len(rules))
 	copy(cp, rules)
-	p.allow.Store(&cp)
+	p.rules.Store(&cp)
 }
 
-// currentAllow returns the live allowlist. The returned slice is
+// currentRules returns the live egress rules. The returned slice is
 // owned by the proxy — callers must not mutate it.
-func (p *Proxy) currentAllow() []EgressRule {
-	if r := p.allow.Load(); r != nil {
+func (p *Proxy) currentRules() []EgressRule {
+	if r := p.rules.Load(); r != nil {
 		return *r
 	}
 	return nil
@@ -185,7 +184,7 @@ func New(cfg Config) (*Proxy, error) {
 	if cfg.CACert != nil && cfg.CAKey != nil {
 		p.minter = NewCertMinter(cfg.CACert, cfg.CAKey)
 	}
-	p.SetAllow(cfg.Allow)
+	p.SetRules(cfg.Rules)
 	return p, nil
 }
 
@@ -255,8 +254,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			r.Body = io.NopCloser(bytes.NewReader(b))
 		}
 	}
-	rule := MatchEgress(p.currentAllow(), r.Method, host, port, r.URL.Path)
-	if rule == nil {
+	rule := MatchEgress(p.currentRules(), r.Method, host, port, r.URL.Path)
+	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
@@ -266,7 +265,9 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, h := range p.stripHeaders {
 		r.Header.Del(h)
 	}
-	applyOverride(r, rule.Override)
+	if rule.Access == "allow" {
+		applyOverride(r, rule.Override)
+	}
 
 	// Rebuild the request for forwarding. http.DefaultTransport requires
 	// RequestURI to be empty and URL to have a scheme + host.
@@ -367,7 +368,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host, port := splitHostPort("", r.Host, 443)
 	ac := p.beginAudit("CONNECT", host, "", "")
 	// CONNECT is host-only — body is opaque under TLS.
-	if MatchEgress(p.currentAllow(), "CONNECT", host, port, "") == nil {
+	if r := MatchEgress(p.currentRules(), "CONNECT", host, port, ""); r == nil || r.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
@@ -415,7 +416,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 // MatchEgress finds the first rule that matches a request, or nil if
-// none does. method and path may be "" for non-HTTP traffic (TLS,
+// none does. The caller must check rule.Access ("allow"/"deny") to determine
+// the outcome. method and path may be "" for non-HTTP traffic (TLS,
 // CONNECT) — in that case Method/Path are not enforced; Host and Port
 // still are. port=0 means "destination port unknown"; rules that pin
 // Ports will never match in that case.
@@ -432,6 +434,14 @@ func MatchEgress(rules []EgressRule, method, host string, port int, path string)
 			continue
 		}
 		if path == "" {
+			// At connection level (TLS/CONNECT) we don't know the request
+			// path yet. A deny rule with path restrictions cannot be
+			// enforced here — skipping it avoids blocking the whole tunnel
+			// for a path-specific deny. The HTTP-level check (after TLS
+			// interception) will enforce it when the actual path is known.
+			if r.Access == "deny" && len(r.Paths) > 0 {
+				continue
+			}
 			return r
 		}
 		if !matchMethod(r.Methods, method) {
@@ -640,7 +650,7 @@ func (a *auditCtx) responseError(reason string, status int) {
 // to do about it.
 func denyHTTPBody(host string) string {
 	return fmt.Sprintf(
-		"egress denied: no allow rule matches %s. Add one under `egress.allow` in the sandbox config.",
+		"egress denied: no matching allow rule for %s. Add one under `egress` in the sandbox config.",
 		host,
 	)
 }

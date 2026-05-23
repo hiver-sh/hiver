@@ -44,7 +44,12 @@ components:
             be a parent directory of another mount path).
           items: { $ref: '#/components/schemas/FileSystem' }
         egress:
-          $ref: '#/components/schemas/Egress'
+          type: array
+          description: |
+            Ordered list of egress rules. The first rule that matches a
+            request decides the outcome; requests that match no rule
+            are denied.
+          items: { $ref: '#/components/schemas/EgressRule' }
 
     FileSystem:
       description: |
@@ -181,25 +186,16 @@ components:
           enum: [rw, ro, deny]
           description: Read-write, read-only, or fully denied.
 
-    Egress:
-      type: object
-      description: Network egress configuration.
-      additionalProperties: false
-      properties:
-        allow:
-          type: array
-          description: |
-            Ordered list of allow rules. The first rule that matches a
-            request decides the outcome; requests that match no rule
-            are denied.
-          items: { $ref: '#/components/schemas/EgressRule' }
-
     EgressRule:
       type: object
-      description: One egress allow rule.
-      required: [host]
+      description: One egress rule.
+      required: [host, access]
       additionalProperties: false
       properties:
+        access:
+          type: string
+          enum: [allow, deny]
+          description: Whether matching requests are allowed or denied.
         host:
           type: string
           description: |

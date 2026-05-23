@@ -16,17 +16,17 @@ const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
       acls: [{ path: "/workspace/**", access: "ro" }],
     },
   ],
-  egress: {
-    allow: [
-      {
-        host: "www.google.com",
-      },
-      {
-        host: "api.anthropic.com",
-      },
-      ...hive.allowedPythonPackages("numpy"),
-    ],
-  },
+  egress: [
+    {
+      access: "allow",
+      host: "www.google.com",
+    },
+    {
+      access: "allow",
+      host: "api.anthropic.com",
+    },
+    ...hive.allowedPythonPackages("numpy"),
+  ],
 });
 
 if (!sandbox.exposedEndpoint) {

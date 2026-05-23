@@ -22,10 +22,10 @@ const imageTag = "hive-example-claude-worker-bundle";
 const scriptPath = join(here, "../../../../scripts/bundle-images.sh");
 
 console.log(`> Building image ${sourceImage}`);
-// await buildImage(sourceImage, join(here, "image"));
+await buildImage(sourceImage, join(here, "image"));
 
 console.log(`> Building sandbox bundle ${imageTag}`);
-// await buildBundle(scriptPath, sourceImage, imageTag);
+await buildBundle(scriptPath, sourceImage, imageTag);
 
 console.log("> Starting sandbox");
 const sandbox = await hive.getOrCreateSandbox("hive-claude-code-worker-1", {
@@ -41,14 +41,12 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-code-worker-1", {
       acls: [{ path: "/workspace/**", access: "rw" }],
     },
   ],
-  egress: {
-    allow: [
-      { host: "api.anthropic.com" },
-      { host: "platform.claude.com" },
-      { host: "statsig.anthropic.com" },
-      { host: "claude.ai" },
-    ],
-  },
+  egress: [
+    { access: "allow", host: "api.anthropic.com" },
+    { access: "allow", host: "platform.claude.com" },
+    { access: "allow", host: "statsig.anthropic.com" },
+    { access: "allow", host: "claude.ai" },
+  ],
 });
 
 const { shutdown } = createShutdown(sandbox);

@@ -168,26 +168,25 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
       gdrive_folder_id: folderId,
     },
   ],
-  egress: {
-    allow: [
-      {
-        host: "finnhub.io",
-        paths: ["/api/v1/*", "/static/swagger.json"],
-        override: {
-          headers: {
-            "X-Finnhub-Token": finnhubKey,
-          },
+  egress: [
+    {
+      access: "allow",
+      host: "finnhub.io",
+      paths: ["/api/v1/*", "/static/swagger.json"],
+      override: {
+        headers: {
+          "X-Finnhub-Token": finnhubKey,
         },
       },
-      ...hive.allowedPythonPackages(
-        "numpy",
-        "pandas",
-        "statsmodels",
-        "scikit-learn",
-        "matplotlib",
-      ),
-    ],
-  },
+    },
+    ...hive.allowedPythonPackages(
+      "numpy",
+      "pandas",
+      "statsmodels",
+      "scikit-learn",
+      "matplotlib",
+    ),
+  ],
 });
 
 const { ac, shutdown } = createShutdown(sandbox, { cleanup: () => rl.close() });

@@ -160,7 +160,7 @@ func main() {
 	// dispatches by protocol sniff. The agent itself is unaware of
 	// the proxy — no HTTP_PROXY env, no opt-in cooperation required.
 	rulesTmp := filepath.Join(*workDir, "egress-rules.json")
-	if err := writeJSON(rulesTmp, sp.Egress.Allow); err != nil {
+	if err := writeJSON(rulesTmp, sp.Egress); err != nil {
 		log.Fatalf("write rules: %v", err)
 	}
 
@@ -658,16 +658,16 @@ func readPersistedConfig(path string) (gen.SandboxConfig, error) {
 	return cfg, nil
 }
 
-// writeEgressRules writes cfg.Egress.Allow (or `[]` if absent) to
-// rulesPath in the JSON shape sbxproxy expects. gen.EgressRule and
-// proxy.EgressRule share their wire format, so no conversion is
-// needed — sbxproxy unmarshals into its own type.
+// writeEgressRules writes cfg.Egress (or `[]` if absent) to rulesPath
+// in the JSON shape sbxproxy expects. gen.EgressRule and proxy.EgressRule
+// share their wire format, so no conversion is needed — sbxproxy
+// unmarshals into its own type.
 func writeEgressRules(rulesPath string, cfg gen.SandboxConfig) error {
-	allow := []gen.EgressRule{}
-	if cfg.Egress != nil && cfg.Egress.Allow != nil {
-		allow = *cfg.Egress.Allow
+	rules := []gen.EgressRule{}
+	if cfg.Egress != nil {
+		rules = *cfg.Egress
 	}
-	return writeJSON(rulesPath, allow)
+	return writeJSON(rulesPath, rules)
 }
 
 // writeACLsForMount writes fs.Acls to aclPath in the JSON shape

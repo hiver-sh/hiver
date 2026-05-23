@@ -64,7 +64,7 @@ func main() {
 	caCert, caKey := loadCA(*caCertPath, *caKeyPath)
 	p, err := proxy.New(proxy.Config{
 		Addr:         *addr,
-		Allow:        rules,
+		Rules:        rules,
 		Audit:        auditOut,
 		OutboundMark: *mark,
 		CACert:       caCert,
@@ -95,7 +95,7 @@ func main() {
 					log.Printf("sbxproxy: SIGHUP reload failed (keeping current rules): %v", err)
 					continue
 				}
-				p.SetAllow(newRules)
+				p.SetRules(newRules)
 				log.Printf("sbxproxy: reloaded %d rules from %s", len(newRules), *rulesPath)
 			}
 		}

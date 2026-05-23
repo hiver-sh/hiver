@@ -25,12 +25,10 @@ console.info("current:", current);
 
 const desired: hive.SandboxConfig = {
   ...current,
-  egress: {
-    allow: [
-      ...(current.egress?.allow ?? []),
-      { host: "api.github.com", methods: ["GET"], paths: ["/repos/*"] },
-    ],
-  },
+  egress: [
+    ...(current.egress ?? []),
+    { access: "allow", host: "api.github.com", methods: ["GET"], paths: ["/repos/*"] },
+  ],
 };
 
 const result = await sandbox.applyConfig(desired);

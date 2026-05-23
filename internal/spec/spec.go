@@ -24,7 +24,7 @@ type Spec struct {
 	Ttl    *int              `json:"ttl,omitempty"`
 	Env    map[string]string `json:"env,omitempty"`
 	FS     []FS              `json:"fs"`
-	Egress Egress            `json:"egress"`
+	Egress []proxy.EgressRule `json:"egress,omitempty"`
 }
 
 // FS defines one FUSE workspace. A spec carries a list of these so
@@ -216,13 +216,6 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 	return nil, nil
 }
 
-// Egress controls the MITM proxy allowlist. Rules are evaluated
-// top-to-bottom; the first match wins. The canonical [proxy.EgressRule]
-// definition lives in the proxy package since it's the consumer.
-type Egress struct {
-	Allow []proxy.EgressRule `json:"allow"`
-}
-
 // Load reads and validates a spec file.
 func Load(path string) (*Spec, error) {
 	s, err := Parse(path)
@@ -299,8 +292,8 @@ func (s *Spec) Validate() error {
 			}
 		}
 	}
-	for i, e := range s.Egress.Allow {
-		ctx := fmt.Sprintf("egress.allow[%d]", i)
+	for i, e := range s.Egress {
+		ctx := fmt.Sprintf("egress[%d]", i)
 		if strings.TrimSpace(e.Host) == "" {
 			return fmt.Errorf("%s.host is required", ctx)
 		}

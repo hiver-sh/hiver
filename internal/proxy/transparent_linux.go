@@ -134,8 +134,8 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 		host = origDst
 	}
 	_, port := splitHostPort("", origDst, 0)
-	rule := MatchEgress(p.currentAllow(), "TLS", host, port, "")
-	if rule == nil {
+	rule := MatchEgress(p.currentRules(), "TLS", host, port, "")
+	if rule == nil || rule.Access == "deny" {
 		p.beginAudit("TLS", host, "", "").deny("no matching rule", 0)
 		// Send a fatal TLS Alert so the peer surfaces a concrete error
 		// ("tlsv1 alert access denied") instead of the bare connection
@@ -226,8 +226,8 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		}
 	}
 	_, port := splitHostPort("", origDst, 0)
-	rule := MatchEgress(p.currentAllow(), req.Method, host, port, req.URL.Path)
-	if rule == nil {
+	rule := MatchEgress(p.currentRules(), req.Method, host, port, req.URL.Path)
+	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		_, _ = clientTLS.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 		return
@@ -236,7 +236,9 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	for _, h := range p.stripHeaders {
 		req.Header.Del(h)
 	}
-	applyOverride(req, rule.Override)
+	if rule.Access == "allow" {
+		applyOverride(req, rule.Override)
+	}
 	req.RequestURI = ""
 	req.Header.Set("Connection", "close")
 
@@ -329,8 +331,8 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 			req.Body = io.NopCloser(bytes.NewReader(b))
 		}
 	}
-	rule := MatchEgress(p.currentAllow(), req.Method, hostOnly, port, req.URL.Path)
-	if rule == nil {
+	rule := MatchEgress(p.currentRules(), req.Method, hostOnly, port, req.URL.Path)
+	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		writeDenyHTTP(c, hostOnly)
 		return
@@ -340,7 +342,9 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	for _, h := range p.stripHeaders {
 		req.Header.Del(h)
 	}
-	applyOverride(req, rule.Override)
+	if rule.Access == "allow" {
+		applyOverride(req, rule.Override)
+	}
 	// http.ReadRequest leaves req.RequestURI set; req.Write picks origin
 	// form regardless, but clear it so it doesn't accidentally end up as
 	// proxy-form on the wire.

@@ -5,7 +5,6 @@ export {
   Backend,
   Changes,
   ConfigApplyEvent,
-  Egress,
   EgressOverride,
   EgressRequestEvent,
   EgressResponseEvent,

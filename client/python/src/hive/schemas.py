@@ -57,6 +57,7 @@ class EgressOverride(BaseModel):
 
 
 class EgressRule(BaseModel):
+    access: Literal["allow", "deny"]
     host: str
     ports: Optional[list[int]] = None
     methods: Optional[list[HttpMethod]] = None
@@ -64,16 +65,12 @@ class EgressRule(BaseModel):
     override: Optional[EgressOverride] = None
 
 
-class Egress(BaseModel):
-    allow: Optional[list[EgressRule]] = None
-
-
 class SandboxConfig(BaseModel):
     image: Optional[str] = None
     env: Optional[dict[str, str]] = None
     ttl: Optional[int] = Field(None, ge=0)
     fs: list[FileSystem] = Field(min_length=1)
-    egress: Optional[Egress] = None
+    egress: Optional[list[EgressRule]] = None
 
 
 class _FSChanges(BaseModel):

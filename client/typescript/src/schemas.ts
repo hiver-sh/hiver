@@ -106,29 +106,21 @@ export const EgressOverride = z.object({
 });
 export type EgressOverride = z.infer<typeof EgressOverride>;
 
-/** One egress allow rule. */
+/** One egress rule. */
 export const EgressRule = z.object({
+  /** Whether matching requests are allowed or denied. */
+  access: z.enum(["allow", "deny"]),
   /** Exact host (`api.github.com`) or wildcard suffix (`*.pypi.org`). */
   host: z.string(),
   /** Optional ports; when omitted no port enforcement is performed. */
   ports: z.array(z.number().int()).optional(),
-  /** HTTP methods allowed by this rule. Empty means any method. */
+  /** HTTP methods matched by this rule. Empty means any method. */
   methods: z.array(HttpMethod).optional(),
-  /** Glob path patterns allowed by this rule. Empty means any path. */
+  /** Glob path patterns matched by this rule. Empty means any path. */
   paths: z.array(z.string()).optional(),
   override: EgressOverride.optional(),
 });
 export type EgressRule = z.infer<typeof EgressRule>;
-
-/** Network egress configuration. */
-export const Egress = z.object({
-  /**
-   * Ordered list of allow rules. The first rule that matches a request decides the outcome;
-   * requests that match no rule are denied.
-   */
-  allow: z.array(EgressRule).optional(),
-});
-export type Egress = z.infer<typeof Egress>;
 
 /** Hive sandbox configuration. */
 export const SandboxConfig = z.object({
@@ -147,8 +139,11 @@ export const SandboxConfig = z.object({
    * non-overlapping (a mount path may not be a parent directory of another mount path).
    */
   fs: z.array(FileSystem).min(1),
-  /** Network egress configuration. Controls which outbound hosts and paths the agent may reach. */
-  egress: Egress.optional(),
+  /**
+   * Ordered list of egress rules. The first rule that matches a request decides the outcome;
+   * requests that match no rule are denied.
+   */
+  egress: z.array(EgressRule).optional(),
 });
 export type SandboxConfig = z.infer<typeof SandboxConfig>;
 

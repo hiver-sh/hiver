@@ -22,7 +22,7 @@ import (
 func startProxy(t *testing.T, rules []proxy.EgressRule) (*http.Client, *bytes.Buffer, func()) {
 	t.Helper()
 	audit := &bytes.Buffer{}
-	p, err := proxy.New(proxy.Config{Addr: "127.0.0.1:0", Allow: rules, Audit: audit})
+	p, err := proxy.New(proxy.Config{Addr: "127.0.0.1:0", Rules: rules, Audit: audit})
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
-	client, audit, stop := startProxy(t, []proxy.EgressRule{{Host: upstreamHost}})
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
 	defer stop()
 
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
@@ -143,35 +143,37 @@ func TestHTTPDeniedReturns403(t *testing.T) {
 
 func TestMatchEgress(t *testing.T) {
 	rules := []proxy.EgressRule{
-		{Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/repos/*"}},
-		{Host: "*.pypi.org"}, // any method, any path, any port
-		{Host: "files.example.com", Override: &proxy.EgressOverride{Headers: map[string]string{"X-Auth": "tok"}}},
-		{Host: "127.0.0.1", Ports: []int{8080}},                    // port-pinned, host-only
-		{Host: "metrics.internal", Ports: []int{9090, 9091, 9092}}, // port set
+		{Access: "allow", Host: "api.github.com", Methods: []string{"GET"}, Paths: []string{"/repos/*"}},
+		{Access: "allow", Host: "*.pypi.org"}, // any method, any path, any port
+		{Access: "allow", Host: "files.example.com", Override: &proxy.EgressOverride{Headers: map[string]string{"X-Auth": "tok"}}},
+		{Access: "allow", Host: "127.0.0.1", Ports: []int{8080}},                    // port-pinned, host-only
+		{Access: "allow", Host: "metrics.internal", Ports: []int{9090, 9091, 9092}}, // port set
+		{Access: "deny", Host: "blocked.com"},                                        // explicit deny rule
 	}
 	cases := []struct {
 		name             string
 		method, host     string
 		port             int
 		p                string
-		wantMatch        bool
+		wantAccess       string // "allow", "deny", or "" for no match
 		wantHeaderInject string
 	}{
-		{"http: full match on rule 1", "GET", "api.github.com", 443, "/repos/foo", true, ""},
-		{"http: method denied", "POST", "api.github.com", 443, "/repos/foo", false, ""},
-		{"http: path denied", "GET", "api.github.com", 443, "/users/foo", false, ""},
-		{"http: wildcard host any method/path", "POST", "files.pypi.org", 443, "/anything", true, ""},
-		{"http: wildcard apex excluded", "GET", "pypi.org", 443, "/", false, ""},
-		{"http: header rule injects", "GET", "files.example.com", 80, "/x", true, "tok"},
-		{"tls: host-only match (path empty)", "TLS", "files.pypi.org", 443, "", true, ""},
-		{"tls: host miss", "TLS", "evil.com", 443, "", false, ""},
-		{"port: pinned port matches", "GET", "127.0.0.1", 8080, "/x", true, ""},
-		{"port: pinned port wrong port denied", "GET", "127.0.0.1", 22, "/x", false, ""},
-		{"port: list match", "GET", "metrics.internal", 9091, "/m", true, ""},
-		{"port: list miss", "GET", "metrics.internal", 9100, "/m", false, ""},
-		{"port: unenforced rule ignores port", "GET", "files.pypi.org", 8443, "/", true, ""},
-		{"empty host always denied", "GET", "", 80, "/", false, ""},
-		{"empty rules deny everything", "GET", "anywhere.com", 80, "/", false, ""},
+		{"http: full match on rule 1", "GET", "api.github.com", 443, "/repos/foo", "allow", ""},
+		{"http: method miss", "POST", "api.github.com", 443, "/repos/foo", "", ""},
+		{"http: path miss", "GET", "api.github.com", 443, "/users/foo", "", ""},
+		{"http: wildcard host any method/path", "POST", "files.pypi.org", 443, "/anything", "allow", ""},
+		{"http: wildcard apex excluded", "GET", "pypi.org", 443, "/", "", ""},
+		{"http: header rule injects", "GET", "files.example.com", 80, "/x", "allow", "tok"},
+		{"tls: host-only match (path empty)", "TLS", "files.pypi.org", 443, "", "allow", ""},
+		{"tls: host miss", "TLS", "evil.com", 443, "", "", ""},
+		{"port: pinned port matches", "GET", "127.0.0.1", 8080, "/x", "allow", ""},
+		{"port: pinned port wrong port denied", "GET", "127.0.0.1", 22, "/x", "", ""},
+		{"port: list match", "GET", "metrics.internal", 9091, "/m", "allow", ""},
+		{"port: list miss", "GET", "metrics.internal", 9100, "/m", "", ""},
+		{"port: unenforced rule ignores port", "GET", "files.pypi.org", 8443, "/", "allow", ""},
+		{"deny rule matches", "GET", "blocked.com", 443, "/", "deny", ""},
+		{"empty host always denied", "GET", "", 80, "/", "", ""},
+		{"empty rules deny everything", "GET", "anywhere.com", 80, "/", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,15 +182,62 @@ func TestMatchEgress(t *testing.T) {
 				r = nil
 			}
 			got := proxy.MatchEgress(r, tc.method, tc.host, tc.port, tc.p)
-			if (got != nil) != tc.wantMatch {
-				t.Fatalf("MatchEgress(%q,%q,%d,%q) match=%v, want %v", tc.method, tc.host, tc.port, tc.p, got != nil, tc.wantMatch)
+			if tc.wantAccess == "" {
+				if got != nil {
+					t.Fatalf("MatchEgress(%q,%q,%d,%q) got match access=%q, want no match", tc.method, tc.host, tc.port, tc.p, got.Access)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("MatchEgress(%q,%q,%d,%q) got no match, want access=%q", tc.method, tc.host, tc.port, tc.p, tc.wantAccess)
+			}
+			if got.Access != tc.wantAccess {
+				t.Errorf("got access=%q, want %q", got.Access, tc.wantAccess)
 			}
 			if tc.wantHeaderInject != "" {
-				if got == nil || got.Override == nil || got.Override.Headers["X-Auth"] != tc.wantHeaderInject {
+				if got.Override == nil || got.Override.Headers["X-Auth"] != tc.wantHeaderInject {
 					t.Errorf("expected header X-Auth=%q on matched rule, got %+v", tc.wantHeaderInject, got)
 				}
 			}
 		})
+	}
+}
+
+// TestPathDenyDoesNotBlockTLSTunnel verifies that a deny rule with a path
+// restriction is skipped at the TLS/CONNECT level (where path is unknown)
+// and is only enforced at the HTTP request level. This ensures that
+// deny /hasown doesn't kill the entire HTTPS tunnel to the host.
+func TestPathDenyDoesNotBlockTLSTunnel(t *testing.T) {
+	rules := []proxy.EgressRule{
+		{Access: "deny", Host: "registry.npmjs.org", Paths: []string{"/hasown"}},
+		{Access: "allow", Host: "registry.npmjs.org", Paths: []string{"/*"}},
+	}
+
+	// TLS tunnel (path=""): deny rule must be skipped; allow /* matches.
+	tls := proxy.MatchEgress(rules, "TLS", "registry.npmjs.org", 443, "")
+	if tls == nil || tls.Access != "allow" {
+		t.Fatalf("TLS tunnel: got %v, want allow (deny /hasown must not block tunnel)", tls)
+	}
+
+	// HTTP /hasown: deny fires.
+	hasown := proxy.MatchEgress(rules, "GET", "registry.npmjs.org", 443, "/hasown")
+	if hasown == nil || hasown.Access != "deny" {
+		t.Fatalf("/hasown: got %v, want deny", hasown)
+	}
+
+	// HTTP /express: allow /* fires.
+	express := proxy.MatchEgress(rules, "GET", "registry.npmjs.org", 443, "/express")
+	if express == nil || express.Access != "allow" {
+		t.Fatalf("/express: got %v, want allow", express)
+	}
+
+	// Host-only deny (no paths) must still block the tunnel.
+	hostDenyRules := []proxy.EgressRule{
+		{Access: "deny", Host: "blocked.com"},
+	}
+	tunnel := proxy.MatchEgress(hostDenyRules, "TLS", "blocked.com", 443, "")
+	if tunnel == nil || tunnel.Access != "deny" {
+		t.Fatalf("host-only deny: got %v, want deny", tunnel)
 	}
 }
 
@@ -205,7 +254,7 @@ func TestStripDefaultAuthHeaders(t *testing.T) {
 	audit := &bytes.Buffer{}
 	p, err := proxy.New(proxy.Config{
 		Addr:         "127.0.0.1:0",
-		Allow:        []proxy.EgressRule{{Host: upstreamHost}},
+		Rules:        []proxy.EgressRule{{Access: "allow", Host: upstreamHost}},
 		Audit:        audit,
 		StripHeaders: proxy.DefaultStrippedAuthHeaders,
 	})

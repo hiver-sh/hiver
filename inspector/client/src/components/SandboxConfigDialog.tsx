@@ -5,7 +5,6 @@ import { CodeEditor } from "@/components/CodeEditor";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { SegmentedControl } from "@/components/SegmentedControl";
 
-// ── Diff engine ───────────────────────────────────────────────────────────────
 
 type DL = { type: "+" | "-" | " "; text: string; oldLine: number; newLine: number };
 
@@ -58,8 +57,6 @@ function buildHunks(diff: DL[], ctx = 3): Hunk[] {
     };
   });
 }
-
-// ── JSON syntax highlighter ───────────────────────────────────────────────────
 
 type JT = { k: "key" | "str" | "num" | "kw" | "ot"; v: string };
 

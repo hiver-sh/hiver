@@ -1094,7 +1094,11 @@ func mapErr(err error) error {
 	case errors.Is(err, os.ErrPermission):
 		return syscall.EACCES
 	default:
-		return err
+		var errno syscall.Errno
+		if errors.As(err, &errno) {
+			return errno
+		}
+		return syscall.EIO
 	}
 }
 

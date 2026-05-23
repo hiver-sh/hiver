@@ -26,7 +26,7 @@ func TestLoadValid(t *testing.T) {
 		"env": {"FOO": "bar"},
 		"fs":     [{"backend": "local", "mount": "/work",
 		            "acls": [{"path": "/work", "access": "rw"}]}],
-		"egress": {"allow": [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]}
+		"egress": [{"access": "allow", "host": "api.github.com", "methods": ["GET"], "paths": ["/repos/*"]}]
 	}`)
 	s, err := spec.Load(p)
 	if err != nil {
@@ -44,7 +44,7 @@ func TestLoadValid(t *testing.T) {
 	if got, want := s.FS[0].BackendPath(), "/work-backend"; got != want {
 		t.Errorf("fs[0] BackendPath: got %q, want %q", got, want)
 	}
-	if got := s.Egress.Allow; len(got) != 1 || got[0].Host != "api.github.com" || len(got[0].Methods) != 1 || got[0].Methods[0] != "GET" {
+	if got := s.Egress; len(got) != 1 || got[0].Access != "allow" || got[0].Host != "api.github.com" || len(got[0].Methods) != 1 || got[0].Methods[0] != "GET" {
 		t.Errorf("egress: %+v", got)
 	}
 }

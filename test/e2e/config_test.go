@@ -64,8 +64,9 @@ func TestConfigE2E(t *testing.T) {
 	// expose it. Reload is async, so poll.
 	apiPorts := []int{8080}
 	withAPIAllow := withExtraEgressRule(initial, gen.EgressRule{
-		Host:  "127.0.0.1",
-		Ports: &apiPorts,
+		Access: gen.EgressRuleAccessAllow,
+		Host:   "127.0.0.1",
+		Ports:  &apiPorts,
 	})
 	add := putConfig(t, apiURL, withAPIAllow)
 	if !add.Applied {
@@ -347,16 +348,16 @@ func mcpCurlConfig(t *testing.T, ctx context.Context, session *mcp.ClientSession
 }
 
 // withExtraEgressRule returns a copy of cfg with rule appended to the
-// allow list. cfg is left untouched so callers can reuse it as the
+// egress list. cfg is left untouched so callers can reuse it as the
 // "before" snapshot when undoing a change.
 func withExtraEgressRule(cfg gen.SandboxConfig, rule gen.EgressRule) gen.SandboxConfig {
 	out := cfg
-	var allow []gen.EgressRule
-	if cfg.Egress != nil && cfg.Egress.Allow != nil {
-		allow = append(allow, *cfg.Egress.Allow...)
+	var rules []gen.EgressRule
+	if cfg.Egress != nil {
+		rules = append(rules, *cfg.Egress...)
 	}
-	allow = append(allow, rule)
-	out.Egress = &gen.Egress{Allow: &allow}
+	rules = append(rules, rule)
+	out.Egress = &rules
 	return out
 }
 
@@ -380,19 +381,19 @@ func assertEgressHostPresent(t *testing.T, cfg gen.SandboxConfig, host string) {
 		return
 	}
 	var hosts []string
-	if cfg.Egress != nil && cfg.Egress.Allow != nil {
-		for _, r := range *cfg.Egress.Allow {
+	if cfg.Egress != nil {
+		for _, r := range *cfg.Egress {
 			hosts = append(hosts, r.Host)
 		}
 	}
-	t.Errorf("egress host %q not in allow list (got %v)", host, hosts)
+	t.Errorf("egress host %q not in egress list (got %v)", host, hosts)
 }
 
 func egressHasHost(cfg gen.SandboxConfig, host string) bool {
-	if cfg.Egress == nil || cfg.Egress.Allow == nil {
+	if cfg.Egress == nil {
 		return false
 	}
-	for _, r := range *cfg.Egress.Allow {
+	for _, r := range *cfg.Egress {
 		if r.Host == host {
 			return true
 		}

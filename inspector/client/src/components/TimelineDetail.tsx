@@ -90,19 +90,10 @@ function AccessCell({
   );
 }
 
-function egressAllowUpdater(host: string, path: string): ConfigUpdater {
+function egressRuleUpdater(host: string, path: string, access: "allow" | "deny"): ConfigUpdater {
   return (cfg) => {
-    const egress = (cfg.egress as Record<string, unknown> | undefined) ?? {};
-    const allow = (egress.allow as unknown[] | undefined) ?? [];
-    return { ...cfg, egress: { ...egress, allow: [...allow, { host, paths: [path] }] } };
-  };
-}
-
-function egressDenyUpdater(host: string, path: string): ConfigUpdater {
-  return (cfg) => {
-    const egress = (cfg.egress as Record<string, unknown> | undefined) ?? {};
-    const deny = (egress.deny as unknown[] | undefined) ?? [];
-    return { ...cfg, egress: { ...egress, deny: [...deny, { host, paths: [path] }] } };
+    const egress = (cfg.egress as unknown[] | undefined) ?? [];
+    return { ...cfg, egress: [{ access, host, paths: [path] }, ...egress] };
   };
 }
 
@@ -525,8 +516,8 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
                 <AccessCell
                   access={req.access}
                   applyConfig={applyConfig}
-                  allowUpdater={egressAllowUpdater(req.host, req.path)}
-                  denyUpdater={egressDenyUpdater(req.host, req.path)}
+                  allowUpdater={egressRuleUpdater(req.host, req.path, "allow")}
+                  denyUpdater={egressRuleUpdater(req.host, req.path, "deny")}
                 />
               </>}
               {req.type === "fs.request" && <>

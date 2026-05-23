@@ -11,19 +11,19 @@ import (
 
 // Defines values for ACLRuleAccess.
 const (
-	Deny ACLRuleAccess = "deny"
-	Ro   ACLRuleAccess = "ro"
-	Rw   ACLRuleAccess = "rw"
+	ACLRuleAccessDeny ACLRuleAccess = "deny"
+	ACLRuleAccessRo   ACLRuleAccess = "ro"
+	ACLRuleAccessRw   ACLRuleAccess = "rw"
 )
 
 // Valid indicates whether the value is a known member of the ACLRuleAccess enum.
 func (e ACLRuleAccess) Valid() bool {
 	switch e {
-	case Deny:
+	case ACLRuleAccessDeny:
 		return true
-	case Ro:
+	case ACLRuleAccessRo:
 		return true
-	case Rw:
+	case ACLRuleAccessRw:
 		return true
 	default:
 		return false
@@ -45,6 +45,24 @@ func (e Backend) Valid() bool {
 	case BackendGdrive:
 		return true
 	case BackendLocal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EgressRuleAccess.
+const (
+	EgressRuleAccessAllow EgressRuleAccess = "allow"
+	EgressRuleAccessDeny  EgressRuleAccess = "deny"
+)
+
+// Valid indicates whether the value is a known member of the EgressRuleAccess enum.
+func (e EgressRuleAccess) Valid() bool {
+	switch e {
+	case EgressRuleAccessAllow:
+		return true
+	case EgressRuleAccessDeny:
 		return true
 	default:
 		return false
@@ -189,16 +207,11 @@ type Changes struct {
 	Warnings *[]string `json:"warnings,omitempty"`
 }
 
-// Egress Network egress configuration.
-type Egress struct {
-	// Allow Ordered list of allow rules. The first rule that matches a
-	// request decides the outcome; requests that match no rule
-	// are denied.
-	Allow *[]EgressRule `json:"allow,omitempty"`
-}
-
-// EgressRule One egress allow rule.
+// EgressRule One egress rule.
 type EgressRule struct {
+	// Access Whether matching requests are allowed or denied.
+	Access EgressRuleAccess `json:"access"`
+
 	// Host Exact host (`api.github.com`) or wildcard suffix
 	// (`*.pypi.org`).
 	Host string `json:"host"`
@@ -229,6 +242,9 @@ type EgressRule struct {
 	// Ports Optional ports otherwise no port enforcement is performed.
 	Ports *[]int `json:"ports,omitempty"`
 }
+
+// EgressRuleAccess Whether matching requests are allowed or denied.
+type EgressRuleAccess string
 
 // Error defines model for Error.
 type Error struct {
@@ -344,8 +360,10 @@ type LocalFileSystemBackend string
 
 // SandboxConfig Hive sandbox configuration.
 type SandboxConfig struct {
-	// Egress Network egress configuration.
-	Egress *Egress `json:"egress,omitempty"`
+	// Egress Ordered list of egress rules. The first rule that matches a
+	// request decides the outcome; requests that match no rule
+	// are denied.
+	Egress *[]EgressRule `json:"egress,omitempty"`
 
 	// Env Additional environment variables as a key/value map. This cannot be changed after the sandbox is initialized.
 	Env *map[string]string `json:"env,omitempty"`

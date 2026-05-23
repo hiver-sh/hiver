@@ -32,17 +32,17 @@ const sandbox = await hive.getOrCreateSandbox("hive-example", {
       acls: [{ path: "/workspace/**", access: "rw" }],
     },
   ],
-  egress: {
-    allow: [
-      {
-        host: "github.com",
-        paths: ["/blasten/hive"],
-      },
-      {
-        host: "www.google.com",
-      },
-    ],
-  },
+  egress: [
+    {
+      access: "allow",
+      host: "github.com",
+      paths: ["/blasten/hive"],
+    },
+    {
+      access: "allow",
+      host: "www.google.com",
+    },
+  ],
 });
 
 const { ac, shutdown } = createShutdown(sandbox);

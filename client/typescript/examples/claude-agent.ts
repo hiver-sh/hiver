@@ -37,26 +37,25 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
       acls: [{ path: "/workspace/**", access: "rw" }],
     },
   ],
-  egress: {
-    allow: [
-      {
-        host: "finnhub.io",
-        paths: ["/api/v1/*", "/static/swagger.json"],
-        override: {
-          headers: {
-            "X-Finnhub-Token": finnhubKey,
-          },
+  egress: [
+    {
+      access: "allow",
+      host: "finnhub.io",
+      paths: ["/api/v1/*", "/static/swagger.json"],
+      override: {
+        headers: {
+          "X-Finnhub-Token": finnhubKey,
         },
       },
-      ...hive.allowedPythonPackages(
-        "numpy",
-        "pandas",
-        "statsmodels",
-        "scikit-learn",
-        "matplotlib",
-      ),
-    ],
-  },
+    },
+    ...hive.allowedPythonPackages(
+      "numpy",
+      "pandas",
+      "statsmodels",
+      "scikit-learn",
+      "matplotlib",
+    ),
+  ],
 });
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
