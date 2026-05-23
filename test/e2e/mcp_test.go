@@ -19,9 +19,8 @@ import (
 )
 
 const (
-	moduleRoot          = "../.."
-	sandboxRuntimeImage = "sandbox-runtime"
-	fixtureName         = "mcp-server"
+	moduleRoot  = "../.."
+	fixtureName = "mcp-server"
 )
 
 // TestMcpServerE2E brings up the mcp-server fixture and drives the
@@ -33,22 +32,22 @@ func TestMcpServerE2E(t *testing.T) {
 	defer cancel()
 	defer session.Close()
 
-	t.Run("bash_ls_workspace", func(t *testing.T) {
+	t.Run("bash_ls_scratch", func(t *testing.T) {
 		var out struct {
 			Stdout, Stderr string
 			ExitCode       int
 		}
-		callMCP(t, ctx, session, "bash", map[string]any{"cmd": "ls -la /workspace"}, &out)
+		callMCP(t, ctx, session, "bash", map[string]any{"cmd": "ls -la /scratch"}, &out)
 		if out.ExitCode != 0 {
 			t.Fatalf("ls exit=%d, stderr=%q", out.ExitCode, out.Stderr)
 		}
-		t.Logf("ls -la /workspace:\n%s", out.Stdout)
+		t.Logf("ls -la /scratch:\n%s", out.Stdout)
 	})
 
 	t.Run("write_creates_file", func(t *testing.T) {
 		var out struct{ Bytes int }
 		callMCP(t, ctx, session, "write", map[string]any{
-			"path":    "/workspace/mcp-e2e.txt",
+			"path":    "/scratch/mcp-e2e.txt",
 			"content": "hello\nworld\n",
 		}, &out)
 		if out.Bytes != 12 {
@@ -62,7 +61,7 @@ func TestMcpServerE2E(t *testing.T) {
 			LineCount int
 			Truncated bool
 		}
-		callMCP(t, ctx, session, "read", map[string]any{"path": "/workspace/mcp-e2e.txt"}, &out)
+		callMCP(t, ctx, session, "read", map[string]any{"path": "/scratch/mcp-e2e.txt"}, &out)
 		if !strings.Contains(out.Content, "hello") || !strings.Contains(out.Content, "world") {
 			t.Errorf("content = %q, want hello+world", out.Content)
 		}
@@ -71,7 +70,7 @@ func TestMcpServerE2E(t *testing.T) {
 	t.Run("edit_replaces_substring", func(t *testing.T) {
 		var out struct{ Replacements int }
 		callMCP(t, ctx, session, "edit", map[string]any{
-			"path":      "/workspace/mcp-e2e.txt",
+			"path":      "/scratch/mcp-e2e.txt",
 			"oldString": "hello",
 			"newString": "HELLO",
 		}, &out)
@@ -84,7 +83,7 @@ func TestMcpServerE2E(t *testing.T) {
 		var out struct{ Paths []string }
 		callMCP(t, ctx, session, "glob", map[string]any{
 			"pattern": "*.txt",
-			"root":    "/workspace",
+			"root":    "/scratch",
 		}, &out)
 		found := false
 		for _, p := range out.Paths {
@@ -107,7 +106,7 @@ func TestMcpServerE2E(t *testing.T) {
 		}
 		callMCP(t, ctx, session, "grep", map[string]any{
 			"pattern": "world",
-			"path":    "/workspace",
+			"path":    "/scratch",
 		}, &out)
 		for _, m := range out.Matches {
 			if strings.HasSuffix(m.Path, "mcp-e2e.txt") && m.Line == 2 {
