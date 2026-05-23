@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/CodeEditor";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { SegmentedControl } from "@/components/SegmentedControl";
 
 // ── Diff engine ───────────────────────────────────────────────────────────────
 
@@ -106,7 +107,13 @@ function JsonLine({ text }: { text: string }) {
 
 function DiffView({ oldStr, newStr }: { oldStr: string; newStr: string }) {
   const hunks = useMemo(() => buildHunks(computeLineDiff(oldStr, newStr)), [oldStr, newStr]);
-  if (!hunks.length) return <p className="text-xs text-muted-foreground text-center py-6">No changes.</p>;
+  if (!hunks.length) {
+    return (
+      <div className="flex min-h-32 h-full items-center justify-center text-sm text-muted-foreground">
+        No changes
+      </div>
+    );
+  }
   return (
     <div className="font-mono text-xs select-text">
       {hunks.map((hunk, hi) => (
@@ -137,6 +144,8 @@ function DiffView({ oldStr, newStr }: { oldStr: string; newStr: string }) {
 
 export interface ConfigProposal { current: string; proposed: string }
 
+type Mode = "diff" | "editor";
+
 interface Props {
   sandboxId: string;
   serverUrl: string;
@@ -147,35 +156,40 @@ interface Props {
 }
 
 export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open, onOpenChange, proposal }: Props) {
-  const [config, setConfig] = useState<unknown>(null);
+  const [savedConfig, setSavedConfig] = useState("");
   const [editedConfig, setEditedConfig] = useState("");
   const [saving, setSaving] = useState(false);
+  const [mode, setMode] = useState<Mode>("diff");
 
-  const savedConfig = config ? JSON.stringify(config, null, 2) : "";
-  const isDirty = editedConfig !== savedConfig;
+  const baseConfig = proposal?.current ?? savedConfig;
+  const hasChanges = editedConfig !== baseConfig;
 
   useEffect(() => {
-    if (!open || proposal) return;
+    if (!open) return;
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`);
     url.searchParams.set("controller", controllerUrl);
     fetch(url).then((r) => r.json()).then((data) => {
-      setConfig(data);
-      setEditedConfig(JSON.stringify(data, null, 2));
+      const str = JSON.stringify(data, null, 2);
+      setSavedConfig(str);
+      setEditedConfig(proposal?.proposed ?? str);
     });
   }, [open, sandboxId, serverUrl, controllerUrl, proposal]);
+
+  useEffect(() => {
+    if (open) setMode(proposal ? "diff" : "editor");
+  }, [open, proposal]);
 
   async function handleSave() {
     setSaving(true);
     try {
       const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`);
       url.searchParams.set("controller", controllerUrl);
-      const body = proposal ? proposal.proposed : editedConfig;
       await fetch(url, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body,
+        body: editedConfig,
       });
-      if (!proposal) setConfig(JSON.parse(body));
+      setSavedConfig(editedConfig);
       onOpenChange(false);
     } finally {
       setSaving(false);
@@ -185,19 +199,27 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open,
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
-        <DialogHeader>
+        <div className="flex items-center justify-between pr-6">
           <DialogTitle>Sandbox config</DialogTitle>
-        </DialogHeader>
-        {proposal ? (
-          <div className="overflow-auto rounded-md border border-border max-h-[60vh]">
-            <DiffView oldStr={proposal.current} newStr={proposal.proposed} />
+          <SegmentedControl
+            options={[
+              { value: "diff", label: "Diff" },
+              { value: "editor", label: "Editor" },
+            ]}
+            value={mode}
+            onChange={(v) => setMode(v as Mode)}
+          />
+        </div>
+
+        {mode === "diff" ? (
+          <div className="overflow-auto rounded-md border border-border">
+            <DiffView oldStr={baseConfig} newStr={editedConfig} />
           </div>
         ) : (
-          <div className="h-[55vh]">
-            <CodeEditor value={editedConfig} onChange={setEditedConfig} className="h-full" />
-          </div>
+          <CodeEditor value={editedConfig} onChange={setEditedConfig} className="h-[55vh]" />
         )}
-        {(proposal || isDirty) && (
+
+        {hasChanges && (
           <div className="flex justify-end">
             <Button size="sm" disabled={saving} onClick={handleSave}>
               {saving && <Loader2 className="h-3 w-3 animate-spin" />}

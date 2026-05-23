@@ -101,17 +101,8 @@ function egressAllowUpdater(host: string, path: string): ConfigUpdater {
 function egressDenyUpdater(host: string, path: string): ConfigUpdater {
   return (cfg) => {
     const egress = (cfg.egress as Record<string, unknown> | undefined) ?? {};
-    const allow = (egress.allow as Array<Record<string, unknown>> | undefined) ?? [];
-    const next = allow
-      .map((rule) => {
-        if (rule.host !== host) return rule;
-        const paths = rule.paths as string[] | undefined;
-        if (!paths?.length) return null; // all-paths rule for this host → remove
-        const filtered = paths.filter((p) => p !== path);
-        return filtered.length ? { ...rule, paths: filtered } : null;
-      })
-      .filter(Boolean);
-    return { ...cfg, egress: { ...egress, allow: next } };
+    const deny = (egress.deny as unknown[] | undefined) ?? [];
+    return { ...cfg, egress: { ...egress, deny: [...deny, { host, paths: [path] }] } };
   };
 }
 

@@ -51,10 +51,22 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }:
       return next;
     }, { replace: true });
   }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [showTerminal, setShowTerminal] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(
+    () => localStorage.getItem("sandbox:showTerminal") === "true",
+  );
+
+  useEffect(() => {
+    localStorage.setItem("sandbox:showTerminal", String(showTerminal));
+  }, [showTerminal]);
   const [showConfig, setShowConfig] = useState(false);
   const [configProposal, setConfigProposal] = useState<ConfigProposal | undefined>();
-  const [terminalWidth, setTerminalWidth] = useState(480);
+  const [terminalWidth, setTerminalWidth] = useState(
+    () => parseInt(localStorage.getItem("sandbox:terminalWidth") ?? "480", 10),
+  );
+
+  useEffect(() => {
+    localStorage.setItem("sandbox:terminalWidth", String(terminalWidth));
+  }, [terminalWidth]);
   const contentRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
