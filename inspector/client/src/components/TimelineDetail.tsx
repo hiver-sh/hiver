@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, History } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
 import type { SandboxEvent } from "@/types";
 import type { TimelineRow } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
 import { SegmentedControl } from "./SegmentedControl";
+
+type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
 type DetailTab = "summary" | "request" | "response";
 
@@ -34,6 +37,110 @@ function KV({ label, value, cls }: { label: string; value: string; cls?: string 
       <span className={`font-mono break-all select-text ${cls ?? ""}`}>{value}</span>
     </>
   );
+}
+
+function AccessCell({
+  access,
+  applyConfig,
+  allowUpdater,
+  denyUpdater,
+}: {
+  access: "allowed" | "denied";
+  applyConfig?: (updater: ConfigUpdater) => Promise<void>;
+  allowUpdater: ConfigUpdater;
+  denyUpdater: ConfigUpdater;
+}) {
+  const [applying, setApplying] = useState<"allow" | "deny" | null>(null);
+
+  async function handleAction(action: "allow" | "deny") {
+    if (!applyConfig || applying) return;
+    setApplying(action);
+    try {
+      await applyConfig(action === "allow" ? allowUpdater : denyUpdater);
+    } finally {
+      setApplying(null);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`font-mono break-all select-text ${access === "denied" ? "text-red-400" : "text-green-400"}`}>
+        {access}
+      </span>
+      {applyConfig && (
+        access === "denied" ? (
+          <button
+            onClick={() => void handleAction("allow")}
+            disabled={!!applying}
+            className="text-[10px] px-1.5 py-0.5 rounded border border-green-600/40 text-green-500 hover:bg-green-500/10 transition-colors disabled:opacity-40 font-mono"
+          >
+            {applying === "allow" ? "…" : "allow"}
+          </button>
+        ) : (
+          <button
+            onClick={() => void handleAction("deny")}
+            disabled={!!applying}
+            className="text-[10px] px-1.5 py-0.5 rounded border border-red-600/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40 font-mono"
+          >
+            {applying === "deny" ? "…" : "deny"}
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
+function egressAllowUpdater(host: string, path: string): ConfigUpdater {
+  return (cfg) => {
+    const egress = (cfg.egress as Record<string, unknown> | undefined) ?? {};
+    const allow = (egress.allow as unknown[] | undefined) ?? [];
+    return { ...cfg, egress: { ...egress, allow: [...allow, { host, paths: [path] }] } };
+  };
+}
+
+function egressDenyUpdater(host: string, path: string): ConfigUpdater {
+  return (cfg) => {
+    const egress = (cfg.egress as Record<string, unknown> | undefined) ?? {};
+    const allow = (egress.allow as Array<Record<string, unknown>> | undefined) ?? [];
+    const next = allow
+      .map((rule) => {
+        if (rule.host !== host) return rule;
+        const paths = rule.paths as string[] | undefined;
+        if (!paths?.length) return null; // all-paths rule for this host → remove
+        const filtered = paths.filter((p) => p !== path);
+        return filtered.length ? { ...rule, paths: filtered } : null;
+      })
+      .filter(Boolean);
+    return { ...cfg, egress: { ...egress, allow: next } };
+  };
+}
+
+function fsAllowUpdater(mount: string, path: string): ConfigUpdater {
+  return (cfg) => {
+    const fs = (cfg.fs as Array<Record<string, unknown>> | undefined) ?? [];
+    return {
+      ...cfg,
+      fs: fs.map((entry) => {
+        if (entry.mount !== mount) return entry;
+        const acls = (entry.acls as Array<Record<string, unknown>> | undefined) ?? [];
+        return { ...entry, acls: [...acls.filter((a) => a.path !== path), { path, access: "rw" }] };
+      }),
+    };
+  };
+}
+
+function fsDenyUpdater(mount: string, path: string): ConfigUpdater {
+  return (cfg) => {
+    const fs = (cfg.fs as Array<Record<string, unknown>> | undefined) ?? [];
+    return {
+      ...cfg,
+      fs: fs.map((entry) => {
+        if (entry.mount !== mount) return entry;
+        const acls = (entry.acls as Array<Record<string, unknown>> | undefined) ?? [];
+        return { ...entry, acls: [...acls.filter((a) => a.path !== path), { path, access: "deny" }] };
+      }),
+    };
+  };
 }
 
 function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
@@ -273,7 +380,7 @@ function SummaryTab({
   }, [reqBody?.messages, prevBody?.messages]);
 
   return (
-    <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0">
+    <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0 scrollbar-thin">
       {sys && (
         <Bubble role="system" defaultCollapsed>
           <PlainText text={sys} />
@@ -301,7 +408,7 @@ function SummaryTab({
 
 // ─── main detail panel ───────────────────────────────────────────────────────
 
-export function RowDetailPanel({ row, prevRow, onPrev, onNext }: { row: TimelineRow; prevRow?: TimelineRow | null; onPrev?: () => void; onNext?: () => void }) {
+export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { row: TimelineRow; prevRow?: TimelineRow | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
   const req = row.rawEvents[0];
   const res = row.rawEvents.find(
     (e): e is Extract<SandboxEvent, { type: "egress.response" | "fs.response" }> =>
@@ -377,42 +484,36 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext }: { row: Timeline
     <div className="flex flex-col h-full text-xs">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         <SegmentedControl options={tabOptions} value={tab} onChange={setTab} />
-        {isAnthropicMsg && tab === "summary" && (
-          <div className="ml-auto flex items-center gap-2">
-            {(anthropicStream.model ?? anthropicReqBody?.model) && (
-              <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                {anthropicStream.model ?? anthropicReqBody?.model}
-              </span>
-            )}
-            {anthropicStream.stopReason && (
-              <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                {anthropicStream.stopReason}
-              </span>
-            )}
-            {(anthropicStream.inputTokens != null || anthropicStream.outputTokens != null) && (
-              <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
-                {anthropicStream.inputTokens ?? "?"}↑ {anthropicStream.outputTokens ?? "?"}↓
-              </span>
-            )}
-            {row.pending && !anthropicStream.stopReason && (
-              <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
-            )}
-            <button
-              onClick={onPrev}
-              disabled={!onPrev}
-              className="p-0.5 rounded text-muted-foreground/50 hover:text-muted-foreground disabled:opacity-20 disabled:cursor-default transition-colors"
-            >
-              <ArrowUp className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={onNext}
-              disabled={!onNext}
-              className="p-0.5 rounded text-muted-foreground/50 hover:text-muted-foreground disabled:opacity-20 disabled:cursor-default transition-colors"
-            >
-              <ArrowDown className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {isAnthropicMsg && tab === "summary" && (
+            <>
+              {(anthropicStream.model ?? anthropicReqBody?.model) && (
+                <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
+                  {anthropicStream.model ?? anthropicReqBody?.model}
+                </span>
+              )}
+              {anthropicStream.stopReason && (
+                <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
+                  {anthropicStream.stopReason}
+                </span>
+              )}
+              {(anthropicStream.inputTokens != null || anthropicStream.outputTokens != null) && (
+                <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
+                  {anthropicStream.inputTokens ?? "?"}↑ {anthropicStream.outputTokens ?? "?"}↓
+                </span>
+              )}
+              {row.pending && !anthropicStream.stopReason && (
+                <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
+              )}
+            </>
+          )}
+          <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
+            <ArrowUp className="h-3.5 w-3.5" />
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
+            <ArrowDown className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       {tab === "summary" && isAnthropicMsg && (
@@ -429,13 +530,25 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext }: { row: Timeline
                 <KV label="host"   value={req.host} />
                 <KV label="path"   value={req.path} />
                 {req.query && <KV label="query" value={req.query} />}
-                <KV label="access" value={req.access} cls={req.access === "denied" ? "text-red-400" : "text-green-400"} />
+                <span className="text-muted-foreground/70 select-text">access</span>
+                <AccessCell
+                  access={req.access}
+                  applyConfig={applyConfig}
+                  allowUpdater={egressAllowUpdater(req.host, req.path)}
+                  denyUpdater={egressDenyUpdater(req.host, req.path)}
+                />
               </>}
               {req.type === "fs.request" && <>
                 <KV label="op"     value={req.operation} />
                 <KV label="path"   value={req.path} />
                 <KV label="mount"  value={req.mount} />
-                <KV label="access" value={req.access} cls={req.access === "denied" ? "text-red-400" : "text-green-400"} />
+                <span className="text-muted-foreground/70 select-text">access</span>
+                <AccessCell
+                  access={req.access}
+                  applyConfig={applyConfig}
+                  allowUpdater={fsAllowUpdater(req.mount, req.path)}
+                  denyUpdater={fsDenyUpdater(req.mount, req.path)}
+                />
               </>}
             </div>
           </div>

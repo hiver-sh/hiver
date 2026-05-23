@@ -1,6 +1,5 @@
 import { Box, RefreshCw } from "lucide-react";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { SandboxRef } from "@/types";
 
@@ -36,16 +35,14 @@ export function SandboxList({
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Sandboxes
         </span>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-6 w-6"
+        <button
+          title="Refresh"
           onClick={onRefresh}
           disabled={loading}
-          title="Refresh"
+          className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
         >
           <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-        </Button>
+        </button>
       </div>
 
       {sandboxes.length === 0 && !loading ? (
@@ -67,7 +64,9 @@ export function SandboxList({
               <span
                 className={cn(
                   "mt-0.5 h-2 w-2 shrink-0 rounded-full",
-                  selectedId === sb.id ? "bg-green-400" : "bg-muted-foreground/40",
+                  selectedId === sb.id
+                    ? "bg-green-400"
+                    : "bg-muted-foreground/40",
                 )}
               />
               <span className="truncate font-mono">{sb.id}</span>

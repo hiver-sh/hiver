@@ -10,6 +10,14 @@ export default {
       screens: { "2xl": "1400px" },
     },
     extend: {
+      fontSize: {
+        xs:   ["0.8rem",   { lineHeight: "1.2rem" }],
+        sm:   ["0.9rem",   { lineHeight: "1.35rem" }],
+        base: ["1rem",     { lineHeight: "1.5rem" }],
+        lg:   ["1.15rem",  { lineHeight: "1.65rem" }],
+        xl:   ["1.3rem",   { lineHeight: "1.8rem" }],
+        "2xl":["1.6rem",   { lineHeight: "2rem" }],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

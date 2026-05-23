@@ -88,6 +88,23 @@ app.get("/api/sandboxes/:id/config", async (req: Request, res: Response) => {
   }
 });
 
+// PUT /api/sandboxes/:id/config — apply a new config
+app.put("/api/sandboxes/:id/config", async (req: Request, res: Response) => {
+  try {
+    const [sandbox] = await listSandboxes({ controllerUrl: controllerUrl(req) }).then(
+      (list) => list.filter((s) => s.id === req.params.id),
+    );
+    if (!sandbox) {
+      res.status(404).json({ error: "sandbox not found" });
+      return;
+    }
+    await sandbox.applyConfig(req.body as SandboxConfig);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: String(err) });
+  }
+});
+
 // GET /api/sandboxes/:id/events — SSE stream of sandbox events
 app.get("/api/sandboxes/:id/events", async (req: Request, res: Response) => {
   const controller = controllerUrl(req);

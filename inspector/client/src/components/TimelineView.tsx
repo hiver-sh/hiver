@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChevronUp } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { SandboxEvent } from "@/types";
@@ -146,6 +147,7 @@ function methodClass(row: TimelineRow): string {
 
 
 export type FilterKind = "all" | "egress" | "fs" | "llm";
+export type FilterAccess = "all" | "allowed" | "denied";
 
 export const KIND_OPTIONS: { value: FilterKind; label: string }[] = [
   { value: "all",    label: "All" },
@@ -154,10 +156,16 @@ export const KIND_OPTIONS: { value: FilterKind; label: string }[] = [
   { value: "llm",    label: "LLM" },
 ];
 
-export interface FilterState { kind: FilterKind; query: string }
-export const EMPTY_FILTER: FilterState = { kind: "all", query: "" };
+export const ACCESS_OPTIONS: { value: FilterAccess; label: string }[] = [
+  { value: "all",     label: "Any" },
+  { value: "allowed", label: "Allowed" },
+  { value: "denied",  label: "Denied" },
+];
 
-export function isFilterActive(f: FilterState) { return f.kind !== "all" || f.query !== ""; }
+export interface FilterState { kind: FilterKind; access: FilterAccess; query: string }
+export const EMPTY_FILTER: FilterState = { kind: "all", access: "all", query: "" };
+
+export function isFilterActive(f: FilterState) { return f.kind !== "all" || f.access !== "all" || f.query !== ""; }
 
 export function applyFilter(rows: TimelineRow[], f: FilterState): TimelineRow[] {
   let out = rows;
@@ -167,10 +175,49 @@ export function applyFilter(rows: TimelineRow[], f: FilterState): TimelineRow[] 
     return e.type === "egress.request" && e.host === "api.anthropic.com" && e.path === "/v1/messages";
   });
   else if (f.kind === "egress") out = out.filter((r) => r.type === "egress");
+  if (f.access === "allowed") out = out.filter((r) => r.access === "allowed");
+  else if (f.access === "denied") out = out.filter((r) => r.access === "denied");
   if (f.query) {
     const q = f.query.toLowerCase();
     out = out.filter((r) => r.label.toLowerCase().includes(q));
   }
+  return out;
+}
+
+export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEvent[] {
+  let out = events;
+
+  if (f.kind !== "all") {
+    const llmIds = f.kind === "llm"
+      ? new Set(events
+          .filter(e => e.type === "egress.request" && e.host === "api.anthropic.com" && e.path === "/v1/messages")
+          .map(e => e.id))
+      : null;
+    out = out.filter(e => {
+      if (f.kind === "egress") return e.type === "egress.request" || e.type === "egress.response" || e.type === "egress.stream_chunk";
+      if (f.kind === "fs") return e.type === "fs.request" || e.type === "fs.response";
+      if (f.kind === "llm") {
+        if (e.type === "egress.request") return llmIds!.has(e.id);
+        if (e.type === "egress.response" || e.type === "egress.stream_chunk") return llmIds!.has(e.request_id);
+        return false;
+      }
+      return true;
+    });
+  }
+
+  if (f.access === "denied") out = out.filter(e => e.type === "egress.request" || e.type === "fs.request" ? e.access === "denied" : false);
+  else if (f.access === "allowed") out = out.filter(e => e.type === "egress.request" || e.type === "fs.request" ? e.access === "allowed" : true);
+
+  if (f.query) {
+    const q = f.query.toLowerCase();
+    out = out.filter(e => {
+      if (e.type === "egress.request") return `${e.host}${e.path}`.toLowerCase().includes(q);
+      if (e.type === "fs.request") return e.path.toLowerCase().includes(q);
+      if (e.type === "stdio") return (e.stdout ?? e.stderr ?? "").toLowerCase().includes(q);
+      return true;
+    });
+  }
+
   return out;
 }
 
@@ -224,16 +271,38 @@ function fmtTick(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
 }
 
-export function TimelineView({ events, filter, autoScroll }: { events: SandboxEvent[]; filter: FilterState; autoScroll?: boolean }) {
+type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
+
+export function TimelineView({ events, filter, autoScroll, applyConfig }: { events: SandboxEvent[]; filter: FilterState; autoScroll?: boolean; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
   const rows = useMemo(() => buildRows(events), [events]);
 
   const hasLive = rows.some((r) => r.pending && r.access === "allowed");
   const [, forceUpdate] = useState(0);
   const [trackWidth, setTrackWidth] = useState(600);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [selectedId, setSelectedId] = useState<number | null>(() => {
+    const v = searchParams.get("event");
+    return v ? parseInt(v, 10) : null;
+  });
+  const [panelCollapsed, setPanelCollapsed] = useState(
+    () => localStorage.getItem("timeline:panelCollapsed") === "true",
+  );
+
+  useEffect(() => {
+    localStorage.setItem("timeline:panelCollapsed", String(panelCollapsed));
+  }, [panelCollapsed]);
   const trackRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (selectedId !== null) next.set("event", String(selectedId));
+      else next.delete("event");
+      return next;
+    }, { replace: true });
+  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (autoScroll) {
@@ -253,7 +322,8 @@ export function TimelineView({ events, filter, autoScroll }: { events: SandboxEv
     const ro = new ResizeObserver(([entry]) => setTrackWidth(entry.contentRect.width));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [rows.length > 0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length > 0 /* re-mount observer once rows appear */]);
 
   // Reset the elapsed clock each time a new event arrives.
   useEffect(() => {
@@ -276,11 +346,6 @@ export function TimelineView({ events, filter, autoScroll }: { events: SandboxEv
     }),
   [rows]);
 
-  const selectedAnthropicIdx = anthropicRows.findIndex((r) => r.id === selectedId);
-  const prevAnthropicRow = selectedAnthropicIdx > 0 ? anthropicRows[selectedAnthropicIdx - 1] : null;
-  const nextAnthropicRow = selectedAnthropicIdx >= 0 && selectedAnthropicIdx < anthropicRows.length - 1
-    ? anthropicRows[selectedAnthropicIdx + 1] : null;
-
   if (rows.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -290,6 +355,24 @@ export function TimelineView({ events, filter, autoScroll }: { events: SandboxEv
   }
 
   const filteredRows = applyFilter(rows, filter);
+
+  if (filteredRows.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        No events match the current filter.
+      </div>
+    );
+  }
+
+  const selectedFilteredIdx = filteredRows.findIndex((r) => r.id === selectedId);
+  const prevFilteredRow = selectedFilteredIdx > 0 ? filteredRows[selectedFilteredIdx - 1] : null;
+  const nextFilteredRow = selectedFilteredIdx >= 0 && selectedFilteredIdx < filteredRows.length - 1
+    ? filteredRows[selectedFilteredIdx + 1] : null;
+
+  const prevAnthropicRow = (() => {
+    const idx = anthropicRows.findIndex((r) => r.id === selectedId);
+    return idx > 0 ? anthropicRows[idx - 1] : null;
+  })();
 
   const now = Date.now();
   const elapsed = hasLive ? Math.max(0, now - lastEventReceivedRef.current) : 0;
@@ -454,8 +537,9 @@ export function TimelineView({ events, filter, autoScroll }: { events: SandboxEv
             key={selectedRow.id}
             row={selectedRow}
             prevRow={prevAnthropicRow}
-            onPrev={prevAnthropicRow ? () => setSelectedId(prevAnthropicRow.id) : undefined}
-            onNext={nextAnthropicRow ? () => setSelectedId(nextAnthropicRow.id) : undefined}
+            onPrev={prevFilteredRow ? () => setSelectedId(prevFilteredRow.id) : undefined}
+            onNext={nextFilteredRow ? () => setSelectedId(nextFilteredRow.id) : undefined}
+            applyConfig={applyConfig}
           />
         </div>
       )

@@ -1,52 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Check, Clipboard } from "lucide-react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { tags as t } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import { json } from "@codemirror/lang-json";
-
-// VS Code Dark+ colors
-const vscodeDark = [
-  EditorView.theme(
-    {
-      "&": { color: "#d4d4d4", backgroundColor: "#18181b", height: "100%", fontSize: "13px" },
-      ".cm-content": { caretColor: "#aeafad" },
-      ".cm-cursor": { borderLeftColor: "#aeafad" },
-      ".cm-selectionBackground, ::selection": { backgroundColor: "#264f78" },
-      ".cm-panels": { backgroundColor: "#18181b", color: "#d4d4d4" },
-      ".cm-gutters": { backgroundColor: "#18181b", color: "#858585", border: "none" },
-      ".cm-activeLineGutter": { backgroundColor: "#232327" },
-      ".cm-activeLine": { backgroundColor: "#232327" },
-      ".cm-scroller": { overflow: "auto", fontFamily: '"Google Sans Code", monospace' },
-      ".cm-scroller::-webkit-scrollbar": { width: "8px", height: "8px" },
-      ".cm-scroller::-webkit-scrollbar-track": { background: "#18181b" },
-      ".cm-scroller::-webkit-scrollbar-thumb": { background: "#3f3f46", borderRadius: "4px" },
-      ".cm-scroller::-webkit-scrollbar-thumb:hover": { background: "#52525b" },
-    },
-    { dark: true },
-  ),
-  syntaxHighlighting(
-    HighlightStyle.define([
-      { tag: t.keyword, color: "#569cd6" },
-      { tag: [t.name, t.deleted, t.character, t.propertyName, t.macroName], color: "#9cdcfe" },
-      { tag: [t.function(t.variableName), t.labelName], color: "#dcdcaa" },
-      { tag: [t.color, t.constant(t.name), t.standard(t.name)], color: "#569cd6" },
-      { tag: [t.definition(t.name), t.separator], color: "#d4d4d4" },
-      { tag: [t.typeName, t.className, t.number, t.changed, t.annotation, t.modifier, t.self, t.namespace], color: "#4ec9b0" },
-      { tag: [t.operator, t.operatorKeyword, t.url, t.escape, t.regexp, t.link, t.special(t.string)], color: "#d4d4d4" },
-      { tag: [t.meta, t.comment], color: "#6a9955" },
-      { tag: t.strong, fontWeight: "bold" },
-      { tag: t.emphasis, fontStyle: "italic" },
-      { tag: t.strikethrough, textDecoration: "line-through" },
-      { tag: t.link, color: "#6a9955", textDecoration: "underline" },
-      { tag: t.heading, fontWeight: "bold", color: "#569cd6" },
-      { tag: [t.atom, t.bool, t.special(t.variableName)], color: "#569cd6" },
-      { tag: [t.processingInstruction, t.string, t.inserted], color: "#ce9178" },
-      { tag: t.invalid, color: "#f44747" },
-    ]),
-  ),
-];
+import { vscodeDark } from "./editorTheme";
 
 interface Props {
   content: string;
@@ -57,6 +15,13 @@ interface Props {
 export function CodeViewer({ content, lang = "text", className }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef      = useRef<EditorView | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    navigator.clipboard.writeText(viewRef.current?.state.doc.toString() ?? content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
 
   useEffect(() => {
     const el = containerRef.current;
@@ -93,5 +58,16 @@ export function CodeViewer({ content, lang = "text", className }: Props) {
     }
   }, [content]);
 
-  return <div ref={containerRef} className={`h-full overflow-hidden ${className ?? ""}`} />;
+  return (
+    <div className={`relative h-full overflow-hidden ${className ?? ""}`}>
+      <div ref={containerRef} className="h-full" />
+      <button
+        onClick={handleCopy}
+        className="absolute top-2 right-3 p-1.5 rounded-md bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+        title="Copy to clipboard"
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
+      </button>
+    </div>
+  );
 }

@@ -56,14 +56,6 @@ function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxe
   );
 }
 
-function EmptyRoute() {
-  return (
-    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      Select a sandbox to inspect it
-    </div>
-  );
-}
-
 export default function App() {
   const [controllerUrl, setControllerUrl] = useState(DEFAULT_CONTROLLER_URL);
   const [serverUrl] = useState(DEFAULT_INSPECTOR_SERVER);
@@ -146,51 +138,53 @@ export default function App() {
           </div>
         </aside>
       ) : (
-        <aside className="flex w-66 shrink-0 flex-col sidebar">
+        <aside className="flex w-72 flex-none flex-col sidebar">
           {/* Branding + controller URL */}
-          <div className="flex items-center justify-between px-5 pt-4 pb-2">
-            <span className="text-sm font-semibold tracking-tight">Hive Inspector</span>
-            <button
-              onClick={() => setSidebarCollapsed(true)}
-              className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-          </div>
-          <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-            <DialogTrigger asChild>
-              <div className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-white/10 transition-colors">
-                <span className="font-mono text-[11px] text-muted-foreground leading-none group-hover:text-foreground transition-colors">
-                  {controllerUrl}
-                </span>
-                <Pencil style={{ width: 12, height: 12 }} className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
-              </div>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-sm">
-              <DialogHeader>
-                <DialogTitle>Controller URL</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-4 py-2">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="ctrl-url">Controller URL</Label>
-                  <Input
-                    id="ctrl-url"
-                    value={controllerInput}
-                    onChange={(e) => setControllerInput(e.target.value)}
-                    placeholder={DEFAULT_CONTROLLER_URL}
-                  />
+          <div className="h-[70px] flex flex-col justify-center">
+            <div className="flex items-center justify-between px-5 pt-4 pb-2">
+              <span className="text-sm font-semibold tracking-tight">Hive Inspector</span>
+              <button
+                onClick={() => setSidebarCollapsed(true)}
+                className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </button>
+            </div>
+            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+              <DialogTrigger asChild>
+                <div className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-white/10 transition-colors">
+                  <span className="font-mono text-[11px] text-muted-foreground leading-none group-hover:text-foreground transition-colors">
+                    {controllerUrl}
+                  </span>
+                  <Pencil style={{ width: 12, height: 12 }} className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
                 </div>
-                <Button
-                  onClick={() => {
-                    setControllerUrl(controllerInput.trim() || DEFAULT_CONTROLLER_URL);
-                    setSettingsOpen(false);
-                  }}
-                >
-                  Apply
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-sm">
+                <DialogHeader>
+                  <DialogTitle>Controller URL</DialogTitle>
+                </DialogHeader>
+                <div className="grid gap-4 py-2">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="ctrl-url">Controller URL</Label>
+                    <Input
+                      id="ctrl-url"
+                      value={controllerInput}
+                      onChange={(e) => setControllerInput(e.target.value)}
+                      placeholder={DEFAULT_CONTROLLER_URL}
+                    />
+                  </div>
+                  <Button
+                    onClick={() => {
+                      setControllerUrl(controllerInput.trim() || DEFAULT_CONTROLLER_URL);
+                      setSettingsOpen(false);
+                    }}
+                  >
+                    Apply
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
 
           <Separator />
 

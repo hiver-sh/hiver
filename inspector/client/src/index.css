@@ -75,6 +75,8 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: "Google Sans", sans-serif;
+    font-size: 17px;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
@@ -87,6 +89,11 @@
 .sidebar {
   background-color: #181818;
 }
+
+.scrollbar-thin::-webkit-scrollbar { width: 6px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.20); border-radius: 9999px; }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.40); }
 
 .bar-in-flight {
   background-image: repeating-linear-gradient(

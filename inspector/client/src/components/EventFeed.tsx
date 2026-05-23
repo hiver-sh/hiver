@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { filterEvents, type FilterState } from "@/components/TimelineView";
 import type { SandboxEvent } from "@/types";
 
 interface Props {
   events: SandboxEvent[];
   autoScroll: boolean;
+  filter: FilterState;
 }
 
 type BadgeVariant =
@@ -68,7 +70,6 @@ function EventDetail({ event }: { event: SandboxEvent }) {
           <span className="text-blue-400">{event.method}</span>{" "}
           {event.host}{event.path}
           {event.query ? `?${event.query}` : ""}
-          {event.body ? <span className="text-zinc-400"> {event.body}</span> : null}
         </span>
       );
     case "egress.response":
@@ -111,14 +112,15 @@ function EventDetail({ event }: { event: SandboxEvent }) {
   }
 }
 
-export function EventFeed({ events, autoScroll }: Props) {
+export function EventFeed({ events, autoScroll, filter }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const filtered = filterEvents(events, filter);
 
   useEffect(() => {
     if (autoScroll) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [events, autoScroll]);
+  }, [filtered, autoScroll]);
 
   if (events.length === 0) {
     return (
@@ -131,7 +133,7 @@ export function EventFeed({ events, autoScroll }: Props) {
   return (
     <ScrollArea className="h-full">
       <div className="space-y-0.5 p-2 font-mono text-xs">
-        {events.map((event) => {
+        {filtered.map((event) => {
           const { label, variant } = eventBadge(event);
           const ts = new Date(event.timestamp).toISOString().slice(11, 23);
           return (
