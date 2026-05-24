@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Check, Clipboard } from "lucide-react";
 import MonacoEditor, { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+import { MONACO_THEME } from "@/monacoWorkers";
 
 loader.config({ monaco });
 
@@ -33,12 +34,12 @@ export function CodeViewer({ content, lang = "text", className, maxHeight, minHe
   }
 
   return (
-    <div className={`relative overflow-hidden ${className ?? ""}`}>
+    <div className={`monaco-bg relative overflow-hidden ${className ?? ""}`}>
       <MonacoEditor
         height={height}
         language={lang === "json" ? "json" : "plaintext"}
         value={content}
-        theme="vs-dark"
+        theme={MONACO_THEME}
         options={{
           readOnly: true,
           minimap: { enabled: false },

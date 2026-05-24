@@ -145,7 +145,6 @@ export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
           if (everConnected) {
             term.write("\r\n\x1b[2m[disconnected]\x1b[0m\r\n");
           } else {
-            term.write("\r\n\x1b[33m[connecting…]\x1b[0m");
             retryTimer = setTimeout(connect, 2000);
           }
         };

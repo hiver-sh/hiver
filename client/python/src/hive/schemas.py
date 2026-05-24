@@ -128,6 +128,8 @@ class EgressRequestEvent(_SandboxEventBase):
     method: str
     path: str
     query: Optional[str] = None
+    headers: Optional[dict[str, str]] = None
+    body: Optional[str] = None
 
 
 class EgressResponseEvent(_SandboxEventBase):
@@ -135,6 +137,8 @@ class EgressResponseEvent(_SandboxEventBase):
     request_id: int
     status: int
     duration_ms: int
+    headers: Optional[dict[str, str]] = None
+    body: Optional[str] = None
 
 
 class FSRequestEvent(_SandboxEventBase):

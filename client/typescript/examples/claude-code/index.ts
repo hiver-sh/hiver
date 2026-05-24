@@ -1,7 +1,9 @@
 // Uses a custom Docker image and connects to the sandbox via SSH with a TTY.
 //
-// Get a token with claude setup-token
+// For claude-code: get a token with claude setup-token
 // Then run with: CLAUDE_CODE_OAUTH_TOKEN='<token>' npx tsx examples/claude-code
+//
+// For codex: run with: OPENAI_API_KEY='<key>' AGENT=codex npx tsx examples/claude-code
 import { spawn } from "node:child_process";
 import { writeFile, unlink } from "node:fs/promises";
 import { join, dirname } from "node:path";
@@ -10,10 +12,21 @@ import { fileURLToPath } from "node:url";
 import * as hive from "../../src";
 import { createShutdown } from "../shutdown.js";
 
+const agent = process.env.AGENT ?? "claude-code";
+const model = process.env.MODEL;
 const claudeOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-if (!claudeOAuthToken) {
-  console.error("CLAUDE_CODE_OAUTH_TOKEN is not set");
-  process.exit(1);
+const openaiApiKey = process.env.OPENAI_API_KEY;
+
+if (agent === "codex") {
+  if (!openaiApiKey) {
+    console.error("OPENAI_API_KEY is required when AGENT=codex");
+    process.exit(1);
+  }
+} else {
+  if (!claudeOAuthToken) {
+    console.error("CLAUDE_CODE_OAUTH_TOKEN is not set");
+    process.exit(1);
+  }
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -32,7 +45,10 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-code-worker-1", {
   ttl: 0,
   image: imageTag,
   env: {
-    CLAUDE_CODE_OAUTH_TOKEN: claudeOAuthToken,
+    AGENT: agent,
+    ...(model && { MODEL: model }),
+    ...(claudeOAuthToken && { CLAUDE_CODE_OAUTH_TOKEN: claudeOAuthToken }),
+    ...(openaiApiKey && { OPENAI_API_KEY: openaiApiKey }),
   },
   fs: [
     {
@@ -42,10 +58,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-code-worker-1", {
     },
   ],
   egress: [
-    { access: "allow", host: "api.anthropic.com" },
-    { access: "allow", host: "platform.claude.com" },
-    { access: "allow", host: "statsig.anthropic.com" },
-    { access: "allow", host: "claude.ai" },
+    { access: "allow", host: "*" },
   ],
 });
 
@@ -75,7 +88,7 @@ async function waitForSsh(host: string, port: string): Promise<void> {
 async function sshConnect(host: string, port: string): Promise<void> {
   console.log('connecting', host, port)
   const askpass = join(tmpdir(), "hive-askpass.sh");
-  await writeFile(askpass, "#!/bin/sh\necho root\n", { mode: 0o700 });
+  await writeFile(askpass, "#!/bin/sh\necho agent\n", { mode: 0o700 });
   try {
     await new Promise<void>((resolve, reject) => {
       const ssh = spawn(
@@ -87,7 +100,7 @@ async function sshConnect(host: string, port: string): Promise<void> {
           "-o", "UserKnownHostsFile=/dev/null",
           "-o", "LogLevel=ERROR",
           "-o", "PreferredAuthentications=password",
-          `claude-agent@${host}`,
+          `agent@${host}`,
         ],
         {
           stdio: "inherit",

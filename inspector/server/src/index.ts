@@ -231,7 +231,9 @@ async function handleTerminal(ws: WebSocket, host: string, port: number, params:
 
   conn.on("error", (err) => {
     if (ws.readyState === ws.OPEN) {
-      ws.send(`\r\nSSH error: ${err.message}\r\n`);
+      if (!err.message.includes("before handshake")) {
+        ws.send(`\r\nSSH error: ${err.message}\r\n`);
+      }
       ws.close();
     }
   });
@@ -239,8 +241,8 @@ async function handleTerminal(ws: WebSocket, host: string, port: number, params:
   conn.connect({
     host,
     port,
-    username: "claude-agent",
-    password: "root",
+    username: "agent",
+    password: "agent",
     readyTimeout: 10000,
     hostVerifier: () => true,
   });

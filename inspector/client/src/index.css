@@ -90,7 +90,17 @@
   background-color: #181818;
 }
 
-.scrollbar-thin::-webkit-scrollbar { width: 6px; }
+.monaco-bg {
+  background-color: #1e1e1e;
+}
+
+.monaco-editor,
+.monaco-editor-background,
+.monaco-editor .margin {
+  background-color: transparent !important;
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.20); border-radius: 9999px; }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.40); }

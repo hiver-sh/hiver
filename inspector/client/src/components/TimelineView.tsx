@@ -294,6 +294,7 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
   }, [panelCollapsed]);
   const trackRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const rowRefMap = useRef<Map<number, HTMLDivElement>>(new Map());
 
   useEffect(() => {
     setSearchParams((prev) => {
@@ -309,6 +310,11 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [rows.length, autoScroll]);
+
+  useEffect(() => {
+    if (selectedId === null) return;
+    rowRefMap.current.get(selectedId)?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
 
   // Wall-clock time when the most recent SSE event arrived at the client.
   const lastEventReceivedRef = useRef(Date.now());
@@ -449,6 +455,7 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
             return (
               <div
                 key={row.id}
+                ref={(el) => { if (el) rowRefMap.current.set(row.id, el); else rowRefMap.current.delete(row.id); }}
                 className={`group flex items-center border-b border-border/40 cursor-pointer ${isSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
                 style={{ height: 22 }}
                 onClick={() => setSelectedId(isSelected ? null : row.id)}

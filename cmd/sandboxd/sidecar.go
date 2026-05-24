@@ -352,6 +352,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 	if q, ok := raw["query"].(string); ok && q != "" {
 		query = &q
 	}
+	headers := rawToStringMap(raw["headers"])
 	var body *string
 	if b, ok := raw["body"].(string); ok && b != "" {
 		body = &b
@@ -366,6 +367,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 			Method:    method,
 			Path:      path,
 			Query:     query,
+			Headers:   headers,
 			Body:      body,
 		})
 		return ev
@@ -375,6 +377,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 func proxyResponseFactory(raw map[string]any, requestID int64) events.Factory {
 	status := intField(raw, "status")
 	durationMs := intField(raw, "duration_ms")
+	headers := rawToStringMap(raw["headers"])
 	var body *string
 	if b, ok := raw["body"].(string); ok && b != "" {
 		body = &b
@@ -387,10 +390,31 @@ func proxyResponseFactory(raw map[string]any, requestID int64) events.Factory {
 			RequestId:  int(requestID),
 			Status:     status,
 			DurationMs: durationMs,
+			Headers:    headers,
 			Body:       body,
 		})
 		return ev
 	}
+}
+
+// rawToStringMap converts a JSON-decoded map[string]any (from the audit
+// socketpair) into a *map[string]string suitable for the gen event types.
+// Returns nil if the value is absent, nil, or not a map.
+func rawToStringMap(v any) *map[string]string {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, val := range m {
+		if s, ok := val.(string); ok {
+			out[k] = s
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return &out
 }
 
 // fuseTranslator turns fuse AuditEvents into fs.request / fs.response

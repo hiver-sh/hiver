@@ -4,6 +4,7 @@ import MonacoEditor, { loader } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import * as monaco from "monaco-editor";
 import { SANDBOX_CONFIG_SCHEMA } from "@/sandboxConfigSchema";
+import { MONACO_THEME } from "@/monacoWorkers";
 
 loader.config({ monaco });
 
@@ -38,13 +39,13 @@ export function CodeEditor({ value, onChange, className }: Props) {
   }
 
   return (
-    <div className={`relative overflow-hidden rounded-md border border-input ${className ?? ""}`}>
+    <div className={`monaco-bg relative overflow-hidden rounded-md border border-input ${className ?? ""}`}>
       <MonacoEditor
         height="100%"
         defaultLanguage="json"
         value={value}
         onChange={(v: string | undefined) => onChange(v ?? "")}
-        theme="vs-dark"
+        theme={MONACO_THEME}
         onMount={handleMount}
         options={{
           minimap: { enabled: false },

@@ -14,16 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && sed -i 's/UsePAM yes/UsePAM no/' /etc/ssh/sshd_config \
     && echo 'PermitUserEnvironment yes' >> /etc/ssh/sshd_config \
     && echo 'ForceCommand tmux -u attach-session -t claude' >> /etc/ssh/sshd_config \
-    && useradd -m -s /bin/bash claude-agent \
-    && echo 'claude-agent:root' | chpasswd \
-    && echo 'claude-agent ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
+    && useradd -m -s /bin/bash agent \
+    && echo 'agent:agent' | chpasswd \
+    && echo 'agent ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
     && printf 'set -g default-terminal "screen-256color"\nset -ga terminal-overrides ",xterm-256color:RGB"\nset -ga terminal-overrides ",xterm-256color:Tc"\nset -ga terminal-overrides ",*256col*:Tc"\nset-option -g window-size latest\nset-environment -g COLORTERM truecolor\nset-environment -g LANG C.UTF-8\nset -g mouse on\nset -g set-clipboard on\nset -g history-limit 0\n' > /etc/tmux.conf
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
-RUN mkdir -p /home/claude-agent/.claude
-COPY settings.json /home/claude-agent/.claude/settings.json
-RUN chown -R claude-agent:claude-agent /home/claude-agent/.claude
+RUN mkdir -p /home/agent/.claude
+COPY settings.json /home/agent/.claude/settings.json
+RUN chown -R agent:agent /home/agent/.claude
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

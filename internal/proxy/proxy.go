@@ -7,7 +7,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -24,6 +23,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"log"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // Config drives a proxy instance.
@@ -36,10 +39,6 @@ type Config struct {
 	// Audit sink. Each event is encoded as one JSON line.
 	// Required; tests pass *bytes.Buffer, prod passes os.Stderr.
 	Audit io.Writer
-	// Headers to strip from outbound requests before forwarding.
-	// Nil (default) means no stripping. Pass [DefaultStrippedAuthHeaders]
-	// explicitly to enable the default auth-header strip.
-	StripHeaders []string
 	// OutboundMark, when non-zero, sets SO_MARK on every upstream socket
 	// the proxy opens. sandboxd uses this in transparent mode so that
 	// iptables can match `-m mark --mark <mark>` and skip the REDIRECT
@@ -86,12 +85,6 @@ type EgressOverride struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// DefaultStrippedAuthHeaders is the set the proxy removes when
-// inboundAuthHeaders == "strip" (REQ-36).
-var DefaultStrippedAuthHeaders = []string{
-	"Authorization", "Cookie", "X-Api-Key", "X-Auth-Token", "Proxy-Authorization",
-}
-
 // AuditEvent is one record on the audit.network topic (§9.1).
 //
 // Each user-level request produces a pair of events sharing the same
@@ -100,29 +93,29 @@ var DefaultStrippedAuthHeaders = []string{
 // carries the upstream Status and DurationMs; for CONNECT and raw-forward
 // TLS it carries Status=200/0 respectively at tunnel close.
 type AuditEvent struct {
-	At         time.Time `json:"at"`
-	Type       string    `json:"type"`  // always "network"
-	Phase      string    `json:"phase"` // "request" | "response" | "stream_chunk"
-	RequestID  int       `json:"request_id"`
-	Method     string    `json:"method"`
-	Host       string    `json:"host"`
-	Path       string    `json:"path,omitempty"`
-	Query      string    `json:"query,omitempty"` // raw URL query (no leading "?")
-	Body       string    `json:"body,omitempty"`  // request body; empty for TLS/CONNECT
-	Verdict    string    `json:"verdict"`         // "allow" | "deny" | "error"
-	Status     int       `json:"status,omitempty"`
-	DurationMs int       `json:"duration_ms,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
+	At         time.Time         `json:"at"`
+	Type       string            `json:"type"`  // always "network"
+	Phase      string            `json:"phase"` // "request" | "response" | "stream_chunk"
+	RequestID  int               `json:"request_id"`
+	Method     string            `json:"method"`
+	Host       string            `json:"host"`
+	Path       string            `json:"path,omitempty"`
+	Query      string            `json:"query,omitempty"`   // raw URL query (no leading "?")
+	Headers    map[string]string `json:"headers,omitempty"` // HTTP headers; nil for TLS/CONNECT
+	Body       string            `json:"body,omitempty"`    // request body; empty for TLS/CONNECT
+	Verdict    string            `json:"verdict"`           // "allow" | "deny" | "error"
+	Status     int               `json:"status,omitempty"`
+	DurationMs int               `json:"duration_ms,omitempty"`
+	Reason     string            `json:"reason,omitempty"`
 }
 
 // Proxy is the running proxy. Construct with [New], drive with [Run].
 type Proxy struct {
-	cfg          Config
-	listener     net.Listener
-	stripHeaders []string
-	dialer       *net.Dialer
-	transport    *http.Transport
-	minter       *CertMinter // nil unless TLS termination is enabled
+	cfg       Config
+	listener  net.Listener
+	dialer    *net.Dialer
+	transport *http.Transport
+	minter    *CertMinter // nil unless TLS termination is enabled
 
 	// rules holds the current egress rules, swappable at runtime via
 	// SetRules so sandboxd can reconcile after a /v1/config PUT
@@ -161,7 +154,6 @@ func New(cfg Config) (*Proxy, error) {
 	if cfg.Audit == nil {
 		return nil, errors.New("proxy: Audit sink required")
 	}
-	strip := cfg.StripHeaders
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	if cfg.OutboundMark != 0 {
 		dialer.Control = soMarkControl(cfg.OutboundMark)
@@ -175,11 +167,10 @@ func New(cfg Config) (*Proxy, error) {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	p := &Proxy{
-		cfg:          cfg,
-		stripHeaders: strip,
-		dialer:       dialer,
-		transport:    transport,
-		auditEnc:     json.NewEncoder(cfg.Audit),
+		cfg:       cfg,
+		dialer:    dialer,
+		transport: transport,
+		auditEnc:  json.NewEncoder(cfg.Audit),
 	}
 	if cfg.CACert != nil && cfg.CAKey != nil {
 		p.minter = NewCertMinter(cfg.CACert, cfg.CAKey)
@@ -248,26 +239,28 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	host, port := splitHostPort(r.URL.Host, r.Host, defPort)
 	ac := p.beginAudit(r.Method, host, r.URL.Path, r.URL.RawQuery)
+	log.Printf("handleHTTP: %s %s body_nil=%v", r.Method, r.URL, r.Body == nil)
 	if r.Body != nil {
-		if b, err := io.ReadAll(r.Body); err == nil && len(b) > 0 {
-			ac.requestBody = string(b)
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("handleHTTP: read body: %v", err)
+		} else {
 			r.Body = io.NopCloser(bytes.NewReader(b))
+			ac.requestBody = decodeBytes(r.Header.Get("Content-Encoding"), b)
 		}
 	}
+	ac.requestHeaders = headerMap(r.Header)
 	rule := MatchEgress(p.currentRules(), r.Method, host, port, r.URL.Path)
 	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
 	}
-	ac.allow()
-
-	for _, h := range p.stripHeaders {
-		r.Header.Del(h)
-	}
 	if rule.Access == "allow" {
 		applyOverride(r, rule.Override)
+		ac.requestHeaders = headerMap(r.Header)
 	}
+	ac.allow()
 
 	// Rebuild the request for forwarding. http.DefaultTransport requires
 	// RequestURI to be empty and URL to have a scheme + host.
@@ -287,46 +280,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer out.Body.Close()
 
-	if strings.Contains(out.Header.Get("Content-Type"), "text/event-stream") {
-		p.serveSSE(w, ac, out)
-		return
-	}
+	ac.responseHeaders = headerMap(out.Header)
 
-	respBody, _ := io.ReadAll(unwrapBody(out))
-	ac.responseBody = string(respBody)
-
-	for k, vs := range out.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(out.StatusCode)
-	_, _ = w.Write(respBody)
-
-	ac.response(out.StatusCode)
-}
-
-// unwrapBody returns an io.Reader for the SSE body, decompressing gzip if
-// the response carries Content-Encoding: gzip. It deletes that header (and
-// Content-Length, which becomes invalid) so the caller can forward the
-// response without advertising compression to the client.
-func unwrapBody(resp *http.Response) io.Reader {
-	if !strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-		return resp.Body
-	}
-	gr, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return resp.Body
-	}
-	resp.Header.Del("Content-Encoding")
-	resp.Header.Del("Content-Length")
-	resp.ContentLength = -1
-	return gr
-}
-
-// serveSSE handles a text/event-stream response for the forward-proxy path.
-func (p *Proxy) serveSSE(w http.ResponseWriter, ac *auditCtx, out *http.Response) {
-	src := unwrapBody(out)
 	for k, vs := range out.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
@@ -335,26 +290,88 @@ func (p *Proxy) serveSSE(w http.ResponseWriter, ac *auditCtx, out *http.Response
 	w.WriteHeader(out.StatusCode)
 	var flush func()
 	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
 		flush = flusher.Flush
 	}
-	p.sseForward(src, w, flush, ac)
+	p.chunkForward(unwrapBody(out), w, flush, ac)
 	ac.response(out.StatusCode)
 }
 
-// sseForward reads SSE frames from src line-by-line, writes each line to dst,
-// calls flush after every write (flush may be nil), and emits a stream_chunk
-// audit event per line.
-func (p *Proxy) sseForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx) {
-	br := bufio.NewReader(src)
+// decodeBytes decompresses b according to the Content-Encoding header value,
+// returning the plain text. On any error it falls back to the raw bytes as a
+// string so the audit log always gets something, even if it's binary.
+func decodeBytes(enc string, b []byte) string {
+	switch strings.ToLower(strings.TrimSpace(enc)) {
+	case "gzip":
+		gr, err := gzip.NewReader(bytes.NewReader(b))
+		if err != nil {
+			log.Printf("decodeBytes: gzip.NewReader: %v", err)
+			return string(b)
+		}
+		out, err := io.ReadAll(gr)
+		if err != nil {
+			log.Printf("decodeBytes: gzip read: %v", err)
+			return string(b)
+		}
+		return string(out)
+	case "zstd":
+		zr, err := zstd.NewReader(bytes.NewReader(b))
+		if err != nil {
+			log.Printf("decodeBytes: zstd.NewReader: %v", err)
+			return string(b)
+		}
+		out, err := io.ReadAll(zr)
+		if err != nil {
+			log.Printf("decodeBytes: zstd read: %v", err)
+			return string(b)
+		}
+		return string(out)
+	default:
+		return string(b)
+	}
+}
+
+// unwrapBody returns an io.Reader for the body, decompressing gzip or zstd if
+// the response carries a matching Content-Encoding. It deletes that header (and
+// Content-Length, which becomes invalid) so the caller can forward the
+// response without advertising compression to the client.
+func unwrapBody(resp *http.Response) io.Reader {
+	enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	switch enc {
+	case "gzip":
+		gr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return resp.Body
+		}
+		resp.Header.Del("Content-Encoding")
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = -1
+		return gr
+	case "zstd":
+		zr, err := zstd.NewReader(resp.Body)
+		if err != nil {
+			return resp.Body
+		}
+		resp.Header.Del("Content-Encoding")
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = -1
+		return zr
+	default:
+		return resp.Body
+	}
+}
+
+// chunkForward copies src to dst one chunk at a time (whatever the server
+// pushes in a single Read), flushing after each chunk. flush may be nil.
+func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx) {
+	buf := make([]byte, 32*1024)
 	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			_, _ = dst.Write(line)
+		n, err := src.Read(buf)
+		if n > 0 {
+			_, _ = dst.Write(buf[:n])
 			if flush != nil {
 				flush()
 			}
-			ac.streamChunk(string(line[:len(line)-1]))
+			ac.streamChunk(string(buf[:n]))
 		}
 		if err != nil {
 			break
@@ -481,14 +498,29 @@ func applyOverride(r *http.Request, ov *EgressOverride) {
 
 func matchHost(pat, host string) bool {
 	pat = strings.TrimSpace(pat)
-	if pat == "" {
+	if pat == "" || host == "" {
 		return false
 	}
-	if pat == host {
-		return true
+	return globMatch(pat, host)
+}
+
+// globMatch implements glob-style matching where '*' matches any sequence of
+// characters (including dots). This allows patterns like "*.host", "*.host.*",
+// or bare "*" to express host allowlists concisely.
+func globMatch(pat, s string) bool {
+	i := strings.IndexByte(pat, '*')
+	if i < 0 {
+		return pat == s
 	}
-	if strings.HasPrefix(pat, "*.") && strings.HasSuffix(host, pat[1:]) {
-		return true
+	if !strings.HasPrefix(s, pat[:i]) {
+		return false
+	}
+	s = s[i:]       // consume the fixed prefix; s now starts where '*' was matched
+	pat = pat[i+1:] // advance past the '*'
+	for j := 0; j <= len(s); j++ {
+		if globMatch(pat, s[j:]) {
+			return true
+		}
 	}
 	return false
 }
@@ -550,15 +582,17 @@ func (p *Proxy) audit(e AuditEvent) {
 // the response side. Callers invoke .allow()/.deny() at decision time
 // and .response()/.responseError() once the upstream call finishes.
 type auditCtx struct {
-	p            *Proxy
-	requestID    int
-	start        time.Time
-	method       string
-	host         string
-	path         string
-	query        string
-	requestBody  string // request body
-	responseBody string // response body (non-SSE only)
+	p               *Proxy
+	requestID       int
+	start           time.Time
+	method          string
+	host            string
+	path            string
+	query           string
+	requestHeaders  map[string]string // outbound headers after strip+override; nil for CONNECT/TLS
+	requestBody     string            // request body
+	responseHeaders map[string]string // upstream response headers; nil for CONNECT/TLS
+	responseBody    string            // response body (non-SSE only)
 }
 
 // beginAudit allocates an auditCtx for one request/response pair.
@@ -590,7 +624,9 @@ func (a *auditCtx) deny(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query, Body: a.requestBody,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Headers: a.requestHeaders,
+		Body:    a.requestBody,
 		Verdict: "deny", Status: status, Reason: reason,
 	})
 	a.p.audit(AuditEvent{
@@ -609,7 +645,9 @@ func (a *auditCtx) allow() {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query, Body: a.requestBody,
+		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Headers: a.requestHeaders,
+		Body:    a.requestBody,
 		Verdict: "allow",
 	})
 }
@@ -619,6 +657,7 @@ func (a *auditCtx) response(status int) {
 		At: time.Now(), Type: "network", Phase: "response",
 		RequestID: a.requestID,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Headers: a.responseHeaders,
 		Body:    a.responseBody,
 		Verdict: "allow", Status: status,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
@@ -664,6 +703,20 @@ func writeDenyHTTP(c net.Conn, host string) {
 		"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		len(body), body,
 	)
+}
+
+// headerMap converts an http.Header into a flat map[string]string, joining
+// multi-value headers with ", " per RFC 7230 §3.2.2. Returns nil for an
+// empty header set so the audit JSON omits the field entirely.
+func headerMap(h http.Header) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(h))
+	for k, vs := range h {
+		m[k] = strings.Join(vs, ", ")
+	}
+	return m
 }
 
 // splitHostPort returns the hostname and port from one of urlHost

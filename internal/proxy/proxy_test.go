@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/blasten/hive/internal/proxy"
+	"github.com/klauspost/compress/zstd"
 )
 
 // startProxy boots a proxy on a random port and returns the HTTP client
@@ -148,7 +150,7 @@ func TestMatchEgress(t *testing.T) {
 		{Access: "allow", Host: "files.example.com", Override: &proxy.EgressOverride{Headers: map[string]string{"X-Auth": "tok"}}},
 		{Access: "allow", Host: "127.0.0.1", Ports: []int{8080}},                    // port-pinned, host-only
 		{Access: "allow", Host: "metrics.internal", Ports: []int{9090, 9091, 9092}}, // port set
-		{Access: "deny", Host: "blocked.com"},                                        // explicit deny rule
+		{Access: "deny", Host: "blocked.com"},                                       // explicit deny rule
 	}
 	cases := []struct {
 		name             string
@@ -253,10 +255,9 @@ func TestStripDefaultAuthHeaders(t *testing.T) {
 	// Explicitly opt into the default auth-header strip list.
 	audit := &bytes.Buffer{}
 	p, err := proxy.New(proxy.Config{
-		Addr:         "127.0.0.1:0",
-		Rules:        []proxy.EgressRule{{Access: "allow", Host: upstreamHost}},
-		Audit:        audit,
-		StripHeaders: proxy.DefaultStrippedAuthHeaders,
+		Addr:  "127.0.0.1:0",
+		Rules: []proxy.EgressRule{{Access: "allow", Host: upstreamHost}},
+		Audit: audit,
 	})
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -287,5 +288,241 @@ func TestStripDefaultAuthHeaders(t *testing.T) {
 	}
 	if got := seen.Get("X-Trace-Id"); got != "keep-me" {
 		t.Errorf("expected X-Trace-Id preserved, got %q", got)
+	}
+}
+
+func TestRequestHeadersInAudit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Response-Id", "resp-42")
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
+
+	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/data", nil)
+	req.Header.Set("X-Request-Tag", "tag-99")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	resp.Body.Close()
+
+	events := decodeAudit(t, audit)
+	if len(events) != 2 {
+		t.Fatalf("want 2 audit events, got %d", len(events))
+	}
+	reqEv := events[0]
+	if reqEv.Phase != "request" {
+		t.Fatalf("events[0] phase=%q, want request", reqEv.Phase)
+	}
+	if reqEv.Headers == nil {
+		t.Fatal("request event: Headers is nil, want non-nil for HTTP flows")
+	}
+	if got := reqEv.Headers["X-Request-Tag"]; got != "tag-99" {
+		t.Errorf("request headers: X-Request-Tag=%q, want %q", got, "tag-99")
+	}
+
+	resEv := events[1]
+	if resEv.Phase != "response" {
+		t.Fatalf("events[1] phase=%q, want response", resEv.Phase)
+	}
+	if resEv.Headers == nil {
+		t.Fatal("response event: Headers is nil, want non-nil for HTTP flows")
+	}
+	if got := resEv.Headers["X-Response-Id"]; got != "resp-42" {
+		t.Errorf("response headers: X-Response-Id=%q, want %q", got, "resp-42")
+	}
+}
+
+func TestStrippedHeadersAbsentFromAudit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(204)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	audit := &bytes.Buffer{}
+	p, err := proxy.New(proxy.Config{
+		Addr:  "127.0.0.1:0",
+		Rules: []proxy.EgressRule{{Access: "allow", Host: upstreamHost}},
+		Audit: audit,
+	})
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	if err := p.Listen(); err != nil {
+		t.Fatalf("proxy.Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go p.Run(ctx) //nolint:errcheck
+	defer cancel()
+
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: p.Addr()})}}
+	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("X-Safe-Header", "visible")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	resp.Body.Close()
+
+	events := decodeAudit(t, audit)
+	if len(events) < 1 {
+		t.Fatal("no audit events")
+	}
+	reqEv := events[0]
+	if reqEv.Headers != nil {
+		if _, hasAuth := reqEv.Headers["Authorization"]; hasAuth {
+			t.Error("Authorization header must be absent from audit after stripping")
+		}
+		if got := reqEv.Headers["X-Safe-Header"]; got != "visible" {
+			t.Errorf("X-Safe-Header=%q, want %q", got, "visible")
+		}
+	}
+}
+
+func TestGzipResponseDecompressed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "text/plain")
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte("hello gzip"))
+		_ = gz.Close()
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, _, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
+
+	resp, err := client.Get(upstream.URL + "/")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello gzip" {
+		t.Errorf("body: got %q, want %q", body, "hello gzip")
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding should be stripped, got %q", resp.Header.Get("Content-Encoding"))
+	}
+}
+
+func TestZstdResponseDecompressed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "zstd")
+		w.Header().Set("Content-Type", "text/plain")
+		enc, _ := zstd.NewWriter(w)
+		_, _ = enc.Write([]byte("hello zstd"))
+		_ = enc.Close()
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, _, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
+
+	resp, err := client.Get(upstream.URL + "/")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello zstd" {
+		t.Errorf("body: got %q, want %q", body, "hello zstd")
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding should be stripped, got %q", resp.Header.Get("Content-Encoding"))
+	}
+}
+
+func TestZstdRequestBodyDecodedInAudit(t *testing.T) {
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b) // upstream sees raw compressed bytes (Content-Encoding still set)
+		w.WriteHeader(204)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
+
+	var buf bytes.Buffer
+	enc, _ := zstd.NewWriter(&buf)
+	_, _ = enc.Write([]byte("hello zstd request"))
+	_ = enc.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/", &buf)
+	req.Header.Set("Content-Encoding", "zstd")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	resp.Body.Close()
+
+	// Audit must contain plain-text body.
+	events := decodeAudit(t, audit)
+	var reqEv proxy.AuditEvent
+	for _, e := range events {
+		if e.Phase == "request" {
+			reqEv = e
+			break
+		}
+	}
+	if reqEv.Body != "hello zstd request" {
+		t.Errorf("audit request body: got %q, want %q", reqEv.Body, "hello zstd request")
+	}
+
+	// Upstream must still receive the compressed bytes (proxy does not strip Content-Encoding).
+	if gotBody == "hello zstd request" {
+		t.Error("upstream should receive compressed bytes, not plain text")
+	}
+}
+
+func TestMatchEgressWildcardHost(t *testing.T) {
+	// bare "*" allows everything
+	rules := []proxy.EgressRule{{Access: "allow", Host: "*"}}
+	for _, host := range []string{"api.anthropic.com", "anything.example.com", "192.0.2.1"} {
+		if got := proxy.MatchEgress(rules, "GET", host, 443, "/"); got == nil || got.Access != "allow" {
+			t.Errorf("bare *: host %q got %v, want allow", host, got)
+		}
+	}
+	if got := proxy.MatchEgress(rules, "GET", "", 80, "/"); got != nil {
+		t.Errorf("empty host: got match %v, want nil", got)
+	}
+
+	// glob patterns
+	cases := []struct {
+		pat        string
+		host       string
+		wantMatch  bool
+	}{
+		// *.suffix — matches subdomain but not apex
+		{"*.host", "foo.host", true},
+		{"*.host", "bar.baz.host", true},
+		{"*.host", "host", false},
+		// *.mid.* — wildcard on both sides
+		{"*.host.*", "foo.host.bar", true},
+		{"*.host.*", "foo.host.bar.baz", true},
+		{"*.host.*", "foo.host", false},  // no trailing segment
+		{"*.host.*", "host.bar", false},  // no leading segment
+		// exact (no wildcard)
+		{"exact.com", "exact.com", true},
+		{"exact.com", "other.com", false},
+	}
+	for _, tc := range cases {
+		r := []proxy.EgressRule{{Access: "allow", Host: tc.pat}}
+		got := proxy.MatchEgress(r, "GET", tc.host, 443, "/path")
+		matched := got != nil && got.Access == "allow"
+		if matched != tc.wantMatch {
+			t.Errorf("pat=%q host=%q: got match=%v, want %v", tc.pat, tc.host, matched, tc.wantMatch)
+		}
 	}
 }

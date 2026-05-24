@@ -11,9 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
-	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -220,11 +220,15 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	}
 	ac := p.beginAudit(req.Method, host, req.URL.Path, req.URL.RawQuery)
 	if req.Body != nil {
-		if b, err := io.ReadAll(req.Body); err == nil && len(b) > 0 {
-			ac.requestBody = string(b)
+		b, err := io.ReadAll(req.Body)
+		if err != nil {
+			log.Printf("interceptTLS: read body: %v", err)
+		} else {
 			req.Body = io.NopCloser(bytes.NewReader(b))
+			ac.requestBody = decodeBytes(req.Header.Get("Content-Encoding"), b)
 		}
 	}
+	ac.requestHeaders = headerMap(req.Header)
 	_, port := splitHostPort("", origDst, 0)
 	rule := MatchEgress(p.currentRules(), req.Method, host, port, req.URL.Path)
 	if rule == nil || rule.Access == "deny" {
@@ -232,13 +236,11 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		_, _ = clientTLS.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 		return
 	}
-	ac.allow()
-	for _, h := range p.stripHeaders {
-		req.Header.Del(h)
-	}
 	if rule.Access == "allow" {
 		applyOverride(req, rule.Override)
+		ac.requestHeaders = headerMap(req.Header)
 	}
+	ac.allow()
 	req.RequestURI = ""
 	req.Header.Set("Connection", "close")
 
@@ -253,22 +255,14 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	}
 	defer resp.Body.Close()
 
-	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		src := unwrapBody(resp)
-		if err := writeResponseHeaders(clientTLS, resp); err != nil {
-			ac.responseError(err.Error(), http.StatusBadGateway)
-			return
-		}
-		p.sseForward(src, clientTLS, nil, ac)
-		ac.response(resp.StatusCode)
+	ac.responseHeaders = headerMap(resp.Header)
+
+	if err := writeResponseHeaders(clientTLS, resp); err != nil {
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
-
-	respBody, _ := io.ReadAll(unwrapBody(resp))
-	ac.responseBody = string(respBody)
+	p.chunkForward(unwrapBody(resp), clientTLS, nil, ac)
 	ac.response(resp.StatusCode)
-	resp.Body = io.NopCloser(bytes.NewReader(respBody))
-	_ = resp.Write(clientTLS)
 }
 
 // peekedConn wraps a net.Conn so reads come from a bufio.Reader that
@@ -326,25 +320,27 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 
 	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path, req.URL.RawQuery)
 	if req.Body != nil {
-		if b, err := io.ReadAll(req.Body); err == nil && len(b) > 0 {
-			ac.requestBody = string(b)
+		b, err := io.ReadAll(req.Body)
+		if err != nil {
+			log.Printf("handleTransparentHTTP: read body: %v", err)
+		} else {
 			req.Body = io.NopCloser(bytes.NewReader(b))
+			ac.requestBody = decodeBytes(req.Header.Get("Content-Encoding"), b)
 		}
 	}
+	ac.requestHeaders = headerMap(req.Header)
 	rule := MatchEgress(p.currentRules(), req.Method, hostOnly, port, req.URL.Path)
 	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		writeDenyHTTP(c, hostOnly)
 		return
 	}
-	ac.allow()
-
-	for _, h := range p.stripHeaders {
-		req.Header.Del(h)
-	}
 	if rule.Access == "allow" {
 		applyOverride(req, rule.Override)
+		ac.requestHeaders = headerMap(req.Header)
 	}
+	ac.allow()
+
 	// http.ReadRequest leaves req.RequestURI set; req.Write picks origin
 	// form regardless, but clear it so it doesn't accidentally end up as
 	// proxy-form on the wire.
@@ -370,22 +366,14 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	}
 	defer resp.Body.Close()
 
-	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		src := unwrapBody(resp)
-		if err := writeResponseHeaders(c, resp); err != nil {
-			ac.responseError(err.Error(), http.StatusBadGateway)
-			return
-		}
-		p.sseForward(src, c, nil, ac)
-		ac.response(resp.StatusCode)
+	ac.responseHeaders = headerMap(resp.Header)
+
+	if err := writeResponseHeaders(c, resp); err != nil {
+		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
-
-	respBody, _ := io.ReadAll(unwrapBody(resp))
-	ac.responseBody = string(respBody)
+	p.chunkForward(unwrapBody(resp), c, nil, ac)
 	ac.response(resp.StatusCode)
-	resp.Body = io.NopCloser(bytes.NewReader(respBody))
-	_ = resp.Write(c)
 }
 
 type protocol int

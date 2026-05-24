@@ -222,6 +222,7 @@ export const EgressRequestEvent = SandboxEventBase.extend({
   method: z.string(),
   path: z.string(),
   query: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
 
@@ -230,6 +231,7 @@ export const EgressResponseEvent = SandboxEventBase.extend({
   request_id: z.number(),
   status: z.number().int(),
   duration_ms: z.number().int(),
+  headers: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
 

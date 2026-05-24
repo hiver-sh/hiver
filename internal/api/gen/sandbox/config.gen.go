@@ -259,14 +259,18 @@ type Error struct {
 // FileSystem A file system exposed to the agent at `mount`. The `backend`
 // selects the storage type and determines which variant applies.
 // Access is governed by `acls`, evaluated longest-prefix-first
-// with deny as the default.
+// with deny as the default when no rule matches. If `acls` is
+// omitted, a default rule granting `rw` access to `<mount>/**`
+// is used.
 type FileSystem struct {
 	union json.RawMessage
 }
 
 // FileSystemBase defines model for FileSystemBase.
 type FileSystemBase struct {
-	// Acls Access control rules for paths under `mount`.
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
 	// Backend Storage type for a file system.
@@ -281,7 +285,9 @@ type FileSystemBase struct {
 
 // GCSFileSystem defines model for GCSFileSystem.
 type GCSFileSystem struct {
-	// Acls Access control rules for paths under `mount`.
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
 	Acls    *[]ACLRule           `json:"acls,omitempty"`
 	Backend GCSFileSystemBackend `json:"backend"`
 
@@ -308,7 +314,9 @@ type GCSFileSystemBackend string
 
 // GDriveFileSystem defines model for GDriveFileSystem.
 type GDriveFileSystem struct {
-	// Acls Access control rules for paths under `mount`.
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
 	Acls    *[]ACLRule              `json:"acls,omitempty"`
 	Backend GDriveFileSystemBackend `json:"backend"`
 
@@ -344,7 +352,9 @@ type HttpMethod string
 
 // LocalFileSystem defines model for LocalFileSystem.
 type LocalFileSystem struct {
-	// Acls Access control rules for paths under `mount`.
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
 	Acls    *[]ACLRule             `json:"acls,omitempty"`
 	Backend LocalFileSystemBackend `json:"backend"`
 

@@ -115,6 +115,16 @@ components:
                 request had no query string, and omitted entirely
                 for CONNECT / raw-forward-TLS audits where there is
                 no inner HTTP request to parse.
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+              description: |
+                HTTP request headers sent to the upstream after proxy
+                transformations (strip + override). Multi-value headers are
+                joined with `, ` per RFC 7230 §3.2.2. Omitted for
+                CONNECT / raw-forward-TLS flows where no inner HTTP request
+                is parsed, and for denied requests.
             body:
               type: string
               description: |
@@ -153,6 +163,15 @@ components:
             duration_ms:
               type: integer
               description: Wall-clock duration of the request, in milliseconds.
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+              description: |
+                HTTP response headers returned by the upstream. Multi-value
+                headers are joined with `, ` per RFC 7230 §3.2.2. Omitted
+                for CONNECT / raw-forward-TLS flows where no inner HTTP
+                response is parsed.
             body:
               type: string
               description: |

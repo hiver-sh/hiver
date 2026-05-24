@@ -25,6 +25,55 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
+        label: "Openclaw - Claude API key",
+        apply: () => ({
+          image: "hive-example-claude-worker-bundle",
+          fs: [{ backend: "local", mount: "/workspace" }],
+          env: { AGENT: "openclaw", ANTHROPIC_API_KEY: "<your-key>" },
+          egress: [
+            { host: "api.anthropic.com", access: "allow", ports: [443] },
+            { host: "*.anthropic.com", access: "allow", ports: [443] },
+            { host: "*", access: "deny" },
+          ],
+        }),
+      },
+      {
+        label: "Openclaw - OpenAI API key",
+        apply: () => ({
+          image: "hive-example-claude-worker-bundle",
+          fs: [{ backend: "local", mount: "/workspace" }],
+          env: { AGENT: "openclaw", OPENAI_API_KEY: "<your-key>" },
+          egress: [
+            { host: "api.openai.com", access: "allow", ports: [443] },
+            { host: "*", access: "deny" },
+          ],
+        }),
+      },
+      {
+        label: "Openclaw - Google API key",
+        apply: () => ({
+          image: "hive-example-claude-worker-bundle",
+          fs: [{ backend: "local", mount: "/workspace" }],
+          env: { AGENT: "openclaw", GOOGLE_API_KEY: "<your-key>" },
+          egress: [
+            { host: "generativelanguage.googleapis.com", access: "allow", ports: [443] },
+            { host: "*", access: "deny" },
+          ],
+        }),
+      },
+      {
+        label: "Openclaw - Open Router API key",
+        apply: () => ({
+          image: "hive-example-claude-worker-bundle",
+          fs: [{ backend: "local", mount: "/workspace" }],
+          env: { AGENT: "openclaw", OPENROUTER_API_KEY: "<your-key>" },
+          egress: [
+            { host: "openrouter.ai", access: "allow", ports: [443] },
+            { host: "*", access: "deny" },
+          ],
+        }),
+      },
+      {
         label: "Hive MCP server",
         apply: () => ({
           image: "hive-mcp-server-bundle",

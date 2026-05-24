@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
@@ -127,6 +127,36 @@ function fsAllowUpdater(mount: string, path: string): ConfigUpdater {
 
 function fsDenyUpdater(mount: string, path: string): ConfigUpdater {
   return fsAclUpdater(mount, path, "deny");
+}
+
+function HeadersBlock({ headers, className }: { headers?: Record<string, string>; className?: string }) {
+  const [open, setOpen] = useState(() => localStorage.getItem("timeline:headersOpen") === "true");
+
+  useEffect(() => {
+    localStorage.setItem("timeline:headersOpen", String(open));
+  }, [open]);
+
+  if (!headers || Object.keys(headers).length === 0) return null;
+  const sorted = Object.entries(headers).sort(([a], [b]) => a.localeCompare(b));
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium hover:text-muted-foreground/80 transition-colors"
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        headers ({sorted.length})
+      </button>
+      {open && (
+        <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5">
+          {sorted.map(([k, v]) => (
+            <KV key={k} label={k.toLowerCase()} value={v} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
@@ -512,7 +542,7 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
 
       {tab === "request" && (
         <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className={`rounded-md border border-border bg-muted/20 p-3 ${reqRawBody ? "shrink-0" : "flex-1"}`}>
+          <div className={`rounded-md border border-border monaco-bg p-3 flex-1 min-w-0 overflow-auto scrollbar-thin`}>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
               <KV label="time" value={ts} />
               {req.type === "egress.request" && <>
@@ -527,6 +557,7 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
                   allowUpdater={egressRuleUpdater(req.host, req.path, "allow")}
                   denyUpdater={egressRuleUpdater(req.host, req.path, "deny")}
                 />
+                {req.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={req.headers} /></div>}
               </>}
               {req.type === "fs.request" && <>
                 <KV label="op"     value={req.operation} />
@@ -542,43 +573,49 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
               </>}
             </div>
           </div>
-          {reqRawBody && <BodyBlock raw={reqRawBody} className="flex-1 min-w-0" />}
+          {reqRawBody ? (
+            <BodyBlock raw={reqRawBody} className="flex-1 min-w-0" />
+          ) : (
+            <div className="flex flex-1 min-w-0 items-center justify-center rounded-md border border-border monaco-bg">
+              <span className="text-sm text-muted-foreground">no body</span>
+            </div>
+          )}
         </div>
       )}
 
       {tab === "response" && (
         <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className={`flex flex-col gap-2 ${resRawBody || chunks.length > 0 ? "shrink-0" : "flex-1"}`}>
+          <div className="rounded-md border border-border monaco-bg p-3 flex-1 min-w-0 overflow-auto scrollbar-thin">
             {res ? (
-              <div className="rounded-md border border-border bg-muted/20 p-3">
-                <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
-                  {res.type === "egress.response" && <>
-                    <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-400" : "text-green-400"} />
-                    <KV label="duration" value={`${res.duration_ms}ms`} />
-                  </>}
-                  {res.type === "fs.response" && <>
-                    <KV label="backend"  value={res.backend} />
-                    <KV label="duration" value={`${res.duration_ms}ms`} />
-                    {res.error && <KV label="error" value={res.error} cls="text-red-400" />}
-                  </>}
-                </div>
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+                {res.type === "egress.response" && <>
+                  <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-400" : "text-green-400"} />
+                  <KV label="duration" value={`${res.duration_ms}ms`} />
+                  {res.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={res.headers} /></div>}
+                </>}
+                {res.type === "fs.response" && <>
+                  <KV label="backend"  value={res.backend} />
+                  <KV label="duration" value={`${res.duration_ms}ms`} />
+                  {res.error && <KV label="error" value={res.error} cls="text-red-400" />}
+                </>}
               </div>
             ) : (
-              <div className="rounded-md border border-border/40 bg-muted/10 p-3 flex items-center justify-center">
-                <span className="text-muted-foreground">{row.pending ? "awaiting response…" : "no response received"}</span>
+              <span className="text-muted-foreground">{row.pending ? "awaiting response…" : "no response received"}</span>
+            )}
+          </div>
+          <div className="flex flex-1 min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
+            {resRawBody && <BodyBlock raw={resRawBody} className={chunks.length > 0 ? "shrink-0" : "flex-1 min-h-0"} />}
+            {chunks.length > 0 && (
+              <div className="flex flex-1 min-h-0 flex-col rounded-md border border-border bg-muted/20 overflow-hidden">
+                <CodeViewer content={chunks.map((c) => c.body).join("\n\n")} lang="text" className="flex-1 min-h-0" />
+              </div>
+            )}
+            {!resRawBody && chunks.length === 0 && (
+              <div className="flex flex-1 min-w-0 items-center justify-center rounded-md border border-border monaco-bg">
+                <span className="text-sm text-muted-foreground">no body</span>
               </div>
             )}
           </div>
-          {(resRawBody || chunks.length > 0) && (
-            <div className="flex flex-1 min-h-0 min-w-0 flex-col gap-1 overflow-hidden">
-              {resRawBody && <BodyBlock raw={resRawBody} className="shrink-0" />}
-              {chunks.length > 0 && (
-                <div className="flex flex-1 min-h-0 flex-col rounded-md border border-border bg-muted/20 overflow-hidden">
-                  <CodeViewer content={chunks.map((c) => c.body).join("\n\n")} lang="text" className="flex-1 min-h-0" />
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
     </div>

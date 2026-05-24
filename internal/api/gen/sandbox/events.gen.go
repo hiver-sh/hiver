@@ -92,7 +92,14 @@ type EgressRequestEvent struct {
 	// Omitted for CONNECT / raw-forward-TLS flows where the body
 	// is not readable, and for requests with no body.
 	Body *string `json:"body,omitempty"`
-	Host string  `json:"host"`
+
+	// Headers HTTP request headers sent to the upstream after proxy
+	// transformations (strip + override). Multi-value headers are
+	// joined with `, ` per RFC 7230 §3.2.2. Omitted for
+	// CONNECT / raw-forward-TLS flows where no inner HTTP request
+	// is parsed, and for denied requests.
+	Headers *map[string]string `json:"headers,omitempty"`
+	Host    string             `json:"host"`
 
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
@@ -128,6 +135,12 @@ type EgressResponseEvent struct {
 
 	// DurationMs Wall-clock duration of the request, in milliseconds.
 	DurationMs int `json:"duration_ms"`
+
+	// Headers HTTP response headers returned by the upstream. Multi-value
+	// headers are joined with `, ` per RFC 7230 §3.2.2. Omitted
+	// for CONNECT / raw-forward-TLS flows where no inner HTTP
+	// response is parsed.
+	Headers *map[string]string `json:"headers,omitempty"`
 
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.

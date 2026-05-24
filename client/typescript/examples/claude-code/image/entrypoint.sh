@@ -1,22 +1,15 @@
 #!/bin/bash
 set -e
 
-mkdir -p /run/sshd /home/claude-agent/.ssh /home/claude-agent/.claude
+mkdir -p /run/sshd /home/agent/.ssh /home/agent/.claude
 
 ssh-keygen -A
 
 if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-  # Write credentials file (access token only — no refresh token so the sandbox
-  # cannot rotate the OAuth pair and invalidate the host session)
-  printf '{"claudeAiOauth":{"accessToken":"%s"}}\n' "$CLAUDE_CODE_OAUTH_TOKEN" \
-    > /home/claude-agent/.claude/.credentials.json
-  chown claude-agent:claude-agent /home/claude-agent/.claude/.credentials.json
-  chmod 600 /home/claude-agent/.claude/.credentials.json
-
   # Seed ~/.claude.json with auth state. Written during startup before the API
   # call completes, so a timeout is expected and acceptable.
   # Workaround for https://github.com/anthropics/claude-code/issues/8938
-  su -s /bin/bash claude-agent \
+  su -s /bin/bash agent \
     -c "CLAUDE_CODE_OAUTH_TOKEN='$CLAUDE_CODE_OAUTH_TOKEN' timeout 30 claude -p ok" \
     2>/dev/null || true
 
@@ -24,13 +17,7 @@ if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
   node -e "
     const fs = require('fs');
 
-    const settingsPath = '/home/claude-agent/.claude/settings.json';
-    let settings = {};
-    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch (e) {}
-    settings.hasCompletedOnboarding = true;
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-
-    const configPath = '/home/claude-agent/.claude.json';
+    const configPath = '/home/agent/.claude.json';
     const extra = process.env.CLAUDE_CONFIG ? JSON.parse(process.env.CLAUDE_CONFIG) : {};
     let config = {};
     try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (e) {}
@@ -40,25 +27,45 @@ if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
     const trusted = { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true };
     config.projects = {
       '/workspace': trusted,
-      '/home/claude-agent': trusted,
+      '/home/agent': trusted,
       ...config.projects,
       ...extra.projects,
     };
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
   "
-  chown claude-agent:claude-agent \
-    /home/claude-agent/.claude/settings.json \
-    /home/claude-agent/.claude.json 2>/dev/null || true
+  chown agent:agent \
+    /home/agent/.claude.json 2>/dev/null || true
 fi
 
-# Propagate token into SSH sessions
-: > /home/claude-agent/.ssh/environment
-for var in CLAUDE_CODE_OAUTH_TOKEN; do
-  [ -n "${!var}" ] && echo "$var=${!var}" >> /home/claude-agent/.ssh/environment
-done
-chown claude-agent:claude-agent /home/claude-agent/.ssh/environment
-chmod 600 /home/claude-agent/.ssh/environment
+if [ "${AGENT:-claude-code}" = "codex" ]; then
+  mkdir -p /home/agent/.codex
+  node -e "
+    const fs = require('fs');
+    const model = process.env.MODEL || 'o4-mini';
+    const config = { model };
+    fs.writeFileSync('/home/agent/.codex/config.json', JSON.stringify(config, null, 2) + '\n');
+  "
+  chown -R agent:agent /home/agent/.codex
+fi
 
-su -s /bin/bash claude-agent -c 'tmux new-session -d -s claude -x 220 -y 50 "cd /workspace && claude"'
+# Propagate token and agent selection into SSH sessions
+: > /home/agent/.ssh/environment
+for var in CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY MODEL AGENT; do
+  [ -n "${!var}" ] && echo "$var=${!var}" >> /home/agent/.ssh/environment
+done
+
+chown agent:agent /home/agent/.ssh/environment
+chmod 600 /home/agent/.ssh/environment
+
+case "${AGENT:-claude-code}" in
+  codex)
+    AGENT_CMD="codex"
+    ;;
+  *)
+    AGENT_CMD="claude"
+    ;;
+esac
+
+su -s /bin/bash agent -c "tmux new-session -d -s claude -x 220 -y 50 \"cd /workspace && $AGENT_CMD\""
 
 exec /usr/sbin/sshd -D
