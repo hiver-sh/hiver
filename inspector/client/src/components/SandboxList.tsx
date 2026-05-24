@@ -9,6 +9,7 @@ interface Props {
   loading: boolean;
   onSelect: (id: string) => void;
   onRefresh: () => void;
+  onCreated: (id: string) => void;
   serverUrl: string;
   controllerUrl: string;
 }
@@ -19,6 +20,7 @@ export function SandboxList({
   loading,
   onSelect,
   onRefresh,
+  onCreated,
   serverUrl,
   controllerUrl,
 }: Props) {
@@ -28,7 +30,7 @@ export function SandboxList({
         <CreateSandboxDialog
           serverUrl={serverUrl}
           controllerUrl={controllerUrl}
-          onCreated={onRefresh}
+          onCreated={onCreated}
         />
       </div>
       <div className="flex items-center justify-between px-5 py-2">

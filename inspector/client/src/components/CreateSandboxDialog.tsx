@@ -13,16 +13,26 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SandboxConfigTemplates } from "@/components/SandboxConfigTemplates";
+import type { AnyConfig } from "@/components/SandboxConfigTemplates";
 
 const DEFAULT_CONFIG = {
   fs: [{ backend: "local", mount: "/workspace" }],
   env: {},
 };
 
+function generateId() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const rand = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+    .map((b) => chars[b % chars.length])
+    .join("");
+  return `sandbox-${rand}`;
+}
+
 interface Props {
   serverUrl: string;
   controllerUrl: string;
-  onCreated: () => void;
+  onCreated: (id: string) => void;
 }
 
 export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compact }: Props & { compact?: boolean }) {
@@ -30,7 +40,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [id, setId] = useState("");
+  const [id, setId] = useState(generateId);
   const [configJson, setConfigJson] = useState(JSON.stringify(DEFAULT_CONFIG, null, 2));
 
   async function handleSubmit(e: React.FormEvent) {
@@ -65,7 +75,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
         return;
       }
       setOpen(false);
-      onCreated();
+      onCreated(id);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -76,7 +86,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (next) {
-      setId("");
+      setId(generateId());
       setConfigJson(JSON.stringify(DEFAULT_CONFIG, null, 2));
       setError(null);
     }
@@ -96,7 +106,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>Create Sandbox</DialogTitle>
           <DialogDescription>
@@ -115,11 +125,24 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
             />
           </div>
           <div className="grid gap-1.5">
-            <Label>Config</Label>
+            <div className="flex items-center gap-2">
+              <Label>Config</Label>
+              <SandboxConfigTemplates
+                disabled={loading}
+                onApply={(apply) => {
+                  try {
+                    const current = JSON.parse(configJson) as AnyConfig;
+                    setConfigJson(JSON.stringify(apply(current), null, 2));
+                  } catch {
+                    setError("Current config is not valid JSON — fix it before applying a template");
+                  }
+                }}
+              />
+            </div>
             <CodeEditor
               value={configJson}
               onChange={setConfigJson}
-              className="min-h-[220px]"
+              className="min-h-[320px]"
             />
           </div>
           {error && (

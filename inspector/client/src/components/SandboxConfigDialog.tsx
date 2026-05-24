@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/CodeEditor";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { SegmentedControl } from "@/components/SegmentedControl";
+import { SandboxConfigTemplates } from "@/components/SandboxConfigTemplates";
+import type { AnyConfig } from "@/components/SandboxConfigTemplates";
 
 
 type DL = { type: "+" | "-" | " "; text: string; oldLine: number; newLine: number };
@@ -156,7 +158,7 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open,
   const [savedConfig, setSavedConfig] = useState("");
   const [editedConfig, setEditedConfig] = useState("");
   const [saving, setSaving] = useState(false);
-  const [mode, setMode] = useState<Mode>("diff");
+  const [mode, setMode] = useState<Mode>(() => proposal ? "diff" : "editor");
 
   const baseConfig = proposal?.current ?? savedConfig;
   const hasChanges = editedConfig !== baseConfig;
@@ -195,35 +197,46 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open,
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-4xl" onKeyDown={(e) => { if (e.key === "Enter" && (mode === "diff" || e.metaKey || e.ctrlKey) && !saving && hasChanges) handleSave(); }}>
         <div className="flex items-center justify-between pr-6">
           <DialogTitle>Sandbox config</DialogTitle>
-          <SegmentedControl
-            options={[
-              { value: "diff", label: "Diff" },
-              { value: "editor", label: "Editor" },
-            ]}
-            value={mode}
-            onChange={(v) => setMode(v as Mode)}
-          />
+          <div className="flex items-center gap-2">
+            {mode === "editor" && (
+              <SandboxConfigTemplates
+                editMode
+                onApply={(apply) => {
+                  try {
+                    const current = JSON.parse(editedConfig) as AnyConfig;
+                    setEditedConfig(JSON.stringify(apply(current), null, 2));
+                  } catch { /* ignore invalid JSON */ }
+                }}
+              />
+            )}
+            <SegmentedControl
+              options={[
+                { value: "diff", label: "Diff" },
+                { value: "editor", label: "Editor" },
+              ]}
+              value={mode}
+              onChange={(v) => setMode(v as Mode)}
+            />
+          </div>
         </div>
 
         {mode === "diff" ? (
-          <div className="overflow-auto rounded-md border border-border">
+          <div className="h-[55vh] overflow-auto rounded-md border border-border">
             <DiffView oldStr={baseConfig} newStr={editedConfig} />
           </div>
         ) : (
           <CodeEditor value={editedConfig} onChange={setEditedConfig} className="h-[55vh]" />
         )}
 
-        {hasChanges && (
-          <div className="flex justify-end">
-            <Button size="sm" disabled={saving} onClick={handleSave}>
-              {saving && <Loader2 className="h-3 w-3 animate-spin" />}
-              {proposal ? "Apply" : "Save"}
-            </Button>
-          </div>
-        )}
+        <div className="flex justify-end">
+          <Button size="sm" disabled={saving || !hasChanges} onClick={handleSave}>
+            {saving && <Loader2 className="h-3 w-3 animate-spin" />}
+            {proposal ? "Apply" : "Save"}
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );

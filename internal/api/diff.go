@@ -7,6 +7,37 @@ import (
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
 
+// NormalizeConfig fills in default values for fields the server enforces
+// when absent. Currently: an FS entry with no acls gets a single default
+// rule granting rw access to "<mount>/**".
+func NormalizeConfig(cfg gen.SandboxConfig) gen.SandboxConfig {
+	for i, fs := range cfg.Fs {
+		base := FSBase(fs)
+		if base.Acls != nil && len(*base.Acls) > 0 {
+			continue
+		}
+		acls := &[]gen.ACLRule{{Path: base.Mount + "/**", Access: gen.ACLRuleAccessRw}}
+		switch base.Backend {
+		case gen.BackendLocal:
+			if v, err := fs.AsLocalFileSystem(); err == nil {
+				v.Acls = acls
+				_ = cfg.Fs[i].FromLocalFileSystem(v)
+			}
+		case gen.BackendGdrive:
+			if v, err := fs.AsGDriveFileSystem(); err == nil {
+				v.Acls = acls
+				_ = cfg.Fs[i].FromGDriveFileSystem(v)
+			}
+		case gen.BackendGcs:
+			if v, err := fs.AsGCSFileSystem(); err == nil {
+				v.Acls = acls
+				_ = cfg.Fs[i].FromGCSFileSystem(v)
+			}
+		}
+	}
+	return cfg
+}
+
 // FSBase decodes the variant-agnostic fields (mount, backend, acls)
 // shared by every FileSystem oneOf member.
 func FSBase(fs gen.FileSystem) gen.FileSystemBase {

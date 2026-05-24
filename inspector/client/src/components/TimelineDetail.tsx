@@ -92,37 +92,41 @@ function AccessCell({
 
 function egressRuleUpdater(host: string, path: string, access: "allow" | "deny"): ConfigUpdater {
   return (cfg) => {
-    const egress = (cfg.egress as unknown[] | undefined) ?? [];
-    return { ...cfg, egress: [{ access, host, paths: [path] }, ...egress] };
+    const egress = (cfg.egress as Array<Record<string, unknown>> | undefined) ?? [];
+    const pathsKey = JSON.stringify([path]);
+    const first = egress[0];
+    if (first?.host === host && JSON.stringify(first.paths) === pathsKey && first.access === access) return cfg;
+    const filtered = egress.filter((r) => !(r.host === host && JSON.stringify(r.paths) === pathsKey));
+    return { ...cfg, egress: [{ access, host, paths: [path] }, ...filtered] };
+  };
+}
+
+function fsAclUpdater(mount: string, path: string, access: "rw" | "deny"): ConfigUpdater {
+  return (cfg) => {
+    const fs = (cfg.fs as Array<Record<string, unknown>> | undefined) ?? [];
+    return {
+      ...cfg,
+      fs: fs.map((entry) => {
+        if (entry.mount !== mount) return entry;
+        const acls = (entry.acls as Array<Record<string, unknown>> | undefined) ?? [];
+        const existing = acls.find((a) => a.path === path);
+        // If there's an existing rule for this exact path with the opposite access, remove it
+        if (existing && existing.access !== access) {
+          return { ...entry, acls: acls.filter((a) => a.path !== path) };
+        }
+        // No existing rule (or same access already) — prepend the new rule
+        return { ...entry, acls: [{ path, access }, ...acls.filter((a) => a.path !== path)] };
+      }),
+    };
   };
 }
 
 function fsAllowUpdater(mount: string, path: string): ConfigUpdater {
-  return (cfg) => {
-    const fs = (cfg.fs as Array<Record<string, unknown>> | undefined) ?? [];
-    return {
-      ...cfg,
-      fs: fs.map((entry) => {
-        if (entry.mount !== mount) return entry;
-        const acls = (entry.acls as Array<Record<string, unknown>> | undefined) ?? [];
-        return { ...entry, acls: [...acls.filter((a) => a.path !== path), { path, access: "rw" }] };
-      }),
-    };
-  };
+  return fsAclUpdater(mount, path, "rw");
 }
 
 function fsDenyUpdater(mount: string, path: string): ConfigUpdater {
-  return (cfg) => {
-    const fs = (cfg.fs as Array<Record<string, unknown>> | undefined) ?? [];
-    return {
-      ...cfg,
-      fs: fs.map((entry) => {
-        if (entry.mount !== mount) return entry;
-        const acls = (entry.acls as Array<Record<string, unknown>> | undefined) ?? [];
-        return { ...entry, acls: [...acls.filter((a) => a.path !== path), { path, access: "deny" }] };
-      }),
-    };
-  };
+  return fsAclUpdater(mount, path, "deny");
 }
 
 function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
@@ -311,7 +315,7 @@ function ToolUseBlock({ name, inputJson }: { name: string; inputJson?: string })
       <span className="font-mono text-[10px] text-purple-400 font-semibold">{name}</span>
       {pretty && (
         <div className="rounded border border-border overflow-hidden">
-          <CodeViewer content={pretty} lang="json" className="max-h-40" />
+          <CodeViewer content={pretty} lang="json" minHeight={60} maxHeight={160} />
         </div>
       )}
     </div>
@@ -327,10 +331,13 @@ function renderContent(content: string | MsgContentPart[]): ReactNode {
       return <ToolUseBlock key={i} name={(part.name as string | undefined) ?? "unknown"} inputJson={JSON.stringify(part.input)} />;
     if (part.type === "tool_result") {
       const raw = typeof part.content === "string" ? part.content : JSON.stringify(part.content);
+      const { content: pretty, isJson } = tryPretty(raw) ?? { content: raw ?? "", isJson: false };
       return (
         <div key={i} className="flex flex-col gap-1">
           <span className="font-mono text-[10px] text-purple-400/70">result · {part.tool_use_id}</span>
-          <PlainText text={raw ?? ""} />
+          <div className="rounded border border-border overflow-hidden">
+            <CodeViewer content={pretty} lang={isJson ? "json" : "text"} minHeight={60} maxHeight={320} />
+          </div>
         </div>
       );
     }
@@ -389,6 +396,7 @@ function SummaryTab({
 }
 
 // ─── main detail panel ───────────────────────────────────────────────────────
+
 
 export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { row: TimelineRow; prevRow?: TimelineRow | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
   const req = row.rawEvents[0];
@@ -489,7 +497,7 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
               )}
             </>
           )}
-          <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
+<Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
             <ArrowUp className="h-3.5 w-3.5" />
           </Button>
           <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>

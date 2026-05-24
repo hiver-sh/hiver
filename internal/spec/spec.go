@@ -279,6 +279,9 @@ func (s *Spec) Validate() error {
 		if !strings.HasPrefix(f.Mount, "/") {
 			return fmt.Errorf("%s.mount: must be an absolute path, got %q", ctx, f.Mount)
 		}
+		if len(f.ACLs) == 0 {
+			f.ACLs = []fusefs.Rule{{Path: f.Mount + "/**", Access: fusefs.AccessRW}}
+		}
 	}
 	// Mount paths must be unique and non-overlapping: one being a
 	// prefix of another would let bind-mounts and ACLs collide. Compare

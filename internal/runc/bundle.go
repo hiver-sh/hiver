@@ -16,6 +16,7 @@ type BundleParams struct {
 	ExtraEnv    map[string]string // sandboxd-injected KEY=VAL entries
 	Mounts      []BindMount       // additional host bind mounts (e.g. /workspace)
 	Hostname    string
+	CgroupsPath string // absolute cgroup path for the container (e.g. "/agent-<pid>")
 }
 
 // BindMount represents a host→container bind. Source is interpreted in
@@ -102,6 +103,7 @@ func WriteConfig(p BundleParams) error {
 		"hostname": p.Hostname,
 		"mounts":   mounts,
 		"linux": map[string]any{
+			"cgroupsPath": p.CgroupsPath,
 			"namespaces": []map[string]string{
 				{"type": "pid"},
 				{"type": "ipc"},

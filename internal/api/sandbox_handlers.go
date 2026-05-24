@@ -51,7 +51,7 @@ func (h *SandboxHandlers) ApplyConfig(c *gin.Context) {
 		return
 	}
 
-	changes, applyErr := h.store.Apply(desired)
+	changes, applyErr := h.store.Apply(NormalizeConfig(desired))
 	if errors.Is(applyErr, ErrApplyInProgress) {
 		c.JSON(http.StatusConflict, gen.Error{Error: applyErr.Error()})
 		return

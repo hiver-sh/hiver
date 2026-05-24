@@ -335,17 +335,24 @@ func main() {
 		runc.BindMount{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
 	)
 
+	// Docker sets the container hostname to the container's short ID, which
+	// is unique per sandbox. os.Getpid() is always 1 in the container's PID
+	// namespace and cannot distinguish sandboxes running on the same host.
+	podHostname, err := os.Hostname()
+	if err != nil {
+		log.Fatalf("get hostname: %v", err)
+	}
+	containerID := fmt.Sprintf("agent-%d", os.Getpid())
 	if err := runc.WriteConfig(runc.BundleParams{
 		BundleDir:   runc.MntDir,
 		ImageConfig: imgCfg,
 		ExtraEnv:    agentEnv,
 		Hostname:    "agent",
 		Mounts:      mounts,
+		CgroupsPath: "/sandbox-" + podHostname,
 	}); err != nil {
 		log.Fatalf("write bundle config: %v", err)
 	}
-
-	containerID := fmt.Sprintf("agent-%d", os.Getpid())
 	agentCmd, agentStdioDone, err := startChild(ctx, &children, "sandbox", "runc",
 		[]string{"run", "-b", runc.MntDir, containerID}, nil, nil,
 		publishAgentStdio(broker))
@@ -674,9 +681,13 @@ func writeEgressRules(rulesPath string, cfg gen.SandboxConfig) error {
 // sbxfuse expects. gen.ACLRule and fusefs.Rule share their wire
 // format.
 func writeACLsForMount(aclPath string, fs gen.FileSystem) error {
+	base := api.FSBase(fs)
 	acls := []gen.ACLRule{}
-	if a := api.FSBase(fs).Acls; a != nil {
+	if a := base.Acls; a != nil {
 		acls = *a
+	}
+	if len(acls) == 0 {
+		acls = []gen.ACLRule{{Path: base.Mount + "/**", Access: gen.ACLRuleAccessRw}}
 	}
 	return writeJSON(aclPath, acls)
 }

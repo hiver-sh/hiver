@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -m -s /bin/bash claude-agent \
     && echo 'claude-agent:root' | chpasswd \
     && echo 'claude-agent ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \
-    && printf 'set -g default-terminal "screen-256color"\nset -ga terminal-overrides ",xterm-256color:RGB"\nset -ga terminal-overrides ",xterm-256color:Tc"\nset -ga terminal-overrides ",*256col*:Tc"\nset-option -g window-size latest\nset-environment -g COLORTERM truecolor\nset-environment -g LANG C.UTF-8\nset -g mouse on\nset -g history-limit 0\n' > /etc/tmux.conf
+    && printf 'set -g default-terminal "screen-256color"\nset -ga terminal-overrides ",xterm-256color:RGB"\nset -ga terminal-overrides ",xterm-256color:Tc"\nset -ga terminal-overrides ",*256col*:Tc"\nset-option -g window-size latest\nset-environment -g COLORTERM truecolor\nset-environment -g LANG C.UTF-8\nset -g mouse on\nset -g set-clipboard on\nset -g history-limit 0\n' > /etc/tmux.conf
 
 RUN npm install -g @anthropic-ai/claude-code
 

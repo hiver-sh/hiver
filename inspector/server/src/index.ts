@@ -203,6 +203,8 @@ async function handleTerminal(ws: WebSocket, host: string, port: number, params:
         stream.write(text);
       }
 
+      ws.send(JSON.stringify({ type: "connected" }));
+
       // Switch to live message handling and flush anything buffered.
       ws.removeAllListeners("message");
       for (const msg of pending) handleMessage(msg);

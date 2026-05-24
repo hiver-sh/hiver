@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Pencil } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, RefreshCw, ServerCrash } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useMatch, useNavigate, useParams } from "react-router-dom";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
@@ -17,6 +17,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { DEFAULT_CONTROLLER_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } from "@/types";
+
+function ControllerUnreachable({ message, loading, onRetry }: { message: string; loading: boolean; onRetry: () => void }) {
+  return (
+    <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-foreground">
+      <ServerCrash className="h-10 w-10 text-muted-foreground/40" />
+      <p className="font-mono text-sm text-muted-foreground max-w-lg text-center">{message}</p>
+      <Button variant="outline" size="sm" onClick={onRetry} disabled={loading}>
+        <RefreshCw className={cn("mr-2 h-3.5 w-3.5", loading && "animate-spin")} />
+        Retry
+      </Button>
+    </div>
+  );
+}
 
 // --- shared state passed down from the layout ---
 interface LayoutProps {
@@ -106,6 +119,10 @@ export default function App() {
     setControllerUrl,
   };
 
+  if (fetchError) {
+    return <ControllerUnreachable message={fetchError} loading={loading} onRetry={fetchSandboxes} />;
+  }
+
   return (
     <div className="flex h-screen bg-background text-foreground">
       {/* Sidebar */}
@@ -117,7 +134,7 @@ export default function App() {
           >
             <ChevronRight className="h-4 w-4" />
           </button>
-          <CreateSandboxDialog compact serverUrl={serverUrl} controllerUrl={controllerUrl} onCreated={fetchSandboxes} />
+          <CreateSandboxDialog compact serverUrl={serverUrl} controllerUrl={controllerUrl} onCreated={(id) => { fetchSandboxes(); navigate(`/sandboxes/${id}`); }} />
           <div className="flex flex-col items-center gap-1 mt-1">
             {sandboxes.map((sb) => (
               <button
@@ -194,6 +211,7 @@ export default function App() {
             loading={loading}
             onSelect={(id) => navigate(`/sandboxes/${id}`)}
             onRefresh={fetchSandboxes}
+            onCreated={(id) => { fetchSandboxes(); navigate(`/sandboxes/${id}`); }}
             serverUrl={serverUrl}
             controllerUrl={controllerUrl}
           />
@@ -202,11 +220,6 @@ export default function App() {
 
       {/* Main */}
       <main className="min-w-0 flex-1">
-        {fetchError && (
-          <div className="m-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-            {fetchError}
-          </div>
-        )}
         <Routes>
           <Route path="/" element={null} />
           <Route

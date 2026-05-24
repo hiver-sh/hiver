@@ -235,6 +235,77 @@ func TestFUSESymlink(t *testing.T) {
 	}
 }
 
+// TestFUSERemoveNonEmptyDirReturnsENOTEMPTY guards against a regression where
+// mapErr returned *os.PathError instead of syscall.Errno, causing bazil.org/fuse
+// to substitute EIO for ENOTEMPTY. npm staging directories hit this when
+// rmdir is called before the directory is fully emptied.
+func TestFUSERemoveNonEmptyDirReturnsENOTEMPTY(t *testing.T) {
+	mp, _, _, stop := startFUSE(t, []fusefs.Rule{
+		{Path: "/", Access: fusefs.AccessRW},
+		{Path: "/**", Access: fusefs.AccessRW},
+	})
+	defer stop()
+
+	dir := filepath.Join(mp, "staging")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	err := syscall.Rmdir(dir)
+	if err == nil {
+		t.Fatal("expected error removing non-empty directory; got nil")
+	}
+	if !errors.Is(err, syscall.ENOTEMPTY) {
+		t.Errorf("got %v (%T), want ENOTEMPTY", err, err)
+	}
+}
+
+// TestFUSEMkdirExistingReturnsEEXIST guards against mapErr returning *os.PathError
+// (which bazil maps to EIO) instead of EEXIST when mkdir is called on a path
+// that already exists.
+func TestFUSEMkdirExistingReturnsEEXIST(t *testing.T) {
+	mp, _, _, stop := startFUSE(t, []fusefs.Rule{
+		{Path: "/", Access: fusefs.AccessRW},
+		{Path: "/**", Access: fusefs.AccessRW},
+	})
+	defer stop()
+
+	dir := filepath.Join(mp, "existing")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("mkdir first: %v", err)
+	}
+
+	err := syscall.Mkdir(dir, 0o755)
+	if err == nil {
+		t.Fatal("expected error on duplicate mkdir; got nil")
+	}
+	if !errors.Is(err, syscall.EEXIST) {
+		t.Errorf("got %v (%T), want EEXIST", err, err)
+	}
+}
+
+// TestFUSERenameNonExistentReturnsENOENT guards against mapErr returning
+// *os.PathError (EIO) instead of ENOENT when the rename source doesn't exist.
+func TestFUSERenameNonExistentReturnsENOENT(t *testing.T) {
+	mp, _, _, stop := startFUSE(t, []fusefs.Rule{
+		{Path: "/", Access: fusefs.AccessRW},
+		{Path: "/**", Access: fusefs.AccessRW},
+	})
+	defer stop()
+
+	err := os.Rename(filepath.Join(mp, "ghost"), filepath.Join(mp, "dst"))
+	if err == nil {
+		t.Fatal("expected error renaming non-existent source; got nil")
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || !errors.Is(pathErr.Err, syscall.ENOENT) {
+		t.Errorf("got %v (%T), want ENOENT", err, err)
+	}
+}
+
 func TestFUSEDeniedDirEntriesHidden(t *testing.T) {
 	mp, backend, _, stop := startFUSE(t, []fusefs.Rule{
 		{Path: "/", Access: fusefs.AccessRW},

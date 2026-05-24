@@ -68,6 +68,18 @@ func TestLoadMultipleMounts(t *testing.T) {
 	}
 }
 
+func TestDefaultACL(t *testing.T) {
+	p := writeSpec(t, `{"fs":[{"backend":"local","mount":"/workspace"}]}`)
+	s, err := spec.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	acls := s.FS[0].ACLs
+	if len(acls) != 1 || acls[0].Path != "/workspace/**" || string(acls[0].Access) != "rw" {
+		t.Errorf("default ACL: got %+v, want [{/workspace/** rw}]", acls)
+	}
+}
+
 func TestLoadMissingRequired(t *testing.T) {
 	cases := []struct {
 		name string

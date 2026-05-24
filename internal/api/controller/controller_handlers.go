@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/blasten/hive/internal/api"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -68,7 +69,7 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, id string) {
 		return
 	}
 
-	sb, err = h.runtime.Start(id, cfg)
+	sb, err = h.runtime.Start(id, api.NormalizeConfig(cfg))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
 		return
