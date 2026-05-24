@@ -75,7 +75,13 @@ export default function App() {
   const [controllerInput, setControllerInput] = useState(DEFAULT_CONTROLLER_URL);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem("app:sidebarCollapsed") === "true",
+  );
+
+  useEffect(() => {
+    localStorage.setItem("app:sidebarCollapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
   const [sandboxes, setSandboxes] = useState<SandboxRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -159,7 +165,10 @@ export default function App() {
           {/* Branding + controller URL */}
           <div className="h-[70px] flex flex-col justify-center">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
-              <span className="text-sm font-semibold tracking-tight">Hive Inspector</span>
+              <span className="flex items-center gap-1.5 text-sm font-semibold tracking-tight">
+                <img src="/favicon.svg" alt="" className="h-4 w-4" />
+                Hive Inspector
+              </span>
               <button
                 onClick={() => setSidebarCollapsed(true)}
                 className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
