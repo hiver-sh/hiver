@@ -18,9 +18,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           fs: [{ backend: "local", mount: "/workspace" }],
           env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
           egress: [
-            { host: "api.anthropic.com", access: "allow", ports: [443] },
-            { host: "*.anthropic.com", access: "allow", ports: [443] },
-            { host: "*", access: "deny" },
+            { host: "*", access: "allow" },
           ],
         }),
       },
@@ -31,9 +29,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           fs: [{ backend: "local", mount: "/workspace" }],
           env: { AGENT: "openclaw", ANTHROPIC_API_KEY: "<your-key>" },
           egress: [
-            { host: "api.anthropic.com", access: "allow", ports: [443] },
-            { host: "*.anthropic.com", access: "allow", ports: [443] },
-            { host: "*", access: "deny" },
+            { host: "*", access: "allow" },
           ],
         }),
       },
@@ -44,8 +40,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           fs: [{ backend: "local", mount: "/workspace" }],
           env: { AGENT: "openclaw", OPENAI_API_KEY: "<your-key>" },
           egress: [
-            { host: "api.openai.com", access: "allow", ports: [443] },
-            { host: "*", access: "deny" },
+            { host: "*", access: "allow" },
           ],
         }),
       },
@@ -56,8 +51,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           fs: [{ backend: "local", mount: "/workspace" }],
           env: { AGENT: "openclaw", GOOGLE_API_KEY: "<your-key>" },
           egress: [
-            { host: "generativelanguage.googleapis.com", access: "allow", ports: [443] },
-            { host: "*", access: "deny" },
+            { host: "*", access: "allow" },
           ],
         }),
       },
@@ -68,8 +62,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           fs: [{ backend: "local", mount: "/workspace" }],
           env: { AGENT: "openclaw", OPENROUTER_API_KEY: "<your-key>" },
           egress: [
-            { host: "openrouter.ai", access: "allow", ports: [443] },
-            { host: "*", access: "deny" },
+            { host: "*", access: "allow" },
           ],
         }),
       },
@@ -80,8 +73,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] }],
           env: {},
           egress: [
-            { host: "api.anthropic.com", access: "allow", ports: [443] },
-            { host: "*", access: "deny" },
+            { host: "*", access: "allow" },
           ],
         }),
       },
