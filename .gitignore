@@ -4,5 +4,6 @@ __pycache__
 .pytest_cache
 .env.local
 .env.*.local
+.DS_Store
 bin
 dist
