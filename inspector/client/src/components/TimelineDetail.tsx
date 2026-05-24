@@ -198,14 +198,16 @@ function parseAnthropicStream(
   let outputTokens: number | undefined;
   let model: string | undefined;
 
-  // Each chunk is one SSE line (empty lines are dropped by the proxy).
-  // Only data: lines carry JSON; skip everything else.
+  // A chunk may contain a whole SSE event (event:\ndata:\n\n) or just
+  // a data: line. Split on newlines so we find data: lines regardless.
   for (const chunk of chunks) {
-    if (!chunk.body.startsWith("data: ")) continue;
-    const data = chunk.body.slice(6);
-    if (!data || data === "[DONE]") continue;
-    let msg: Record<string, unknown>;
-    try { msg = JSON.parse(data) as Record<string, unknown>; } catch { continue; }
+    for (const line of chunk.body.split("\n")) {
+      const trimmed = line.trimEnd();
+      if (!trimmed.startsWith("data: ")) continue;
+      const data = trimmed.slice(6);
+      if (!data || data === "[DONE]") continue;
+      let msg: Record<string, unknown>;
+      try { msg = JSON.parse(data) as Record<string, unknown>; } catch { continue; }
 
     switch (msg.type) {
       case "message_start": {
@@ -242,6 +244,7 @@ function parseAnthropicStream(
         if (u?.output_tokens) outputTokens = u.output_tokens;
         break;
       }
+      }
     }
   }
 
@@ -259,9 +262,21 @@ interface AnthropicReqBody {
   messages?: Array<{ role: string; content: string | MsgContentPart[] }>;
 }
 
+interface AnthropicResBody {
+  content?: MsgContentPart[];
+  stop_reason?: string;
+  model?: string;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
 function parseAnthropicRequest(body?: string): AnthropicReqBody | null {
   if (!body) return null;
   try { return JSON.parse(body) as AnthropicReqBody; } catch { return null; }
+}
+
+function parseAnthropicResponse(body?: string): AnthropicResBody | null {
+  if (!body) return null;
+  try { return JSON.parse(body) as AnthropicResBody; } catch { return null; }
 }
 
 function resolveSystem(system?: string | Array<{ type: string; text?: string }>): string | undefined {
@@ -379,10 +394,12 @@ function SummaryTab({
   reqBody,
   stream,
   prevBody,
+  resBody,
 }: {
   reqBody: AnthropicReqBody | null;
   stream: StreamResult;
   prevBody?: AnthropicReqBody | null;
+  resBody?: AnthropicResBody | null;
 }) {
   const sys = useMemo(() => resolveSystem(reqBody?.system), [reqBody]);
 
@@ -421,6 +438,11 @@ function SummaryTab({
           )}
         </Bubble>
       )}
+      {stream.blocks.length === 0 && resBody?.content && resBody.content.length > 0 && (
+        <Bubble role="assistant">
+          {renderContent(resBody.content)}
+        </Bubble>
+      )}
     </div>
   );
 }
@@ -456,6 +478,21 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [row],
   );
+  const anthropicResBody = useMemo((): AnthropicResBody | null => {
+    // Try the response body field first (populated when proxy captures it directly).
+    if (res?.type === "egress.response" && res.body) {
+      const parsed = parseAnthropicResponse(res.body);
+      if (parsed?.content) return parsed;
+    }
+    // chunkForward emits every response read — including plain JSON bodies — as
+    // stream_chunk events. When those chunks carry no SSE "data: " lines,
+    // concatenate them and parse as a non-streaming Anthropic response.
+    if (chunks.length > 0 && anthropicStream.blocks.length === 0) {
+      return parseAnthropicResponse(chunks.map((c) => c.body).join(""));
+    }
+    return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row]);
   const prevAnthropicReqBody = useMemo(() => {
     if (!prevRow) return null;
     const e = prevRow.rawEvents[0];
@@ -507,22 +544,26 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
         <div className="ml-auto flex items-center gap-2">
           {isAnthropicMsg && tab === "summary" && (
             <>
-              {(anthropicStream.model ?? anthropicReqBody?.model) && (
+              {(anthropicStream.model ?? anthropicResBody?.model ?? anthropicReqBody?.model) && (
                 <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                  {anthropicStream.model ?? anthropicReqBody?.model}
+                  {anthropicStream.model ?? anthropicResBody?.model ?? anthropicReqBody?.model}
                 </span>
               )}
-              {anthropicStream.stopReason && (
+              {(anthropicStream.stopReason ?? anthropicResBody?.stop_reason) && (
                 <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                  {anthropicStream.stopReason}
+                  {anthropicStream.stopReason ?? anthropicResBody?.stop_reason}
                 </span>
               )}
-              {(anthropicStream.inputTokens != null || anthropicStream.outputTokens != null) && (
-                <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
-                  {anthropicStream.inputTokens ?? "?"}↑ {anthropicStream.outputTokens ?? "?"}↓
-                </span>
-              )}
-              {row.pending && !anthropicStream.stopReason && (
+              {(() => {
+                const inTok = anthropicStream.inputTokens ?? anthropicResBody?.usage?.input_tokens;
+                const outTok = anthropicStream.outputTokens ?? anthropicResBody?.usage?.output_tokens;
+                return (inTok != null || outTok != null) ? (
+                  <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
+                    {inTok ?? "?"}↑ {outTok ?? "?"}↓
+                  </span>
+                ) : null;
+              })()}
+              {row.pending && !anthropicStream.stopReason && !anthropicResBody?.stop_reason && (
                 <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
               )}
             </>
@@ -537,7 +578,7 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
       </div>
 
       {tab === "summary" && isAnthropicMsg && (
-        <SummaryTab reqBody={anthropicReqBody} stream={anthropicStream} prevBody={prevAnthropicReqBody} />
+        <SummaryTab reqBody={anthropicReqBody} stream={anthropicStream} prevBody={prevAnthropicReqBody} resBody={anthropicResBody} />
       )}
 
       {tab === "request" && (
