@@ -255,13 +255,14 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	}
 	defer resp.Body.Close()
 
+	src := unwrapBody(resp)
 	ac.responseHeaders = headerMap(resp.Header)
 
 	if err := writeResponseHeaders(clientTLS, resp); err != nil {
 		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.chunkForward(unwrapBody(resp), clientTLS, nil, ac)
+	p.chunkForward(src, clientTLS, nil, ac)
 	ac.response(resp.StatusCode)
 }
 
@@ -366,13 +367,14 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	}
 	defer resp.Body.Close()
 
+	src := unwrapBody(resp)
 	ac.responseHeaders = headerMap(resp.Header)
 
 	if err := writeResponseHeaders(c, resp); err != nil {
 		ac.responseError(err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.chunkForward(unwrapBody(resp), c, nil, ac)
+	p.chunkForward(src, c, nil, ac)
 	ac.response(resp.StatusCode)
 }
 

@@ -280,6 +280,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer out.Body.Close()
 
+	src := unwrapBody(out)
 	ac.responseHeaders = headerMap(out.Header)
 
 	for k, vs := range out.Header {
@@ -292,7 +293,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if flusher, ok := w.(http.Flusher); ok {
 		flush = flusher.Flush
 	}
-	p.chunkForward(unwrapBody(out), w, flush, ac)
+	p.chunkForward(src, w, flush, ac)
 	ac.response(out.StatusCode)
 }
 
@@ -329,7 +330,6 @@ func decodeBytes(enc string, b []byte) string {
 		return string(b)
 	}
 }
-
 // unwrapBody returns an io.Reader for the body, decompressing gzip or zstd if
 // the response carries a matching Content-Encoding. It deletes that header (and
 // Content-Length, which becomes invalid) so the caller can forward the
