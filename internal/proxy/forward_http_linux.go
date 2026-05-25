@@ -84,7 +84,7 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 	// are known. Body bytes flow as response_chunk events from chunkForward
 	// so consumers (especially SSE) don't have to wait for the body to end.
 	ac.response(resp.StatusCode)
-	p.chunkForward(src, client, nil, ac)
+	p.chunkForward(src, client, nil, ac, isTextContentType(resp.Header.Get("Content-Type")))
 }
 
 // writeUpstreamRequest writes req to upstream, choosing one of three paths:

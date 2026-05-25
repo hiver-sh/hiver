@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -317,7 +318,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// are known. Body bytes flow as response_chunk events from chunkForward
 	// so consumers don't have to wait for the body to finish.
 	ac.response(out.StatusCode)
-	p.chunkForward(src, w, flush, ac)
+	p.chunkForward(src, w, flush, ac, isTextContentType(out.Header.Get("Content-Type")))
 }
 
 // decodeBytes decompresses b according to the Content-Encoding header value,
@@ -389,7 +390,8 @@ func unwrapBody(resp *http.Response) io.Reader {
 // Each chunk is emitted as a response_chunk audit event so consumers see body
 // bytes as they arrive — the paired response event has already been emitted
 // (with status + headers + time-to-first-byte) before this loop starts.
-func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx) {
+// logBody suppresses chunk events for binary content types.
+func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx, logBody bool) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := src.Read(buf)
@@ -398,12 +400,37 @@ func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *aud
 			if flush != nil {
 				flush()
 			}
-			ac.streamChunk(string(buf[:n]), "")
+			if logBody {
+				ac.streamChunk(string(buf[:n]), "")
+			}
 		}
 		if err != nil {
 			break
 		}
 	}
+}
+
+// isTextContentType reports whether ct is a human-readable text type safe to
+// include in audit logs. An empty Content-Type defaults to true. Binary types
+// (image/*, audio/*, video/*, application/octet-stream, etc.) return false.
+func isTextContentType(ct string) bool {
+	if ct == "" {
+		return true
+	}
+	mt, _, _ := mime.ParseMediaType(ct)
+	if strings.HasPrefix(mt, "text/") {
+		return true
+	}
+	switch mt {
+	case "application/json", "application/xml",
+		"application/javascript", "application/x-javascript",
+		"application/x-www-form-urlencoded",
+		"application/ld+json", "application/graphql",
+		"application/graphql+json", "application/atom+xml",
+		"application/rss+xml":
+		return true
+	}
+	return strings.HasSuffix(mt, "+json") || strings.HasSuffix(mt, "+xml")
 }
 
 // isWebSocketUpgrade reports whether r carries a WebSocket upgrade.
