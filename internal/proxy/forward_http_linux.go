@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 )
 
 // maxAuditBodyBytes caps the request body snapshot captured for audit so a
@@ -49,6 +48,10 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 			ac.responseError("write 101: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Response event before the WS tunnel starts pumping — frame audit
+		// events flow as stream_chunks from wsForward, so consumers see
+		// the 101 immediately rather than at tunnel close.
+		ac.response(http.StatusSwitchingProtocols)
 		// upstreamBR may already hold the first WS frame bytes
 		// http.ReadResponse over-read past the headers — drain it before
 		// reading further from upstream.
@@ -56,7 +59,6 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 		go func() { p.wsForward(client, upstream, ac); done <- struct{}{} }()
 		go func() { p.wsForward(io.MultiReader(upstreamBR, upstream), client, ac); done <- struct{}{} }()
 		<-done
-		ac.response(http.StatusSwitchingProtocols)
 		return
 	}
 
@@ -66,9 +68,11 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 		ac.responseError("write response: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	streaming := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
-	p.chunkForward(src, client, nil, ac, streaming)
+	// Emit the response event now — status, headers, and time-to-first-byte
+	// are known. Body bytes flow as stream_chunk events from chunkForward
+	// so consumers (especially SSE) don't have to wait for the body to end.
 	ac.response(resp.StatusCode)
+	p.chunkForward(src, client, nil, ac)
 }
 
 // writeUpstreamRequest writes req to upstream, choosing one of three paths:

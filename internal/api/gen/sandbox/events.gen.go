@@ -128,11 +128,6 @@ type EgressRequestEventAccess string
 
 // EgressResponseEvent defines model for EgressResponseEvent.
 type EgressResponseEvent struct {
-	// Body Response body captured by the proxy during TLS interception.
-	// Omitted for CONNECT / raw-forward-TLS flows where the body
-	// is not readable, and for responses with no body.
-	Body *string `json:"body,omitempty"`
-
 	// DurationMs Wall-clock duration of the request, in milliseconds.
 	DurationMs int `json:"duration_ms"`
 
@@ -157,8 +152,7 @@ type EgressResponseEvent struct {
 
 // EgressStreamChunkEvent defines model for EgressStreamChunkEvent.
 type EgressStreamChunkEvent struct {
-	// Body Raw SSE frame content (all lines up to but not including
-	// the blank-line frame separator).
+	// Body Raw chunk content.
 	Body string `json:"body"`
 
 	// Id Monotonic event id. Pass via the `lastEventId` query

@@ -96,11 +96,16 @@ type EgressOverride struct {
 
 // AuditEvent is one record on the audit.network topic (§9.1).
 //
-// Each user-level request produces a pair of events sharing the same
-// RequestID: a `phase:"request"` carrying the access decision, then
-// a `phase:"response"` carrying the result. For HTTP flows the response
-// carries the upstream Status and DurationMs; for CONNECT and raw-forward
-// TLS it carries Status=200/0 respectively at tunnel close.
+// Each user-level request produces one phase:"request" event (access
+// decision), one phase:"response" event (status + headers + time-to-first-
+// byte, emitted as soon as the upstream responds), and zero or more
+// phase:"stream_chunk" events carrying body bytes as they flow. SSE and
+// WebSocket streams emit many chunks; ordinary HTTP responses emit
+// however many the upstream pushes per Read. All four share the same
+// RequestID.
+//
+// For CONNECT and raw-forward TLS, only request/response events fire —
+// the proxy doesn't see body bytes through the cipher.
 type AuditEvent struct {
 	At         time.Time         `json:"at"`
 	Type       string            `json:"type"`  // always "network"
@@ -111,7 +116,7 @@ type AuditEvent struct {
 	Path       string            `json:"path,omitempty"`
 	Query      string            `json:"query,omitempty"`   // raw URL query (no leading "?")
 	Headers    map[string]string `json:"headers,omitempty"` // HTTP headers; nil for TLS/CONNECT
-	Body       string            `json:"body,omitempty"`    // request body; empty for TLS/CONNECT
+	Body       string            `json:"body,omitempty"`    // request body (phase:request) or chunk bytes (phase:stream_chunk); response events no longer carry a body
 	Verdict    string            `json:"verdict"`           // "allow" | "deny" | "error"
 	Status     int               `json:"status,omitempty"`
 	DurationMs int               `json:"duration_ms,omitempty"`
@@ -307,9 +312,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if flusher, ok := w.(http.Flusher); ok {
 		flush = flusher.Flush
 	}
-	streaming := strings.Contains(out.Header.Get("Content-Type"), "text/event-stream")
-	p.chunkForward(src, w, flush, ac, streaming)
+	// Emit the response event now — status, headers, and time-to-first-byte
+	// are known. Body bytes flow as stream_chunk events from chunkForward
+	// so consumers don't have to wait for the body to finish.
 	ac.response(out.StatusCode)
+	p.chunkForward(src, w, flush, ac)
 }
 
 // decodeBytes decompresses b according to the Content-Encoding header value,
@@ -377,10 +384,10 @@ func unwrapBody(resp *http.Response) io.Reader {
 
 // chunkForward copies src to dst one chunk at a time (whatever the server
 // pushes in a single Read), flushing after each chunk. flush may be nil.
-// When streaming is true (SSE), each chunk is emitted as a stream_chunk audit
-// event. When false (regular HTTP), chunks are accumulated in ac.responseBody
-// and surfaced as part of the final response event.
-func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx, streaming bool) {
+// Each chunk is emitted as a stream_chunk audit event so consumers see body
+// bytes as they arrive — the paired response event has already been emitted
+// (with status + headers + time-to-first-byte) before this loop starts.
+func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := src.Read(buf)
@@ -389,11 +396,7 @@ func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *aud
 			if flush != nil {
 				flush()
 			}
-			if streaming {
-				ac.streamChunk(string(buf[:n]))
-			} else {
-				ac.responseBody += string(buf[:n])
-			}
+			ac.streamChunk(string(buf[:n]))
 		}
 		if err != nil {
 			break
@@ -495,13 +498,16 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, host str
 		return
 	}
 
+	// Response event before the WS tunnel starts pumping — frame audit
+	// events flow as stream_chunks from wsForward, so consumers see the
+	// 101 immediately rather than at tunnel close.
+	ac.response(http.StatusSwitchingProtocols)
 	done := make(chan struct{}, 2)
 	go func() { p.wsForward(io.MultiReader(clientBrw.Reader, client), upstream, ac); done <- struct{}{} }()
 	go func() { p.wsForward(io.MultiReader(upstreamBuf, upstream), client, ac); done <- struct{}{} }()
 	<-done
 	_ = client.Close()
 	_ = upstream.Close()
-	ac.response(http.StatusSwitchingProtocols)
 }
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -717,7 +723,6 @@ type auditCtx struct {
 	requestHeaders  map[string]string // outbound headers after strip+override; nil for CONNECT/TLS
 	requestBody     string            // request body
 	responseHeaders map[string]string // upstream response headers; nil for CONNECT/TLS
-	responseBody    string            // response body (non-SSE only)
 }
 
 // beginAudit allocates an auditCtx for one request/response pair.
@@ -777,13 +782,17 @@ func (a *auditCtx) allow() {
 	})
 }
 
+// response emits the phase:"response" event with status, headers, and
+// time-to-first-byte. Body bytes are NOT included — they flow as
+// phase:"stream_chunk" events from chunkForward / wsForward as they arrive,
+// so consumers see the response immediately instead of waiting for the body
+// to complete (matters most for long-lived SSE / WebSocket).
 func (a *auditCtx) response(status int) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response",
 		RequestID: a.requestID,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
 		Headers: a.responseHeaders,
-		Body:    a.responseBody,
 		Verdict: "allow", Status: status,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
 	})

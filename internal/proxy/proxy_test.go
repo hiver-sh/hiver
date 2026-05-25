@@ -99,8 +99,9 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	}
 
 	events := decodeAudit(t, audit)
-	if len(events) != 2 {
-		t.Fatalf("audit events: got %d, want 2 (request+response): %+v", len(events), events)
+	// request + response (now emitted at headers) + stream_chunk per body Read
+	if len(events) < 3 {
+		t.Fatalf("audit events: got %d, want >=3 (request+response+>=1 stream_chunk): %+v", len(events), events)
 	}
 	if events[0].Phase != "request" || events[0].Verdict != "allow" || events[0].Method != "GET" {
 		t.Errorf("request event mismatch: %+v", events[0])
@@ -108,8 +109,20 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	if events[1].Phase != "response" || events[1].Verdict != "allow" || events[1].Status != 200 {
 		t.Errorf("response event mismatch: %+v", events[1])
 	}
-	if events[0].RequestID == 0 || events[0].RequestID != events[1].RequestID {
-		t.Errorf("request_id should pair the two events: req=%d resp=%d", events[0].RequestID, events[1].RequestID)
+	// Body should come as one or more stream_chunk events after the response.
+	var chunkBody string
+	for _, e := range events[2:] {
+		if e.Phase == "stream_chunk" {
+			chunkBody += e.Body
+		}
+	}
+	if chunkBody != "hello" {
+		t.Errorf("stream_chunk body: got %q, want %q", chunkBody, "hello")
+	}
+	for _, e := range events {
+		if e.RequestID != events[0].RequestID {
+			t.Errorf("all events should share RequestID; got %d vs %d in %+v", e.RequestID, events[0].RequestID, e)
+		}
 	}
 }
 

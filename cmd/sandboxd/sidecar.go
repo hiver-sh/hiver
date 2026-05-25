@@ -300,10 +300,21 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 			t.broker.Publish(f)
 		}
 	case "response":
-		if v, _ := raw["verdict"].(string); v != "allow" && v != "error" && v != "deny" {
+		verdict, _ := raw["verdict"].(string)
+		if verdict != "allow" && verdict != "error" && verdict != "deny" {
 			return
 		}
-		sseID, ok := t.corr.take(internalID)
+		// Allow responses are emitted at headers-time, before the body
+		// finishes streaming; subsequent stream_chunks still need the
+		// correlation. Peek (keep the entry) for allow; take (clean up)
+		// for deny/error since those are terminal — no chunks follow.
+		var sseID int64
+		var ok bool
+		if verdict == "allow" {
+			sseID, ok = t.corr.peek(internalID)
+		} else {
+			sseID, ok = t.corr.take(internalID)
+		}
 		if !ok {
 			return // paired request was filtered out (shouldn't happen for proxy)
 		}
@@ -378,10 +389,6 @@ func proxyResponseFactory(raw map[string]any, requestID int64) events.Factory {
 	status := intField(raw, "status")
 	durationMs := intField(raw, "duration_ms")
 	headers := rawToStringMap(raw["headers"])
-	var body *string
-	if b, ok := raw["body"].(string); ok && b != "" {
-		body = &b
-	}
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		_ = ev.FromEgressResponseEvent(gen.EgressResponseEvent{
@@ -391,7 +398,6 @@ func proxyResponseFactory(raw map[string]any, requestID int64) events.Factory {
 			Status:     status,
 			DurationMs: durationMs,
 			Headers:    headers,
-			Body:       body,
 		})
 		return ev
 	}
