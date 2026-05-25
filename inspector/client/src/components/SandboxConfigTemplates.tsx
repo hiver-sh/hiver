@@ -23,51 +23,40 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
-        label: "Openclaw - Claude API key",
+        label: "Codex",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "openclaw", ANTHROPIC_API_KEY: "<your-key>" },
+          env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
           egress: [
             { host: "*", access: "allow" },
           ],
         }),
       },
       {
-        label: "Openclaw - OpenAI API key",
+        label: "Gemini CLI",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "openclaw", OPENAI_API_KEY: "<your-key>" },
+          env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
           egress: [
             { host: "*", access: "allow" },
           ],
         }),
       },
       {
-        label: "Openclaw - Google API key",
+        label: "GitHub Copilot",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "openclaw", GOOGLE_API_KEY: "<your-key>" },
+          env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
           egress: [
             { host: "*", access: "allow" },
           ],
         }),
       },
       {
-        label: "Openclaw - Open Router API key",
-        apply: () => ({
-          image: "hive-example-claude-worker-bundle",
-          fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "openclaw", OPENROUTER_API_KEY: "<your-key>" },
-          egress: [
-            { host: "*", access: "allow" },
-          ],
-        }),
-      },
-      {
-        label: "Hive MCP server",
+        label: "Default",
         apply: () => ({
           image: "hive-mcp-server-bundle",
           fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] }],

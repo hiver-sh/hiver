@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { filterEvents, type FilterState } from "@/components/TimelineView";
@@ -6,7 +5,6 @@ import type { SandboxEvent } from "@/types";
 
 interface Props {
   events: SandboxEvent[];
-  autoScroll: boolean;
   filter: FilterState;
 }
 
@@ -118,15 +116,8 @@ function EventDetail({ event }: { event: SandboxEvent }) {
   }
 }
 
-export function EventFeed({ events, autoScroll, filter }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+export function EventFeed({ events, filter }: Props) {
   const filtered = filterEvents(events, filter);
-
-  useEffect(() => {
-    if (autoScroll) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [filtered, autoScroll]);
 
   if (events.length === 0) {
     return (
@@ -155,7 +146,6 @@ export function EventFeed({ events, autoScroll, filter }: Props) {
             </div>
           );
         })}
-        <div ref={bottomRef} />
       </div>
     </ScrollArea>
   );

@@ -418,7 +418,7 @@ function SummaryTab({
   }, [reqBody?.messages, prevBody?.messages]);
 
   return (
-    <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0 scrollbar-thin">
+    <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0">
       {sys && (
         <Bubble role="system" defaultCollapsed>
           <PlainText text={sys} />
@@ -605,35 +605,37 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
 
       {tab === "request" && (
         <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className={`rounded-md border border-border p-3 min-w-0 overflow-auto scrollbar-thin ${reqRawBody ? "flex-1" : "w-full"}`}>
-            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
-              <KV label="time" value={ts} />
-              {req.type === "egress.request" && <>
-                <KV label="method" value={req.method} cls={egressMethodCls(req.method)} />
-                <KV label="host"   value={req.host} />
-                <KV label="path"   value={req.path} />
-                {req.query && <KV label="query" value={req.query} />}
-                <span className="text-muted-foreground/70 select-text">access</span>
-                <AccessCell
-                  access={req.access}
-                  applyConfig={applyConfig}
-                  allowUpdater={egressRuleUpdater(req.host, req.path, "allow")}
-                  denyUpdater={egressRuleUpdater(req.host, req.path, "deny")}
-                />
-                {req.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={req.headers} /></div>}
-              </>}
-              {req.type === "fs.request" && <>
-                <KV label="op"     value={req.operation} />
-                <KV label="path"   value={req.path} />
-                <KV label="mount"  value={req.mount} />
-                <span className="text-muted-foreground/70 select-text">access</span>
-                <AccessCell
-                  access={req.access}
-                  applyConfig={applyConfig}
-                  allowUpdater={fsAllowUpdater(req.mount, req.path)}
-                  denyUpdater={fsDenyUpdater(req.mount, req.path)}
-                />
-              </>}
+          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${reqRawBody ? "flex-1" : "w-full"}`}>
+            <div className="p-3 overflow-auto h-full">
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+                <KV label="time" value={ts} />
+                {req.type === "egress.request" && <>
+                  <KV label="method" value={req.method} cls={egressMethodCls(req.method)} />
+                  <KV label="host"   value={req.host} />
+                  <KV label="path"   value={req.path} />
+                  {req.query && <KV label="query" value={req.query} />}
+                  <span className="text-muted-foreground/70 select-text">access</span>
+                  <AccessCell
+                    access={req.access}
+                    applyConfig={applyConfig}
+                    allowUpdater={egressRuleUpdater(req.host, req.path, "allow")}
+                    denyUpdater={egressRuleUpdater(req.host, req.path, "deny")}
+                  />
+                  {req.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={req.headers} /></div>}
+                </>}
+                {req.type === "fs.request" && <>
+                  <KV label="op"     value={req.operation} />
+                  <KV label="path"   value={req.path} />
+                  <KV label="mount"  value={req.mount} />
+                  <span className="text-muted-foreground/70 select-text">access</span>
+                  <AccessCell
+                    access={req.access}
+                    applyConfig={applyConfig}
+                    allowUpdater={fsAllowUpdater(req.mount, req.path)}
+                    denyUpdater={fsDenyUpdater(req.mount, req.path)}
+                  />
+                </>}
+              </div>
             </div>
           </div>
           {reqRawBody && (
@@ -644,28 +646,30 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
 
       {tab === "response" && (
         <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className={`rounded-md border border-border p-3 min-w-0 overflow-auto scrollbar-thin ${chunks.length > 0 ? "flex-1" : "w-full"}`}>
-            {res ? (
-              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
-                {res.type === "egress.response" && <>
-                  <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-400" : "text-green-400"} />
-                  {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
-                  {res.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={res.headers} /></div>}
-                </>}
-                {res.type === "fs.response" && <>
-                  <KV label="backend"  value={res.backend} />
-                  {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
-                  {res.error && <KV label="error" value={res.error} cls="text-red-400" />}
-                </>}
-              </div>
-            ) : (
-              <span className="text-muted-foreground">{bar.pending ? "awaiting response…" : "no response received"}</span>
-            )}
+          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${chunks.length > 0 ? "flex-1" : "w-full"}`}>
+            <div className="p-3 overflow-auto h-full">
+              {res ? (
+                <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+                  {res.type === "egress.response" && <>
+                    <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-400" : "text-green-400"} />
+                    {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
+                    {res.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={res.headers} /></div>}
+                  </>}
+                  {res.type === "fs.response" && <>
+                    <KV label="backend"  value={res.backend} />
+                    {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
+                    {res.error && <KV label="error" value={res.error} cls="text-red-400" />}
+                  </>}
+                </div>
+              ) : (
+                <span className="text-muted-foreground">{bar.pending ? "awaiting response…" : "no response received"}</span>
+              )}
+            </div>
           </div>
           {chunks.length > 0 && (
             <div className="flex flex-1 min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
               {isWebSocket ? (
-                <div className="flex flex-col flex-1 min-h-0 overflow-y-auto scrollbar-thin rounded-md border border-border bg-muted/20 py-1">
+                <div className="flex flex-col flex-1 min-h-0 overflow-y-auto rounded-md border border-border bg-muted/20 py-1">
                   {chunks.map((chunk) => (
                     <WsChunkRow key={chunk.id} chunk={chunk} />
                   ))}

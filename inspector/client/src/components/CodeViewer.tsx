@@ -111,7 +111,7 @@ export function CodeViewer({ content, lang = "text", className, autoSize, maxHei
           fontSize: 13,
           padding: { top: 8, bottom: 8 },
           folding: false,
-          scrollbar: { alwaysConsumeMouseWheel: false },
+          scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
         }}
       />
       <button

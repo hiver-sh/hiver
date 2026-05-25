@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronUp } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import type { SandboxEvent } from "@/types";
+import { humanDuration } from "@/lib/utils";
 import { RowDetailPanel } from "./TimelineDetail";
 
 export interface TimelineBar {
@@ -126,26 +126,38 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
     });
 }
 
-function computeBarPositions(
+
+interface MergedGroup {
+  bars: TimelineBar[];
+  leftPx: number;
+  widthPx: number;
+}
+
+function computeMergedGroups(
   bars: TimelineBar[],
-  minTime: number,
-  totalSpan: number,
-  trackWidth: number,
-  effectiveDurFn: (bar: TimelineBar) => number,
-): { leftPx: number; widthPx: number }[] {
-  if (trackWidth <= 0) return bars.map(() => ({ leftPx: 0, widthPx: 1 }));
-  const pxPerMs = trackWidth / totalSpan;
-  const result: { leftPx: number; widthPx: number }[] = new Array(bars.length);
-  const order = bars.map((_, i) => i).sort((a, b) => bars[a].startTime - bars[b].startTime);
-  let rightEdgePx = -Infinity;
-  for (const i of order) {
-    const bar = bars[i];
-    const widthPx = Math.max(1, effectiveDurFn(bar) * pxPerMs);
-    const leftPx = Math.max((bar.startTime - minTime) * pxPerMs, rightEdgePx + 1);
-    rightEdgePx = leftPx + widthPx;
-    result[i] = { leftPx, widthPx };
+  toDisplay: (t: number) => number,
+  effectiveDurFn: (b: TimelineBar) => number,
+): MergedGroup[] {
+  if (bars.length === 0) return [];
+  const sorted = [...bars].sort((a, b) => a.startTime - b.startTime);
+  const groups: MergedGroup[] = [];
+  let gBars = [sorted[0]];
+  let leftPx = toDisplay(sorted[0].startTime);
+  let rightPx = Math.max(leftPx + 1, toDisplay(sorted[0].startTime + effectiveDurFn(sorted[0])));
+  for (let i = 1; i < sorted.length; i++) {
+    const bar = sorted[i];
+    const bLeft = toDisplay(bar.startTime);
+    const bRight = Math.max(bLeft + 1, toDisplay(bar.startTime + effectiveDurFn(bar)));
+    if (bLeft < rightPx + 1) {
+      gBars.push(bar);
+      rightPx = Math.max(rightPx, bRight);
+    } else {
+      groups.push({ bars: gBars, leftPx, widthPx: rightPx - leftPx });
+      gBars = [bar]; leftPx = bLeft; rightPx = bRight;
+    }
   }
-  return result;
+  groups.push({ bars: gBars, leftPx, widthPx: rightPx - leftPx });
+  return groups;
 }
 
 function barClass(bar: TimelineBar, type: "egress" | "fs" | "stdio"): string {
@@ -250,57 +262,13 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
 }
 
 const LABEL_W = 220;
-const BAR_MIN_W = "1px";
-
-interface DurationLabelProps {
-  dur: number;
-  leftNum: number;
-  rightEdgeNum: number;
-  rowIdx: number;
-  totalRows: number;
-  isLive: boolean;
-  isError: boolean;
-  isPending: boolean;
-  status?: number;
-}
-
-function DurationLabel({ dur, leftNum, rightEdgeNum, rowIdx, totalRows, isLive, isError, isPending, status }: DurationLabelProps) {
-  let posClass: string;
-  if (rightEdgeNum < 0.68) {
-    posClass = "left-full top-1/2 -translate-y-1/2 pl-1.5";
-  } else if (leftNum > 0.06) {
-    posClass = "right-full top-1/2 -translate-y-1/2 pr-1.5";
-  } else if (rowIdx < Math.floor(totalRows / 2)) {
-    posClass = "top-full left-0 mt-0.5";
-  } else {
-    posClass = "bottom-full left-0 mb-0.5";
-  }
-
-  const colorClass = isError ? "text-red-400" : isLive ? "text-blue-400" : "text-muted-foreground";
-
-  const text = isLive
-    ? dur < 1000 ? `${dur}ms…` : `${(dur / 1000).toFixed(2)}s…`
-    : isPending
-      ? "no response"
-      : dur < 1000 ? `${dur}ms` : `${(dur / 1000).toFixed(2)}s`;
-
-  return (
-    <span className={`absolute z-10 font-mono whitespace-nowrap opacity-0 group-hover/bar:opacity-100 transition-opacity ${posClass} ${colorClass}`}>
-      {text}{status ? ` ${status}` : ""}
-    </span>
-  );
-}
 
 
-function fmtTick(ms: number): string {
-  if (ms === 0) return "0";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
-}
+
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
-export function TimelineView({ events, filter, autoScroll, applyConfig }: { events: SandboxEvent[]; filter: FilterState; autoScroll?: boolean; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
+export function TimelineView({ events, filter, applyConfig }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
   const rows = useMemo(() => buildRows(events), [events]);
 
   const hasLive = rows.some((r) => r.bars.some(b => b.pending && b.access === "allowed"));
@@ -320,8 +288,10 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
     localStorage.setItem("timeline:panelCollapsed", String(panelCollapsed));
   }, [panelCollapsed]);
   const trackRef = useRef<HTMLDivElement>(null);
+  const rowsScrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const rowRefMap = useRef<Map<string, HTMLDivElement>>(new Map());
+  const selectedBarRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setSearchParams((prev) => {
@@ -332,17 +302,33 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
     }, { replace: true });
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    if (autoScroll) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [rows.length, autoScroll]);
+
+  const scrollSelectedIntoView = useCallback(() => {
+    const barEl = selectedBarRef.current;
+    const scrollEl = rowsScrollRef.current;
+    if (!barEl || !scrollEl) return;
+
+    const barRect = barEl.getBoundingClientRect();
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const curTop = scrollEl.scrollTop;
+    const curLeft = scrollEl.scrollLeft;
+
+    const hiddenV = barRect.top < scrollRect.top || barRect.bottom > scrollRect.bottom;
+    const hiddenH = barRect.left < scrollRect.left + LABEL_W || barRect.right > scrollRect.right;
+
+    if (!hiddenV && !hiddenH) return;
+
+    const barCenterV = (barRect.top  - scrollRect.top)  + curTop  + barRect.height / 2;
+    const barCenterH = (barRect.left - scrollRect.left) + curLeft + barRect.width  / 2;
+
+    if (hiddenV) scrollEl.scrollTop = Math.max(0, barCenterV - scrollRect.height / 2);
+    if (hiddenH) scrollEl.scrollLeft = Math.max(0, barCenterH - LABEL_W - (scrollRect.width - LABEL_W) / 2);
+  }, []);
 
   useEffect(() => {
     if (selectedId === null) return;
-    const row = rows.find(r => r.bars.some(b => b.id === selectedId));
-    if (row) rowRefMap.current.get(row.key)?.scrollIntoView({ block: "nearest" });
-  }, [selectedId, rows]);
+    scrollSelectedIntoView();
+  }, [selectedId, scrollSelectedIntoView]);
 
   // Wall-clock time when the most recent SSE event arrived at the client.
   const lastEventReceivedRef = useRef(Date.now());
@@ -431,60 +417,162 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
     return bar.durationMs;
   }
 
-  const tickCount = Math.min(12, Math.max(3, Math.floor(trackWidth / 90)));
-  const tickInterval = totalSpan / tickCount;
-  const ticks = Array.from({ length: tickCount + 1 }, (_, i) => i * tickInterval);
+  // Scale: shortest event duration = 1px. Everything else proportional.
+  const pxPerMs = (() => {
+    let minDur = Infinity;
+    for (const row of filteredRows) {
+      if (row.isPoint) continue;
+      for (const bar of row.bars) {
+        const d = effectiveDur(bar);
+        if (d > 0) minDur = Math.min(minDur, d);
+      }
+    }
+    if (!isFinite(minDur) || totalSpan <= 0) return trackWidth > 0 ? trackWidth / Math.max(totalSpan, 1) : 1;
+    return 1 / minDur;
+  })();
 
-  function pct(ms: number) {
-    return `${(ms / totalSpan) * 100}%`;
+  // Gap compression: build segments mapping real time → display pixels.
+  // Large gaps are collapsed to GAP_DISPLAY_PX wide with an indicator.
+  const GAP_DISPLAY_PX = 20;
+  const gapThresholdPx = Math.max(60, 0.15 * trackWidth);
+
+  const rawIntervals: [number, number][] = [];
+  for (const row of filteredRows) {
+    for (const bar of row.bars) {
+      rawIntervals.push([bar.startTime, bar.startTime + bar.durationMs]);
+    }
+  }
+  rawIntervals.sort((a, b) => a[0] - b[0]);
+  const mergedIntervals: [number, number][] = [];
+  for (const [s, e] of rawIntervals) {
+    if (mergedIntervals.length === 0 || s > mergedIntervals[mergedIntervals.length - 1][1]) {
+      mergedIntervals.push([s, e]);
+    } else {
+      mergedIntervals[mergedIntervals.length - 1][1] = Math.max(mergedIntervals[mergedIntervals.length - 1][1], e);
+    }
+  }
+
+  interface Segment { realStart: number; realEnd: number; dispStart: number; dispEnd: number; isGap: boolean; }
+  const segments: Segment[] = [];
+  let dispPos = 0;
+  let prevEnd = minTime;
+  for (const [iStart, iEnd] of mergedIntervals) {
+    if (iStart > prevEnd) {
+      const gapNatural = (iStart - prevEnd) * pxPerMs;
+      const dw = gapNatural > gapThresholdPx ? GAP_DISPLAY_PX : gapNatural;
+      segments.push({ realStart: prevEnd, realEnd: iStart, dispStart: dispPos, dispEnd: dispPos + dw, isGap: gapNatural > gapThresholdPx });
+      dispPos += dw;
+    }
+    const evW = Math.max(1, (iEnd - iStart) * pxPerMs);
+    segments.push({ realStart: iStart, realEnd: iEnd, dispStart: dispPos, dispEnd: dispPos + evW, isGap: false });
+    dispPos += evW;
+    prevEnd = Math.max(prevEnd, iEnd);
+  }
+
+  // If the natural timeline is shorter than the viewport, scale it up to fill
+  // edge-to-edge (with 10px right padding). Otherwise keep the natural scale
+  // and let the user scroll.
+  const fitScale = trackWidth > 0 && dispPos > 0 && dispPos + 10 < trackWidth
+    ? (trackWidth - 10) / dispPos
+    : 1;
+  for (const seg of segments) {
+    seg.dispStart *= fitScale;
+    seg.dispEnd   *= fitScale;
+  }
+const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitScale + 10);
+
+  function realToDisplay(realMs: number): number {
+    for (const seg of segments) {
+      if (realMs <= seg.realEnd) {
+        const span = seg.realEnd - seg.realStart;
+        return seg.dispStart + (span > 0 ? (realMs - seg.realStart) / span : 0) * (seg.dispEnd - seg.dispStart);
+      }
+    }
+    return contentTrackWidth;
+  }
+
+  function displayToReal(dispPx: number): number {
+    for (const seg of segments) {
+      if (dispPx <= seg.dispEnd) {
+        const span = seg.dispEnd - seg.dispStart;
+        return seg.realStart + (span > 0 ? (dispPx - seg.dispStart) / span : 0) * (seg.realEnd - seg.realStart);
+      }
+    }
+    return segments.length > 0 ? segments[segments.length - 1].realEnd : minTime;
+  }
+
+  // One tick every 100px in display space, skipping positions inside compressed gaps.
+  const tickPositions = Array.from(
+    { length: Math.floor(contentTrackWidth / 100) + 1 },
+    (_, i) => i * 100,
+  ).filter(px => !segments.some(s => s.isGap && px > s.dispStart && px < s.dispEnd));
+
+  function syncRuler() {
+    if (trackRef.current && rowsScrollRef.current) {
+      trackRef.current.scrollLeft = rowsScrollRef.current.scrollLeft;
+    }
   }
 
   return (
     <div className="flex flex-col h-full">
 
-      {/* Sticky ruler */}
+      {/* Sticky ruler — scrolled programmatically to match rows */}
       <div className="shrink-0 text-xs cursor-default select-none border-b border-border">
         <div className="flex" style={{ paddingLeft: LABEL_W }}>
-          <div ref={trackRef} className="relative h-6 flex-1">
-            {ticks.map((t, i) => {
-              const isFirst = i === 0;
-              const isLast  = i === ticks.length - 1;
-              return (
+          <div ref={trackRef} className="flex-1 overflow-hidden">
+            <div className="group/ruler relative h-6" style={{ width: contentTrackWidth }}>
+              {/* Compressed-gap indicators */}
+              {segments.filter(s => s.isGap).map((seg, i) => (
                 <div
-                  key={t}
-                  className={`absolute top-0 flex flex-col ${isLast ? "items-end right-0" : isFirst ? "items-start left-0" : "items-center"}`}
-                  style={isFirst || isLast ? undefined : { left: pct(t), transform: "translateX(-50%)" }}
+                  key={`gap-${i}`}
+                  className="gap-indicator group/gap absolute top-0 bottom-0 flex items-center justify-center border-x border-dashed border-zinc-500/30 bg-zinc-500/10 hover:bg-zinc-500/20 transition-colors"
+                  style={{ left: seg.dispStart, width: seg.dispEnd - seg.dispStart }}
                 >
-                  <span className="whitespace-nowrap text-muted-foreground">
-                    {fmtTick(t)}
+                  <span className="text-[9px] text-zinc-400 whitespace-nowrap opacity-0 group-hover/gap:opacity-100 transition-opacity">
+                    ~{humanDuration(seg.realEnd - seg.realStart)}
                   </span>
-                  <div className="h-1.5 w-px bg-border" />
                 </div>
-              );
-            })}
+              ))}
+              {/* Time ticks — one every 100px in display space */}
+              {tickPositions.map((px, i) => {
+                const isFirst = i === 0;
+                const isLast  = i === tickPositions.length - 1;
+                return (
+                  <div
+                    key={px}
+                    className={`absolute top-0 flex flex-col transition-opacity group-has-[.gap-indicator:hover]/ruler:opacity-0 ${isLast ? "items-end" : isFirst ? "items-start" : "items-center"}`}
+                    style={isFirst ? { left: 0 } : isLast ? { right: 0 } : { left: px, transform: "translateX(-50%)" }}
+                  >
+                    <span className="whitespace-nowrap text-muted-foreground">{humanDuration(displayToReal(px) - minTime)}</span>
+                    <div className="h-1.5 w-px bg-border" />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
 
-    <ScrollArea className="min-h-0 flex-1">
-      <div className="text-xs cursor-default select-none">
-
-        {/* Rows */}
-        <div className="border-border relative">
-          {filteredRows.map((row, rowIdx) => {
+      {/* Rows — horizontal + vertical scroll */}
+      <div
+        ref={rowsScrollRef}
+        className="timeline-scroll min-h-0 flex-1 overflow-auto text-xs cursor-default select-none"
+        onScroll={syncRuler}
+      >
+        <div className="relative" style={{ width: LABEL_W + contentTrackWidth }}>
+          {filteredRows.map((row) => {
             const isRowSelected = row.bars.some(b => b.id === selectedId);
-            const barPositions = row.isPoint ? null : computeBarPositions(row.bars, minTime, totalSpan, trackWidth, effectiveDur);
 
             return (
               <div
                 key={row.key}
                 ref={(el) => { if (el) rowRefMap.current.set(row.key, el); else rowRefMap.current.delete(row.key); }}
-                className={`flex items-center border-b border-border/40 ${isRowSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
+                className={`group flex border-b border-border/40 ${isRowSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
                 style={{ height: 22 }}
               >
-                {/* Label column */}
+                {/* Label column — sticky so it stays visible when scrolling horizontally */}
                 <div
-                  className="flex shrink-0 items-center gap-1.5 overflow-hidden px-5"
+                  className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isRowSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
                   style={{ width: LABEL_W }}
                 >
                   <span className={`shrink-0 font-mono font-semibold ${methodClass(row)}`}>
@@ -494,70 +582,65 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
                 </div>
 
                 {/* Track */}
-                <div className="relative flex-1 self-stretch overflow-hidden">
+                <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
                   {/* Grid lines */}
-                  {ticks.map((t) => (
-                    <div
-                      key={t}
-                      className="absolute inset-y-0 w-px bg-border/30"
-                      style={{ left: pct(t) }}
-                    />
+                  {tickPositions.map((px) => (
+                    <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
                   ))}
 
                   {row.isPoint ? (
                     row.bars.map(bar => (
                       <div
                         key={bar.id}
-                        className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${bar.id === selectedId ? "ring-1 ring-white/50" : selectedId !== null ? "opacity-50" : ""}`}
-                        style={{ left: pct(bar.startTime - minTime), width: `max(${BAR_MIN_W},0%)`, maxWidth: `calc(100% - ${pct(bar.startTime - minTime)})` }}
+                        ref={bar.id === selectedId ? (el) => { selectedBarRef.current = el; } : undefined}
+                        className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${selectedId !== null ? "opacity-50" : ""}`}
+                        style={{ left: realToDisplay(bar.startTime), width: 1, maxWidth: `calc(100% - ${realToDisplay(bar.startTime)}px)` }}
                         title={row.label}
                         onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
                       />
                     ))
                   ) : (
-                    row.bars.map((bar, barIdx) => {
-                      const { leftPx, widthPx } = barPositions![barIdx];
-                      const dur = effectiveDur(bar);
-                      const isLive = bar.pending && bar.access === "allowed";
-                      const isBarSelected = bar.id === selectedId;
-                      const leftNum = trackWidth > 0 ? leftPx / trackWidth : 0;
-                      const rightEdgeNum = trackWidth > 0 ? Math.min((leftPx + widthPx) / trackWidth, 1) : 0;
-                      const isError =
-                        bar.access === "denied" ||
-                        !!bar.error ||
-                        (bar.status !== undefined && bar.status >= 400);
+                    computeMergedGroups(row.bars, realToDisplay, effectiveDur).map((group) => {
+                      const { bars: gBars, leftPx, widthPx } = group;
+                      const isSingle = gBars.length === 1;
+                      const firstBar = gBars[0];
+                      const selectedIdx = gBars.findIndex(b => b.id === selectedId);
+                      const isGroupSelected = selectedIdx !== -1;
+                      const isLive = gBars.some(b => b.pending && b.access === "allowed");
+                      const isError = gBars.some(b =>
+                        b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400));
+                      const isPending = !isLive && gBars.some(b => b.pending);
+
+                      const visualClass = isError
+                        ? "bg-red-500/80"
+                        : isPending
+                          ? "bg-muted-foreground/40 border border-dashed border-muted-foreground/60"
+                          : isSingle
+                            ? barClass(firstBar, row.type)
+                            : row.type === "egress" ? "bg-blue-500/80" : "bg-purple-500/80";
+
+                      function handleClick() {
+                        if (selectedIdx === -1) setSelectedId(firstBar.id);
+                        else if (selectedIdx < gBars.length - 1) setSelectedId(gBars[selectedIdx + 1].id);
+                        else setSelectedId(null);
+                      }
 
                       return (
                         <div
-                          key={bar.id}
-                          className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isBarSelected && selectedId !== null ? "opacity-50" : ""}`}
+                          key={firstBar.id}
+                          ref={isGroupSelected ? (el) => { selectedBarRef.current = el; } : undefined}
+                          className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isGroupSelected && selectedId !== null ? "opacity-50" : ""}`}
                           style={{ left: leftPx, width: widthPx, maxWidth: `calc(100% - ${leftPx}px)` }}
-                          onClick={() => setSelectedId(isBarSelected ? null : bar.id)}
+                          onClick={handleClick}
                         >
-                          {/* Bar visual — overflow-hidden clips the stripe animation */}
                           <div
-                            className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, row.type)} ${isBarSelected ? "ring-1 ring-white/50" : ""}`}
-                            title={
-                              isLive
-                                ? `in-flight · ${dur}ms`
-                                : bar.pending
-                                  ? "no response received"
-                                  : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`
-                            }
+                            className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : visualClass}`}
+                            title={isSingle
+                              ? (isLive ? `in-flight · ${effectiveDur(firstBar)}ms` : firstBar.pending ? "no response received" : `${firstBar.durationMs}ms${firstBar.status ? ` · ${firstBar.status}` : ""}${firstBar.error ? ` · ${firstBar.error}` : ""}`)
+                              : `${gBars.length} events`}
                           >
                             {isLive && <div className="absolute inset-0 bar-in-flight" />}
                           </div>
-                          <DurationLabel
-                            dur={dur}
-                            leftNum={leftNum}
-                            rightEdgeNum={rightEdgeNum}
-                            rowIdx={rowIdx}
-                            totalRows={filteredRows.length}
-                            isLive={isLive}
-                            isError={isError}
-                            isPending={bar.pending}
-                            status={bar.status}
-                          />
                         </div>
                       );
                     })
@@ -566,31 +649,30 @@ export function TimelineView({ events, filter, autoScroll, applyConfig }: { even
               </div>
             );
           })}
+          <div ref={bottomRef} />
         </div>
       </div>
-      <div ref={bottomRef} />
-    </ScrollArea>
 
-    {selectedBar && (
-      panelCollapsed ? (
-        <div className="shrink-0 border-t border-border flex items-center px-3 h-7">
-          <button onClick={() => setPanelCollapsed(false)} className="text-muted-foreground/50 hover:text-muted-foreground transition-colors">
-            <ChevronUp className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      ) : (
-        <div className="h-[45%] shrink-0 border-t border-border flex flex-col overflow-hidden">
-          <RowDetailPanel
-            key={selectedBar.id}
-            bar={selectedBar}
-            prevBar={prevAnthropicBar}
-            onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
-            onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
-            applyConfig={applyConfig}
-          />
-        </div>
-      )
-    )}
+      {selectedBar && (
+        panelCollapsed ? (
+          <div className="shrink-0 border-t border-border flex items-center px-3 h-7">
+            <button onClick={() => setPanelCollapsed(false)} className="text-muted-foreground/50 hover:text-muted-foreground transition-colors">
+              <ChevronUp className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : (
+          <div className="h-[45%] shrink-0 border-t border-border flex flex-col overflow-hidden">
+            <RowDetailPanel
+              key={selectedBar.id}
+              bar={selectedBar}
+              prevBar={prevAnthropicBar}
+              onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
+              onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
+              applyConfig={applyConfig}
+            />
+          </div>
+        )
+      )}
     </div>
   );
 }

@@ -1,8 +1,7 @@
-import { ArrowDownToLine, ExternalLink, Filter, Loader2, Power, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
+import { ExternalLink, Filter, Loader2, Power, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EventFeed } from "@/components/EventFeed";
 import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
@@ -21,15 +20,16 @@ interface Props {
   serverUrl: string;
   controllerUrl: string;
   onShutdown: () => void;
+  onConnectedChange?: (connected: boolean) => void;
 }
 
 type View = "logs" | "timeline";
 
-export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }: Props) {
+export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown, onConnectedChange }: Props) {
   const [events, setEvents] = useState<SandboxEvent[]>([]);
   const [connected, setConnected] = useState(false);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [shutdownLoading, setShutdownLoading] = useState(false);
+  useEffect(() => { onConnectedChange?.(connected); }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
+const [shutdownLoading, setShutdownLoading] = useState(false);
   const [view, setView] = useState<View>("timeline");
   const [searchParams, setSearchParams] = useSearchParams();
   const [filter, setFilter] = useState<FilterState>(() => {
@@ -169,9 +169,6 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }:
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h2 className="truncate text-base font-semibold">{sandbox.id}</h2>
-            <Badge variant={connected ? "green" : "zinc"} className="shrink-0">
-              {connected ? "live" : "disconnected"}
-            </Badge>
           </div>
           <a
             href={sandbox.endpoint}
@@ -309,18 +306,6 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }:
                 )}
               </PopoverContent>
             </Popover>
-          <button
-            onClick={() => setAutoScroll((v) => !v)}
-            title={autoScroll ? "Auto-scroll on" : "Auto-scroll off"}
-            className={cn(
-              "flex items-center rounded-md border px-2 py-0.5 transition-colors",
-              autoScroll
-                ? "border-blue-500/60 bg-blue-500/10 text-blue-400"
-                : "border-border text-muted-foreground hover:bg-muted/40",
-            )}
-          >
-            <ArrowDownToLine className="h-3 w-3" />
-          </button>
           {events.length > 0 && (
             <button
               onClick={() => setEvents([])}
@@ -338,8 +323,8 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }:
       <div ref={contentRef} className="min-h-0 flex-1 flex overflow-hidden">
         <div className="min-w-0 flex-1 overflow-hidden">
           {view === "logs"
-            ? <EventFeed events={events} autoScroll={autoScroll} filter={filter} />
-            : <TimelineView events={events} filter={filter} autoScroll={autoScroll} applyConfig={proposePolicy} />}
+            ? <EventFeed events={events} filter={filter} />
+            : <TimelineView events={events} filter={filter} applyConfig={proposePolicy} />}
         </div>
 
         {showTerminal && (

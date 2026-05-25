@@ -41,9 +41,10 @@ interface LayoutProps {
   fetchError: string | null;
   fetchSandboxes: () => void;
   setControllerUrl: (url: string) => void;
+  onConnectedChange: (id: string, connected: boolean) => void;
 }
 
-function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxes }: LayoutProps) {
+function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxes, onConnectedChange }: LayoutProps) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const sandbox = sandboxes.find((s) => s.id === id);
@@ -66,6 +67,7 @@ function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxe
         fetchSandboxes();
         navigate("/");
       }}
+      onConnectedChange={(c) => onConnectedChange(sandbox.id, c)}
     />
   );
 }
@@ -86,6 +88,7 @@ export default function App() {
   const [sandboxes, setSandboxes] = useState<SandboxRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [connectedId, setConnectedId] = useState<string | null>(null);
 
   const navigate = useNavigate();
   const match = useMatch("/sandboxes/:id");
@@ -124,6 +127,7 @@ export default function App() {
     fetchError,
     fetchSandboxes,
     setControllerUrl,
+    onConnectedChange: (id, c) => setConnectedId(c ? id : null),
   };
 
   if (fetchError) {
@@ -155,7 +159,8 @@ export default function App() {
               >
                 <span className={cn(
                   "block rounded-full transition-all",
-                  selectedId === sb.id ? "h-2.5 w-2.5 bg-green-400" : "h-2 w-2 bg-muted-foreground/40",
+                  selectedId === sb.id ? "h-2.5 w-2.5" : "h-2 w-2",
+                  connectedId === sb.id ? "bg-green-400" : "bg-muted-foreground/40",
                 )} />
               </button>
             ))}
@@ -218,6 +223,7 @@ export default function App() {
           <SandboxList
             sandboxes={sandboxes}
             selectedId={selectedId ?? null}
+            connectedId={connectedId}
             loading={loading}
             onSelect={(id) => navigate(`/sandboxes/${id}`)}
             onRefresh={fetchSandboxes}

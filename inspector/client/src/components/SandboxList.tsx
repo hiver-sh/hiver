@@ -6,6 +6,7 @@ import type { SandboxRef } from "@/types";
 interface Props {
   sandboxes: SandboxRef[];
   selectedId: string | null;
+  connectedId: string | null;
   loading: boolean;
   onSelect: (id: string) => void;
   onRefresh: () => void;
@@ -17,6 +18,7 @@ interface Props {
 export function SandboxList({
   sandboxes,
   selectedId,
+  connectedId,
   loading,
   onSelect,
   onRefresh,
@@ -64,12 +66,7 @@ export function SandboxList({
               )}
             >
               <span
-                className={cn(
-                  "mt-0.5 h-2 w-2 shrink-0 rounded-full",
-                  selectedId === sb.id
-                    ? "bg-green-400"
-                    : "bg-muted-foreground/40",
-                )}
+                className={cn("mt-0.5 h-2 w-2 shrink-0 rounded-full", connectedId === sb.id ? "bg-green-400" : "bg-muted-foreground/40")}
               />
               <span className="truncate font-mono">{sb.id}</span>
             </button>
