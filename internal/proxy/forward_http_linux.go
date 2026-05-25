@@ -68,8 +68,8 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 		// http.ReadResponse over-read past the headers — drain it before
 		// reading further from upstream.
 		done := make(chan struct{}, 2)
-		go func() { p.wsForward(client, upstream, ac); done <- struct{}{} }()
-		go func() { p.wsForward(io.MultiReader(upstreamBR, upstream), client, ac); done <- struct{}{} }()
+		go func() { p.wsForward(client, upstream, wsDirUp, ac); done <- struct{}{} }()
+		go func() { p.wsForward(io.MultiReader(upstreamBR, upstream), client, wsDirDown, ac); done <- struct{}{} }()
 		<-done
 		return
 	}

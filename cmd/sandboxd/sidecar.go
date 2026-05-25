@@ -330,14 +330,19 @@ func proxyStreamChunkFactory(raw map[string]any, requestID int64) events.Factory
 	if body == "" {
 		return nil
 	}
+	label, _ := raw["label"].(string)
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
-		_ = ev.FromEgressStreamChunkEvent(gen.EgressStreamChunkEvent{
+		chunk := gen.EgressStreamChunkEvent{
 			Id:        int(id),
 			Timestamp: ts,
 			RequestId: int(requestID),
 			Body:      body,
-		})
+		}
+		if label != "" {
+			chunk.Label = &label
+		}
+		_ = ev.FromEgressStreamChunkEvent(chunk)
 		return ev
 	}
 }

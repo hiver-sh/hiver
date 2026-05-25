@@ -159,6 +159,11 @@ type EgressStreamChunkEvent struct {
 	// parameter on `GET /v1/events` to resume after this event.
 	Id int `json:"id"`
 
+	// Label Optional tag indicating the chunk's origin. For WebSocket
+	// traffic the proxy sets `up` (client→upstream) or `down`
+	// (upstream→client); HTTP/SSE responses omit the field.
+	Label *string `json:"label,omitempty"`
+
 	// RequestId Unique identifier correlating this chunk to its `EgressRequestEvent`.
 	RequestId int       `json:"request_id"`
 	Timestamp time.Time `json:"timestamp"`

@@ -626,11 +626,21 @@ func TestWebSocketProxied(t *testing.T) {
 	if len(chunks) != 2 {
 		t.Fatalf("stream_chunk events: got %d, want 2: %+v", len(chunks), chunks)
 	}
-	// Both chunks carry the message payload (one per direction).
+	// Both chunks carry the raw message payload; the direction lives
+	// on the Label field ("up" for client→upstream, "down" for the
+	// echo back). Order is non-deterministic; assert the set.
+	labels := map[string]string{}
 	for _, c := range chunks {
 		if c.Body != string(msg) {
 			t.Errorf("stream_chunk body: got %q, want %q", c.Body, msg)
 		}
+		labels[c.Label] = c.Body
+	}
+	if _, ok := labels["up"]; !ok {
+		t.Errorf("missing stream_chunk with label=up; labels=%+v", labels)
+	}
+	if _, ok := labels["down"]; !ok {
+		t.Errorf("missing stream_chunk with label=down; labels=%+v", labels)
 	}
 }
 

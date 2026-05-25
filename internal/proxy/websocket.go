@@ -216,23 +216,32 @@ func wsRenderClose(payload []byte) string {
 	return fmt.Sprintf("[close %d]", code)
 }
 
+// WebSocket frame directions reported as the audit chunk's `label`
+// so consumers can distinguish client→upstream from upstream→client.
+const (
+	wsDirUp   = "up"   // client → upstream
+	wsDirDown = "down" // upstream → client
+)
+
 // wsForward pumps WebSocket frames from src to dst, emitting one
-// stream_chunk audit event per fully-assembled message. The proxy
-// strips Sec-WebSocket-Extensions from every upgrade, so frames on
-// the wire are uncompressed and the recorded payload is exactly the
-// application data — no decoder, no negotiation tracking. A frame
-// with RSV1=1 in this regime indicates the server violated the
-// stripped negotiation; we log and keep forwarding.
-func (p *Proxy) wsForward(src io.Reader, dst io.Writer, ac *auditCtx) {
+// stream_chunk audit event per fully-assembled message. The dir
+// ("up" or "down") is carried on each event's Label field rather
+// than inlined in the body, keeping payload bytes pristine. The
+// proxy strips Sec-WebSocket-Extensions from every upgrade, so
+// frames on the wire are uncompressed and the recorded payload is
+// exactly the application data. A frame with RSV1=1 in this regime
+// indicates the server violated the stripped negotiation; we log
+// and keep forwarding.
+func (p *Proxy) wsForward(src io.Reader, dst io.Writer, dir string, ac *auditCtx) {
 	var asm wsAssembler
 	for {
 		opcode, rsv1, fin, payload, payloadLen, err := wsForwardFrame(src, dst)
 		if err != nil {
-			log.Printf("ws frame error: host=%s op=%d err=%v", ac.host, opcode, err)
+			log.Printf("ws frame error: host=%s dir=%s op=%d err=%v", ac.host, dir, opcode, err)
 			return
 		}
 		if rsv1 {
-			log.Printf("ws protocol violation: host=%s op=%d rsv1=1 with stripped extensions", ac.host, opcode)
+			log.Printf("ws protocol violation: host=%s dir=%s op=%d rsv1=1 with stripped extensions", ac.host, dir, opcode)
 		}
 
 		var body string
@@ -247,9 +256,9 @@ func (p *Proxy) wsForward(src io.Reader, dst io.Writer, ac *auditCtx) {
 			body = "[pong]"
 		}
 
-		log.Printf("ws frame: host=%s op=%d rsv1=%v fin=%v payloadLen=%d body=%q", ac.host, opcode, rsv1, fin, payloadLen, body)
+		log.Printf("ws frame: host=%s dir=%s op=%d rsv1=%v fin=%v payloadLen=%d body=%q", ac.host, dir, opcode, rsv1, fin, payloadLen, body)
 		if body != "" {
-			ac.streamChunk(body)
+			ac.streamChunk(body, dir)
 		}
 	}
 }

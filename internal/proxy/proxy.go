@@ -117,6 +117,7 @@ type AuditEvent struct {
 	Query      string            `json:"query,omitempty"`   // raw URL query (no leading "?")
 	Headers    map[string]string `json:"headers,omitempty"` // HTTP headers; nil for TLS/CONNECT
 	Body       string            `json:"body,omitempty"`    // request body (phase:request) or chunk bytes (phase:stream_chunk); response events no longer carry a body
+	Label      string            `json:"label,omitempty"`   // origin tag on stream_chunk events; "up"/"down" for WebSocket, empty for HTTP
 	Verdict    string            `json:"verdict"`           // "allow" | "deny" | "error"
 	Status     int               `json:"status,omitempty"`
 	DurationMs int               `json:"duration_ms,omitempty"`
@@ -396,7 +397,7 @@ func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *aud
 			if flush != nil {
 				flush()
 			}
-			ac.streamChunk(string(buf[:n]))
+			ac.streamChunk(string(buf[:n]), "")
 		}
 		if err != nil {
 			break
@@ -509,8 +510,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, host str
 	ac.responseHeaders = headerMap(resp.Header)
 	ac.response(http.StatusSwitchingProtocols)
 	done := make(chan struct{}, 2)
-	go func() { p.wsForward(io.MultiReader(clientBrw.Reader, client), upstream, ac); done <- struct{}{} }()
-	go func() { p.wsForward(io.MultiReader(upstreamBuf, upstream), client, ac); done <- struct{}{} }()
+	go func() {
+		p.wsForward(io.MultiReader(clientBrw.Reader, client), upstream, wsDirUp, ac)
+		done <- struct{}{}
+	}()
+	go func() {
+		p.wsForward(io.MultiReader(upstreamBuf, upstream), client, wsDirDown, ac)
+		done <- struct{}{}
+	}()
 	<-done
 	_ = client.Close()
 	_ = upstream.Close()
@@ -805,12 +812,15 @@ func (a *auditCtx) response(status int) {
 	})
 }
 
-func (a *auditCtx) streamChunk(body string) {
+// streamChunk records a single body chunk on the in-flight request.
+// label is optional ("up"/"down" for WebSocket directions; empty
+// for HTTP/SSE where direction is implicit).
+func (a *auditCtx) streamChunk(body, label string) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "stream_chunk",
 		RequestID: a.requestID,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
-		Body: body, Verdict: "allow",
+		Body: body, Label: label, Verdict: "allow",
 	})
 }
 
