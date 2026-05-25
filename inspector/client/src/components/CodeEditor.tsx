@@ -27,9 +27,12 @@ function configureJsonSchema(m: typeof monaco) {
 
 export function CodeEditor({ value, onChange, className }: Props) {
   const [copied, setCopied] = useState(false);
+  const [focused, setFocused] = useState(false);
 
-  function handleMount(_ed: editor.IStandaloneCodeEditor, m: typeof monaco) {
+  function handleMount(ed: editor.IStandaloneCodeEditor, m: typeof monaco) {
     configureJsonSchema(m);
+    ed.onDidFocusEditorWidget(() => setFocused(true));
+    ed.onDidBlurEditorWidget(() => setFocused(false));
   }
 
   function handleCopy() {
@@ -39,7 +42,7 @@ export function CodeEditor({ value, onChange, className }: Props) {
   }
 
   return (
-    <div className={`monaco-bg relative overflow-hidden rounded-md border border-input ${className ?? ""}`}>
+    <div className={`relative overflow-hidden rounded-md border border-input ring-offset-background ${focused ? "ring-2 ring-ring ring-offset-2" : ""} ${className ?? ""}`}>
       <MonacoEditor
         height="100%"
         defaultLanguage="json"
@@ -49,7 +52,7 @@ export function CodeEditor({ value, onChange, className }: Props) {
         onMount={handleMount}
         options={{
           minimap: { enabled: false },
-          lineNumbers: "on",
+          lineNumbers: "off",
           scrollBeyondLastLine: false,
           wordWrap: "on",
           tabSize: 2,
@@ -57,6 +60,7 @@ export function CodeEditor({ value, onChange, className }: Props) {
           automaticLayout: true,
           fontSize: 13,
           padding: { top: 8, bottom: 8 },
+          folding: false,
         }}
       />
       <button

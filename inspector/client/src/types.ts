@@ -12,7 +12,7 @@ export type SandboxEvent =
   | { id: number; timestamp: string; type: "config.apply"; success: boolean; changes: unknown; errorMessage?: string }
   | { id: number; timestamp: string; type: "egress.request"; access: "allowed" | "denied"; host: string; method: string; path: string; query?: string; headers?: Record<string, string>; body?: string }
   | { id: number; timestamp: string; type: "egress.response"; request_id: number; status: number; duration_ms: number; headers?: Record<string, string>; body?: string }
-  | { id: number; timestamp: string; type: "egress.stream_chunk"; request_id: number; body: string }
+  | { id: number; timestamp: string; type: "egress.chunk"; request_id: number; body: string; label?: string }
   | { id: number; timestamp: string; type: "fs.request"; access: "allowed" | "denied"; mount: string; path: string; operation: "read" | "write" }
   | { id: number; timestamp: string; type: "fs.response"; backend: string; request_id: number; duration_ms: number; error?: string }
   | { id: number; timestamp: string; type: "stdio"; stdout?: string; stderr?: string };

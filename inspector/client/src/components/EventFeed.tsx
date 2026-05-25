@@ -28,7 +28,7 @@ function eventBadge(event: SandboxEvent): { label: string; variant: BadgeVariant
         label: `egress.res ${event.status}`,
         variant: event.status >= 400 ? "red" : "green",
       };
-    case "egress.stream_chunk":
+    case "egress.chunk":
       return { label: "egress.chunk", variant: "cyan" };
     case "fs.request":
       return {
@@ -82,10 +82,16 @@ function EventDetail({ event }: { event: SandboxEvent }) {
           {event.duration_ms}ms
         </span>
       );
-    case "egress.stream_chunk":
+    case "egress.chunk":
       return (
         <span className="font-mono text-xs text-muted-foreground">
-          req#{event.request_id} chunk ({event.body.length}b)
+          req#{event.request_id} chunk
+          {event.label ? (
+            <span className={`ml-1 ${event.label === "up" ? "text-blue-400" : "text-green-400"}`}>
+              {event.label === "up" ? "↑" : "↓"} {event.label}
+            </span>
+          ) : null}{" "}
+          ({event.body.length}b)
         </span>
       );
     case "fs.request":

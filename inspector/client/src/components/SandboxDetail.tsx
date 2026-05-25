@@ -84,6 +84,8 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }:
   const rows = useMemo(() => buildRows(events), [events]);
   const filteredRows = useMemo(() => applyFilter(rows, filter), [rows, filter]);
   const filteredEvents = useMemo(() => filterEvents(events, filter), [events, filter]);
+  const totalBars = useMemo(() => rows.reduce((sum, r) => sum + r.bars.length, 0), [rows]);
+  const filteredTotalBars = useMemo(() => filteredRows.reduce((sum, r) => sum + r.bars.length, 0), [filteredRows]);
 
   const startStream = useCallback(() => {
     abortRef.current?.abort();
@@ -224,9 +226,9 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown }:
       <div className="flex items-center justify-between px-5 py-1.5 text-xs text-muted-foreground">
         <span>
           {isFilterActive(filter)
-            ? <>{view === "timeline" ? filteredRows.length : filteredEvents.length} <span className="text-muted-foreground/40">/ {rows.length}</span></>
-            : rows.length
-          }{" "}event{rows.length !== 1 ? "s" : ""}
+            ? <>{view === "timeline" ? filteredTotalBars : filteredEvents.length} <span className="text-muted-foreground/40">/ {totalBars}</span></>
+            : totalBars
+          }{" "}event{totalBars !== 1 ? "s" : ""}
         </span>
         <div className="flex items-stretch gap-3">
           <SegmentedControl

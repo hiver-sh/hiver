@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WsChunkRow } from "./WsChunkRow";
 import type { ReactNode } from "react";
 import type { SandboxEvent } from "@/types";
-import type { TimelineRow } from "./TimelineView";
+import type { TimelineBar } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
 import { SegmentedControl } from "./SegmentedControl";
+import { humanDuration } from "@/lib/utils";
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
@@ -190,7 +192,7 @@ interface StreamResult {
 }
 
 function parseAnthropicStream(
-  chunks: Extract<SandboxEvent, { type: "egress.stream_chunk" }>[],
+  chunks: Extract<SandboxEvent, { type: "egress.chunk" }>[],
 ): StreamResult {
   const blocks: StreamBlock[] = [];
   let stopReason: string | undefined;
@@ -450,57 +452,78 @@ function SummaryTab({
 // ─── main detail panel ───────────────────────────────────────────────────────
 
 
-export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { row: TimelineRow; prevRow?: TimelineRow | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
-  const req = row.rawEvents[0];
-  const res = row.rawEvents.find(
+export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { bar: TimelineBar; prevBar?: TimelineBar | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
+  const req = bar.rawEvents[0];
+  const res = bar.rawEvents.find(
     (e): e is Extract<SandboxEvent, { type: "egress.response" | "fs.response" }> =>
       e.type === "egress.response" || e.type === "fs.response",
   );
-  const chunks = row.rawEvents.filter(
-    (e): e is Extract<SandboxEvent, { type: "egress.stream_chunk" }> =>
-      e.type === "egress.stream_chunk",
+  const chunks = bar.rawEvents.filter(
+    (e): e is Extract<SandboxEvent, { type: "egress.chunk" }> =>
+      e.type === "egress.chunk",
   );
+
+  const effectiveDurationMs = useMemo(() => {
+    const lastChunk = chunks[chunks.length - 1];
+    if (lastChunk) {
+      return Math.round(new Date(lastChunk.timestamp).getTime() - new Date(req.timestamp).getTime());
+    }
+    return res && "duration_ms" in res ? res.duration_ms : null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bar]);
 
   const isAnthropicMsg =
     req.type === "egress.request" &&
     req.host === "api.anthropic.com" &&
     req.path === "/v1/messages";
 
-  const [tab, setTab] = useState<DetailTab>(isAnthropicMsg ? "summary" : "request");
+  const isWebSocket = useMemo(() => {
+    if (!res || res.type !== "egress.response") return false;
+    if (res.status === 101) return true;
+    const upgrade = res.headers?.["upgrade"] ?? res.headers?.["Upgrade"] ?? "";
+    return upgrade.toLowerCase().includes("websocket");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bar]);
+
+  const [tab, setTab] = useState<DetailTab>(() => {
+    const saved = localStorage.getItem("timeline:detailTab") as DetailTab | null;
+    if (saved === "summary") return isAnthropicMsg ? "summary" : "request";
+    if (saved === "response") return "response";
+    return isAnthropicMsg ? "summary" : "request";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("timeline:detailTab", tab);
+  }, [tab]);
 
   const anthropicReqBody = useMemo(
     () => (req.type === "egress.request" ? parseAnthropicRequest(req.body) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [row],
+    [bar],
   );
   const anthropicStream = useMemo(
     () => parseAnthropicStream(chunks),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [row],
+    [bar],
   );
   const anthropicResBody = useMemo((): AnthropicResBody | null => {
-    // Try the response body field first (populated when proxy captures it directly).
-    if (res?.type === "egress.response" && res.body) {
-      const parsed = parseAnthropicResponse(res.body);
-      if (parsed?.content) return parsed;
-    }
     // chunkForward emits every response read — including plain JSON bodies — as
-    // stream_chunk events. When those chunks carry no SSE "data: " lines,
+    // response_chunk events. When those chunks carry no SSE "data: " lines,
     // concatenate them and parse as a non-streaming Anthropic response.
     if (chunks.length > 0 && anthropicStream.blocks.length === 0) {
       return parseAnthropicResponse(chunks.map((c) => c.body).join(""));
     }
     return null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [row]);
+  }, [bar]);
   const prevAnthropicReqBody = useMemo(() => {
-    if (!prevRow) return null;
-    const e = prevRow.rawEvents[0];
+    if (!prevBar) return null;
+    const e = prevBar.rawEvents[0];
     const body = e.type === "egress.request" ? parseAnthropicRequest(e.body) : null;
     if (!body) return null;
-    const prevChunks = prevRow.rawEvents.filter(
-      (ev): ev is Extract<SandboxEvent, { type: "egress.stream_chunk" }> =>
-        ev.type === "egress.stream_chunk",
+    const prevChunks = prevBar.rawEvents.filter(
+      (ev): ev is Extract<SandboxEvent, { type: "egress.chunk" }> =>
+        ev.type === "egress.chunk",
     );
     const prevStream = parseAnthropicStream(prevChunks);
     if (prevStream.blocks.length === 0) return body;
@@ -510,7 +533,7 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
         : { type: "tool_use", id: blk.id ?? "", name: blk.name ?? "", input: (() => { try { return JSON.parse(blk.inputJson ?? "{}"); } catch { return {}; } })() },
     );
     return { ...body, messages: [...(body.messages ?? []), { role: "assistant", content: assistantContent }] };
-  }, [prevRow]);
+  }, [prevBar]);
 
   const ts = new Date(req.timestamp).toISOString().slice(11, 23);
 
@@ -529,7 +552,6 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
   }
 
   const reqRawBody = req.type === "egress.request" ? req.body : undefined;
-  const resRawBody = res?.type === "egress.response" ? res.body : undefined;
 
   const tabOptions: { value: DetailTab; label: string }[] = [
     ...(isAnthropicMsg ? [{ value: "summary" as DetailTab, label: "Summary" }] : []),
@@ -563,7 +585,7 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
                   </span>
                 ) : null;
               })()}
-              {row.pending && !anthropicStream.stopReason && !anthropicResBody?.stop_reason && (
+              {bar.pending && !anthropicStream.stopReason && !anthropicResBody?.stop_reason && (
                 <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
               )}
             </>
@@ -583,7 +605,7 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
 
       {tab === "request" && (
         <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className={`rounded-md border border-border monaco-bg p-3 flex-1 min-w-0 overflow-auto scrollbar-thin`}>
+          <div className={`rounded-md border border-border p-3 min-w-0 overflow-auto scrollbar-thin ${reqRawBody ? "flex-1" : "w-full"}`}>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
               <KV label="time" value={ts} />
               {req.type === "egress.request" && <>
@@ -614,49 +636,51 @@ export function RowDetailPanel({ row, prevRow, onPrev, onNext, applyConfig }: { 
               </>}
             </div>
           </div>
-          {reqRawBody ? (
+          {reqRawBody && (
             <BodyBlock raw={reqRawBody} className="flex-1 min-w-0" />
-          ) : (
-            <div className="flex flex-1 min-w-0 items-center justify-center rounded-md border border-border monaco-bg">
-              <span className="text-sm text-muted-foreground">no body</span>
-            </div>
           )}
         </div>
       )}
 
       {tab === "response" && (
         <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className="rounded-md border border-border monaco-bg p-3 flex-1 min-w-0 overflow-auto scrollbar-thin">
+          <div className={`rounded-md border border-border p-3 min-w-0 overflow-auto scrollbar-thin ${chunks.length > 0 ? "flex-1" : "w-full"}`}>
             {res ? (
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                 {res.type === "egress.response" && <>
                   <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-400" : "text-green-400"} />
-                  <KV label="duration" value={`${res.duration_ms}ms`} />
+                  {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
                   {res.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={res.headers} /></div>}
                 </>}
                 {res.type === "fs.response" && <>
                   <KV label="backend"  value={res.backend} />
-                  <KV label="duration" value={`${res.duration_ms}ms`} />
+                  {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
                   {res.error && <KV label="error" value={res.error} cls="text-red-400" />}
                 </>}
               </div>
             ) : (
-              <span className="text-muted-foreground">{row.pending ? "awaiting response…" : "no response received"}</span>
+              <span className="text-muted-foreground">{bar.pending ? "awaiting response…" : "no response received"}</span>
             )}
           </div>
-          <div className="flex flex-1 min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
-            {resRawBody && <BodyBlock raw={resRawBody} className={chunks.length > 0 ? "shrink-0" : "flex-1 min-h-0"} />}
-            {chunks.length > 0 && (
-              <div className="flex flex-1 min-h-0 flex-col rounded-md border border-border bg-muted/20 overflow-hidden">
-                <CodeViewer content={chunks.map((c) => c.body).join("\n\n")} lang="text" className="flex-1 min-h-0" />
-              </div>
-            )}
-            {!resRawBody && chunks.length === 0 && (
-              <div className="flex flex-1 min-w-0 items-center justify-center rounded-md border border-border monaco-bg">
-                <span className="text-sm text-muted-foreground">no body</span>
-              </div>
-            )}
-          </div>
+          {chunks.length > 0 && (
+            <div className="flex flex-1 min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
+              {isWebSocket ? (
+                <div className="flex flex-col flex-1 min-h-0 overflow-y-auto scrollbar-thin rounded-md border border-border bg-muted/20 py-1">
+                  {chunks.map((chunk) => (
+                    <WsChunkRow key={chunk.id} chunk={chunk} />
+                  ))}
+                </div>
+              ) : (() => {
+                const raw = chunks.map((c) => c.body).join("\n\n");
+                const pretty = tryPretty(raw);
+                return (
+                  <div className="flex flex-1 min-h-0 flex-col rounded-md border border-border bg-muted/20 overflow-hidden">
+                    <CodeViewer content={pretty?.content ?? raw} lang={pretty?.isJson ? "json" : "text"} className="flex-1 min-h-0" />
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </div>
       )}
     </div>

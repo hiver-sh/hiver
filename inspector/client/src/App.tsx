@@ -2,6 +2,7 @@ import { ChevronLeft, ChevronRight, Pencil, RefreshCw, ServerCrash } from "lucid
 import { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useMatch, useNavigate, useParams } from "react-router-dom";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
+import { GettingStarted } from "@/components/GettingStarted";
 import { SandboxDetail } from "@/components/SandboxDetail";
 import { SandboxList } from "@/components/SandboxList";
 import { cn } from "@/lib/utils";
@@ -165,10 +166,10 @@ export default function App() {
           {/* Branding + controller URL */}
           <div className="h-[70px] flex flex-col justify-center">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
-              <span className="flex items-center gap-1.5 text-sm font-semibold tracking-tight">
+              <button onClick={() => navigate("/")} className="flex items-center gap-1.5 text-sm font-semibold tracking-tight hover:opacity-80 transition-opacity">
                 <img src="/favicon.svg" alt="" className="h-4 w-4" />
                 Hive Inspector
-              </span>
+              </button>
               <button
                 onClick={() => setSidebarCollapsed(true)}
                 className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
@@ -230,7 +231,7 @@ export default function App() {
       {/* Main */}
       <main className="min-w-0 flex-1">
         <Routes>
-          <Route path="/" element={null} />
+          <Route path="/" element={<GettingStarted />} />
           <Route
             path="/sandboxes/:id"
             element={<SandboxDetailRoute {...layoutProps} />}

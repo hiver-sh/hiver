@@ -224,7 +224,7 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open,
         </div>
 
         {mode === "diff" ? (
-          <div className="monaco-bg h-[55vh] overflow-auto rounded-md border border-border">
+          <div className="h-[55vh] overflow-auto rounded-md border border-border">
             <DiffView oldStr={baseConfig} newStr={editedConfig} />
           </div>
         ) : (
