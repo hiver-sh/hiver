@@ -1,0 +1,14 @@
+image: .
+
+fs:
+  - backend: local
+    mount: /workspace
+    acls:
+      - { path: /workspace,    access: rw }
+      - { path: /workspace/**, access: rw }
+
+egress:
+  # Allow WebSocket connections to the host-side echo server only.
+  - access: allow
+    host: upstream-ws
+    ports: [17082]

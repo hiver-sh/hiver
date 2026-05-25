@@ -1,0 +1,24 @@
+ops:
+  # ── ws:// allowed: upgrade + echo ───────────────────────────────────
+  - desc: "proxy allows WebSocket upgrade to upstream-ws"
+    substring: "sandboxd: agent op | proxy allow GET upstream-ws/"
+
+  - desc: "proxy emits stream_chunk for the echoed message (client→server direction)"
+    substring: "sandboxd: agent op | proxy chunk GET upstream-ws/ \"hello-ws-plain\""
+
+  - desc: "proxy closes WebSocket tunnel with status 101"
+    substring: "sandboxd: agent op | proxy resp  101"
+
+  - desc: "agent confirms echo was received correctly"
+    substring: "[sandbox:out] WS ALLOWED OK"
+
+  # ── ws:// denied: proxy returns 403 ─────────────────────────────────
+  - desc: "proxy denies WebSocket upgrade to upstream-denied (no matching rule)"
+    substring: "sandboxd: agent op | proxy deny  GET upstream-denied/"
+
+  - desc: "agent confirms deny was 403"
+    substring: "[sandbox:out] WS DENIED OK"
+
+  # ── Agent reaches sleep loop ─────────────────────────────────────────
+  - desc: "agent reaches idle"
+    substring: "[sandbox:out] DONE"
