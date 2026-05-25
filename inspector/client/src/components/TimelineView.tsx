@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp } from "lucide-react";
 import type { SandboxEvent } from "@/types";
 import { humanDuration } from "@/lib/utils";
 import { RowDetailPanel } from "./TimelineDetail";
@@ -127,37 +127,30 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
 }
 
 
-interface MergedGroup {
-  bars: TimelineBar[];
-  leftPx: number;
-  widthPx: number;
-}
-
-function computeMergedGroups(
+function computeLanes(
   bars: TimelineBar[],
   toDisplay: (t: number) => number,
   effectiveDurFn: (b: TimelineBar) => number,
-): MergedGroup[] {
+): TimelineBar[][] {
   if (bars.length === 0) return [];
   const sorted = [...bars].sort((a, b) => a.startTime - b.startTime);
-  const groups: MergedGroup[] = [];
-  let gBars = [sorted[0]];
-  let leftPx = toDisplay(sorted[0].startTime);
-  let rightPx = Math.max(leftPx + 1, toDisplay(sorted[0].startTime + effectiveDurFn(sorted[0])));
-  for (let i = 1; i < sorted.length; i++) {
-    const bar = sorted[i];
-    const bLeft = toDisplay(bar.startTime);
-    const bRight = Math.max(bLeft + 1, toDisplay(bar.startTime + effectiveDurFn(bar)));
-    if (bLeft < rightPx + 1) {
-      gBars.push(bar);
-      rightPx = Math.max(rightPx, bRight);
-    } else {
-      groups.push({ bars: gBars, leftPx, widthPx: rightPx - leftPx });
-      gBars = [bar]; leftPx = bLeft; rightPx = bRight;
+  const lanes: TimelineBar[][] = [];
+  const laneRightPx: number[] = [];
+  for (const bar of sorted) {
+    const leftPx = toDisplay(bar.startTime);
+    const rightPx = Math.max(leftPx + 1, toDisplay(bar.startTime + effectiveDurFn(bar)));
+    let placed = false;
+    for (let i = 0; i < lanes.length; i++) {
+      if (laneRightPx[i] < leftPx) {
+        lanes[i].push(bar);
+        laneRightPx[i] = rightPx;
+        placed = true;
+        break;
+      }
     }
+    if (!placed) { lanes.push([bar]); laneRightPx.push(rightPx); }
   }
-  groups.push({ bars: gBars, leftPx, widthPx: rightPx - leftPx });
-  return groups;
+  return lanes;
 }
 
 function barClass(bar: TimelineBar, type: "egress" | "fs" | "stdio"): string {
@@ -263,8 +256,82 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
 
 const LABEL_W = 220;
 
+// ─── category grouping ───────────────────────────────────────────────────────
 
+type Category = "llm" | "fs" | "egress" | "stdio";
 
+const CATEGORY_ORDER: Category[] = ["llm", "fs", "egress", "stdio"];
+const CATEGORY_LABELS: Record<Category, string> = {
+  llm: "LLM",
+  fs: "File System",
+  egress: "Egress",
+  stdio: "Stdio",
+};
+
+function getRowCategory(row: TimelineRow): Category {
+  if (row.type === "stdio") return "stdio";
+  if (row.type === "fs") return "fs";
+  const e = row.bars[0]?.rawEvents[0];
+  if (e?.type === "egress.request" && e.host === "api.anthropic.com" && e.path === "/v1/messages") {
+    return "llm";
+  }
+  return "egress";
+}
+
+function getSubgroupKey(row: TimelineRow): string | null {
+  if (row.type === "fs") return row.label; // mount path
+  if (row.type === "egress") {
+    const e = row.bars[0]?.rawEvents[0];
+    return e?.type === "egress.request" ? e.host : null;
+  }
+  return null;
+}
+
+type DisplayItem =
+  | { kind: "category"; category: Category; allBars: TimelineBar[] }
+  | { kind: "row"; row: TimelineRow };
+
+function buildDisplayItems(
+  filteredRows: TimelineRow[],
+  collapsedCategories: ReadonlySet<Category>,
+): DisplayItem[] {
+  const byCategory = new Map<Category, TimelineRow[]>();
+  for (const row of filteredRows) {
+    const cat = getRowCategory(row);
+    const list = byCategory.get(cat);
+    if (list) list.push(row);
+    else byCategory.set(cat, [row]);
+  }
+
+  const items: DisplayItem[] = [];
+
+  for (const cat of CATEGORY_ORDER) {
+    const rows = byCategory.get(cat);
+    if (!rows || rows.length === 0) continue;
+
+    items.push({ kind: "category", category: cat, allBars: rows.flatMap(r => r.bars) });
+    if (collapsedCategories.has(cat)) continue;
+
+    if (cat === "fs" || cat === "egress") {
+      // Group by host/mount for ordering but emit flat (no subgroup headers)
+      const bySubgroup = new Map<string, TimelineRow[]>();
+      const subgroupOrder: string[] = [];
+      for (const row of rows) {
+        const key = getSubgroupKey(row) ?? "";
+        const existing = bySubgroup.get(key);
+        if (existing) existing.push(row);
+        else { bySubgroup.set(key, [row]); subgroupOrder.push(key); }
+      }
+      for (const key of subgroupOrder) {
+        for (const row of bySubgroup.get(key)!) items.push({ kind: "row", row });
+      }
+    } else {
+      for (const row of rows) items.push({ kind: "row", row });
+    }
+  }
+
+  return items;
+}
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
@@ -287,6 +354,26 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
   useEffect(() => {
     localStorage.setItem("timeline:panelCollapsed", String(panelCollapsed));
   }, [panelCollapsed]);
+
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<Category>>(() => {
+    try {
+      const saved = localStorage.getItem("timeline:collapsedCategories");
+      return saved ? new Set(JSON.parse(saved) as Category[]) : new Set();
+    } catch { return new Set(); }
+  });
+
+  useEffect(() => {
+    localStorage.setItem("timeline:collapsedCategories", JSON.stringify([...collapsedCategories]));
+  }, [collapsedCategories]);
+
+  function toggleCategory(cat: Category) {
+    setCollapsedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
+  }
+
   const trackRef = useRef<HTMLDivElement>(null);
   const rowsScrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -392,7 +479,9 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     );
   }
 
-  // Flat ordered list of bars for prev/next navigation.
+  const displayItems = buildDisplayItems(filteredRows, collapsedCategories);
+
+  // For timeline scale + prev/next navigation use all filtered bars (even inside collapsed groups).
   const filteredBars = filteredRows.flatMap(r => r.bars);
   const selectedBarIdx = filteredBars.findIndex(b => b.id === selectedId);
   const prevBarId = selectedBarIdx > 0 ? filteredBars[selectedBarIdx - 1].id : null;
@@ -418,18 +507,9 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
   }
 
   // Scale: shortest event duration = 1px. Everything else proportional.
-  const pxPerMs = (() => {
-    let minDur = Infinity;
-    for (const row of filteredRows) {
-      if (row.isPoint) continue;
-      for (const bar of row.bars) {
-        const d = effectiveDur(bar);
-        if (d > 0) minDur = Math.min(minDur, d);
-      }
-    }
-    if (!isFinite(minDur) || totalSpan <= 0) return trackWidth > 0 ? trackWidth / Math.max(totalSpan, 1) : 1;
-    return 1 / minDur;
-  })();
+  // Scale so the full time span maps to the viewport width.
+  // This keeps bar widths proportional and stable as new events arrive.
+  const pxPerMs = totalSpan > 0 && trackWidth > 0 ? trackWidth / totalSpan : 1;
 
   // Gap compression: build segments mapping real time → display pixels.
   // Large gaps are collapsed to GAP_DISPLAY_PX wide with an indicator.
@@ -560,93 +640,125 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
         onScroll={syncRuler}
       >
         <div className="relative" style={{ width: LABEL_W + contentTrackWidth }}>
-          {filteredRows.map((row) => {
-            const isRowSelected = row.bars.some(b => b.id === selectedId);
-
-            return (
-              <div
-                key={row.key}
-                ref={(el) => { if (el) rowRefMap.current.set(row.key, el); else rowRefMap.current.delete(row.key); }}
-                className={`group flex border-b border-border/40 ${isRowSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
-                style={{ height: 22 }}
-              >
-                {/* Label column — sticky so it stays visible when scrolling horizontally */}
+          {displayItems.map((item) => {
+            if (item.kind === "category") {
+              const collapsed = collapsedCategories.has(item.category);
+              return (
                 <div
-                  className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isRowSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
-                  style={{ width: LABEL_W }}
+                  key={`cat-${item.category}`}
+                  className="flex border-b border-border/60 bg-muted/20 cursor-pointer"
+                  style={{ height: 24 }}
+                  onClick={() => toggleCategory(item.category)}
                 >
-                  <span className={`shrink-0 font-mono font-semibold ${methodClass(row)}`}>
-                    {row.method?.toUpperCase()}
-                  </span>
-                  <span className="truncate font-mono text-muted-foreground">{row.label}</span>
-                </div>
-
-                {/* Track */}
-                <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
-                  {/* Grid lines */}
-                  {tickPositions.map((px) => (
-                    <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
-                  ))}
-
-                  {row.isPoint ? (
-                    row.bars.map(bar => (
-                      <div
-                        key={bar.id}
-                        ref={bar.id === selectedId ? (el) => { selectedBarRef.current = el; } : undefined}
-                        className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${selectedId !== null ? "opacity-50" : ""}`}
-                        style={{ left: realToDisplay(bar.startTime), width: 1, maxWidth: `calc(100% - ${realToDisplay(bar.startTime)}px)` }}
-                        title={row.label}
-                        onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
-                      />
-                    ))
-                  ) : (
-                    computeMergedGroups(row.bars, realToDisplay, effectiveDur).map((group) => {
-                      const { bars: gBars, leftPx, widthPx } = group;
-                      const isSingle = gBars.length === 1;
-                      const firstBar = gBars[0];
-                      const selectedIdx = gBars.findIndex(b => b.id === selectedId);
-                      const isGroupSelected = selectedIdx !== -1;
-                      const isLive = gBars.some(b => b.pending && b.access === "allowed");
-                      const isError = gBars.some(b =>
-                        b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400));
-                      const isPending = !isLive && gBars.some(b => b.pending);
-
-                      const visualClass = isError
-                        ? "bg-red-500/80"
-                        : isPending
-                          ? "bg-muted-foreground/40 border border-dashed border-muted-foreground/60"
-                          : isSingle
-                            ? barClass(firstBar, row.type)
-                            : row.type === "egress" ? "bg-blue-500/80" : "bg-purple-500/80";
-
-                      function handleClick() {
-                        if (selectedIdx === -1) setSelectedId(firstBar.id);
-                        else if (selectedIdx < gBars.length - 1) setSelectedId(gBars[selectedIdx + 1].id);
-                        else setSelectedId(null);
+                  <div
+                    className="shrink-0 sticky left-0 z-10 flex items-center gap-1.5 px-2 bg-muted/20"
+                    style={{ width: LABEL_W }}
+                  >
+                    {collapsed
+                      ? <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      : <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-foreground/70">
+                      {CATEGORY_LABELS[item.category]}
+                    </span>
+                  </div>
+                  <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
+                    {tickPositions.map((px) => (
+                      <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
+                    ))}
+                    {collapsed && (() => {
+                      const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70" }[item.category];
+                      const ranges = item.allBars
+                        .map(b => ({ left: realToDisplay(b.startTime), right: Math.max(realToDisplay(b.startTime) + 1, realToDisplay(b.startTime + effectiveDur(b))), isError: b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400), isLive: b.pending && b.access === "allowed" }))
+                        .sort((a, b) => a.left - b.left);
+                      const merged: { left: number; right: number; isError: boolean; isLive: boolean }[] = [];
+                      for (const r of ranges) {
+                        const last = merged[merged.length - 1];
+                        if (last && r.left <= last.right) { last.right = Math.max(last.right, r.right); last.isError = last.isError || r.isError; last.isLive = last.isLive || r.isLive; }
+                        else merged.push({ ...r });
                       }
-
-                      return (
+                      return merged.map((r, i) => (
                         <div
-                          key={firstBar.id}
-                          ref={isGroupSelected ? (el) => { selectedBarRef.current = el; } : undefined}
-                          className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isGroupSelected && selectedId !== null ? "opacity-50" : ""}`}
-                          style={{ left: leftPx, width: widthPx, maxWidth: `calc(100% - ${leftPx}px)` }}
-                          onClick={handleClick}
+                          key={i}
+                          className={`absolute top-1/2 -translate-y-1/2 h-3 rounded-sm overflow-hidden ${r.isError ? "bg-red-500/70" : r.isLive ? "bg-blue-500/50 border border-blue-400/60" : catColor}`}
+                          style={{ left: r.left, width: r.right - r.left }}
                         >
-                          <div
-                            className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : visualClass}`}
-                            title={isSingle
-                              ? (isLive ? `in-flight · ${effectiveDur(firstBar)}ms` : firstBar.pending ? "no response received" : `${firstBar.durationMs}ms${firstBar.status ? ` · ${firstBar.status}` : ""}${firstBar.error ? ` · ${firstBar.error}` : ""}`)
-                              : `${gBars.length} events`}
-                          >
-                            {isLive && <div className="absolute inset-0 bar-in-flight" />}
-                          </div>
+                          {r.isLive && <div className="absolute inset-0 bar-in-flight" />}
                         </div>
-                      );
-                    })
-                  )}
+                      ));
+                    })()}
+                  </div>
                 </div>
-              </div>
+              );
+            }
+
+            // item.kind === "row"
+            const { row } = item;
+            const lanes = row.isPoint
+              ? [row.bars]
+              : computeLanes(row.bars, realToDisplay, effectiveDur);
+            return (
+              <Fragment key={row.key}>
+                {lanes.map((laneBars, laneIdx) => {
+                  const isLaneSelected = laneBars.some(b => b.id === selectedId);
+                  return (
+                    <div
+                      key={`${row.key}:${laneIdx}`}
+                      ref={laneIdx === 0 ? (el) => { if (el) rowRefMap.current.set(row.key, el); else rowRefMap.current.delete(row.key); } : undefined}
+                      className={`group flex border-b border-border/40 ${isLaneSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
+                      style={{ height: 22 }}
+                    >
+                      <div
+                        className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
+                        style={{ width: LABEL_W }}
+                      >
+                        <span className={`shrink-0 font-mono font-semibold ${methodClass(row)}`}>
+                          {row.method?.toUpperCase()}
+                        </span>
+                        <span className="truncate font-mono text-muted-foreground">{row.label}</span>
+                      </div>
+                      <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
+                        {tickPositions.map((px) => (
+                          <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
+                        ))}
+                        {laneBars.map(bar => {
+                          const leftPx = realToDisplay(bar.startTime);
+                          const rightPx = Math.max(leftPx + 1, realToDisplay(bar.startTime + effectiveDur(bar)));
+                          const isSelected = bar.id === selectedId;
+                          const isLive = bar.pending && bar.access === "allowed";
+                          if (row.isPoint) {
+                            return (
+                              <div
+                                key={bar.id}
+                                ref={isSelected ? (el) => { selectedBarRef.current = el; } : undefined}
+                                className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${selectedId !== null ? "opacity-50" : ""}`}
+                                style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
+                                title={row.label}
+                                onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
+                              />
+                            );
+                          }
+                          return (
+                            <div
+                              key={bar.id}
+                              ref={isSelected ? (el) => { selectedBarRef.current = el; } : undefined}
+                              className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                              style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
+                              onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
+                            >
+                              <div
+                                className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, row.type)}`}
+                                title={isLive ? `in-flight · ${effectiveDur(bar)}ms` : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
+                              >
+                                {isLive && <div className="absolute inset-0 bar-in-flight" />}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </Fragment>
             );
           })}
           <div ref={bottomRef} />
