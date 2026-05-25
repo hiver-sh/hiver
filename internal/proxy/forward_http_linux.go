@@ -27,6 +27,17 @@ const maxAuditBodyBytes = 1 << 20 // 1 MiB
 func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.Request, rawReqBytes []byte, ac *auditCtx) {
 	ws := isWebSocketUpgrade(req)
 
+	// Strip Sec-WebSocket-Extensions so the server can't negotiate any
+	// RSV-using extension (notably permessage-deflate). Frames stay
+	// plain on the wire and the audit log records native payloads.
+	if ws {
+		if rawReqBytes != nil {
+			rawReqBytes = stripWebSocketExtensionsRaw(rawReqBytes)
+		} else {
+			stripWebSocketExtensions(req.Header)
+		}
+	}
+
 	if err := writeUpstreamRequest(upstream, req, rawReqBytes, ws); err != nil {
 		log.Printf("forward http: write request error host=%s: %v", req.Host, err)
 		ac.responseError("write request: "+err.Error(), http.StatusBadGateway)

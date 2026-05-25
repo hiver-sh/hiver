@@ -454,6 +454,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, host str
 		return
 	}
 
+	// Strip Sec-WebSocket-Extensions so the server can't negotiate
+	// permessage-deflate (or anything else that touches the RSV bits).
+	// Frames on the wire are then plain bytes and the audit log
+	// records exactly the application payload.
+	stripWebSocketExtensions(r.Header)
 	if err := writeWebSocketUpgrade(upstream, r); err != nil {
 		_ = upstream.Close()
 		ac.responseError("ws write request: "+err.Error(), http.StatusBadGateway)
