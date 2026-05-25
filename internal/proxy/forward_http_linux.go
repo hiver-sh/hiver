@@ -51,6 +51,7 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 		// Response event before the WS tunnel starts pumping — frame audit
 		// events flow as stream_chunks from wsForward, so consumers see
 		// the 101 immediately rather than at tunnel close.
+		ac.responseHeaders = headerMap(resp.Header)
 		ac.response(http.StatusSwitchingProtocols)
 		// upstreamBR may already hold the first WS frame bytes
 		// http.ReadResponse over-read past the headers — drain it before

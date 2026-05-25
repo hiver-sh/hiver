@@ -501,6 +501,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, host str
 	// Response event before the WS tunnel starts pumping — frame audit
 	// events flow as stream_chunks from wsForward, so consumers see the
 	// 101 immediately rather than at tunnel close.
+	ac.responseHeaders = headerMap(resp.Header)
 	ac.response(http.StatusSwitchingProtocols)
 	done := make(chan struct{}, 2)
 	go func() { p.wsForward(io.MultiReader(clientBrw.Reader, client), upstream, ac); done <- struct{}{} }()
@@ -531,6 +532,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ac.requestHeaders = headerMap(r.Header)
 	ac.allow()
 
 	hj, ok := w.(http.Hijacker)
