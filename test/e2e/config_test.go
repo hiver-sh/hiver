@@ -156,7 +156,7 @@ func withScratchLockedDeny(cfg gen.SandboxConfig) gen.SandboxConfig {
 		if ls.Acls != nil {
 			acls = append(acls, *ls.Acls...)
 		}
-		acls = append(acls, gen.ACLRule{Path: "/scratch/locked/**", Access: gen.Deny})
+		acls = append(acls, gen.ACLRule{Path: "/scratch/locked/**", Access: gen.ACLRuleAccessDeny})
 		ls.Acls = &acls
 		b, err := json.Marshal(ls)
 		if err != nil {

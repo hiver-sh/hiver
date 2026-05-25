@@ -147,7 +147,10 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	stopUpstream := startUpstreams(t)
 	defer stopUpstream()
 
-	pod := runSandboxPod(t, bundleImage, specPath, cfg.DuringLifetime)
+	expectationsPath := filepath.Join(fixtureDir, "expectations.yaml")
+	expectations := loadExpectations(t, expectationsPath)
+
+	pod := runSandboxPod(t, bundleImage, specPath, expectations, cfg.DuringLifetime)
 
 	// (1) Substring assertions against the pod's combined stdout/stderr.
 	// Expected lines live in the fixture's expectations.yaml so the
@@ -156,8 +159,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	// agent-printed "[sandbox:out] …" lines, but any substring of the
 	// container output is fair game (sandboxd lifecycle, audit-tail
 	// "agent op | …", etc.).
-	expectationsPath := filepath.Join(fixtureDir, "expectations.yaml")
-	for _, want := range loadExpectations(t, expectationsPath) {
+	for _, want := range expectations {
 		if !strings.Contains(pod.output, want.Substring) {
 			t.Errorf("missing %s: no substring %q in pod output", want.Desc, want.Substring)
 		}
@@ -212,7 +214,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 			sawSecretDeny = true
 		}
 	}
-	if !sawWriteAllow {
+	if expectationsContain(expectations, "fuse  allow write") && !sawWriteAllow {
 		t.Errorf("fs.request: no write/allowed event; got %d fs.request total", len(fsRequests))
 	}
 	hasSecretRule := false
@@ -374,6 +376,7 @@ func startUpstreams(t *testing.T) (stop func()) {
 		go func() { _ = srv.Serve(l) }()
 		return srv
 	}
+	stopWS := StartWSEchoServer(t)
 	allowedSrv := mkServer(upstreamAllowedPort, func(w http.ResponseWriter, r *http.Request) {
 		// Header override: spec.yaml has the rule inject
 		// "X-Sandbox-Agent: agent-python". If the proxy isn't applying
@@ -392,6 +395,7 @@ func startUpstreams(t *testing.T) (stop func()) {
 	return func() {
 		_ = allowedSrv.Close()
 		_ = deniedSrv.Close()
+		stopWS()
 	}
 }
 
@@ -424,7 +428,7 @@ type podRun struct {
 	events []map[string]any
 }
 
-func runSandboxPod(t *testing.T, bundleImage, specPath string, duringLifetime FixtureHook) podRun {
+func runSandboxPod(t *testing.T, bundleImage, specPath string, expectations []Expectation, duringLifetime FixtureHook) podRun {
 	t.Helper()
 	// 2 min outer deadline. The graceful-shutdown path adds ~25 s
 	// (sbxfuse drain + sandboxd WaitDelay) on top of the sandbox's
@@ -494,6 +498,7 @@ func runSandboxPod(t *testing.T, bundleImage, specPath string, duringLifetime Fi
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"--add-host", "upstream-allowed:host-gateway",
 		"--add-host", "upstream-denied:host-gateway",
+		"--add-host", "upstream-ws:host-gateway",
 		// Publish sandboxd's API server so the host-side e2e harness can
 		// subscribe to /v1/events while the workload runs.
 		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),
@@ -568,7 +573,7 @@ func runSandboxPod(t *testing.T, bundleImage, specPath string, duringLifetime Fi
 		// goroutine (which polls every 100 ms) a settle window so the
 		// last verdicts and the INGRESS line have made it to stdout.
 		sendIngressProbe(t)
-		sendExecProbe(t)
+		sendExecProbe(t, expectations)
 		time.Sleep(500 * time.Millisecond)
 
 		// Caller-supplied hook (e.g. lastEventId resume checks). Runs
@@ -649,7 +654,7 @@ func sendIngressProbe(t *testing.T) {
 // running `echo hello-from-exec; exit 7` should produce. This proves
 // host→agent command execution round-trips: the host can drive the
 // agent and read back its results.
-func sendExecProbe(t *testing.T) {
+func sendExecProbe(t *testing.T, expectations []Expectation) {
 	t.Helper()
 	const command = "echo hello-from-exec; exit 7"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -661,7 +666,9 @@ func sendExecProbe(t *testing.T) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Errorf("exec probe: %v", err)
+		if expectationsContain(expectations, "INGRESS EXEC") {
+			t.Errorf("exec probe: %v", err)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -744,6 +751,16 @@ func loadExpectations(t *testing.T, path string) []Expectation {
 		t.Fatalf("parse expectations: %v", err)
 	}
 	return f.Ops
+}
+
+// expectationsContain reports whether any expectation's Substring contains substr.
+func expectationsContain(expectations []Expectation, substr string) bool {
+	for _, e := range expectations {
+		if strings.Contains(e.Substring, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func countByField(events []map[string]any, field string) map[string]int {

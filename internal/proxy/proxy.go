@@ -7,6 +7,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -68,13 +69,21 @@ type Config struct {
 // proxy can read SNI from the ClientHello and the destination port
 // from SO_ORIGINAL_DST, but not method/path under encryption);
 // Methods/Paths/Override are ignored on those flows.
+//
+// Passthrough, when true, disables TLS interception for this rule even
+// when the proxy is configured with a CA. The byte stream is forwarded
+// end-to-end without termination, preserving the client's TLS fingerprint.
+// Use this for hosts whose WAF or bot-detection rejects the proxy's TLS
+// fingerprint (e.g. WebSocket endpoints protected by Cloudflare Bot
+// Management). Method/Path/Override are not enforced for passthrough rules.
 type EgressRule struct {
-	Access   string          `json:"access"` // "allow" | "deny"
-	Host     string          `json:"host"`
-	Ports    []int           `json:"ports,omitempty"`
-	Methods  []string        `json:"methods,omitempty"`
-	Paths    []string        `json:"paths,omitempty"`
-	Override *EgressOverride `json:"override,omitempty"`
+	Access      string          `json:"access"` // "allow" | "deny"
+	Host        string          `json:"host"`
+	Ports       []int           `json:"ports,omitempty"`
+	Methods     []string        `json:"methods,omitempty"`
+	Paths       []string        `json:"paths,omitempty"`
+	Override    *EgressOverride `json:"override,omitempty"`
+	Passthrough bool            `json:"passthrough,omitempty"`
 }
 
 // EgressOverride bundles per-rule URL query and header injections.
@@ -272,6 +281,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.Host = r.Host
 	}
 
+	if isWebSocketUpgrade(r) {
+		p.handleWebSocket(w, r, host, port, ac)
+		return
+	}
+
 	out, err := p.transport.RoundTrip(r)
 	if err != nil {
 		ac.responseError(err.Error(), http.StatusBadGateway)
@@ -293,7 +307,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if flusher, ok := w.(http.Flusher); ok {
 		flush = flusher.Flush
 	}
-	p.chunkForward(src, w, flush, ac)
+	streaming := strings.Contains(out.Header.Get("Content-Type"), "text/event-stream")
+	p.chunkForward(src, w, flush, ac, streaming)
 	ac.response(out.StatusCode)
 }
 
@@ -362,7 +377,10 @@ func unwrapBody(resp *http.Response) io.Reader {
 
 // chunkForward copies src to dst one chunk at a time (whatever the server
 // pushes in a single Read), flushing after each chunk. flush may be nil.
-func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx) {
+// When streaming is true (SSE), each chunk is emitted as a stream_chunk audit
+// event. When false (regular HTTP), chunks are accumulated in ac.responseBody
+// and surfaced as part of the final response event.
+func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx, streaming bool) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := src.Read(buf)
@@ -371,12 +389,119 @@ func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *aud
 			if flush != nil {
 				flush()
 			}
-			ac.streamChunk(string(buf[:n]))
+			if streaming {
+				ac.streamChunk(string(buf[:n]))
+			} else {
+				ac.responseBody += string(buf[:n])
+			}
 		}
 		if err != nil {
 			break
 		}
 	}
+}
+
+// isWebSocketUpgrade reports whether r carries a WebSocket upgrade.
+func isWebSocketUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
+}
+
+// writeWebSocketUpgrade writes a WebSocket upgrade request to w using the
+// headers from req.Header directly, without the modifications that
+// http.Request.Write makes:
+//
+//   - req.Write adds "User-Agent: Go-http-client/1.1" when the original
+//     request carries no User-Agent. That tag identifies the proxy to the
+//     upstream's WAF and can trigger security rejections.
+//   - req.Write sorts headers in map-iteration order, which may differ from
+//     the client's original ordering.
+//
+// Header names are still Go-canonical (e.g. "Sec-Websocket-Key") because
+// http.ReadRequest normalises them on ingress; that canonicalisation is
+// unavoidable. HTTP/1.1 requires case-insensitive header processing, so
+// compliant upstreams accept it.
+func writeWebSocketUpgrade(w io.Writer, req *http.Request) error {
+	bw := bufio.NewWriter(w)
+	path := req.URL.RequestURI()
+	if path == "" {
+		path = "/"
+	}
+	log.Printf("ws upgrade: sending %s %s HTTP/1.1 host=%s headers=%v", req.Method, path, req.Host, req.Header)
+	if _, err := fmt.Fprintf(bw, "%s %s HTTP/1.1\r\nHost: %s\r\n", req.Method, path, req.Host); err != nil {
+		return err
+	}
+	if err := req.Header.Write(bw); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(bw, "\r\n"); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+// handleWebSocket tunnels a plain ws:// WebSocket through the proxy.
+// The egress rule has already been matched and ac.allow() already called by
+// handleHTTP; this function owns the ac.response() call.
+func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, host string, port int, ac *auditCtx) {
+	upstream, err := p.dialer.DialContext(r.Context(), "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		ac.responseError(err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	if err := writeWebSocketUpgrade(upstream, r); err != nil {
+		_ = upstream.Close()
+		ac.responseError("ws write request: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	upstreamBuf := bufio.NewReader(upstream)
+	resp, err := http.ReadResponse(upstreamBuf, r)
+	if err != nil {
+		_ = upstream.Close()
+		ac.responseError("ws read response: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		_ = upstream.Close()
+		ac.responseError("ws: upstream rejected upgrade", resp.StatusCode)
+		http.Error(w, "upstream rejected WebSocket upgrade", resp.StatusCode)
+		return
+	}
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		_ = upstream.Close()
+		ac.responseError("ws: no hijacker", http.StatusInternalServerError)
+		http.Error(w, "no hijacker", http.StatusInternalServerError)
+		return
+	}
+	client, clientBrw, err := hj.Hijack()
+	if err != nil {
+		_ = upstream.Close()
+		ac.responseError(err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := writeResponseHeaders(client, resp); err != nil {
+		_ = client.Close()
+		_ = upstream.Close()
+		ac.responseError("ws write response: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	done := make(chan struct{}, 2)
+	go func() { p.wsForward(io.MultiReader(clientBrw.Reader, client), upstream, ac); done <- struct{}{} }()
+	go func() { p.wsForward(io.MultiReader(upstreamBuf, upstream), client, ac); done <- struct{}{} }()
+	<-done
+	_ = client.Close()
+	_ = upstream.Close()
+	ac.response(http.StatusSwitchingProtocols)
 }
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -703,6 +828,28 @@ func writeDenyHTTP(c net.Conn, host string) {
 		"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		len(body), body,
 	)
+}
+
+// writeResponseHeaders writes the HTTP status line and headers of resp to w,
+// followed by the blank line that separates headers from body. Used when the
+// caller needs to stream the body separately (e.g. SSE or WebSocket).
+func writeResponseHeaders(w io.Writer, resp *http.Response) error {
+	statusText := http.StatusText(resp.StatusCode)
+	if statusText == "" {
+		statusText = "Unknown"
+	}
+	if _, err := fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText); err != nil {
+		return err
+	}
+	// Forward upstream headers verbatim except Transfer-Encoding: the body
+	// we're about to stream is already decoded by Go's http.ReadResponse.
+	hdrs := resp.Header.Clone()
+	hdrs.Del("Transfer-Encoding")
+	if err := hdrs.Write(w); err != nil {
+		return err
+	}
+	_, err := fmt.Fprint(w, "\r\n")
+	return err
 }
 
 // headerMap converts an http.Header into a flat map[string]string, joining

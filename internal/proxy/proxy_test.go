@@ -1,11 +1,13 @@
 package proxy_test
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -243,7 +245,7 @@ func TestPathDenyDoesNotBlockTLSTunnel(t *testing.T) {
 	}
 }
 
-func TestStripDefaultAuthHeaders(t *testing.T) {
+func TestAuthHeadersPassThrough(t *testing.T) {
 	var seen http.Header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.Header.Clone()
@@ -252,42 +254,22 @@ func TestStripDefaultAuthHeaders(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
-	// Explicitly opt into the default auth-header strip list.
-	audit := &bytes.Buffer{}
-	p, err := proxy.New(proxy.Config{
-		Addr:  "127.0.0.1:0",
-		Rules: []proxy.EgressRule{{Access: "allow", Host: upstreamHost}},
-		Audit: audit,
-	})
-	if err != nil {
-		t.Fatalf("proxy.New: %v", err)
-	}
-	if err := p.Listen(); err != nil {
-		t.Fatalf("proxy.Listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go p.Run(ctx) //nolint:errcheck
-	addr := p.Addr()
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: addr})}}
-	defer cancel()
+	client, _, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
 
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
-	req.Header.Set("Authorization", "Bearer leaked")
+	req.Header.Set("Authorization", "Bearer token")
 	req.Header.Set("Cookie", "session=xyz")
 	req.Header.Set("X-Api-Key", "hunter2")
-	req.Header.Set("X-Trace-Id", "keep-me") // not in strip list
 	resp, _ := client.Do(req)
 	if resp != nil {
 		resp.Body.Close()
 	}
 
 	for _, h := range []string{"Authorization", "Cookie", "X-Api-Key"} {
-		if got := seen.Get(h); got != "" {
-			t.Errorf("expected %s stripped, got %q", h, got)
+		if got := seen.Get(h); got == "" {
+			t.Errorf("expected %s forwarded to upstream, got empty", h)
 		}
-	}
-	if got := seen.Get("X-Trace-Id"); got != "keep-me" {
-		t.Errorf("expected X-Trace-Id preserved, got %q", got)
 	}
 }
 
@@ -337,30 +319,16 @@ func TestRequestHeadersInAudit(t *testing.T) {
 	}
 }
 
-func TestStrippedHeadersAbsentFromAudit(t *testing.T) {
+func TestAuthHeadersInAudit(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	}))
 	defer upstream.Close()
 
 	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
-	audit := &bytes.Buffer{}
-	p, err := proxy.New(proxy.Config{
-		Addr:  "127.0.0.1:0",
-		Rules: []proxy.EgressRule{{Access: "allow", Host: upstreamHost}},
-		Audit: audit,
-	})
-	if err != nil {
-		t.Fatalf("proxy.New: %v", err)
-	}
-	if err := p.Listen(); err != nil {
-		t.Fatalf("proxy.Listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go p.Run(ctx) //nolint:errcheck
-	defer cancel()
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
 
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: p.Addr()})}}
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("X-Safe-Header", "visible")
@@ -375,13 +343,14 @@ func TestStrippedHeadersAbsentFromAudit(t *testing.T) {
 		t.Fatal("no audit events")
 	}
 	reqEv := events[0]
-	if reqEv.Headers != nil {
-		if _, hasAuth := reqEv.Headers["Authorization"]; hasAuth {
-			t.Error("Authorization header must be absent from audit after stripping")
-		}
-		if got := reqEv.Headers["X-Safe-Header"]; got != "visible" {
-			t.Errorf("X-Safe-Header=%q, want %q", got, "visible")
-		}
+	if reqEv.Headers == nil {
+		t.Fatal("request event: Headers is nil")
+	}
+	if got := reqEv.Headers["Authorization"]; got != "Bearer secret" {
+		t.Errorf("Authorization=%q in audit, want %q", got, "Bearer secret")
+	}
+	if got := reqEv.Headers["X-Safe-Header"]; got != "visible" {
+		t.Errorf("X-Safe-Header=%q, want %q", got, "visible")
 	}
 }
 
@@ -483,6 +452,214 @@ func TestZstdRequestBodyDecodedInAudit(t *testing.T) {
 	// Upstream must still receive the compressed bytes (proxy does not strip Content-Encoding).
 	if gotBody == "hello zstd request" {
 		t.Error("upstream should receive compressed bytes, not plain text")
+	}
+}
+
+// wsMakeFrame builds a WebSocket text frame. Client frames are masked
+// (RFC 6455 §5.3); server frames are not.
+func wsMakeFrame(opcode byte, fromClient bool, payload []byte) []byte {
+	frame := []byte{0x80 | opcode} // FIN=1
+	pl := len(payload)
+	if fromClient {
+		frame = append(frame, 0x80|byte(pl))
+		key := [4]byte{0x37, 0xFA, 0x21, 0x3D}
+		frame = append(frame, key[:]...)
+		for i, b := range payload {
+			frame = append(frame, b^key[i%4])
+		}
+	} else {
+		frame = append(frame, byte(pl))
+		frame = append(frame, payload...)
+	}
+	return frame
+}
+
+// wsReadFrameTest reads one WebSocket frame (payload < 126 bytes) and
+// returns the unmasked payload. Used only in tests.
+func wsReadFrameTest(r io.Reader) (opcode byte, payload []byte, err error) {
+	var hdr [2]byte
+	if _, err = io.ReadFull(r, hdr[:]); err != nil {
+		return
+	}
+	opcode = hdr[0] & 0x0F
+	masked := hdr[1]&0x80 != 0
+	pl := int(hdr[1] & 0x7F)
+	var key [4]byte
+	if masked {
+		if _, err = io.ReadFull(r, key[:]); err != nil {
+			return
+		}
+	}
+	payload = make([]byte, pl)
+	if _, err = io.ReadFull(r, payload); err != nil {
+		return
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= key[i%4]
+		}
+	}
+	return
+}
+
+func TestWebSocketProxied(t *testing.T) {
+	// Upstream: respond 101, then echo WebSocket frames properly (parse masked
+	// client frames, send back unmasked server frames).
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.Error(w, "expected ws upgrade", http.StatusBadRequest)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijacker", http.StatusInternalServerError)
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprint(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		br := bufio.NewReader(conn)
+		for {
+			opcode, payload, err := wsReadFrameTest(br)
+			if err != nil || opcode == 0x08 {
+				return
+			}
+			if _, err := conn.Write(wsMakeFrame(opcode, false, payload)); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+
+	audit := &bytes.Buffer{}
+	p, err := proxy.New(proxy.Config{Addr: "127.0.0.1:0", Rules: []proxy.EgressRule{{Access: "allow", Host: upstreamHost}}, Audit: audit})
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	if err := p.Listen(); err != nil {
+		t.Fatalf("proxy.Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx) //nolint:errcheck
+
+	// Dial the proxy directly and send a WebSocket upgrade in proxy-request form.
+	conn, err := net.DialTimeout("tcp", p.Addr(), 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+
+	_, _ = fmt.Fprintf(conn,
+		"GET %s/ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		upstream.URL, upstreamHost,
+	)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read upgrade response: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+
+	// Send a masked text frame, read back the unmasked echo.
+	msg := []byte("hello ws")
+	if _, err := conn.Write(wsMakeFrame(0x1, true, msg)); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	opcode, got, err := wsReadFrameTest(br)
+	if err != nil {
+		t.Fatalf("read echo frame: %v", err)
+	}
+	if opcode != 0x1 || string(got) != string(msg) {
+		t.Errorf("echo: opcode=%d payload=%q, want opcode=1 payload=%q", opcode, got, msg)
+	}
+
+	// Close the connection so the proxy tunnel goroutines exit and emit all
+	// audit events before we read the buffer.
+	conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	events := decodeAudit(t, audit)
+	// expect: request + stream_chunk (client→upstream) + stream_chunk (upstream→client) + response
+	if len(events) != 4 {
+		t.Fatalf("audit events: got %d, want 4 (request+2×stream_chunk+response): %+v", len(events), events)
+	}
+	var reqEv, respEv proxy.AuditEvent
+	var chunks []proxy.AuditEvent
+	for _, e := range events {
+		switch e.Phase {
+		case "request":
+			reqEv = e
+		case "response":
+			respEv = e
+		case "stream_chunk":
+			chunks = append(chunks, e)
+		}
+	}
+	if reqEv.Verdict != "allow" || reqEv.Method != "GET" {
+		t.Errorf("request event: %+v", reqEv)
+	}
+	if respEv.Verdict != "allow" || respEv.Status != http.StatusSwitchingProtocols {
+		t.Errorf("response event: %+v", respEv)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("stream_chunk events: got %d, want 2: %+v", len(chunks), chunks)
+	}
+	// Both chunks carry the message payload (one per direction).
+	for _, c := range chunks {
+		if c.Body != string(msg) {
+			t.Errorf("stream_chunk body: got %q, want %q", c.Body, msg)
+		}
+	}
+}
+
+func TestWebSocketDenied(t *testing.T) {
+	audit := &bytes.Buffer{}
+	p, err := proxy.New(proxy.Config{Addr: "127.0.0.1:0", Rules: nil, Audit: audit})
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	if err := p.Listen(); err != nil {
+		t.Fatalf("proxy.Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx) //nolint:errcheck
+
+	conn, err := net.DialTimeout("tcp", p.Addr(), 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	_, _ = fmt.Fprint(conn,
+		"GET http://example.com/ws HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+	)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+
+	events := decodeAudit(t, audit)
+	if len(events) != 2 {
+		t.Fatalf("audit events: got %d, want 2: %+v", len(events), events)
+	}
+	if events[0].Verdict != "deny" || events[1].Verdict != "deny" {
+		t.Errorf("expected both events to be deny: %+v", events)
 	}
 }
 
