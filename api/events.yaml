@@ -9,7 +9,7 @@ components:
         - $ref: '#/components/schemas/ConfigApplyEvent'
         - $ref: '#/components/schemas/EgressRequestEvent'
         - $ref: '#/components/schemas/EgressResponseEvent'
-        - $ref: '#/components/schemas/EgressStreamChunkEvent'
+        - $ref: '#/components/schemas/EgressChunkEvent'
         - $ref: '#/components/schemas/FSRequestEvent'
         - $ref: '#/components/schemas/FSResponseEvent'
         - $ref: '#/components/schemas/StdioEvent'
@@ -19,7 +19,7 @@ components:
           config.apply: '#/components/schemas/ConfigApplyEvent'
           egress.request: '#/components/schemas/EgressRequestEvent'
           egress.response: '#/components/schemas/EgressResponseEvent'
-          egress.stream_chunk: '#/components/schemas/EgressStreamChunkEvent'
+          egress.chunk: '#/components/schemas/EgressChunkEvent'
           fs.request: '#/components/schemas/FSRequestEvent'
           fs.response: '#/components/schemas/FSResponseEvent'
           stdio: '#/components/schemas/StdioEvent'
@@ -172,12 +172,6 @@ components:
                 headers are joined with `, ` per RFC 7230 §3.2.2. Omitted
                 for CONNECT / raw-forward-TLS flows where no inner HTTP
                 response is parsed.
-            body:
-              type: string
-              description: |
-                Response body captured by the proxy during TLS interception.
-                Omitted for CONNECT / raw-forward-TLS flows where the body
-                is not readable, and for responses with no body.
       example:
         type: egress.result
         id: 190
@@ -186,9 +180,9 @@ components:
         status: 200
         duration_ms: 87
 
-    EgressStreamChunkEvent:
+    EgressChunkEvent:
       description: |
-        Emitted for each SSE frame forwarded from a streaming upstream
+        Emitted for each chunk from a streaming upstream
         response. The `request_id` matches the `id` of the originating
         `EgressRequestEvent`.
       allOf:
@@ -198,21 +192,27 @@ components:
           properties:
             type:
               type: string
-              const: egress.stream_chunk
+              const: egress.chunk
             request_id:
               type: integer
               description: Unique identifier correlating this chunk to its `EgressRequestEvent`.
             body:
               type: string
               description: |
-                Raw SSE frame content (all lines up to but not including
-                the blank-line frame separator).
+                Raw chunk content.
+            label:
+              type: string
+              description: |
+                Optional tag indicating the chunk's origin. For WebSocket
+                traffic the proxy sets `up` (client→upstream) or `down`
+                (upstream→client); HTTP/SSE responses omit the field.
       example:
-        type: egress.stream_chunk
+        type: egress.chunk
         id: 191
         timestamp: "2026-05-08T17:10:03Z"
         request_id: 186
         body: "data: {\"token\":\"Hello\"}"
+        label: "down"
 
     FSRequestEvent:
       description: |

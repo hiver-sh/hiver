@@ -224,7 +224,7 @@ const (
 )
 
 // wsForward pumps WebSocket frames from src to dst, emitting one
-// stream_chunk audit event per fully-assembled message. The dir
+// response_chunk audit event per fully-assembled message. The dir
 // ("up" or "down") is carried on each event's Label field rather
 // than inlined in the body, keeping payload bytes pristine. The
 // proxy strips Sec-WebSocket-Extensions from every upgrade, so

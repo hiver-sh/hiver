@@ -99,9 +99,9 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	}
 
 	events := decodeAudit(t, audit)
-	// request + response (now emitted at headers) + stream_chunk per body Read
+	// request + response (now emitted at headers) + response_chunk per body Read
 	if len(events) < 3 {
-		t.Fatalf("audit events: got %d, want >=3 (request+response+>=1 stream_chunk): %+v", len(events), events)
+		t.Fatalf("audit events: got %d, want >=3 (request+response+>=1 response_chunk): %+v", len(events), events)
 	}
 	if events[0].Phase != "request" || events[0].Verdict != "allow" || events[0].Method != "GET" {
 		t.Errorf("request event mismatch: %+v", events[0])
@@ -109,15 +109,15 @@ func TestHTTPAllowedForwarded(t *testing.T) {
 	if events[1].Phase != "response" || events[1].Verdict != "allow" || events[1].Status != 200 {
 		t.Errorf("response event mismatch: %+v", events[1])
 	}
-	// Body should come as one or more stream_chunk events after the response.
+	// Body should come as one or more response_chunk events after the response.
 	var chunkBody string
 	for _, e := range events[2:] {
-		if e.Phase == "stream_chunk" {
+		if e.Phase == "response_chunk" {
 			chunkBody += e.Body
 		}
 	}
 	if chunkBody != "hello" {
-		t.Errorf("stream_chunk body: got %q, want %q", chunkBody, "hello")
+		t.Errorf("response_chunk body: got %q, want %q", chunkBody, "hello")
 	}
 	for _, e := range events {
 		if e.RequestID != events[0].RequestID {
@@ -601,9 +601,9 @@ func TestWebSocketProxied(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	events := decodeAudit(t, audit)
-	// expect: request + stream_chunk (client→upstream) + stream_chunk (upstream→client) + response
+	// expect: request + response_chunk (client→upstream) + response_chunk (upstream→client) + response
 	if len(events) != 4 {
-		t.Fatalf("audit events: got %d, want 4 (request+2×stream_chunk+response): %+v", len(events), events)
+		t.Fatalf("audit events: got %d, want 4 (request+2×response_chunk+response): %+v", len(events), events)
 	}
 	var reqEv, respEv proxy.AuditEvent
 	var chunks []proxy.AuditEvent
@@ -613,7 +613,7 @@ func TestWebSocketProxied(t *testing.T) {
 			reqEv = e
 		case "response":
 			respEv = e
-		case "stream_chunk":
+		case "response_chunk":
 			chunks = append(chunks, e)
 		}
 	}
@@ -624,7 +624,7 @@ func TestWebSocketProxied(t *testing.T) {
 		t.Errorf("response event: %+v", respEv)
 	}
 	if len(chunks) != 2 {
-		t.Fatalf("stream_chunk events: got %d, want 2: %+v", len(chunks), chunks)
+		t.Fatalf("response_chunk events: got %d, want 2: %+v", len(chunks), chunks)
 	}
 	// Both chunks carry the raw message payload; the direction lives
 	// on the Label field ("up" for client→upstream, "down" for the
@@ -632,15 +632,15 @@ func TestWebSocketProxied(t *testing.T) {
 	labels := map[string]string{}
 	for _, c := range chunks {
 		if c.Body != string(msg) {
-			t.Errorf("stream_chunk body: got %q, want %q", c.Body, msg)
+			t.Errorf("response_chunk body: got %q, want %q", c.Body, msg)
 		}
 		labels[c.Label] = c.Body
 	}
 	if _, ok := labels["up"]; !ok {
-		t.Errorf("missing stream_chunk with label=up; labels=%+v", labels)
+		t.Errorf("missing response_chunk with label=up; labels=%+v", labels)
 	}
 	if _, ok := labels["down"]; !ok {
-		t.Errorf("missing stream_chunk with label=down; labels=%+v", labels)
+		t.Errorf("missing response_chunk with label=down; labels=%+v", labels)
 	}
 }
 
@@ -700,9 +700,9 @@ func TestMatchEgressWildcardHost(t *testing.T) {
 
 	// glob patterns
 	cases := []struct {
-		pat        string
-		host       string
-		wantMatch  bool
+		pat       string
+		host      string
+		wantMatch bool
 	}{
 		// *.suffix — matches subdomain but not apex
 		{"*.host", "foo.host", true},
@@ -711,8 +711,8 @@ func TestMatchEgressWildcardHost(t *testing.T) {
 		// *.mid.* — wildcard on both sides
 		{"*.host.*", "foo.host.bar", true},
 		{"*.host.*", "foo.host.bar.baz", true},
-		{"*.host.*", "foo.host", false},  // no trailing segment
-		{"*.host.*", "host.bar", false},  // no leading segment
+		{"*.host.*", "foo.host", false}, // no trailing segment
+		{"*.host.*", "host.bar", false}, // no leading segment
 		// exact (no wildcard)
 		{"exact.com", "exact.com", true},
 		{"exact.com", "other.com", false},

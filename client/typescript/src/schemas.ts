@@ -232,13 +232,14 @@ export const EgressResponseEvent = SandboxEventBase.extend({
   status: z.number().int(),
   duration_ms: z.number().int(),
   headers: z.record(z.string(), z.string()).optional(),
-  body: z.string().optional(),
 });
 
-export const EgressStreamChunkEvent = SandboxEventBase.extend({
-  type: z.literal("egress.stream_chunk"),
+export const EgressChunkEvent = SandboxEventBase.extend({
+  type: z.literal("egress.chunk"),
   request_id: z.number(),
   body: z.string(),
+  /** Optional origin tag: `up` for client→upstream, `down` for upstream→client (WebSocket only). */
+  label: z.string().optional(),
 });
 
 export const FSRequestEvent = SandboxEventBase.extend({
@@ -267,7 +268,7 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
   EgressRequestEvent,
   EgressResponseEvent,
-  EgressStreamChunkEvent,
+  EgressChunkEvent,
   FSRequestEvent,
   FSResponseEvent,
   StdioEvent,

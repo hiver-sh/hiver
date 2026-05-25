@@ -138,7 +138,14 @@ class EgressResponseEvent(_SandboxEventBase):
     status: int
     duration_ms: int
     headers: Optional[dict[str, str]] = None
-    body: Optional[str] = None
+
+
+class EgressChunkEvent(_SandboxEventBase):
+    type: Literal["egress.chunk"]
+    request_id: int
+    body: str
+    # `up` for client→upstream, `down` for upstream→client (WebSocket only).
+    label: Optional[str] = None
 
 
 class FSRequestEvent(_SandboxEventBase):
@@ -168,6 +175,7 @@ SandboxEvent = Annotated[
         ConfigApplyEvent,
         EgressRequestEvent,
         EgressResponseEvent,
+        EgressChunkEvent,
         FSRequestEvent,
         FSResponseEvent,
         StdioEvent,

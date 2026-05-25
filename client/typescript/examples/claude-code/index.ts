@@ -4,6 +4,9 @@
 // Then run with: CLAUDE_CODE_OAUTH_TOKEN='<token>' npx tsx examples/claude-code
 //
 // For codex: run with: OPENAI_API_KEY='<key>' AGENT=codex npx tsx examples/claude-code
+//
+// For repro-cf: run with: AGENT=repro-cf npx tsx examples/claude-code
+//   Reads auth from ~/.codex/auth.json and ~/.codex/installation_id
 import { spawn } from "node:child_process";
 import { writeFile, unlink } from "node:fs/promises";
 import { join, dirname } from "node:path";
@@ -17,7 +20,9 @@ const model = process.env.MODEL;
 const claudeOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const openaiApiKey = process.env.OPENAI_API_KEY;
 
-if (agent === "codex") {
+if (agent === "repro-cf") {
+  // auth loaded from ~/.codex/ below
+} else if (agent === "codex") {
   if (!openaiApiKey) {
     console.error("OPENAI_API_KEY is required when AGENT=codex");
     process.exit(1);
@@ -30,26 +35,46 @@ if (agent === "codex") {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
-const sourceImage = "hive-example-claude-worker";
-const imageTag = "hive-example-claude-worker-bundle";
-const scriptPath = join(here, "../../../../scripts/bundle-images.sh");
+const repoRoot = join(here, "../../../..");
+const scriptPath = join(repoRoot, "scripts/bundle-images.sh");
 
-console.log(`> Building image ${sourceImage}`);
-await buildImage(sourceImage, join(here, "image"));
+let sourceImage: string;
+let imageTag: string;
+let sandboxName: string;
+let sandboxEnv: Record<string, string>;
+
+if (agent === "repro-cf") {
+  sourceImage = "hive-example-repro-cf";
+  imageTag = "hive-example-repro-cf-bundle";
+  sandboxName = "hive-repro-cf-worker-1";
+
+  sandboxEnv = {};
+
+  console.log(`> Building image ${sourceImage}`);
+  await buildImage(sourceImage, join(here, "image-2"));
+} else {
+  sourceImage = "hive-example-claude-worker";
+  imageTag = "hive-example-claude-worker-bundle";
+  sandboxName = "hive-claude-code-worker-1";
+  sandboxEnv = {
+    AGENT: agent,
+    ...(model && { MODEL: model }),
+    ...(claudeOAuthToken && { CLAUDE_CODE_OAUTH_TOKEN: claudeOAuthToken }),
+    ...(openaiApiKey && { OPENAI_API_KEY: openaiApiKey }),
+  };
+
+  console.log(`> Building image ${sourceImage}`);
+  await buildImage(sourceImage, join(here, "image"));
+}
 
 console.log(`> Building sandbox bundle ${imageTag}`);
 await buildBundle(scriptPath, sourceImage, imageTag);
 
 console.log("> Starting sandbox");
-const sandbox = await hive.getOrCreateSandbox("hive-claude-code-worker-1", {
+const sandbox = await hive.getOrCreateSandbox(sandboxName, {
   ttl: 0,
   image: imageTag,
-  env: {
-    AGENT: agent,
-    ...(model && { MODEL: model }),
-    ...(claudeOAuthToken && { CLAUDE_CODE_OAUTH_TOKEN: claudeOAuthToken }),
-    ...(openaiApiKey && { OPENAI_API_KEY: openaiApiKey }),
-  },
+  env: sandboxEnv,
   fs: [
     {
       backend: "local",
@@ -57,9 +82,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-code-worker-1", {
       acls: [{ path: "/workspace/**", access: "rw" }],
     },
   ],
-  egress: [
-    { access: "allow", host: "*" },
-  ],
+  egress: [{ access: "allow", host: "*" }],
 });
 
 const { shutdown } = createShutdown(sandbox);
@@ -125,6 +148,7 @@ async function sshConnect(host: string, port: string): Promise<void> {
 function buildImage(tag: string, contextDir: string): Promise<void> {
   return spawnOk("docker", ["build", "-t", tag, contextDir]);
 }
+
 
 function buildBundle(
   scriptPath: string,

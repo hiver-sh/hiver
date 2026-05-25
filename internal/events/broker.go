@@ -15,7 +15,7 @@ import (
 
 // DefaultCapacity is the number of recent events the broker keeps for
 // `lastEventId` replay. Older events fall off the back of the ring.
-const DefaultCapacity = 1000
+const DefaultCapacity = 5000
 
 // Factory builds a [gen.SandboxEvent] given the id+timestamp the broker
 // just allocated. The broker calls Factory inside its critical section

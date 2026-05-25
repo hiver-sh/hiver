@@ -60,7 +60,7 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 			return
 		}
 		// Response event before the WS tunnel starts pumping — frame audit
-		// events flow as stream_chunks from wsForward, so consumers see
+		// events flow as response_chunks from wsForward, so consumers see
 		// the 101 immediately rather than at tunnel close.
 		ac.responseHeaders = headerMap(resp.Header)
 		ac.response(http.StatusSwitchingProtocols)
@@ -81,7 +81,7 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 		return
 	}
 	// Emit the response event now — status, headers, and time-to-first-byte
-	// are known. Body bytes flow as stream_chunk events from chunkForward
+	// are known. Body bytes flow as response_chunk events from chunkForward
 	// so consumers (especially SSE) don't have to wait for the body to end.
 	ac.response(resp.StatusCode)
 	p.chunkForward(src, client, nil, ac)

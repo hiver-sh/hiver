@@ -190,7 +190,7 @@ func formatProxyEvent(ev map[string]any) string {
 		durMs := intField(ev, "duration_ms")
 		return fmt.Sprintf("proxy resp  %d %dms %s %s%s", status, durMs, method, host, path)
 	}
-	if phase == "stream_chunk" {
+	if phase == "response_chunk" {
 		body, _ := ev["body"].(string)
 		if len(body) > 60 {
 			body = body[:60] + "…"
@@ -290,7 +290,7 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 		if verdict == "allow" || verdict == "deny" {
 			t.corr.put(internalID, sseID)
 		}
-	case "stream_chunk":
+	case "response_chunk":
 		sseID, ok := t.corr.peek(internalID)
 		if !ok {
 			return
@@ -305,7 +305,7 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 			return
 		}
 		// Allow responses are emitted at headers-time, before the body
-		// finishes streaming; subsequent stream_chunks still need the
+		// finishes streaming; subsequent response_chunks still need the
 		// correlation. Peek (keep the entry) for allow; take (clean up)
 		// for deny/error since those are terminal — no chunks follow.
 		var sseID int64
@@ -333,7 +333,7 @@ func proxyStreamChunkFactory(raw map[string]any, requestID int64) events.Factory
 	label, _ := raw["label"].(string)
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
-		chunk := gen.EgressStreamChunkEvent{
+		chunk := gen.EgressChunkEvent{
 			Id:        int(id),
 			Timestamp: ts,
 			RequestId: int(requestID),
@@ -342,7 +342,7 @@ func proxyStreamChunkFactory(raw map[string]any, requestID int64) events.Factory
 		if label != "" {
 			chunk.Label = &label
 		}
-		_ = ev.FromEgressStreamChunkEvent(chunk)
+		_ = ev.FromEgressChunkEvent(chunk)
 		return ev
 	}
 }

@@ -10,7 +10,7 @@ import (
 // tunnels WebSocket (ws://) connections:
 //
 //   - An allowed ws:// upgrade reaches the host-side echo server, frames
-//     are forwarded bidirectionally, and the proxy emits stream_chunk audit
+//     are forwarded bidirectionally, and the proxy emits response_chunk audit
 //     events for each frame.
 //   - A ws:// upgrade to a host not in the egress allowlist is rejected
 //     with 403 before the upstream is ever dialled.

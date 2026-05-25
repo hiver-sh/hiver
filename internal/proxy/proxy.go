@@ -99,7 +99,7 @@ type EgressOverride struct {
 // Each user-level request produces one phase:"request" event (access
 // decision), one phase:"response" event (status + headers + time-to-first-
 // byte, emitted as soon as the upstream responds), and zero or more
-// phase:"stream_chunk" events carrying body bytes as they flow. SSE and
+// phase:"response_chunk" events carrying body bytes as they flow. SSE and
 // WebSocket streams emit many chunks; ordinary HTTP responses emit
 // however many the upstream pushes per Read. All four share the same
 // RequestID.
@@ -109,15 +109,15 @@ type EgressOverride struct {
 type AuditEvent struct {
 	At         time.Time         `json:"at"`
 	Type       string            `json:"type"`  // always "network"
-	Phase      string            `json:"phase"` // "request" | "response" | "stream_chunk"
+	Phase      string            `json:"phase"` // "request" | "response" | "response_chunk"
 	RequestID  int               `json:"request_id"`
 	Method     string            `json:"method"`
 	Host       string            `json:"host"`
 	Path       string            `json:"path,omitempty"`
 	Query      string            `json:"query,omitempty"`   // raw URL query (no leading "?")
 	Headers    map[string]string `json:"headers,omitempty"` // HTTP headers; nil for TLS/CONNECT
-	Body       string            `json:"body,omitempty"`    // request body (phase:request) or chunk bytes (phase:stream_chunk); response events no longer carry a body
-	Label      string            `json:"label,omitempty"`   // origin tag on stream_chunk events; "up"/"down" for WebSocket, empty for HTTP
+	Body       string            `json:"body,omitempty"`    // request body (phase:request) or chunk bytes (phase:response_chunk); response events no longer carry a body
+	Label      string            `json:"label,omitempty"`   // origin tag on response_chunk events; "up"/"down" for WebSocket, empty for HTTP
 	Verdict    string            `json:"verdict"`           // "allow" | "deny" | "error"
 	Status     int               `json:"status,omitempty"`
 	DurationMs int               `json:"duration_ms,omitempty"`
@@ -314,7 +314,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		flush = flusher.Flush
 	}
 	// Emit the response event now — status, headers, and time-to-first-byte
-	// are known. Body bytes flow as stream_chunk events from chunkForward
+	// are known. Body bytes flow as response_chunk events from chunkForward
 	// so consumers don't have to wait for the body to finish.
 	ac.response(out.StatusCode)
 	p.chunkForward(src, w, flush, ac)
@@ -353,6 +353,7 @@ func decodeBytes(enc string, b []byte) string {
 		return string(b)
 	}
 }
+
 // unwrapBody returns an io.Reader for the body, decompressing gzip or zstd if
 // the response carries a matching Content-Encoding. It deletes that header (and
 // Content-Length, which becomes invalid) so the caller can forward the
@@ -385,7 +386,7 @@ func unwrapBody(resp *http.Response) io.Reader {
 
 // chunkForward copies src to dst one chunk at a time (whatever the server
 // pushes in a single Read), flushing after each chunk. flush may be nil.
-// Each chunk is emitted as a stream_chunk audit event so consumers see body
+// Each chunk is emitted as a response_chunk audit event so consumers see body
 // bytes as they arrive — the paired response event has already been emitted
 // (with status + headers + time-to-first-byte) before this loop starts.
 func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *auditCtx) {
@@ -505,7 +506,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, host str
 	}
 
 	// Response event before the WS tunnel starts pumping — frame audit
-	// events flow as stream_chunks from wsForward, so consumers see the
+	// events flow as response_chunks from wsForward, so consumers see the
 	// 101 immediately rather than at tunnel close.
 	ac.responseHeaders = headerMap(resp.Header)
 	ac.response(http.StatusSwitchingProtocols)
@@ -783,7 +784,7 @@ func (a *auditCtx) deny(reason string, status int) {
 }
 
 // allow emits the phase:"request" audit event immediately. It must be
-// called before any stream_chunk events so the sidecar correlator has
+// called before any response_chunk events so the sidecar correlator has
 // the SSE request id in place when chunks arrive.
 func (a *auditCtx) allow() {
 	a.p.audit(AuditEvent{
@@ -798,7 +799,7 @@ func (a *auditCtx) allow() {
 
 // response emits the phase:"response" event with status, headers, and
 // time-to-first-byte. Body bytes are NOT included — they flow as
-// phase:"stream_chunk" events from chunkForward / wsForward as they arrive,
+// phase:"response_chunk" events from chunkForward / wsForward as they arrive,
 // so consumers see the response immediately instead of waiting for the body
 // to complete (matters most for long-lived SSE / WebSocket).
 func (a *auditCtx) response(status int) {
@@ -817,7 +818,7 @@ func (a *auditCtx) response(status int) {
 // for HTTP/SSE where direction is implicit).
 func (a *auditCtx) streamChunk(body, label string) {
 	a.p.audit(AuditEvent{
-		At: time.Now(), Type: "network", Phase: "stream_chunk",
+		At: time.Now(), Type: "network", Phase: "response_chunk",
 		RequestID: a.requestID,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
 		Body: body, Label: label, Verdict: "allow",

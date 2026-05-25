@@ -84,6 +84,26 @@ type ConfigApplyEvent struct {
 	Type      string    `json:"type"`
 }
 
+// EgressChunkEvent defines model for EgressChunkEvent.
+type EgressChunkEvent struct {
+	// Body Raw chunk content.
+	Body string `json:"body"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// Label Optional tag indicating the chunk's origin. For WebSocket
+	// traffic the proxy sets `up` (client→upstream) or `down`
+	// (upstream→client); HTTP/SSE responses omit the field.
+	Label *string `json:"label,omitempty"`
+
+	// RequestId Unique identifier correlating this chunk to its `EgressRequestEvent`.
+	RequestId int       `json:"request_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
 // EgressRequestEvent defines model for EgressRequestEvent.
 type EgressRequestEvent struct {
 	Access EgressRequestEventAccess `json:"access"`
@@ -146,26 +166,6 @@ type EgressResponseEvent struct {
 
 	// Status HTTP status code returned by the upstream.
 	Status    int       `json:"status"`
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`
-}
-
-// EgressStreamChunkEvent defines model for EgressStreamChunkEvent.
-type EgressStreamChunkEvent struct {
-	// Body Raw chunk content.
-	Body string `json:"body"`
-
-	// Id Monotonic event id. Pass via the `lastEventId` query
-	// parameter on `GET /v1/events` to resume after this event.
-	Id int `json:"id"`
-
-	// Label Optional tag indicating the chunk's origin. For WebSocket
-	// traffic the proxy sets `up` (client→upstream) or `down`
-	// (upstream→client); HTTP/SSE responses omit the field.
-	Label *string `json:"label,omitempty"`
-
-	// RequestId Unique identifier correlating this chunk to its `EgressRequestEvent`.
-	RequestId int       `json:"request_id"`
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
 }
@@ -331,24 +331,24 @@ func (t *SandboxEvent) MergeEgressResponseEvent(v EgressResponseEvent) error {
 	return err
 }
 
-// AsEgressStreamChunkEvent returns the union data inside the SandboxEvent as a EgressStreamChunkEvent
-func (t SandboxEvent) AsEgressStreamChunkEvent() (EgressStreamChunkEvent, error) {
-	var body EgressStreamChunkEvent
+// AsEgressChunkEvent returns the union data inside the SandboxEvent as a EgressChunkEvent
+func (t SandboxEvent) AsEgressChunkEvent() (EgressChunkEvent, error) {
+	var body EgressChunkEvent
 	err := json.Unmarshal(t.union, &body)
 	return body, err
 }
 
-// FromEgressStreamChunkEvent overwrites any union data inside the SandboxEvent as the provided EgressStreamChunkEvent
-func (t *SandboxEvent) FromEgressStreamChunkEvent(v EgressStreamChunkEvent) error {
-	v.Type = "egress.stream_chunk"
+// FromEgressChunkEvent overwrites any union data inside the SandboxEvent as the provided EgressChunkEvent
+func (t *SandboxEvent) FromEgressChunkEvent(v EgressChunkEvent) error {
+	v.Type = "egress.chunk"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
 }
 
-// MergeEgressStreamChunkEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressStreamChunkEvent
-func (t *SandboxEvent) MergeEgressStreamChunkEvent(v EgressStreamChunkEvent) error {
-	v.Type = "egress.stream_chunk"
+// MergeEgressChunkEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressChunkEvent
+func (t *SandboxEvent) MergeEgressChunkEvent(v EgressChunkEvent) error {
+	v.Type = "egress.chunk"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -459,12 +459,12 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 	switch discriminator {
 	case "config.apply":
 		return t.AsConfigApplyEvent()
+	case "egress.chunk":
+		return t.AsEgressChunkEvent()
 	case "egress.request":
 		return t.AsEgressRequestEvent()
 	case "egress.response":
 		return t.AsEgressResponseEvent()
-	case "egress.stream_chunk":
-		return t.AsEgressStreamChunkEvent()
 	case "fs.request":
 		return t.AsFSRequestEvent()
 	case "fs.response":
