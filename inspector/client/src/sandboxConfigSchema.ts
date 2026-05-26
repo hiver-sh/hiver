@@ -39,6 +39,32 @@ export const SANDBOX_CONFIG_SCHEMA = {
           description: "Ordered list of egress rules. First matching rule wins; unmatched requests are denied.",
           items: { $ref: "#/definitions/EgressRule" },
         },
+        snapshot: { $ref: "#/definitions/Snapshot" },
+      },
+    },
+
+    Snapshot: {
+      type: "object",
+      description: "Snapshot configuration. Captured automatically before the sandbox shuts down and restored before it starts.",
+      additionalProperties: false,
+      properties: {
+        restore_key: {
+          type: "string",
+          pattern: "^[A-Za-z0-9_-]{1,64}$",
+          description: "Key identifying the snapshot to restore when the sandbox starts. When omitted, no snapshot is restored.",
+        },
+        write_key: {
+          type: "string",
+          pattern: "^[A-Za-z0-9_-]{1,64}$",
+          description: "Key under which the snapshot is saved on shutdown. When omitted, restore_key is used.",
+        },
+        include: {
+          type: "array",
+          minItems: 1,
+          description: "Glob patterns specifying which paths to include in the snapshot (e.g. /home/user/*).",
+          items: { type: "string" },
+          examples: [["/home/user/*", "/workspace/data"]],
+        },
       },
     },
 

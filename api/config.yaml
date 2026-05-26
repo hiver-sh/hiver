@@ -50,6 +50,40 @@ components:
             request decides the outcome; requests that match no rule
             are denied.
           items: { $ref: '#/components/schemas/EgressRule' }
+        snapshot:
+          $ref: '#/components/schemas/Snapshot'
+
+    Snapshot:
+      type: object
+      description: |
+        Snapshot configuration. A snapshot is captured automatically before
+        the sandbox shuts down and restored before the sandbox starts.
+      additionalProperties: false
+      properties:
+        restore_key:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: |
+            Key identifying the snapshot to restore when the sandbox starts.
+            When omitted, no snapshot is restored on start.
+        write_key:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: |
+            Key under which the snapshot is saved on shutdown. When omitted,
+            the `restore_key` is used.
+        include:
+          type: array
+          minItems: 1
+          description: |
+            Glob patterns specifying which paths to include in the snapshot.
+            The directory containing each matched path is snapshotted (e.g.
+            `/home/user/*` snapshots `/home/user`).
+          items:
+            type: string
+          example:
+            - /home/user/*
+            - /workspace/data
 
     FileSystem:
       description: |

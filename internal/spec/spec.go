@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -18,17 +19,41 @@ import (
 	"github.com/blasten/hive/internal/proxy"
 )
 
+var snapshotKeyRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 // BackendSuffix is appended to a mount path to derive the host-side
 // backend directory (e.g. "/workspace" → "/workspace-backend").
 const BackendSuffix = "-backend"
 
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
-	Image  string            `json:"image,omitempty"`
-	Ttl    *int              `json:"ttl,omitempty"`
-	Env    map[string]string `json:"env,omitempty"`
-	FS     []FS              `json:"fs"`
-	Egress []proxy.EgressRule `json:"egress,omitempty"`
+	Image    string            `json:"image,omitempty"`
+	Ttl      *int              `json:"ttl,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	FS       []FS              `json:"fs"`
+	Egress   []proxy.EgressRule `json:"egress,omitempty"`
+	Snapshot *Snapshot         `json:"snapshot,omitempty"`
+}
+
+// Snapshot controls how the sandbox upper layer is persisted and restored.
+type Snapshot struct {
+	// RestoreKey identifies which snapshot file to restore on start.
+	// When empty, no restore is performed.
+	RestoreKey string `json:"restore_key,omitempty"`
+	// WriteKey is the key used when saving the snapshot on shutdown.
+	// When empty, RestoreKey is used as the write key.
+	WriteKey string `json:"write_key,omitempty"`
+	// Include is a list of absolute container paths or glob patterns
+	// (e.g. /home/user/*) whose parent directories are snapshotted.
+	Include []string `json:"include,omitempty"`
+}
+
+// EffectiveWriteKey returns the key to use when saving the snapshot.
+func (s *Snapshot) EffectiveWriteKey() string {
+	if s.WriteKey != "" {
+		return s.WriteKey
+	}
+	return s.RestoreKey
 }
 
 // FS defines one FUSE workspace. A spec carries a list of these so
@@ -308,6 +333,14 @@ func (s *Spec) Validate() error {
 			if p < 1 || p > 65535 {
 				return fmt.Errorf("%s.ports[%d]: %d out of range [1, 65535]", ctx, j, p)
 			}
+		}
+	}
+	if sn := s.Snapshot; sn != nil {
+		if sn.RestoreKey != "" && !snapshotKeyRE.MatchString(sn.RestoreKey) {
+			return fmt.Errorf("snapshot.restore_key: must match %s", snapshotKeyRE)
+		}
+		if sn.WriteKey != "" && !snapshotKeyRE.MatchString(sn.WriteKey) {
+			return fmt.Errorf("snapshot.write_key: must match %s", snapshotKeyRE)
 		}
 	}
 	return nil

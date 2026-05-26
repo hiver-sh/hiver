@@ -386,10 +386,31 @@ type SandboxConfig struct {
 	// Image Reference to the agent image to launch. This cannot be changed after the sandbox is initialized.
 	Image *string `json:"image,omitempty"`
 
+	// Snapshot Snapshot configuration. A snapshot is captured automatically before
+	// the sandbox shuts down and restored before the sandbox starts.
+	Snapshot *Snapshot `json:"snapshot,omitempty"`
+
 	// Ttl Sandbox time to live in seconds. The client must ping the sandbox using the /v1/ping endpoint to reset the timer. Once a ping has not been received for as long as this value, the sandbox will receive a SIGTERM and begin shutdown.
 	// The default is 30 min or 1800 seconds.
 	// Use `0` to disable shutdown.
 	Ttl *int `json:"ttl,omitempty"`
+}
+
+// Snapshot Snapshot configuration. A snapshot is captured automatically before
+// the sandbox shuts down and restored before the sandbox starts.
+type Snapshot struct {
+	// Include Glob patterns specifying which paths to include in the snapshot.
+	// The directory containing each matched path is snapshotted (e.g.
+	// `/home/user/*` snapshots `/home/user`).
+	Include *[]string `json:"include,omitempty"`
+
+	// RestoreKey Key identifying the snapshot to restore when the sandbox starts.
+	// When omitted, no snapshot is restored on start.
+	RestoreKey *string `json:"restore_key,omitempty"`
+
+	// WriteKey Key under which the snapshot is saved on shutdown. When omitted,
+	// the `restore_key` is used.
+	WriteKey *string `json:"write_key,omitempty"`
 }
 
 // AsLocalFileSystem returns the union data inside the FileSystem as a LocalFileSystem

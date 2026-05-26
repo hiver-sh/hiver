@@ -33,3 +33,11 @@ services:
     build:
       context: ..
       dockerfile: docker/sandbox-bundle.Dockerfile
+
+volumes:
+  snapshots:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.hive/snapshots

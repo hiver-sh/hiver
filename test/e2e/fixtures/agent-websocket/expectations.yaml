@@ -3,9 +3,6 @@ ops:
   - desc: "proxy allows WebSocket upgrade to upstream-ws"
     substring: "sandboxd: agent op | proxy allow GET upstream-ws/"
 
-  - desc: "proxy emits response_chunk for the echoed message (client→server direction)"
-    substring: "sandboxd: agent op | proxy chunk GET upstream-ws/ \"hello-ws-plain\""
-
   - desc: "proxy closes WebSocket tunnel with status 101"
     substring: "sandboxd: agent op | proxy resp  101"
 

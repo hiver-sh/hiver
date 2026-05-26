@@ -65,12 +65,19 @@ class EgressRule(BaseModel):
     override: Optional[EgressOverride] = None
 
 
+class Snapshot(BaseModel):
+    restore_key: Optional[str] = Field(None, pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    write_key: Optional[str] = Field(None, pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    include: Optional[list[str]] = Field(None, min_length=1)
+
+
 class SandboxConfig(BaseModel):
     image: Optional[str] = None
     env: Optional[dict[str, str]] = None
     ttl: Optional[int] = Field(None, ge=0)
     fs: list[FileSystem] = Field(min_length=1)
     egress: Optional[list[EgressRule]] = None
+    snapshot: Optional[Snapshot] = None
 
 
 class _FSChanges(BaseModel):

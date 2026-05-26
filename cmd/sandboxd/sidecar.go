@@ -113,7 +113,9 @@ func sidecarOnEvent(
 	handle func(raw map[string]any),
 ) func(map[string]any) {
 	return func(raw map[string]any) {
-		log.Printf("sandboxd: agent op | %s", formatLog(raw))
+		if s := formatLog(raw); s != "" {
+			log.Printf("sandboxd: agent op | %s", s)
+		}
 		handle(raw)
 	}
 }
@@ -191,7 +193,7 @@ func formatProxyEvent(ev map[string]any) string {
 		return fmt.Sprintf("proxy resp  %d %dms %s %s%s", status, durMs, method, host, path)
 	}
 	if phase == "response_chunk" {
-		return fmt.Sprintf("proxy chunk %s %s%s", method, host, path)
+		return ""
 	}
 	body, _ := ev["body"].(string)
 	if body != "" {

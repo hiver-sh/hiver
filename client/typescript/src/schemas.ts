@@ -122,6 +122,20 @@ export const EgressRule = z.object({
 });
 export type EgressRule = z.infer<typeof EgressRule>;
 
+/**
+ * Snapshot configuration. A snapshot is captured automatically before the sandbox shuts down
+ * and restored before the sandbox starts.
+ */
+export const Snapshot = z.object({
+  /** Key identifying the snapshot to restore when the sandbox starts. When omitted, no snapshot is restored on start. */
+  restore_key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+  /** Key under which the snapshot is saved on shutdown. When omitted, `restore_key` is used. */
+  write_key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+  /** Glob patterns specifying which paths to include in the snapshot (e.g. `/home/user/*`). */
+  include: z.array(z.string()).min(1).optional(),
+});
+export type Snapshot = z.infer<typeof Snapshot>;
+
 /** Hive sandbox configuration. */
 export const SandboxConfig = z.object({
   /** Reference to the agent image to launch. This cannot be changed after the sandbox is initialized. */
@@ -144,6 +158,7 @@ export const SandboxConfig = z.object({
    * requests that match no rule are denied.
    */
   egress: z.array(EgressRule).optional(),
+  snapshot: Snapshot.optional(),
 });
 export type SandboxConfig = z.infer<typeof SandboxConfig>;
 

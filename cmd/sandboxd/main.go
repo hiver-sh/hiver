@@ -36,6 +36,7 @@ import (
 	"github.com/blasten/hive/internal/events"
 	"github.com/blasten/hive/internal/runc"
 	"github.com/blasten/hive/internal/sandboxd"
+	"github.com/blasten/hive/internal/snapshot"
 	"github.com/blasten/hive/internal/spec"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
@@ -75,6 +76,7 @@ func main() {
 		fuseBin       = flag.String("fuse-bin", "sbxfuse", "path to sbxfuse binary")
 		apiServerPort = flag.String("api-server-port", "8080", "port of the API server")
 		workDir       = flag.String("work-dir", "/run/sandboxd", "directory for sandboxd's internal scratch (CA cert, rules JSON, ACL files, persisted config)")
+		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored; required for snapshot support")
 	)
 	flag.Parse()
 
@@ -306,6 +308,24 @@ func main() {
 	}
 	log.Printf("sandboxd: overlayfs mounted (lower=%s upper=%s merged=%s)", runc.RootfsDir, runc.ScratchDir, runc.MergedDir)
 
+	// snapshotMounts is derived from the initial FS list which never changes
+	// at runtime (mount add/remove is not supported).
+	snapshotMounts := localFSMounts(sp.FS)
+
+	// Restore snapshot before the container starts so the agent sees the
+	// previously snapshotted state on its first access.
+	if sp.Snapshot != nil && sp.Snapshot.RestoreKey != "" && *snapshotDir != "" {
+		src := snapshot.SnapshotPath(*snapshotDir, sp.Snapshot.RestoreKey)
+		if _, err := os.Stat(src); err == nil {
+			log.Printf("sandboxd: snapshot: restoring %s", src)
+			if err := snapshot.Restore(src, runc.UpperDir, snapshotMounts); err != nil {
+				log.Fatalf("snapshot restore: %v", err)
+			}
+		} else {
+			log.Printf("sandboxd: snapshot: no snapshot found at %s, starting fresh", src)
+		}
+	}
+
 	sandboxd.AddCA(runc.MergedDir, caCert)
 
 	// Write the sandbox CA to a dedicated file in the agent rootfs so
@@ -409,10 +429,38 @@ func main() {
 	//      point at which the kernel has actually sent the trailing
 	//      SSE bytes and FIN'd the TCP connection cleanly
 	//   4. cancel the lifecycle ctx, which SIGTERMs the sidecars
-	go func() {
+	children.Go(func() {
 		<-agentStdioDone
 		_ = agentCmd.Wait()
 		log.Println("sandboxd: agent finished")
+
+		// Capture snapshot before unmounting. Read the current config from
+		// the store so any runtime update to snapshot config is respected.
+		if *snapshotDir != "" {
+			if cfg, err := store.Get(); err != nil {
+				log.Printf("sandboxd: snapshot: read config: %v", err)
+			} else if sn := cfg.Snapshot; sn != nil {
+				writeKey := ""
+				if sn.WriteKey != nil && *sn.WriteKey != "" {
+					writeKey = *sn.WriteKey
+				} else if sn.RestoreKey != nil {
+					writeKey = *sn.RestoreKey
+				}
+				if writeKey != "" {
+					var userInclude []string
+					if sn.Include != nil {
+						userInclude = *sn.Include
+					}
+					include := effectiveInclude(userInclude, snapshotMounts)
+					dst := snapshot.SnapshotPath(*snapshotDir, writeKey)
+					log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
+					if err := snapshot.Capture(dst, runc.UpperDir, snapshotMounts, include); err != nil {
+						log.Printf("sandboxd: snapshot capture: %v", err)
+					}
+				}
+			}
+		}
+
 		if err := runc.UnmountOverlay(); err != nil {
 			log.Printf("sandboxd: unmount overlayfs: %v", err)
 		}
@@ -432,7 +480,7 @@ func main() {
 		cancelShutdown()
 		log.Println("sandboxd: shutting down sidecars")
 		cancel()
-	}()
+	})
 
 	<-ctx.Done()
 	children.Wait()
@@ -724,6 +772,43 @@ func writeInitialConfig(path string, sp *spec.Spec) error {
 		return err
 	}
 	return os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+// localFSMounts returns a MountSource for every local-backend FS entry.
+// Local backends store their data in the -backend directory (not the overlayfs
+// upper layer), so snapshot capture and restore must route those paths there.
+func localFSMounts(fsList []spec.FS) []snapshot.MountSource {
+	var mounts []snapshot.MountSource
+	for i := range fsList {
+		f := &fsList[i]
+		if f.Backend == spec.BackendLocal {
+			mounts = append(mounts, snapshot.MountSource{
+				ContainerPath: f.Mount,
+				HostDir:       f.BackendPath(),
+			})
+		}
+	}
+	return mounts
+}
+
+// effectiveInclude returns the snapshot include list with local FS mounts
+// appended automatically. This ensures local filesystems are always captured
+// even when the caller omits them from the explicit include list.
+func effectiveInclude(userInclude []string, mounts []snapshot.MountSource) []string {
+	include := append([]string(nil), userInclude...)
+	for _, m := range mounts {
+		already := false
+		for _, p := range include {
+			if p == m.ContainerPath || p == m.ContainerPath+"/*" {
+				already = true
+				break
+			}
+		}
+		if !already {
+			include = append(include, m.ContainerPath)
+		}
+	}
+	return include
 }
 
 // installIptables sets up the OUTPUT-chain nat REDIRECT rules that make

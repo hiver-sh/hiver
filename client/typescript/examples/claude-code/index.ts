@@ -51,7 +51,7 @@ if (agent === "repro-cf") {
   sandboxEnv = {};
 
   console.log(`> Building image ${sourceImage}`);
-  await buildImage(sourceImage, join(here, "image-2"));
+  // await buildImage(sourceImage, join(here, "image-2"));
 } else {
   sourceImage = "hive-example-claude-worker";
   imageTag = "hive-example-claude-worker-bundle";
@@ -64,11 +64,11 @@ if (agent === "repro-cf") {
   };
 
   console.log(`> Building image ${sourceImage}`);
-  await buildImage(sourceImage, join(here, "image"));
+  // await buildImage(sourceImage, join(here, "image"));
 }
 
 console.log(`> Building sandbox bundle ${imageTag}`);
-await buildBundle(scriptPath, sourceImage, imageTag);
+// await buildBundle(scriptPath, sourceImage, imageTag);
 
 console.log("> Starting sandbox");
 const sandbox = await hive.getOrCreateSandbox(sandboxName, {
@@ -83,6 +83,12 @@ const sandbox = await hive.getOrCreateSandbox(sandboxName, {
     },
   ],
   egress: [{ access: "allow", host: "*" }],
+  snapshot: {
+    restore_key: sandboxName,
+    include: [
+      "/home/agent/*"
+    ],
+  }
 });
 
 const { shutdown } = createShutdown(sandbox);

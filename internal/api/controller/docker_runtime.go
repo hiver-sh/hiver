@@ -137,9 +137,12 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		createArgs = append(createArgs, "-v", *local.Origin+":"+local.Mount+spec.BackendSuffix)
 	}
 
+	createArgs = append(createArgs, "-v", composeProject+"_snapshots:/snapshots")
+
 	createArgs = append(createArgs,
 		image,
 		"--spec", "/mnt/spec.yaml",
+		"--snapshot-dir", "/snapshots",
 	)
 	if out, err := exec.Command("docker", createArgs...).CombinedOutput(); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("docker create: %v: %s", err, out)
@@ -177,7 +180,10 @@ func (r *DockerRuntime) Shutdown(id string) error {
 		return ErrSandboxNotFound
 	}
 	if running {
-		if out, err := exec.Command("docker", "stop", name).CombinedOutput(); err != nil {
+		// Allow 60 s for sandboxd to capture the snapshot before SIGKILL.
+		// `-t` (not `--timeout`) — the Debian Bookworm `docker.io` package
+		// ships CLI 20.10, which predates the `--timeout` long form.
+		if out, err := exec.Command("docker", "stop", "-t", "60", name).CombinedOutput(); err != nil {
 			return fmt.Errorf("docker stop %s: %v: %s", name, err, out)
 		}
 	}
