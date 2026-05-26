@@ -355,6 +355,14 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     localStorage.setItem("timeline:panelCollapsed", String(panelCollapsed));
   }, [panelCollapsed]);
 
+  const [panelHeight, setPanelHeight] = useState(
+    () => parseInt(localStorage.getItem("timeline:panelHeight") ?? "300", 10),
+  );
+
+  useEffect(() => {
+    localStorage.setItem("timeline:panelHeight", String(panelHeight));
+  }, [panelHeight]);
+
   const [collapsedCategories, setCollapsedCategories] = useState<Set<Category>>(() => {
     try {
       const saved = localStorage.getItem("timeline:collapsedCategories");
@@ -374,6 +382,7 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     });
   }
 
+  const containerRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const rowsScrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -593,8 +602,33 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
     }
   }
 
+  function startPanelDrag(e: React.MouseEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = panelHeight;
+    const containerH = containerRef.current?.getBoundingClientRect().height ?? 600;
+
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+
+    function onMove(ev: MouseEvent) {
+      const delta = startY - ev.clientY;
+      setPanelHeight(Math.max(100, Math.min(startHeight + delta, containerH - 120)));
+    }
+
+    function onUp() {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
   return (
-    <div className="flex flex-col h-full">
+    <div ref={containerRef} className="flex flex-col h-full">
 
       {/* Sticky ruler — scrolled programmatically to match rows */}
       <div className="shrink-0 text-xs cursor-default select-none border-b border-border">
@@ -774,16 +808,22 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
             </button>
           </div>
         ) : (
-          <div className="h-[45%] shrink-0 border-t border-border flex flex-col overflow-hidden">
-            <RowDetailPanel
-              key={selectedBar.id}
-              bar={selectedBar}
-              prevBar={prevAnthropicBar}
-              onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
-              onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
-              applyConfig={applyConfig}
+          <>
+            <div
+              className="h-[5px] shrink-0 cursor-row-resize bg-border hover:bg-white/40 transition-colors"
+              onMouseDown={startPanelDrag}
             />
-          </div>
+            <div className="shrink-0 flex flex-col overflow-hidden" style={{ height: panelHeight }}>
+              <RowDetailPanel
+                key={selectedBar.id}
+                bar={selectedBar}
+                prevBar={prevAnthropicBar}
+                onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
+                onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
+                applyConfig={applyConfig}
+              />
+            </div>
+          </>
         )
       )}
     </div>

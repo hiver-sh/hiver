@@ -9,9 +9,10 @@ import (
 
 // BundleParams configure the OCI runtime spec sandboxd writes for the
 // agent container. The bundle layout matches what `runc run -b <dir>`
-// expects: <dir>/config.json + <dir>/rootfs/.
+// expects: <dir>/config.json + <dir>/<RootPath>/.
 type BundleParams struct {
 	BundleDir   string            // bundle root — must already contain rootfs/
+	RootPath    string            // rootfs dir relative to BundleDir; defaults to "rootfs"
 	ImageConfig *ImageConfig      // image-supplied entrypoint/cmd/env/cwd
 	ExtraEnv    map[string]string // sandboxd-injected KEY=VAL entries
 	Mounts      []BindMount       // additional host bind mounts (e.g. /workspace)
@@ -43,6 +44,11 @@ func WriteConfig(p BundleParams) error {
 	env := append([]string{}, p.ImageConfig.Env...)
 	for name, value := range p.ExtraEnv {
 		env = append(env, name+"="+value)
+	}
+
+	rootPath := p.RootPath
+	if rootPath == "" {
+		rootPath = "rootfs"
 	}
 
 	cwd := p.ImageConfig.WorkingDir
@@ -99,7 +105,7 @@ func WriteConfig(p BundleParams) error {
 			},
 			"noNewPrivileges": true,
 		},
-		"root":     map[string]any{"path": "rootfs", "readonly": false},
+		"root":     map[string]any{"path": rootPath, "readonly": false},
 		"hostname": p.Hostname,
 		"mounts":   mounts,
 		"linux": map[string]any{

@@ -191,11 +191,7 @@ func formatProxyEvent(ev map[string]any) string {
 		return fmt.Sprintf("proxy resp  %d %dms %s %s%s", status, durMs, method, host, path)
 	}
 	if phase == "response_chunk" {
-		body, _ := ev["body"].(string)
-		if len(body) > 60 {
-			body = body[:60] + "…"
-		}
-		return fmt.Sprintf("proxy chunk %s %s%s %q", method, host, path, body)
+		return fmt.Sprintf("proxy chunk %s %s%s", method, host, path)
 	}
 	body, _ := ev["body"].(string)
 	if body != "" {

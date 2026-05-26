@@ -608,6 +608,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
           <div className={`rounded-md border border-border overflow-hidden min-w-0 ${reqRawBody ? "flex-1" : "w-full"}`}>
             <div className="p-3 overflow-auto h-full">
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+                <KV label="id"   value={String(req.id)} />
                 <KV label="time" value={ts} />
                 {req.type === "egress.request" && <>
                   <KV label="method" value={req.method} cls={egressMethodCls(req.method)} />

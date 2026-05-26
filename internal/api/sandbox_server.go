@@ -12,7 +12,7 @@ import (
 	middleware "github.com/oapi-codegen/gin-middleware"
 )
 
-func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, lifetime *Lifetime) *http.Server {
+func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, lifetime *Lifetime, upperDir string) *http.Server {
 	swagger, err := gen.GetSpec()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading swagger spec: %s", err)
@@ -24,7 +24,7 @@ func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, li
 
 	oapiGroup := r.Group("/")
 	oapiGroup.Use(middleware.OapiRequestValidator(swagger))
-	hs := NewSandboxHandlers(broker, store, lifetime)
+	hs := NewSandboxHandlers(broker, store, lifetime, upperDir)
 	gen.RegisterHandlers(oapiGroup, hs)
 
 	s := &http.Server{

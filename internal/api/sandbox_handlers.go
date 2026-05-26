@@ -21,10 +21,32 @@ type SandboxHandlers struct {
 	broker   *events.Broker
 	store    *ConfigStore
 	lifetime *Lifetime
+	upperDir string // host-side path of the overlayfs upper layer
 }
 
-func NewSandboxHandlers(broker *events.Broker, store *ConfigStore, lifetime *Lifetime) *SandboxHandlers {
-	return &SandboxHandlers{broker: broker, store: store, lifetime: lifetime}
+func NewSandboxHandlers(broker *events.Broker, store *ConfigStore, lifetime *Lifetime, upperDir string) *SandboxHandlers {
+	return &SandboxHandlers{broker: broker, store: store, lifetime: lifetime, upperDir: upperDir}
+}
+
+// resolveHostPath maps an agent-visible absolute path to its host-side path.
+// FUSE mount backends take priority (longest-prefix match on cfg.Fs); all
+// other paths fall back to the overlayfs upper layer so the caller can read
+// or write any file the container has touched.
+func (h *SandboxHandlers) resolveHostPath(cfg gen.SandboxConfig, cleaned string) string {
+	var matchedMount string
+	for _, fs := range cfg.Fs {
+		m := FSBase(fs).Mount
+		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
+			if len(m) > len(matchedMount) {
+				matchedMount = m
+			}
+		}
+	}
+	if matchedMount != "" {
+		rel := strings.TrimPrefix(cleaned, matchedMount)
+		return filepath.Join(matchedMount+spec.BackendSuffix, rel)
+	}
+	return filepath.Join(h.upperDir, cleaned)
 }
 
 func (h *SandboxHandlers) GetConfig(c *gin.Context) {
@@ -112,14 +134,15 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing form field: destination"})
 		return
 	}
+	cleaned := filepath.Clean(destination)
+	if !strings.HasPrefix(cleaned, "/") {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "destination must be absolute"})
+		return
+	}
 
 	cfg, err := h.store.Get()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
-		return
-	}
-	if !mountConfigured(cfg, destination) {
-		c.JSON(http.StatusNotFound, gen.Error{Error: fmt.Sprintf("destination %q does not match any configured mount", destination)})
 		return
 	}
 
@@ -133,12 +156,14 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "invalid file filename"})
 		return
 	}
-	// Resolve to the host-side backend directory so the write lands on
-	// real disk and skips sbxfuse. Mirrors spec.FS.BackendPath: backend
-	// dir is always `<mount>-backend`, created by sandboxd at startup.
-	backendDir := destination + spec.BackendSuffix
-	backendTarget := filepath.Join(backendDir, name)
-	agentTarget := filepath.Join(destination, name)
+
+	hostDir := h.resolveHostPath(cfg, cleaned)
+	if err := os.MkdirAll(hostDir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	hostTarget := filepath.Join(hostDir, name)
+	agentTarget := filepath.Join(cleaned, name)
 
 	src, err := header.Open()
 	if err != nil {
@@ -147,7 +172,7 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	}
 	defer src.Close()
 
-	dst, err := os.OpenFile(backendTarget, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	dst, err := os.OpenFile(hostTarget, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
@@ -155,12 +180,12 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	n, copyErr := io.Copy(dst, src)
 	closeErr := dst.Close()
 	if copyErr != nil {
-		_ = os.Remove(backendTarget)
+		_ = os.Remove(hostTarget)
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: copyErr.Error()})
 		return
 	}
 	if closeErr != nil {
-		_ = os.Remove(backendTarget)
+		_ = os.Remove(hostTarget)
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: closeErr.Error()})
 		return
 	}
@@ -168,24 +193,18 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"path": agentTarget, "bytes": n})
 }
 
-func mountConfigured(cfg gen.SandboxConfig, dest string) bool {
-	for _, fs := range cfg.Fs {
-		if FSBase(fs).Mount == dest {
-			return true
-		}
-	}
-	return false
-}
-
-// ListDirectory returns the immediate children of a directory under one of
-// the configured mounts. Like GetFile, the read is served from the
-// host-side backend directory and bypasses sbxfuse ACLs.
+// ListDirectory returns the immediate children of a directory. For the
+// root path ("/") it lists the overlayfs upper layer so callers see every
+// path the container has written to. For any other path the read is served
+// from the FUSE mount backend when the path is under a configured mount,
+// falling back to the upper layer otherwise. Either way the read bypasses
+// sbxfuse ACLs.
 func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) {
-	if params.Path == "" {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
-		return
+	path := params.Path
+	if path == "" {
+		path = "/"
 	}
-	cleaned := filepath.Clean(params.Path)
+	cleaned := filepath.Clean(path)
 	if !strings.HasPrefix(cleaned, "/") {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must be absolute"})
 		return
@@ -197,27 +216,7 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectory
 		return
 	}
 
-	var matchedMount string
-	for _, fs := range cfg.Fs {
-		m := FSBase(fs).Mount
-		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
-			if len(m) > len(matchedMount) {
-				matchedMount = m
-			}
-		}
-	}
-	if matchedMount == "" {
-		c.JSON(http.StatusNotFound, gen.Error{Error: fmt.Sprintf("path %q is not under any configured mount", params.Path)})
-		return
-	}
-
-	rel := strings.TrimPrefix(cleaned, matchedMount)
-	backendDir := matchedMount + spec.BackendSuffix
-	target := filepath.Join(backendDir, rel)
-	if target != backendDir && !strings.HasPrefix(target, backendDir+string(filepath.Separator)) {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "path escapes the destination mount"})
-		return
-	}
+	target := h.resolveHostPath(cfg, cleaned)
 
 	entries, err := os.ReadDir(target)
 	if err != nil {
@@ -255,10 +254,9 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectory
 	c.JSON(http.StatusOK, gin.H{"entries": result})
 }
 
-// GetFile streams a file from beneath one of the configured mounts.
-// Like UploadFile, the read is served from the host-side backend
-// directory and bypasses sbxfuse — the per-mount ACLs that gate the
-// agent do not apply.
+// GetFile streams a file from the sandbox filesystem. The path resolves
+// via the same FUSE-backend-first / upper-layer-fallback logic as
+// ListDirectory, and bypasses sbxfuse ACLs.
 func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 	if params.Path == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
@@ -276,32 +274,7 @@ func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 		return
 	}
 
-	// Longest-prefix-match on mount roots so /a and /a/b can coexist
-	// and `/a/b/x` resolves to the /a/b mount, not /a.
-	var matchedMount string
-	for _, fs := range cfg.Fs {
-		m := FSBase(fs).Mount
-		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
-			if len(m) > len(matchedMount) {
-				matchedMount = m
-			}
-		}
-	}
-	if matchedMount == "" {
-		c.JSON(http.StatusNotFound, gen.Error{Error: fmt.Sprintf("path %q is not under any configured mount", params.Path)})
-		return
-	}
-
-	// Re-root onto the backend directory. filepath.Clean above already
-	// neutralised `..`; re-check the result is contained for defence in
-	// depth against any future path-construction change.
-	rel := strings.TrimPrefix(cleaned, matchedMount)
-	backendDir := matchedMount + spec.BackendSuffix
-	target := filepath.Join(backendDir, rel)
-	if target != backendDir && !strings.HasPrefix(target, backendDir+string(filepath.Separator)) {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "path escapes the destination mount"})
-		return
-	}
+	target := h.resolveHostPath(cfg, cleaned)
 
 	info, err := os.Stat(target)
 	if err != nil {

@@ -298,7 +298,15 @@ func main() {
 		}
 	}
 
-	sandboxd.AddCA(runc.RootfsDir, caCert)
+	// Mount overlayfs: lower=rootfs (base image, read-only), upper=upper
+	// (all sandbox writes), merged=container root. Must come after seeding
+	// so the seed reads clean image content from the lower layer directly.
+	if err := runc.MountOverlay(); err != nil {
+		log.Fatalf("mount overlayfs: %v", err)
+	}
+	log.Printf("sandboxd: overlayfs mounted (lower=%s upper=%s merged=%s)", runc.RootfsDir, runc.ScratchDir, runc.MergedDir)
+
+	sandboxd.AddCA(runc.MergedDir, caCert)
 
 	// Write the sandbox CA to a dedicated file in the agent rootfs so
 	// NODE_EXTRA_CA_CERTS can point at it. Node.js uses a bundled Mozilla
@@ -306,7 +314,7 @@ func main() {
 	// AddCA alone is not enough for TLS interception to succeed.
 	const agentCACertPath = "/etc/ssl/certs/sandbox-ca.crt"
 	if caData, err := os.ReadFile(caCertPath); err == nil {
-		dest := filepath.Join(runc.RootfsDir, agentCACertPath)
+		dest := filepath.Join(runc.MergedDir, agentCACertPath)
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err == nil {
 			if err := os.WriteFile(dest, caData, 0o644); err != nil {
 				log.Printf("sandboxd: install sandbox CA for Node.js (%s): %v", dest, err)
@@ -345,6 +353,7 @@ func main() {
 	containerID := fmt.Sprintf("agent-%d", os.Getpid())
 	if err := runc.WriteConfig(runc.BundleParams{
 		BundleDir:   runc.MntDir,
+		RootPath:    "merged",
 		ImageConfig: imgCfg,
 		ExtraEnv:    agentEnv,
 		Hostname:    "agent",
@@ -364,7 +373,8 @@ func main() {
 		*apiServerPort,
 		broker,
 		store,
-		lifetime)
+		lifetime,
+		runc.UpperDir)
 
 	// If the agent image exposes a service port (other than our own proxy
 	// port), start a TCP proxy at sandboxTCPProxyPort so the controller can
@@ -403,6 +413,9 @@ func main() {
 		<-agentStdioDone
 		_ = agentCmd.Wait()
 		log.Println("sandboxd: agent finished")
+		if err := runc.UnmountOverlay(); err != nil {
+			log.Printf("sandboxd: unmount overlayfs: %v", err)
+		}
 		if n := broker.SubscriberCount(); n > 0 {
 			log.Printf("sandboxd: waiting for %d event subscriber(s) to drain", n)
 			drainCtx, cancelDrain := context.WithTimeout(context.Background(), drainTimeout)

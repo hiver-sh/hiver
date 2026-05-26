@@ -124,36 +124,6 @@ export function FileExplorer({ sandboxId, serverUrl, controllerUrl }: Props) {
     [sandboxId, serverUrl, controllerUrl],
   );
 
-  const loadMounts = useCallback(async () => {
-    setConfigLoading(true);
-    setConfigError(null);
-    try {
-      const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`,
-      );
-      url.searchParams.set("controller", controllerUrl);
-      const config = await fetch(url).then((r) => r.json() as Promise<{ fs?: { mount: string }[] }>);
-      const mounts = (config.fs ?? []).map((f) => f.mount);
-      setRoots(
-        mounts.map((mount) => ({
-          name: mount,
-          path: mount,
-          is_dir: true,
-          size: 0,
-          children: null,
-          expanded: false,
-          loading: false,
-        })),
-      );
-    } catch (e) {
-      setConfigError(String(e));
-    } finally {
-      setConfigLoading(false);
-    }
-  }, [sandboxId, serverUrl, controllerUrl]);
-
-  useEffect(() => { loadMounts(); }, [loadMounts]);
-
   const fetchChildren = useCallback(
     async (path: string): Promise<TreeNode[]> => {
       const url = new URL(
@@ -166,6 +136,21 @@ export function FileExplorer({ sandboxId, serverUrl, controllerUrl }: Props) {
     },
     [sandboxId, serverUrl, controllerUrl],
   );
+
+  const loadMounts = useCallback(async () => {
+    setConfigLoading(true);
+    setConfigError(null);
+    try {
+      const nodes = await fetchChildren("/");
+      setRoots(nodes);
+    } catch (e) {
+      setConfigError(String(e));
+    } finally {
+      setConfigLoading(false);
+    }
+  }, [fetchChildren]);
+
+  useEffect(() => { loadMounts(); }, [loadMounts]);
 
   async function toggle(path: string) {
     const node = findNode(roots, path);
