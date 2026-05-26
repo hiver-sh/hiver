@@ -48,7 +48,7 @@ const PADDING = 16;
 
 interface Props {
   content: string;
-  lang?: "json" | "text" | "typescript" | "python";
+  lang?: string;
   className?: string;
   /** Sizes the editor to its content height with no internal scrollbar. */
   autoSize?: boolean;
@@ -97,7 +97,7 @@ export function CodeViewer({ content, lang = "text", className, autoSize, maxHei
       <MonacoEditor
         height={height}
         onMount={handleMount}
-        language={LANG_MAP[lang] ?? "plaintext"}
+        language={LANG_MAP[lang ?? ""] ?? lang ?? "plaintext"}
         value={content}
         theme={MONACO_THEME}
         options={{
