@@ -141,7 +141,7 @@ function computeLanes(
     const rightPx = Math.max(leftPx + 1, toDisplay(bar.startTime + effectiveDurFn(bar)));
     let placed = false;
     for (let i = 0; i < lanes.length; i++) {
-      if (laneRightPx[i] < leftPx) {
+      if (laneRightPx[i] + 1 <= leftPx) {
         lanes[i].push(bar);
         laneRightPx[i] = rightPx;
         placed = true;
@@ -668,12 +668,12 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
                     {collapsed && (() => {
                       const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70" }[item.category];
                       const ranges = item.allBars
-                        .map(b => ({ left: realToDisplay(b.startTime), right: Math.max(realToDisplay(b.startTime) + 1, realToDisplay(b.startTime + effectiveDur(b))), isError: b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400), isLive: b.pending && b.access === "allowed" }))
+                        .map(b => ({ left: realToDisplay(b.startTime), right: Math.max(realToDisplay(b.startTime) + 5, realToDisplay(b.startTime + effectiveDur(b))), isError: b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400), isLive: b.pending && b.access === "allowed" }))
                         .sort((a, b) => a.left - b.left);
                       const merged: { left: number; right: number; isError: boolean; isLive: boolean }[] = [];
                       for (const r of ranges) {
                         const last = merged[merged.length - 1];
-                        if (last && r.left <= last.right) { last.right = Math.max(last.right, r.right); last.isError = last.isError || r.isError; last.isLive = last.isLive || r.isLive; }
+                        if (last && r.left <= last.right + 2) { last.right = Math.max(last.right, r.right); last.isError = last.isError || r.isError; last.isLive = last.isLive || r.isLive; }
                         else merged.push({ ...r });
                       }
                       return merged.map((r, i) => (
@@ -708,13 +708,14 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
                       style={{ height: 22 }}
                     >
                       <div
-                        className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
+                        className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 cursor-pointer ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
                         style={{ width: LABEL_W }}
+                        onClick={() => { const first = laneBars[0]; if (first) setSelectedId(first.id); }}
                       >
                         <span className={`shrink-0 font-mono font-semibold ${methodClass(row)}`}>
                           {row.method?.toUpperCase()}
                         </span>
-                        <span className="truncate font-mono text-muted-foreground">{row.label}</span>
+                        <span className={`truncate font-mono ${selectedId !== null && isLaneSelected ? "text-white" : "text-muted-foreground"}`}>{row.label}</span>
                       </div>
                       <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
                         {tickPositions.map((px) => (

@@ -102,6 +102,20 @@ class Sandbox:
             raise _to_error(res, "apply_config")
         return ApplyResult.model_validate(res.json())
 
+    async def list_directory(self, path: str) -> list[dict[str, object]]:
+        """
+        List the immediate children of a directory under a sandbox mount.
+        `path` is the agent-visible absolute path (e.g. `/workspace`).
+        Returns a list of entries with `name`, `path`, `is_dir`, and `size`.
+        """
+        res = await self._client.get(
+            f"{self.api_server_url}/v1/directories",
+            params={"path": path},
+        )
+        if not res.is_success:
+            raise _to_error(res, "list_directory")
+        return res.json()["entries"]
+
     async def download_file(self, path: str) -> bytes:
         """
         Download a file from a sandbox mount. `path` is the agent-visible

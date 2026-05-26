@@ -182,6 +182,23 @@ export class Sandbox {
   }
 
   /**
+   * List the immediate children of a directory under a sandbox mount.
+   * `path` is the agent-visible absolute path (e.g. `/workspace`).
+   */
+  async listDirectory(
+    path: string,
+  ): Promise<{ name: string; path: string; is_dir: boolean; size: number }[]> {
+    const url = new URL(`${this.apiServerUrl}/v1/directories`);
+    url.searchParams.set("path", path);
+    const res = await this.fetchImpl(url);
+    if (!res.ok) throw await toError(res, "listDirectory");
+    const body = (await res.json()) as {
+      entries: { name: string; path: string; is_dir: boolean; size: number }[];
+    };
+    return body.entries;
+  }
+
+  /**
    * Download a file from a sandbox mount. `path` is the agent-visible
    * absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
    */

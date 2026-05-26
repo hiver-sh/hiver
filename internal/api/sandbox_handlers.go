@@ -13,6 +13,7 @@ import (
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/events"
+	"github.com/blasten/hive/internal/spec"
 	"github.com/gin-gonic/gin"
 )
 
@@ -135,7 +136,7 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	// Resolve to the host-side backend directory so the write lands on
 	// real disk and skips sbxfuse. Mirrors spec.FS.BackendPath: backend
 	// dir is always `<mount>-backend`, created by sandboxd at startup.
-	backendDir := destination + "-backend"
+	backendDir := destination + spec.BackendSuffix
 	backendTarget := filepath.Join(backendDir, name)
 	agentTarget := filepath.Join(destination, name)
 
@@ -174,6 +175,84 @@ func mountConfigured(cfg gen.SandboxConfig, dest string) bool {
 		}
 	}
 	return false
+}
+
+// ListDirectory returns the immediate children of a directory under one of
+// the configured mounts. Like GetFile, the read is served from the
+// host-side backend directory and bypasses sbxfuse ACLs.
+func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) {
+	if params.Path == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
+		return
+	}
+	cleaned := filepath.Clean(params.Path)
+	if !strings.HasPrefix(cleaned, "/") {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must be absolute"})
+		return
+	}
+
+	cfg, err := h.store.Get()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+
+	var matchedMount string
+	for _, fs := range cfg.Fs {
+		m := FSBase(fs).Mount
+		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
+			if len(m) > len(matchedMount) {
+				matchedMount = m
+			}
+		}
+	}
+	if matchedMount == "" {
+		c.JSON(http.StatusNotFound, gen.Error{Error: fmt.Sprintf("path %q is not under any configured mount", params.Path)})
+		return
+	}
+
+	rel := strings.TrimPrefix(cleaned, matchedMount)
+	backendDir := matchedMount + spec.BackendSuffix
+	target := filepath.Join(backendDir, rel)
+	if target != backendDir && !strings.HasPrefix(target, backendDir+string(filepath.Separator)) {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "path escapes the destination mount"})
+		return
+	}
+
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gen.Error{Error: err.Error()})
+		return
+	}
+
+	type dirEntry struct {
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size"`
+	}
+	result := make([]dirEntry, 0, len(entries))
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		size := int64(0)
+		if !e.IsDir() {
+			size = info.Size()
+		}
+		result = append(result, dirEntry{
+			Name:  e.Name(),
+			Path:  filepath.Join(cleaned, e.Name()),
+			IsDir: e.IsDir(),
+			Size:  size,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": result})
 }
 
 // GetFile streams a file from beneath one of the configured mounts.
@@ -217,7 +296,7 @@ func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 	// neutralised `..`; re-check the result is contained for defence in
 	// depth against any future path-construction change.
 	rel := strings.TrimPrefix(cleaned, matchedMount)
-	backendDir := matchedMount + "-backend"
+	backendDir := matchedMount + spec.BackendSuffix
 	target := filepath.Join(backendDir, rel)
 	if target != backendDir && !strings.HasPrefix(target, backendDir+string(filepath.Separator)) {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "path escapes the destination mount"})

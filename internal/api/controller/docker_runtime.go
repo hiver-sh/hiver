@@ -11,6 +11,7 @@ import (
 
 	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
+	"github.com/blasten/hive/internal/spec"
 	"sigs.k8s.io/yaml"
 )
 
@@ -133,7 +134,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		if err != nil || local.Origin == nil {
 			continue
 		}
-		createArgs = append(createArgs, "-v", *local.Origin+":"+local.Mount+"-backend")
+		createArgs = append(createArgs, "-v", *local.Origin+":"+local.Mount+spec.BackendSuffix)
 	}
 
 	createArgs = append(createArgs,

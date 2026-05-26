@@ -18,6 +18,10 @@ import (
 	"github.com/blasten/hive/internal/proxy"
 )
 
+// BackendSuffix is appended to a mount path to derive the host-side
+// backend directory (e.g. "/workspace" → "/workspace-backend").
+const BackendSuffix = "-backend"
+
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
 	Image  string            `json:"image,omitempty"`
@@ -118,7 +122,7 @@ func (b Backend) IsRemote() bool {
 // Derived from the mount so each FS entry gets its own dir without the
 // caller having to thread per-mount config through.
 func (f *FS) BackendPath() string {
-	return f.Mount + "-backend"
+	return f.Mount + BackendSuffix
 }
 
 // Slug returns a filename-safe identifier derived from the mount path,

@@ -211,6 +211,74 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
+  /v1/directories:
+    get:
+      tags: [Files]
+      summary: List the contents of a directory under a sandbox mount.
+      operationId: listDirectory
+      description: |
+        Returns the immediate children of a directory that lives under one
+        of the configured `SandboxConfig.fs` mounts. The `path` query
+        parameter is the agent-visible absolute path (e.g. `/workspace`)
+        and must resolve to a directory beneath one of the configured
+        mount roots.
+
+        Like `/v1/file`, the read bypasses the destination mount's ACLs.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: |
+            Agent-visible absolute path of the directory to list. Must be
+            inside one of the configured `fs[].mount` directories.
+          example: /workspace
+      responses:
+        '200':
+          description: Directory listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                additionalProperties: false
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, path, is_dir, size]
+                      additionalProperties: false
+                      properties:
+                        name:
+                          type: string
+                          description: Basename of the entry.
+                          example: data.csv
+                        path:
+                          type: string
+                          description: Agent-visible absolute path of the entry.
+                          example: /workspace/data.csv
+                        is_dir:
+                          type: boolean
+                          description: True if the entry is a directory.
+                        size:
+                          type: integer
+                          format: int64
+                          description: File size in bytes; 0 for directories.
+        '400':
+          description: The request is malformed (missing `path`, traversal, …).
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+        '404':
+          description: |
+            `path` is not under any configured mount, or no directory
+            exists at the resolved location.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
   /v1/events:
     get:
       summary: Open the SSE event stream.
