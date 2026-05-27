@@ -7,6 +7,8 @@
 //
 // For gemini: run with: GEMINI_API_KEY='<key>' AGENT=gemini npx tsx examples/claude-code
 //
+// For copilot: run with: GITHUB_TOKEN='<token>' AGENT=copilot npx tsx examples/claude-code
+//
 // For repro-cf: run with: AGENT=repro-cf npx tsx examples/claude-code
 //   Reads auth from ~/.codex/auth.json and ~/.codex/installation_id
 import { spawn } from "node:child_process";
@@ -22,6 +24,7 @@ const model = process.env.MODEL;
 const claudeOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const geminiApiKey = process.env.GEMINI_API_KEY;
+const githubToken = process.env.GITHUB_TOKEN;
 
 if (agent === "codex") {
   // OPENAI_API_KEY is optional; codex CLI supports browser-based OAuth
@@ -59,6 +62,7 @@ if (agent === "repro-cf") {
     ...(claudeOAuthToken && { CLAUDE_CODE_OAUTH_TOKEN: claudeOAuthToken }),
     ...(openaiApiKey && { OPENAI_API_KEY: openaiApiKey }),
     ...(geminiApiKey && { GEMINI_API_KEY: geminiApiKey }),
+    ...(githubToken && { GITHUB_TOKEN: githubToken }),
   };
 
   console.log(`> Building image ${sourceImage}`);
