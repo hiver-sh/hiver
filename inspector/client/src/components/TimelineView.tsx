@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, ChevronUp } from "lucide-react";
 import type { SandboxEvent } from "@/types";
 import { humanDuration } from "@/lib/utils";
+import { LLM_PROVIDERS } from "@/lib/llmProviders";
 import { RowDetailPanel } from "./TimelineDetail";
 
 export interface TimelineBar {
@@ -61,7 +62,12 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       const durationMs = res
         ? (lastChunk ? new Date(lastChunk.timestamp).getTime() - startMs : res.duration_ms)
         : 0;
-      const label = `${event.host}${event.path}`;
+      let label = `${event.host}${event.path}`;
+      for (const provider of LLM_PROVIDERS) {
+        if (!provider.matches(event)) continue;
+        const extracted = provider.extractLabel(event);
+        if (extracted) { label = extracted; break; }
+      }
       const key = `egress:${event.method}:${label}`;
       const row = getOrCreateRow(key, "egress", label, event.method);
       row.bars.push({
@@ -202,7 +208,7 @@ export function applyFilter(rows: TimelineRow[], f: FilterState): TimelineRow[] 
   if (f.kind === "fs") out = out.filter((r) => r.type === "fs");
   else if (f.kind === "llm") out = out.filter((r) => {
     const e = r.bars[0]?.rawEvents[0];
-    return e?.type === "egress.request" && e.host === "api.anthropic.com" && e.path === "/v1/messages";
+    return e?.type === "egress.request" && LLM_PROVIDERS.some(p => p.matches(e));
   });
   else if (f.kind === "egress") out = out.filter((r) => r.type === "egress");
   if (f.query) {
@@ -223,7 +229,7 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
   if (f.kind !== "all") {
     const llmIds = f.kind === "llm"
       ? new Set(events
-          .filter(e => e.type === "egress.request" && e.host === "api.anthropic.com" && e.path === "/v1/messages")
+          .filter(e => e.type === "egress.request" && LLM_PROVIDERS.some(p => p.matches(e)))
           .map(e => e.id))
       : null;
     out = out.filter(e => {
@@ -272,7 +278,7 @@ function getRowCategory(row: TimelineRow): Category {
   if (row.type === "stdio") return "stdio";
   if (row.type === "fs") return "fs";
   const e = row.bars[0]?.rawEvents[0];
-  if (e?.type === "egress.request" && e.host === "api.anthropic.com" && e.path === "/v1/messages") {
+  if (e?.type === "egress.request" && LLM_PROVIDERS.some(p => p.matches(e))) {
     return "llm";
   }
   return "egress";
@@ -456,18 +462,18 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     : null;
 
   // Flat list of all Anthropic bars for "previous context" comparison in the detail panel.
-  const anthropicBars = useMemo(() =>
+  const llmBars = useMemo(() =>
     rows
       .filter(r => {
         const e = r.bars[0]?.rawEvents[0];
-        return e?.type === "egress.request" && e.host === "api.anthropic.com" && e.path === "/v1/messages";
+        return e?.type === "egress.request" && LLM_PROVIDERS.some(p => p.matches(e));
       })
       .flatMap(r => r.bars),
   [rows]);
 
   const prevAnthropicBar = (() => {
-    const idx = anthropicBars.findIndex(b => b.id === selectedId);
-    return idx > 0 ? anthropicBars[idx - 1] : null;
+    const idx = llmBars.findIndex(b => b.id === selectedId);
+    return idx > 0 ? llmBars[idx - 1] : null;
   })();
 
   if (rows.length === 0) {
@@ -680,12 +686,12 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
               return (
                 <div
                   key={`cat-${item.category}`}
-                  className="flex border-b border-border/60 bg-muted/20 cursor-pointer"
+                  className="flex border-b border-border/60 bg-background cursor-pointer"
                   style={{ height: 24 }}
                   onClick={() => toggleCategory(item.category)}
                 >
                   <div
-                    className="shrink-0 sticky left-0 z-10 flex items-center gap-1.5 px-2 bg-muted/20"
+                    className="shrink-0 sticky left-0 z-10 flex items-center gap-1.5 px-2 bg-background"
                     style={{ width: LABEL_W }}
                   >
                     {collapsed
@@ -765,7 +771,7 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
                               <div
                                 key={bar.id}
                                 ref={isSelected ? (el) => { selectedBarRef.current = el; } : undefined}
-                                className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${selectedId !== null ? "opacity-50" : ""}`}
+                                className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
                                 style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
                                 title={row.label}
                                 onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}

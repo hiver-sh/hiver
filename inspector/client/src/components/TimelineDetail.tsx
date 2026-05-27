@@ -8,6 +8,8 @@ import type { TimelineBar } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
 import { SegmentedControl } from "./SegmentedControl";
 import { humanDuration } from "@/lib/utils";
+import { LLM_PROVIDERS } from "@/lib/llmProviders";
+import type { LLMSummaryData, LLMContentBlock } from "@/lib/llmProviders";
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
@@ -173,141 +175,6 @@ function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
   );
 }
 
-// ─── Anthropic /v1/messages summary ─────────────────────────────────────────
-
-interface StreamBlock {
-  type: "text" | "tool_use";
-  text?: string;
-  id?: string;
-  name?: string;
-  inputJson?: string;
-}
-
-interface StreamResult {
-  blocks: StreamBlock[];
-  stopReason?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  model?: string;
-}
-
-function parseAnthropicStream(
-  chunks: Extract<SandboxEvent, { type: "egress.chunk" }>[],
-): StreamResult {
-  const blocks: StreamBlock[] = [];
-  let stopReason: string | undefined;
-  let inputTokens: number | undefined;
-  let outputTokens: number | undefined;
-  let model: string | undefined;
-
-  // A chunk may contain a whole SSE event (event:\ndata:\n\n) or just
-  // a data: line. Split on newlines so we find data: lines regardless.
-  for (const chunk of chunks) {
-    for (const line of chunk.body.split("\n")) {
-      const trimmed = line.trimEnd();
-      if (!trimmed.startsWith("data: ")) continue;
-      const data = trimmed.slice(6);
-      if (!data || data === "[DONE]") continue;
-      let msg: Record<string, unknown>;
-      try { msg = JSON.parse(data) as Record<string, unknown>; } catch { continue; }
-
-    switch (msg.type) {
-      case "message_start": {
-        const m = msg.message as Record<string, unknown> | undefined;
-        if (m?.model) model = m.model as string;
-        const u = m?.usage as Record<string, number> | undefined;
-        if (u) { inputTokens = u.input_tokens; outputTokens = u.output_tokens; }
-        break;
-      }
-      case "content_block_start": {
-        const idx = msg.index as number;
-        const cb = msg.content_block as Record<string, unknown>;
-        if (cb.type === "text")
-          blocks[idx] = { type: "text", text: (cb.text as string) ?? "" };
-        else if (cb.type === "tool_use")
-          blocks[idx] = { type: "tool_use", id: cb.id as string, name: cb.name as string, inputJson: "" };
-        break;
-      }
-      case "content_block_delta": {
-        const idx = msg.index as number;
-        const delta = msg.delta as Record<string, unknown>;
-        const blk = blocks[idx];
-        if (!blk) break;
-        if (delta.type === "text_delta" && blk.type === "text")
-          blk.text = (blk.text ?? "") + (delta.text as string);
-        else if (delta.type === "input_json_delta" && blk.type === "tool_use")
-          blk.inputJson = (blk.inputJson ?? "") + (delta.partial_json as string);
-        break;
-      }
-      case "message_delta": {
-        const d = msg.delta as Record<string, unknown> | undefined;
-        if (d?.stop_reason) stopReason = d.stop_reason as string;
-        const u = msg.usage as Record<string, number> | undefined;
-        if (u?.output_tokens) outputTokens = u.output_tokens;
-        break;
-      }
-      }
-    }
-  }
-
-  return { blocks: blocks.filter(Boolean), stopReason, inputTokens, outputTokens, model };
-}
-
-type MsgContentPart =
-  | { type: "text"; text?: string }
-  | { type: "tool_use"; id?: string; name?: string; input?: unknown }
-  | { type: "tool_result"; tool_use_id?: string; content?: unknown };
-
-interface AnthropicReqBody {
-  model?: string;
-  system?: string | Array<{ type: string; text?: string }>;
-  messages?: Array<{ role: string; content: string | MsgContentPart[] }>;
-}
-
-interface AnthropicResBody {
-  content?: MsgContentPart[];
-  stop_reason?: string;
-  model?: string;
-  usage?: { input_tokens?: number; output_tokens?: number };
-}
-
-function parseAnthropicRequest(body?: string): AnthropicReqBody | null {
-  if (!body) return null;
-  try { return JSON.parse(body) as AnthropicReqBody; } catch { return null; }
-}
-
-function parseAnthropicResponse(body?: string): AnthropicResBody | null {
-  if (!body) return null;
-  try { return JSON.parse(body) as AnthropicResBody; } catch { return null; }
-}
-
-function resolveSystem(system?: string | Array<{ type: string; text?: string }>): string | undefined {
-  if (!system) return undefined;
-  if (typeof system === "string") return system || undefined;
-  return system.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n") || undefined;
-}
-
-function isThinkingBlock(v: unknown): boolean {
-  if (!v || typeof v !== "object") return false;
-  const t = (v as Record<string, unknown>).type;
-  return t === "thinking" || t === "redacted_thinking";
-}
-
-function normalizeMsg(obj: unknown): unknown {
-  if (Array.isArray(obj)) return obj.filter((v) => !isThinkingBlock(v)).map(normalizeMsg);
-  if (obj && typeof obj === "object") {
-    const entries = Object.entries(obj as Record<string, unknown>)
-      .filter(([k]) => k !== "cache_control")
-      .map(([k, v]): [string, unknown] => {
-        if (k === "content" && typeof v === "string") return [k, [{ text: v, type: "text" }]];
-        return [k, normalizeMsg(v)];
-      })
-      .sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries);
-  }
-  return obj;
-}
-
 function prettyJson(s?: string): string {
   if (!s) return "";
   try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
@@ -355,8 +222,8 @@ function PlainText({ text }: { text: string }) {
   );
 }
 
-function ToolUseBlock({ name, inputJson }: { name: string; inputJson?: string }) {
-  const pretty = useMemo(() => prettyJson(inputJson), [inputJson]);
+function ToolUseBlock({ name, input }: { name: string; input?: unknown }) {
+  const pretty = useMemo(() => prettyJson(input !== undefined ? JSON.stringify(input) : undefined), [input]);
   return (
     <div className="flex flex-col gap-1">
       <span className="font-mono text-[10px] text-purple-400 font-semibold">{name}</span>
@@ -369,19 +236,18 @@ function ToolUseBlock({ name, inputJson }: { name: string; inputJson?: string })
   );
 }
 
-function renderContent(content: string | MsgContentPart[]): ReactNode {
-  if (typeof content === "string") return <PlainText text={content} />;
-  return content.filter((part) => !isThinkingBlock(part)).map((part, i) => {
-    if (part.type === "text" && part.text)
-      return <PlainText key={i} text={part.text} />;
-    if (part.type === "tool_use")
-      return <ToolUseBlock key={i} name={(part.name as string | undefined) ?? "unknown"} inputJson={JSON.stringify(part.input)} />;
-    if (part.type === "tool_result") {
-      const raw = typeof part.content === "string" ? part.content : JSON.stringify(part.content);
+function renderBlocks(blocks: LLMContentBlock[]): ReactNode {
+  return blocks.map((blk, i) => {
+    if (blk.type === "text" && blk.text)
+      return <PlainText key={i} text={blk.text} />;
+    if (blk.type === "tool_use")
+      return <ToolUseBlock key={i} name={blk.toolName ?? "unknown"} input={blk.toolInput} />;
+    if (blk.type === "tool_result") {
+      const raw = typeof blk.toolResultContent === "string" ? blk.toolResultContent : JSON.stringify(blk.toolResultContent);
       const { content: pretty, isJson } = tryPretty(raw) ?? { content: raw ?? "", isJson: false };
       return (
         <div key={i} className="flex flex-col gap-1">
-          <span className="font-mono text-[10px] text-purple-400/70">result · {part.tool_use_id}</span>
+          <span className="font-mono text-[10px] text-purple-400/70">result · {blk.toolId}</span>
           <div className="rounded border border-border overflow-hidden">
             <CodeViewer content={pretty} lang={isJson ? "json" : "text"} minHeight={60} maxHeight={320} />
           </div>
@@ -392,57 +258,34 @@ function renderContent(content: string | MsgContentPart[]): ReactNode {
   });
 }
 
-function SummaryTab({
-  reqBody,
-  stream,
-  prevBody,
-  resBody,
-}: {
-  reqBody: AnthropicReqBody | null;
-  stream: StreamResult;
-  prevBody?: AnthropicReqBody | null;
-  resBody?: AnthropicResBody | null;
-}) {
-  const sys = useMemo(() => resolveSystem(reqBody?.system), [reqBody]);
-
+function SummaryTab({ summary, prevSummary }: { summary: LLMSummaryData; prevSummary?: LLMSummaryData | null }) {
   const sharedIndices = useMemo(() => {
-    const current = reqBody?.messages ?? [];
-    const prev = prevBody?.messages ?? [];
+    const current = summary.messages;
+    const prev = prevSummary?.messages ?? [];
     const shared = new Set<number>();
     for (let i = 0; i < current.length && i < prev.length; i++) {
-      if (JSON.stringify(normalizeMsg(current[i])) === JSON.stringify(normalizeMsg(prev[i]))) {
-        shared.add(i);
-      }
+      if (JSON.stringify(current[i]) === JSON.stringify(prev[i])) shared.add(i);
     }
     return shared;
-  }, [reqBody?.messages, prevBody?.messages]);
+  }, [summary.messages, prevSummary?.messages]);
 
   return (
     <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0">
-      {sys && (
+      {summary.system && (
         <Bubble role="system" defaultCollapsed>
-          <PlainText text={sys} />
+          <PlainText text={summary.system} />
         </Bubble>
       )}
 
-      {reqBody?.messages?.map((msg, i) => (
+      {summary.messages.map((msg, i) => (
         <Bubble key={i} role={msg.role} defaultCollapsed={sharedIndices.has(i)} repeated={sharedIndices.has(i)}>
-          {renderContent(msg.content)}
+          {renderBlocks(msg.content)}
         </Bubble>
       ))}
 
-      {stream.blocks.length > 0 && (
+      {summary.response && summary.response.blocks.length > 0 && (
         <Bubble role="assistant">
-          {stream.blocks.map((blk, i) =>
-            blk.type === "text"
-              ? <PlainText key={i} text={blk.text ?? ""} />
-              : <ToolUseBlock key={i} name={blk.name ?? "unknown"} inputJson={blk.inputJson} />,
-          )}
-        </Bubble>
-      )}
-      {stream.blocks.length === 0 && resBody?.content && resBody.content.length > 0 && (
-        <Bubble role="assistant">
-          {renderContent(resBody.content)}
+          {renderBlocks(summary.response.blocks)}
         </Bubble>
       )}
     </div>
@@ -472,10 +315,45 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bar]);
 
-  const isAnthropicMsg =
-    req.type === "egress.request" &&
-    req.host === "api.anthropic.com" &&
-    req.path === "/v1/messages";
+  const summaryData = useMemo((): LLMSummaryData | null => {
+    if (req.type !== "egress.request") return null;
+    const egressRes = res?.type === "egress.response" ? res : undefined;
+    for (const provider of LLM_PROVIDERS) {
+      const data = provider.parseSummary(req, egressRes, chunks);
+      if (data) return data;
+    }
+    return null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bar]);
+
+  const prevSummaryData = useMemo((): LLMSummaryData | null => {
+    if (!prevBar) return null;
+    const prevReq = prevBar.rawEvents[0];
+    if (prevReq.type !== "egress.request") return null;
+    const prevRes = prevBar.rawEvents.find(
+      (e): e is Extract<SandboxEvent, { type: "egress.response" }> => e.type === "egress.response",
+    );
+    const prevChunks = prevBar.rawEvents.filter(
+      (e): e is Extract<SandboxEvent, { type: "egress.chunk" }> => e.type === "egress.chunk",
+    );
+    for (const provider of LLM_PROVIDERS) {
+      const data = provider.parseSummary(prevReq, prevRes, prevChunks);
+      if (data) {
+        // Inject the previous response as an assistant turn so shared-message
+        // detection correctly marks context carried forward into the current request.
+        if (data.response && data.response.blocks.length > 0) {
+          return {
+            ...data,
+            messages: [...data.messages, { role: "assistant", content: data.response.blocks }],
+          };
+        }
+        return data;
+      }
+    }
+    return null;
+  }, [prevBar]);
+
+  const hasSummary = summaryData !== null;
 
   const isWebSocket = useMemo(() => {
     if (!res || res.type !== "egress.response") return false;
@@ -487,53 +365,14 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
 
   const [tab, setTab] = useState<DetailTab>(() => {
     const saved = localStorage.getItem("timeline:detailTab") as DetailTab | null;
-    if (saved === "summary") return isAnthropicMsg ? "summary" : "request";
+    if (saved === "summary") return hasSummary ? "summary" : "request";
     if (saved === "response") return "response";
-    return isAnthropicMsg ? "summary" : "request";
+    return hasSummary ? "summary" : "request";
   });
 
   useEffect(() => {
     localStorage.setItem("timeline:detailTab", tab);
   }, [tab]);
-
-  const anthropicReqBody = useMemo(
-    () => (req.type === "egress.request" ? parseAnthropicRequest(req.body) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [bar],
-  );
-  const anthropicStream = useMemo(
-    () => parseAnthropicStream(chunks),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [bar],
-  );
-  const anthropicResBody = useMemo((): AnthropicResBody | null => {
-    // chunkForward emits every response read — including plain JSON bodies — as
-    // response_chunk events. When those chunks carry no SSE "data: " lines,
-    // concatenate them and parse as a non-streaming Anthropic response.
-    if (chunks.length > 0 && anthropicStream.blocks.length === 0) {
-      return parseAnthropicResponse(chunks.map((c) => c.body).join(""));
-    }
-    return null;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bar]);
-  const prevAnthropicReqBody = useMemo(() => {
-    if (!prevBar) return null;
-    const e = prevBar.rawEvents[0];
-    const body = e.type === "egress.request" ? parseAnthropicRequest(e.body) : null;
-    if (!body) return null;
-    const prevChunks = prevBar.rawEvents.filter(
-      (ev): ev is Extract<SandboxEvent, { type: "egress.chunk" }> =>
-        ev.type === "egress.chunk",
-    );
-    const prevStream = parseAnthropicStream(prevChunks);
-    if (prevStream.blocks.length === 0) return body;
-    const assistantContent: MsgContentPart[] = prevStream.blocks.map((blk) =>
-      blk.type === "text"
-        ? { type: "text", text: blk.text ?? "" }
-        : { type: "tool_use", id: blk.id ?? "", name: blk.name ?? "", input: (() => { try { return JSON.parse(blk.inputJson ?? "{}"); } catch { return {}; } })() },
-    );
-    return { ...body, messages: [...(body.messages ?? []), { role: "assistant", content: assistantContent }] };
-  }, [prevBar]);
 
   const ts = new Date(req.timestamp).toISOString().slice(11, 23);
 
@@ -554,7 +393,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
   const reqRawBody = req.type === "egress.request" ? req.body : undefined;
 
   const tabOptions: { value: DetailTab; label: string }[] = [
-    ...(isAnthropicMsg ? [{ value: "summary" as DetailTab, label: "Summary" }] : []),
+    ...(hasSummary ? [{ value: "summary" as DetailTab, label: "Summary" }] : []),
     { value: "request", label: "Request" },
     { value: "response", label: "Response" },
   ];
@@ -564,33 +403,29 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         <SegmentedControl options={tabOptions} value={tab} onChange={setTab} />
         <div className="ml-auto flex items-center gap-2">
-          {isAnthropicMsg && tab === "summary" && (
+          {hasSummary && summaryData && tab === "summary" && (
             <>
-              {(anthropicStream.model ?? anthropicResBody?.model ?? anthropicReqBody?.model) && (
+              {summaryData.model && (
                 <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                  {anthropicStream.model ?? anthropicResBody?.model ?? anthropicReqBody?.model}
+                  {summaryData.model}
                 </span>
               )}
-              {(anthropicStream.stopReason ?? anthropicResBody?.stop_reason) && (
+              {summaryData.response?.stopReason && (
                 <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                  {anthropicStream.stopReason ?? anthropicResBody?.stop_reason}
+                  {summaryData.response.stopReason}
                 </span>
               )}
-              {(() => {
-                const inTok = anthropicStream.inputTokens ?? anthropicResBody?.usage?.input_tokens;
-                const outTok = anthropicStream.outputTokens ?? anthropicResBody?.usage?.output_tokens;
-                return (inTok != null || outTok != null) ? (
-                  <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
-                    {inTok ?? "?"}↑ {outTok ?? "?"}↓
-                  </span>
-                ) : null;
-              })()}
-              {bar.pending && !anthropicStream.stopReason && !anthropicResBody?.stop_reason && (
+              {(summaryData.usage?.inputTokens != null || summaryData.usage?.outputTokens != null) && (
+                <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
+                  {summaryData.usage.inputTokens ?? "?"}↑ {summaryData.usage.outputTokens ?? "?"}↓
+                </span>
+              )}
+              {bar.pending && !summaryData.response?.stopReason && (
                 <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
               )}
             </>
           )}
-<Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
+          <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
             <ArrowUp className="h-3.5 w-3.5" />
           </Button>
           <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
@@ -599,8 +434,8 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
         </div>
       </div>
 
-      {tab === "summary" && isAnthropicMsg && (
-        <SummaryTab reqBody={anthropicReqBody} stream={anthropicStream} prevBody={prevAnthropicReqBody} resBody={anthropicResBody} />
+      {tab === "summary" && summaryData && (
+        <SummaryTab summary={summaryData} prevSummary={prevSummaryData} />
       )}
 
       {tab === "request" && (
