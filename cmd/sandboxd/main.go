@@ -830,6 +830,8 @@ func effectiveInclude(userInclude []string, mounts []snapshot.MountSource) []str
 //     loopback included.
 //
 // Requires CAP_NET_ADMIN; the sandbox-pod runs --privileged for now.
+// resolveContainerHome returns the HOME directory of the process running
+
 func installIptables(ctx context.Context, proxyPort, soMark int) error {
 	rules := [][]string{
 		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", fmt.Sprintf("0x%x", soMark), "-j", "RETURN"},

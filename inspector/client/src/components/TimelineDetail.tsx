@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WsChunkRow } from "./WsChunkRow";
@@ -40,6 +40,23 @@ function KV({ label, value, cls }: { label: string; value: string; cls?: string 
       <span className="text-muted-foreground/70 select-text">{label}</span>
       <span className={`font-mono break-all select-text ${cls ?? ""}`}>{value}</span>
     </>
+  );
+}
+
+const HEADER_TRUNCATE = 100;
+
+function TruncatedValue({ value }: { value: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const needsTrunc = value.length > HEADER_TRUNCATE;
+  if (!needsTrunc) return <span className="font-mono break-all select-text">{value}</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      className="font-mono break-all select-text text-left hover:opacity-80 transition-opacity"
+    >
+      {expanded ? value : `${value.slice(0, HEADER_TRUNCATE)}…`}
+    </button>
   );
 }
 
@@ -155,7 +172,10 @@ function HeadersBlock({ headers, className }: { headers?: Record<string, string>
       {open && (
         <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5">
           {sorted.map(([k, v]) => (
-            <KV key={k} label={k.toLowerCase()} value={v} />
+            <React.Fragment key={k}>
+              <span className="text-muted-foreground/70 select-text">{k.toLowerCase()}</span>
+              <TruncatedValue value={v} />
+            </React.Fragment>
           ))}
         </div>
       )}
@@ -295,7 +315,7 @@ function SummaryTab({ summary, prevSummary }: { summary: LLMSummaryData; prevSum
 // ─── main detail panel ───────────────────────────────────────────────────────
 
 
-export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { bar: TimelineBar; prevBar?: TimelineBar | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
+export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOpenFile }: { bar: TimelineBar; prevBar?: TimelineBar | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void }) {
   const req = bar.rawEvents[0];
   const res = bar.rawEvents.find(
     (e): e is Extract<SandboxEvent, { type: "egress.response" | "fs.response" }> =>
@@ -374,6 +394,18 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
     localStorage.setItem("timeline:detailTab", tab);
   }, [tab]);
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setNarrow(entry.contentRect.width < 700);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const ts = new Date(req.timestamp).toISOString().slice(11, 23);
 
   if (req.type === "stdio") {
@@ -399,7 +431,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
   ];
 
   return (
-    <div className="flex flex-col h-full text-xs">
+    <div ref={containerRef} className="flex flex-col h-full text-xs">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         <SegmentedControl options={tabOptions} value={tab} onChange={setTab} />
         <div className="ml-auto flex items-center gap-2">
@@ -439,9 +471,9 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
       )}
 
       {tab === "request" && (
-        <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${reqRawBody ? "flex-1" : "w-full"}`}>
-            <div className="p-3 overflow-auto h-full">
+        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto" : ""}`}>
+          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${!narrow && reqRawBody ? "flex-1" : narrow ? "shrink-0" : "w-full"}`}>
+            <div className={`p-3 overflow-auto ${narrow ? "" : "h-full"}`}>
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                 <KV label="id"   value={String(req.id)} />
                 <KV label="time" value={ts} />
@@ -461,7 +493,17 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
                 </>}
                 {req.type === "fs.request" && <>
                   <KV label="op"     value={req.operation} />
-                  <KV label="path"   value={req.path} />
+                  <span className="text-muted-foreground/70 select-text">path</span>
+                  {onOpenFile && (req.operation === "read" || req.operation === "write") ? (
+                    <button
+                      className="font-mono break-all select-text text-left text-blue-400 hover:underline"
+                      onClick={() => onOpenFile(req.path)}
+                    >
+                      {req.path}
+                    </button>
+                  ) : (
+                    <span className="font-mono break-all select-text">{req.path}</span>
+                  )}
                   <KV label="mount"  value={req.mount} />
                   <span className="text-muted-foreground/70 select-text">access</span>
                   <AccessCell
@@ -475,15 +517,15 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
             </div>
           </div>
           {reqRawBody && (
-            <BodyBlock raw={reqRawBody} className="flex-1 min-w-0" />
+            <BodyBlock raw={reqRawBody} className={narrow ? "flex-1 min-h-[400px]" : "flex-1 min-w-0"} />
           )}
         </div>
       )}
 
       {tab === "response" && (
-        <div className="flex flex-1 min-h-0 gap-3 px-3 pb-3">
-          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${chunks.length > 0 ? "flex-1" : "w-full"}`}>
-            <div className="p-3 overflow-auto h-full">
+        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto" : ""}`}>
+          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${!narrow && chunks.length > 0 ? "flex-1" : narrow ? "shrink-0" : "w-full"}`}>
+            <div className={`p-3 overflow-auto ${narrow ? "" : "h-full"}`}>
               {res ? (
                 <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                   {res.type === "egress.response" && <>
@@ -503,7 +545,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig }: { 
             </div>
           </div>
           {chunks.length > 0 && (
-            <div className="flex flex-1 min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
+            <div className={`flex min-w-0 flex-col gap-2 ${narrow ? "flex-1 min-h-[400px]" : "flex-1 min-h-0 overflow-hidden"}`}>
               {isWebSocket ? (
                 <div className="flex flex-col flex-1 min-h-0 overflow-y-auto rounded-md border border-border bg-muted/20 py-1">
                   {chunks.map((chunk) => (

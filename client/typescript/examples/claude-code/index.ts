@@ -100,7 +100,7 @@ console.log(`> Looking up SSH port for ${containerName}`);
 
 console.log(`> Waiting for sshd on ${sandbox.exposedEndpoint}`);
 const sshPortParts = sandbox.exposedEndpoint!.split(':');
-await waitForSsh(sshPortParts[0]!, sshPortParts[1]!);
+// await waitForSsh(sshPortParts[0]!, sshPortParts[1]!);
 
 await shutdown();
 

@@ -21,13 +21,6 @@ const DEFAULT_CONFIG = {
   env: {},
 };
 
-function generateId() {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  const rand = Array.from(crypto.getRandomValues(new Uint8Array(6)))
-    .map((b) => chars[b % chars.length])
-    .join("");
-  return `sandbox-${rand}`;
-}
 
 interface Props {
   serverUrl: string;
@@ -40,7 +33,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [id, setId] = useState(generateId);
+  const [id, setId] = useState("");
   const [configJson, setConfigJson] = useState(JSON.stringify(DEFAULT_CONFIG, null, 2));
 
   async function handleSubmit(e: React.FormEvent) {
@@ -86,7 +79,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (next) {
-      setId(generateId());
+      setId("");
       setConfigJson(JSON.stringify(DEFAULT_CONFIG, null, 2));
       setError(null);
     }
@@ -137,6 +130,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
                     setError("Current config is not valid JSON — fix it before applying a template");
                   }
                 }}
+                onSuggestId={setId}
               />
             </div>
             <CodeEditor

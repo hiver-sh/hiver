@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, ChevronUp } from "lucide-react";
 import type { SandboxEvent } from "@/types";
@@ -95,7 +95,6 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
     } else if (event.type === "stdio") {
       const text = (event.stdout ?? event.stderr ?? "").trimEnd();
       const method = event.stderr ? "err" : "out";
-      // Each stdio event stays on its own row (unique content per event).
       const key = `stdio:${event.id}`;
       const row = getOrCreateRow(key, "stdio", text.slice(0, 120), method, true);
       row.bars.push({
@@ -108,7 +107,6 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
     }
   }
 
-  // For fs rows, all rows sharing a mount sort together by the mount's earliest event.
   const mountEarliestTime = new Map<string, number>();
   for (const k of rowOrder) {
     const row = rowMap.get(k)!;
@@ -125,7 +123,6 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       const aTime = a.type === "fs" ? (mountEarliestTime.get(a.label) ?? 0) : (a.bars[0]?.startTime ?? 0);
       const bTime = b.type === "fs" ? (mountEarliestTime.get(b.label) ?? 0) : (b.bars[0]?.startTime ?? 0);
       if (aTime !== bTime) return aTime - bTime;
-      // Within the same mount, sort read before write.
       if (a.type === "fs" && b.type === "fs" && a.label === b.label)
         return (a.method ?? "").localeCompare(b.method ?? "");
       return 0;
@@ -262,8 +259,6 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
 
 const DEFAULT_labelW = 220;
 
-// ─── category grouping ───────────────────────────────────────────────────────
-
 type Category = "llm" | "fs" | "egress" | "stdio";
 
 const CATEGORY_ORDER: Category[] = ["llm", "fs", "egress", "stdio"];
@@ -285,7 +280,7 @@ function getRowCategory(row: TimelineRow): Category {
 }
 
 function getSubgroupKey(row: TimelineRow): string | null {
-  if (row.type === "fs") return row.label; // mount path
+  if (row.type === "fs") return row.label;
   if (row.type === "egress") {
     const e = row.bars[0]?.rawEvents[0];
     return e?.type === "egress.request" ? e.host : null;
@@ -319,7 +314,6 @@ function buildDisplayItems(
     if (collapsedCategories.has(cat)) continue;
 
     if (cat === "fs" || cat === "egress") {
-      // Group by host/mount for ordering but emit flat (no subgroup headers)
       const bySubgroup = new Map<string, TimelineRow[]>();
       const subgroupOrder: string[] = [];
       for (const row of rows) {
@@ -339,9 +333,30 @@ function buildDisplayItems(
   return items;
 }
 
+// Virtual scroll types
+interface VLane {
+  row: TimelineRow;
+  laneIdx: number;
+  laneBars: TimelineBar[];
+  lanes: TimelineBar[][];
+  localTop: number;    // offset within section rows area
+  absoluteTop: number; // offset within full scroll container
+}
+
+interface VSection {
+  category: Category;
+  allBars: TimelineBar[];
+  collapsed: boolean;
+  absoluteHeaderTop: number;
+  absoluteRowsTop: number;
+  laneCount: number;
+  lanes: VLane[];
+  totalHeight: number; // header (24) + laneCount * 22
+}
+
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
-export function TimelineView({ events, filter, applyConfig }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void> }) {
+export function TimelineView({ events, filter, applyConfig, onOpenFile }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void }) {
   const rows = useMemo(() => buildRows(events), [events]);
 
   const hasLive = rows.some((r) => r.bars.some(b => b.pending && b.access === "allowed"));
@@ -388,6 +403,21 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     localStorage.setItem("timeline:collapsedCategories", JSON.stringify([...collapsedCategories]));
   }, [collapsedCategories]);
 
+  // Virtual scroll state
+  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(400);
+  const [viewportWidth, setViewportWidth] = useState(600);
+  const rafScrollRef = useRef<number>(0);
+
+  // Holds render-time computed values accessible from callbacks without stale closures
+  const computedRef = useRef<{
+    vsections: VSection[];
+    realToDisplay: (t: number) => number;
+    effectiveDur: (b: TimelineBar) => number;
+    labelW: number;
+  }>({ vsections: [], realToDisplay: () => 0, effectiveDur: () => 0, labelW: DEFAULT_labelW });
+
   function toggleCategory(cat: Category) {
     setCollapsedCategories(prev => {
       const next = new Set(prev);
@@ -401,7 +431,6 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
   const rowsScrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const rowRefMap = useRef<Map<string, HTMLDivElement>>(new Map());
-  const selectedBarRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setSearchParams((prev) => {
@@ -412,38 +441,47 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     }, { replace: true });
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-
+  // Math-based scroll-into-view: reads vsections from computedRef to avoid stale closures
   const scrollSelectedIntoView = useCallback(() => {
-    const barEl = selectedBarRef.current;
     const scrollEl = rowsScrollRef.current;
-    if (!barEl || !scrollEl) return;
+    if (!scrollEl || selectedId === null) return;
+    const { vsections, realToDisplay, effectiveDur, labelW: lw } = computedRef.current;
 
-    const barRect = barEl.getBoundingClientRect();
-    const scrollRect = scrollEl.getBoundingClientRect();
-    const curTop = scrollEl.scrollTop;
-    const curLeft = scrollEl.scrollLeft;
+    for (const section of vsections) {
+      for (const lane of section.lanes) {
+        const bar = lane.laneBars.find(b => b.id === selectedId);
+        if (!bar) continue;
 
-    const hiddenV = barRect.top < scrollRect.top || barRect.bottom > scrollRect.bottom;
-    const hiddenH = barRect.left < scrollRect.left + labelW || barRect.right > scrollRect.right;
+        const barLeft = realToDisplay(bar.startTime);
+        const barRight = Math.max(barLeft + 1, realToDisplay(bar.startTime + effectiveDur(bar)));
+        const laneTop = lane.absoluteTop;
+        const laneBottom = laneTop + 22;
 
-    if (!hiddenV && !hiddenH) return;
+        const viewH = scrollEl.clientHeight;
+        const viewW = scrollEl.clientWidth;
+        const curScrollTop = scrollEl.scrollTop;
+        const curScrollLeft = scrollEl.scrollLeft;
 
-    const barCenterV = (barRect.top  - scrollRect.top)  + curTop  + barRect.height / 2;
-    const barCenterH = (barRect.left - scrollRect.left) + curLeft + barRect.width  / 2;
+        const hiddenV = laneTop < curScrollTop || laneBottom > curScrollTop + viewH;
+        const hiddenH = barLeft < curScrollLeft + lw || barRight > curScrollLeft + viewW;
 
-    if (hiddenV) scrollEl.scrollTop = Math.max(0, barCenterV - scrollRect.height / 2);
-    if (hiddenH) scrollEl.scrollLeft = Math.max(0, barCenterH - labelW - (scrollRect.width - labelW) / 2);
-  }, []);
+        if (!hiddenV && !hiddenH) return;
+
+        if (hiddenV) scrollEl.scrollTop = Math.max(0, laneTop + 11 - viewH / 2);
+        if (hiddenH) scrollEl.scrollLeft = Math.max(0, (barLeft + barRight) / 2 - lw - (viewW - lw) / 2);
+        return;
+      }
+    }
+  }, [selectedId]);
 
   useEffect(() => {
     if (selectedId === null) return;
     scrollSelectedIntoView();
   }, [selectedId, scrollSelectedIntoView]);
 
-  // Wall-clock time when the most recent SSE event arrived at the client.
   const lastEventReceivedRef = useRef(Date.now());
 
-  // Observe the ruler track div to derive responsive tick count.
+  // Observe the ruler track for responsive tick count
   useEffect(() => {
     const el = trackRef.current;
     if (!el) return;
@@ -453,12 +491,27 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.length > 0]);
 
-  // Reset the elapsed clock each time a new event arrives.
+  // Observe rows viewport for virtual scroll dimensions.
+  // Deps mirror trackRef: re-run when the scroll div first mounts (rows.length > 0).
+  // Read dimensions immediately so the first render uses the real size.
+  useEffect(() => {
+    const el = rowsScrollRef.current;
+    if (!el) return;
+    setViewportHeight(el.clientHeight);
+    setViewportWidth(el.clientWidth);
+    const ro = new ResizeObserver(([entry]) => {
+      setViewportHeight(entry.contentRect.height);
+      setViewportWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length > 0]);
+
   useEffect(() => {
     lastEventReceivedRef.current = Date.now();
   }, [events.length]);
 
-  // Tick while any in-flight request is pending.
   useEffect(() => {
     if (!hasLive) return;
     const id = setInterval(() => forceUpdate((n) => n + 1), 100);
@@ -469,7 +522,6 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     ? rows.flatMap(r => r.bars).find(b => b.id === selectedId) ?? null
     : null;
 
-  // Flat list of all Anthropic bars for "previous context" comparison in the detail panel.
   const llmBars = useMemo(() =>
     rows
       .filter(r => {
@@ -504,7 +556,6 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
 
   const displayItems = buildDisplayItems(filteredRows, collapsedCategories);
 
-  // For timeline scale + prev/next navigation use all filtered bars (even inside collapsed groups).
   const filteredBars = filteredRows.flatMap(r => r.bars);
   const selectedBarIdx = filteredBars.findIndex(b => b.id === selectedId);
   const prevBarId = selectedBarIdx > 0 ? filteredBars[selectedBarIdx - 1].id : null;
@@ -518,7 +569,6 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
   const maxEventEnd = Math.max(...filteredBars.map(b => b.startTime + b.durationMs), minTime + 1);
   const rightEdge = maxEventEnd + elapsed;
   const rawSpan = Math.max(rightEdge - minTime, 1);
-  // Right-side padding: at least 30px worth of time so the last bar is never clipped.
   const rightPad = trackWidth > 0 ? (30 / trackWidth) * rawSpan : rawSpan * 0.03;
   const totalSpan = rawSpan + rightPad;
 
@@ -529,13 +579,8 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     return bar.durationMs;
   }
 
-  // Scale: shortest event duration = 1px. Everything else proportional.
-  // Scale so the full time span maps to the viewport width.
-  // This keeps bar widths proportional and stable as new events arrive.
   const pxPerMs = totalSpan > 0 && trackWidth > 0 ? trackWidth / totalSpan : 1;
 
-  // Gap compression: build segments mapping real time → display pixels.
-  // Large gaps are collapsed to GAP_DISPLAY_PX wide with an indicator.
   const GAP_DISPLAY_PX = 20;
   const gapThresholdPx = Math.max(60, 0.15 * trackWidth);
 
@@ -572,9 +617,6 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     prevEnd = Math.max(prevEnd, iEnd);
   }
 
-  // If the natural timeline is shorter than the viewport, scale it up to fill
-  // edge-to-edge (with 10px right padding). Otherwise keep the natural scale
-  // and let the user scroll.
   const fitScale = trackWidth > 0 && dispPos > 0 && dispPos + 10 < trackWidth
     ? (trackWidth - 10) / dispPos
     : 1;
@@ -582,7 +624,7 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     seg.dispStart *= fitScale;
     seg.dispEnd   *= fitScale;
   }
-const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitScale + 10);
+  const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitScale + 10);
 
   function realToDisplay(realMs: number): number {
     for (const seg of segments) {
@@ -604,16 +646,82 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
     return segments.length > 0 ? segments[segments.length - 1].realEnd : minTime;
   }
 
-  // One tick every 100px in display space, skipping positions inside compressed gaps.
   const tickPositions = Array.from(
     { length: Math.floor(contentTrackWidth / 100) + 1 },
     (_, i) => i * 100,
   ).filter(px => !segments.some(s => s.isGap && px > s.dispStart && px < s.dispEnd));
 
-  function syncRuler() {
+  // ─── Build virtual sections ───────────────────────────────────────────────
+
+  const vsections: VSection[] = [];
+  let absTop = 0;
+
+  for (const item of displayItems) {
+    if (item.kind === "category") {
+      const collapsed = collapsedCategories.has(item.category);
+      vsections.push({
+        category: item.category,
+        allBars: item.allBars,
+        collapsed,
+        absoluteHeaderTop: absTop,
+        absoluteRowsTop: absTop + 24,
+        laneCount: 0,
+        lanes: [],
+        totalHeight: 0,
+      });
+      absTop += 24;
+    } else {
+      const section = vsections[vsections.length - 1];
+      if (section && !section.collapsed) {
+        const lanes = item.row.isPoint
+          ? [item.row.bars]
+          : computeLanes(item.row.bars, realToDisplay, effectiveDur);
+        for (let li = 0; li < lanes.length; li++) {
+          section.lanes.push({
+            row: item.row,
+            laneIdx: li,
+            laneBars: lanes[li],
+            lanes,
+            localTop: section.laneCount * 22,
+            absoluteTop: section.absoluteRowsTop + section.laneCount * 22,
+          });
+          section.laneCount++;
+          absTop += 22;
+        }
+      }
+    }
+  }
+  for (const s of vsections) {
+    s.totalHeight = 24 + s.laneCount * 22;
+  }
+
+  // Update ref so callbacks can access current render values
+  computedRef.current = { vsections, realToDisplay, effectiveDur, labelW };
+
+  // ─── Visibility windows ───────────────────────────────────────────────────
+
+  const H_OVERSCAN = 200;
+  const hVisLeft  = scrollLeft - H_OVERSCAN;
+  const hVisRight = scrollLeft + (viewportWidth - labelW) + H_OVERSCAN;
+
+  const V_OVERSCAN_PX = 5 * 22;
+
+  // Pre-filter ticks to visible horizontal window (shared by all rows)
+  const visibleTicks = tickPositions.filter(px => px >= hVisLeft && px <= hVisRight);
+
+  // ─── Interaction handlers ─────────────────────────────────────────────────
+
+  function onScroll() {
     if (trackRef.current && rowsScrollRef.current) {
       trackRef.current.scrollLeft = rowsScrollRef.current.scrollLeft;
     }
+    if (rafScrollRef.current) cancelAnimationFrame(rafScrollRef.current);
+    rafScrollRef.current = requestAnimationFrame(() => {
+      const el = rowsScrollRef.current;
+      if (!el) return;
+      setScrollTop(el.scrollTop);
+      setScrollLeft(el.scrollLeft);
+    });
   }
 
   function startPanelDrag(e: React.MouseEvent) {
@@ -621,22 +729,18 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
     const startY = e.clientY;
     const startHeight = panelHeight;
     const containerH = containerRef.current?.getBoundingClientRect().height ?? 600;
-
     document.body.style.cursor = "row-resize";
     document.body.style.userSelect = "none";
-
     function onMove(ev: MouseEvent) {
       const delta = startY - ev.clientY;
       setPanelHeight(Math.max(100, Math.min(startHeight + delta, containerH - 120)));
     }
-
     function onUp() {
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     }
-
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }
@@ -645,24 +749,22 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
     e.preventDefault();
     const startX = e.clientX;
     const startW = labelW;
-
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
-
     function onMove(ev: MouseEvent) {
       setLabelW(Math.max(120, Math.min(startW + ev.clientX - startX, 480)));
     }
-
     function onUp() {
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     }
-
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div ref={containerRef} className="flex flex-col h-full">
@@ -677,12 +779,11 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
         <div className="absolute inset-y-0 left-[2px] w-px bg-transparent group-hover/lsplit:bg-border transition-colors" />
       </div>
 
-      {/* Sticky ruler — scrolled programmatically to match rows */}
+      {/* Sticky ruler */}
       <div className="shrink-0 text-xs cursor-default select-none border-b border-border">
         <div className="flex" style={{ paddingLeft: labelW }}>
           <div ref={trackRef} className="flex-1 overflow-hidden">
             <div className="group/ruler relative h-6" style={{ width: contentTrackWidth }}>
-              {/* Compressed-gap indicators */}
               {segments.filter(s => s.isGap).map((seg, i) => (
                 <div
                   key={`gap-${i}`}
@@ -694,7 +795,6 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
                   </span>
                 </div>
               ))}
-              {/* Time ticks — one every 100px in display space */}
               {tickPositions.map((px, i) => {
                 const isFirst = i === 0;
                 const isLast  = i === tickPositions.length - 1;
@@ -714,133 +814,166 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
         </div>
       </div>
 
-      {/* Rows — horizontal + vertical scroll */}
+      {/* Rows — virtual scroll */}
       <div
         ref={rowsScrollRef}
         className="timeline-scroll min-h-0 flex-1 overflow-auto text-xs cursor-default select-none"
-        onScroll={syncRuler}
+        onScroll={onScroll}
       >
-        <div className="relative" style={{ width: labelW + contentTrackWidth }}>
-          {displayItems.map((item) => {
-            if (item.kind === "category") {
-              const collapsed = collapsedCategories.has(item.category);
-              return (
+        {/* Width wrapper — sections stack here in normal document flow */}
+        <div style={{ width: labelW + contentTrackWidth }}>
+          {vsections.map(section => {
+            const collapsed = section.collapsed;
+
+            // Vertical: compute which lanes are in the visible window for this section
+            const localVisTop    = scrollTop - section.absoluteRowsTop - V_OVERSCAN_PX;
+            const localVisBottom = scrollTop + viewportHeight - section.absoluteRowsTop + V_OVERSCAN_PX;
+            const visLanes = section.lanes.filter(
+              vl => vl.localTop + 22 > localVisTop && vl.localTop < localVisBottom,
+            );
+
+            return (
+              // Section div has explicit height so sticky headers from later sections
+              // push earlier ones out correctly via normal document flow.
+              <div key={section.category} style={{ height: section.totalHeight }}>
+
+                {/* Category header — sticky within its section */}
                 <div
-                  key={`cat-${item.category}`}
-                  className="flex border-b border-border/60 bg-background cursor-pointer"
+                  className="flex border-b border-border/60 bg-background cursor-pointer sticky top-0 z-20"
                   style={{ height: 24 }}
-                  onClick={() => toggleCategory(item.category)}
+                  onClick={() => toggleCategory(section.category)}
                 >
+                  {/* Label cell — also sticky horizontally */}
                   <div
-                    className="shrink-0 sticky left-0 z-10 flex items-center gap-1.5 px-2 bg-background"
+                    className="shrink-0 sticky left-0 z-[21] flex items-center gap-1.5 px-2 bg-background"
                     style={{ width: labelW }}
                   >
                     {collapsed
                       ? <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                       : <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />}
                     <span className="text-[10px] font-semibold uppercase tracking-wider text-foreground/70">
-                      {CATEGORY_LABELS[item.category]}
+                      {CATEGORY_LABELS[section.category]}
                     </span>
                   </div>
+
+                  {/* Track area */}
                   <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
-                    {tickPositions.map((px) => (
+                    {visibleTicks.map((px) => (
                       <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
                     ))}
                     {collapsed && (() => {
-                      const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70" }[item.category];
-                      const ranges = item.allBars
-                        .map(b => ({ left: realToDisplay(b.startTime), right: Math.max(realToDisplay(b.startTime) + 5, realToDisplay(b.startTime + effectiveDur(b))), isError: b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400), isLive: b.pending && b.access === "allowed" }))
+                      const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70" }[section.category];
+                      const ranges = section.allBars
+                        .map(b => ({
+                          left: realToDisplay(b.startTime),
+                          right: Math.max(realToDisplay(b.startTime) + 5, realToDisplay(b.startTime + effectiveDur(b))),
+                          isError: b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400),
+                          isLive: b.pending && b.access === "allowed",
+                        }))
                         .sort((a, b) => a.left - b.left);
                       const merged: { left: number; right: number; isError: boolean; isLive: boolean }[] = [];
                       for (const r of ranges) {
                         const last = merged[merged.length - 1];
-                        if (last && r.left <= last.right + 2) { last.right = Math.max(last.right, r.right); last.isError = last.isError || r.isError; last.isLive = last.isLive || r.isLive; }
-                        else merged.push({ ...r });
+                        if (last && r.left <= last.right + 2) {
+                          last.right = Math.max(last.right, r.right);
+                          last.isError = last.isError || r.isError;
+                          last.isLive = last.isLive || r.isLive;
+                        } else merged.push({ ...r });
                       }
-                      return merged.map((r, i) => (
-                        <div
-                          key={i}
-                          className={`absolute top-1/2 -translate-y-1/2 h-3 rounded-sm overflow-hidden ${r.isError ? "bg-red-500/70" : r.isLive ? "bg-blue-500/50 border border-blue-400/60" : catColor}`}
-                          style={{ left: r.left, width: r.right - r.left }}
-                        >
-                          {r.isLive && <div className="absolute inset-0 bar-in-flight" />}
-                        </div>
-                      ));
+                      return merged
+                        .filter(r => r.right >= hVisLeft && r.left <= hVisRight)
+                        .map((r, i) => (
+                          <div
+                            key={i}
+                            className={`absolute top-1/2 -translate-y-1/2 h-3 rounded-sm overflow-hidden ${r.isError ? "bg-red-500/70" : r.isLive ? "bg-blue-500/50 border border-blue-400/60" : catColor}`}
+                            style={{ left: r.left, width: r.right - r.left }}
+                          >
+                            {r.isLive && <div className="absolute inset-0 bar-in-flight" />}
+                          </div>
+                        ));
                     })()}
                   </div>
                 </div>
-              );
-            }
 
-            // item.kind === "row"
-            const { row } = item;
-            const lanes = row.isPoint
-              ? [row.bars]
-              : computeLanes(row.bars, realToDisplay, effectiveDur);
-            return (
-              <Fragment key={row.key}>
-                {lanes.map((laneBars, laneIdx) => {
-                  const isLaneSelected = laneBars.some(b => b.id === selectedId);
-                  return (
-                    <div
-                      key={`${row.key}:${laneIdx}`}
-                      ref={laneIdx === 0 ? (el) => { if (el) rowRefMap.current.set(row.key, el); else rowRefMap.current.delete(row.key); } : undefined}
-                      className={`group flex border-b border-border/40 ${isLaneSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
-                      style={{ height: 22 }}
-                    >
-                      <div
-                        className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 cursor-pointer ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
-                        style={{ width: labelW }}
-                        onClick={() => { const first = laneBars[0]; if (first) setSelectedId(first.id === selectedId ? null : first.id); }}
-                      >
-                        <span className={`shrink-0 font-mono font-semibold ${methodClass(row)}`}>
-                          {row.method?.toUpperCase()}
-                        </span>
-                        <span className={`truncate font-mono ${selectedId !== null && isLaneSelected ? "text-white" : "text-muted-foreground"}`}>{row.label}</span>
-                      </div>
-                      <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
-                        {tickPositions.map((px) => (
-                          <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
-                        ))}
-                        {laneBars.map(bar => {
-                          const leftPx = realToDisplay(bar.startTime);
-                          const rightPx = Math.max(leftPx + 1, realToDisplay(bar.startTime + effectiveDur(bar)));
-                          const isSelected = bar.id === selectedId;
-                          const isLive = bar.pending && bar.access === "allowed";
-                          if (row.isPoint) {
-                            return (
-                              <div
-                                key={bar.id}
-                                ref={isSelected ? (el) => { selectedBarRef.current = el; } : undefined}
-                                className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
-                                title={row.label}
-                                onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
-                              />
-                            );
-                          }
-                          return (
-                            <div
-                              key={bar.id}
-                              ref={isSelected ? (el) => { selectedBarRef.current = el; } : undefined}
-                              className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                              style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
-                              onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
-                            >
-                              <div
-                                className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, row.type)}`}
-                                title={isLive ? `in-flight · ${effectiveDur(bar)}ms` : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
-                              >
-                                {isLive && <div className="absolute inset-0 bar-in-flight" />}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </Fragment>
+                {/* Rows area — virtualized via absolute positioning */}
+                {!collapsed && (
+                  <div style={{ position: "relative", height: section.laneCount * 22 }}>
+                    {visLanes.map(vl => {
+                      const isLaneSelected = vl.laneBars.some(b => b.id === selectedId);
+                      return (
+                        <div
+                          key={`${vl.row.key}:${vl.laneIdx}`}
+                          ref={vl.laneIdx === 0 ? (el) => { if (el) rowRefMap.current.set(vl.row.key, el); else rowRefMap.current.delete(vl.row.key); } : undefined}
+                          className={`group flex border-b border-border/40 ${isLaneSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
+                          style={{ position: "absolute", top: vl.localTop, left: 0, right: 0, height: 22 }}
+                        >
+                          {/* Label cell — sticky horizontally */}
+                          <div
+                            className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 cursor-pointer ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
+                            style={{ width: labelW }}
+                            onClick={() => {
+                              const first = vl.laneBars[0];
+                              if (first) setSelectedId(first.id === selectedId ? null : first.id);
+                            }}
+                          >
+                            <span className={`shrink-0 font-mono font-semibold ${methodClass(vl.row)}`}>
+                              {vl.row.method?.toUpperCase()}
+                            </span>
+                            <span className={`truncate font-mono ${selectedId !== null && isLaneSelected ? "text-white" : "text-muted-foreground"}`}>
+                              {vl.row.label}
+                            </span>
+                          </div>
+
+                          {/* Track cell — horizontal virtualization */}
+                          <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
+                            {visibleTicks.map((px) => (
+                              <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
+                            ))}
+                            {vl.laneBars
+                              .filter(bar => {
+                                const l = realToDisplay(bar.startTime);
+                                const r = Math.max(l + 1, realToDisplay(bar.startTime + effectiveDur(bar)));
+                                return r >= hVisLeft && l <= hVisRight;
+                              })
+                              .map(bar => {
+                                const leftPx  = realToDisplay(bar.startTime);
+                                const rightPx = Math.max(leftPx + 1, realToDisplay(bar.startTime + effectiveDur(bar)));
+                                const isSelected = bar.id === selectedId;
+                                const isLive = bar.pending && bar.access === "allowed";
+                                if (vl.row.isPoint) {
+                                  return (
+                                    <div
+                                      key={bar.id}
+                                      className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                      style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
+                                      title={vl.row.label}
+                                      onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
+                                    />
+                                  );
+                                }
+                                return (
+                                  <div
+                                    key={bar.id}
+                                    className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                    style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
+                                    onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
+                                  >
+                                    <div
+                                      className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, vl.row.type)}`}
+                                      title={isLive ? `in-flight · ${effectiveDur(bar)}ms` : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
+                                    >
+                                      {isLive && <div className="absolute inset-0 bar-in-flight" />}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
           })}
           <div ref={bottomRef} />
@@ -870,6 +1003,7 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
                 onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
                 onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
                 applyConfig={applyConfig}
+                onOpenFile={onOpenFile}
               />
             </div>
           </>

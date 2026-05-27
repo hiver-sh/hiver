@@ -1,0 +1,35 @@
+const TEXT_LANGS: Record<string, string> = {
+  md: "markdown", markdown: "markdown",
+  txt: "plaintext", log: "plaintext", csv: "plaintext", env: "plaintext",
+  json: "json", jsonc: "json",
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  ts: "typescript", tsx: "typescript",
+  py: "python",
+  yaml: "yaml", yml: "yaml",
+  html: "html", htm: "html",
+  css: "css", scss: "scss", less: "less",
+  sh: "shell", bash: "shell", zsh: "shell",
+  toml: "ini", ini: "ini",
+  xml: "xml", svg: "xml",
+  sql: "sql",
+  go: "go",
+  rs: "rust",
+  rb: "ruby",
+  php: "php",
+  java: "java",
+  c: "c", h: "cpp", cpp: "cpp", cc: "cpp",
+  cs: "csharp",
+  swift: "swift",
+  kt: "kotlin",
+  r: "r",
+  lua: "lua",
+  dockerfile: "dockerfile",
+};
+
+export function langForPath(path: string): string | null {
+  const name = path.split("/").pop() ?? "";
+  const bare = TEXT_LANGS[name.toLowerCase()];
+  if (bare) return bare;
+  const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+  return TEXT_LANGS[ext] ?? null;
+}

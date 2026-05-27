@@ -5,7 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 export type AnyConfig = Record<string, unknown>;
 type FsEntry = Record<string, unknown>;
 
-type Template = { label: string; apply: (cfg: AnyConfig) => AnyConfig };
+type Template = { label: string; idPrefix?: string; apply: (cfg: AnyConfig) => AnyConfig };
 
 export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
   {
@@ -13,50 +13,75 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
     templates: [
       {
         label: "Claude Code",
+        idPrefix: "claude-code",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
+          env: { AGENT: "claude-code" },
           egress: [
             { host: "*", access: "allow" },
           ],
+          snapshot: {
+            restore_key: "claude-code-agent",
+            include: [ "/home/agent/.claude/*", "/home/agent/.claude.json" ],
+          },
+          ttl: 0,
         }),
       },
       {
         label: "Codex",
+        idPrefix: "codex",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
+          env: { AGENT: "codex" },
           egress: [
             { host: "*", access: "allow" },
           ],
+          snapshot: {
+            restore_key: "codex-agent",
+            include: [ "/home/agent/.codex/*"],
+          },
+          ttl: 0,
         }),
       },
       {
         label: "Gemini CLI",
+        idPrefix: "gemini",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
+          env: { AGENT: "gemini" },
           egress: [
             { host: "*", access: "allow" },
           ],
+          snapshot: {
+            restore_key: "gemini-agent",
+            include: [ "/home/agent/*"],
+          },
+          ttl: 0,
         }),
       },
       {
         label: "GitHub Copilot",
+        idPrefix: "copilot",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { CLAUDE_CODE_OAUTH_TOKEN: "<your-key>" },
+          env: { AGENT: "copilot" },
           egress: [
             { host: "*", access: "allow" },
           ],
+          snapshot: {
+            restore_key: "copilot-agent",
+            include: [ "/home/agent/*"],
+          },
+          ttl: 0,
         }),
       },
       {
         label: "Default",
+        idPrefix: "mcp-server",
         apply: () => ({
           image: "hive-mcp-server-bundle",
           fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] }],
@@ -64,6 +89,10 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           egress: [
             { host: "*", access: "allow" },
           ],
+          snapshot: {
+            restore_key: "mcp-server-agent",
+            include: [ "/home/agent/*"],
+          },
         }),
       },
     ],
@@ -195,9 +224,10 @@ interface Props {
   disabled?: boolean;
   editMode?: boolean;
   onApply: (template: (cfg: AnyConfig) => AnyConfig) => void;
+  onSuggestId?: (id: string) => void;
 }
 
-export function SandboxConfigTemplates({ disabled, editMode, onApply }: Props) {
+export function SandboxConfigTemplates({ disabled, editMode, onApply, onSuggestId }: Props) {
   const [open, setOpen] = useState(false);
   const groups = TEMPLATE_GROUPS;
   return (
@@ -227,7 +257,13 @@ export function SandboxConfigTemplates({ disabled, editMode, onApply }: Props) {
                   type="button"
                   disabled={groupDisabled}
                   className="w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-muted/60 disabled:pointer-events-none disabled:opacity-30"
-                  onClick={() => { onApply(t.apply); setOpen(false); }}
+                  onClick={() => {
+                    onApply(t.apply);
+                    if (t.idPrefix && onSuggestId) {
+                      onSuggestId(`${t.idPrefix}-${Math.random().toString(36).slice(2, 4)}`);
+                    }
+                    setOpen(false);
+                  }}
                 >
                   {t.label}
                 </button>

@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // MountSource maps a container path to its backing host directory.
@@ -116,6 +117,12 @@ func Restore(src, upperDir string, mounts []MountSource) error {
 			if err := os.MkdirAll(target, hdr.FileInfo().Mode()); err != nil {
 				return fmt.Errorf("mkdir %s: %w", target, err)
 			}
+			if err := os.Chmod(target, hdr.FileInfo().Mode()); err != nil {
+				return fmt.Errorf("chmod %s: %w", target, err)
+			}
+			if err := os.Lchown(target, hdr.Uid, hdr.Gid); err != nil {
+				return fmt.Errorf("lchown %s: %w", target, err)
+			}
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf("mkdir parent %s: %w", target, err)
@@ -123,6 +130,9 @@ func Restore(src, upperDir string, mounts []MountSource) error {
 			_ = os.Remove(target)
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return fmt.Errorf("symlink %s: %w", target, err)
+			}
+			if err := os.Lchown(target, hdr.Uid, hdr.Gid); err != nil {
+				return fmt.Errorf("lchown %s: %w", target, err)
 			}
 		default:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -137,6 +147,12 @@ func Restore(src, upperDir string, mounts []MountSource) error {
 				return fmt.Errorf("write %s: %w", target, err)
 			}
 			fh.Close()
+			if err := os.Chmod(target, hdr.FileInfo().Mode()); err != nil {
+				return fmt.Errorf("chmod %s: %w", target, err)
+			}
+			if err := os.Lchown(target, hdr.Uid, hdr.Gid); err != nil {
+				return fmt.Errorf("lchown %s: %w", target, err)
+			}
 		}
 		count++
 	}
@@ -237,6 +253,10 @@ func walkIntoTar(tw *tar.Writer, hostRoot, tarPrefix string) error {
 				Linkname: link,
 				Mode:     int64(info.Mode()),
 				ModTime:  info.ModTime(),
+			}
+			if sys, ok := info.Sys().(*syscall.Stat_t); ok {
+				hdr.Uid = int(sys.Uid)
+				hdr.Gid = int(sys.Gid)
 			}
 		} else {
 			hdr, err = tar.FileInfoHeader(info, "")

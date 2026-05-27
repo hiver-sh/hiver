@@ -50,7 +50,7 @@ fi
 
 # Propagate token and agent selection into SSH sessions
 : > /home/agent/.ssh/environment
-for var in CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY GITHUB_TOKEN MODEL AGENT; do
+for var in CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY GITHUB_TOKEN MODEL AGENT NODE_EXTRA_CA_CERTS; do
   [ -n "${!var}" ] && echo "$var=${!var}" >> /home/agent/.ssh/environment
 done
 
@@ -65,13 +65,31 @@ case "${AGENT:-claude-code}" in
     AGENT_CMD="gemini"
     ;;
   copilot)
-    AGENT_CMD="gh copilot"
+    AGENT_CMD="copilot"
     ;;
   *)
     AGENT_CMD="claude"
     ;;
 esac
 
-su -s /bin/bash agent -c "tmux new-session -d -s claude -x 220 -y 50 \"cd /workspace && $AGENT_CMD\""
+mkdir -p /home/agent/.config/zellij/layouts
+
+cat > /home/agent/.config/zellij/config.kdl << 'EOF'
+pane_frames false
+default_layout "agent"
+show_release_notes false
+show_startup_tips false
+on_force_close "detach"
+EOF
+
+cat > /home/agent/.config/zellij/layouts/agent.kdl << EOF
+layout {
+    pane command="bash" close_on_exit=false {
+        args "-c" "cd /workspace && $AGENT_CMD || exec bash"
+    }
+}
+EOF
+
+chown -R agent:agent /home/agent/.config
 
 exec /usr/sbin/sshd -D

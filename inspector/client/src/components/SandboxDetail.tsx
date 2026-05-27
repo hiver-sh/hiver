@@ -11,7 +11,10 @@ import { TimelineView, EMPTY_FILTER, KIND_OPTIONS, ACCESS_OPTIONS, isFilterActiv
 import type { FilterKind, FilterAccess, FilterState } from "@/components/TimelineView";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { CodeViewer } from "@/components/CodeViewer";
 import { cn } from "@/lib/utils";
+import { langForPath } from "@/lib/fileUtils";
 import type { SandboxEvent, SandboxRef } from "@/types";
 
 interface Props {
@@ -80,6 +83,19 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   }, [terminalWidth]);
   const contentRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [filePreview, setFilePreview] = useState<{ path: string; content: string; lang: string } | null>(null);
+
+  const openFile = useCallback(async (path: string) => {
+    const lang = langForPath(path);
+    if (!lang) return;
+    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/file`);
+    url.searchParams.set("path", path);
+    url.searchParams.set("controller", controllerUrl);
+    try {
+      const content = await fetch(url).then((r) => r.text());
+      setFilePreview({ path, content, lang });
+    } catch { /* ignore */ }
+  }, [sandbox.id, serverUrl, controllerUrl]);
 
   const proposePolicy = useCallback(async (updater: (cfg: Record<string, unknown>) => Record<string, unknown>) => {
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/config`);
@@ -347,7 +363,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} />
+              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} onOpenFile={openFile} />
             </div>
           </div>
         )}
@@ -396,6 +412,19 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           </>
         )}
       </div>
+
+      <Dialog open={filePreview !== null} onOpenChange={(open) => { if (!open) setFilePreview(null); }}>
+        <DialogContent className="max-w-4xl">
+          <div className="pr-6">
+            <DialogTitle className="truncate font-mono text-sm font-normal text-muted-foreground">
+              {filePreview?.path}
+            </DialogTitle>
+          </div>
+          <div className="h-[55vh] overflow-hidden rounded-md border border-border">
+            {filePreview && <CodeViewer content={filePreview.content} lang={filePreview.lang} />}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <SandboxConfigDialog
         sandboxId={sandbox.id}
