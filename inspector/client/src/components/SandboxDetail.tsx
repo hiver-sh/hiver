@@ -92,6 +92,11 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     setShowConfig(true);
   }, [sandbox.id, serverUrl, controllerUrl]);
 
+  const fsWriteEvents = useMemo(
+    () => events.filter(e => e.type === "fs.request" && e.operation === "write"),
+    [events],
+  );
+
   const rows = useMemo(() => buildRows(events), [events]);
   const filteredRows = useMemo(() => applyFilter(rows, filter), [rows, filter]);
 
@@ -385,6 +390,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                 sandboxId={sandbox.id}
                 serverUrl={serverUrl}
                 controllerUrl={controllerUrl}
+                events={fsWriteEvents}
               />
             </div>
           </>

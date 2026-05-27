@@ -260,7 +260,7 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
   return out;
 }
 
-const LABEL_W = 220;
+const DEFAULT_labelW = 220;
 
 // ─── category grouping ───────────────────────────────────────────────────────
 
@@ -369,6 +369,14 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     localStorage.setItem("timeline:panelHeight", String(panelHeight));
   }, [panelHeight]);
 
+  const [labelW, setLabelW] = useState(
+    () => parseInt(localStorage.getItem("timeline:labelW") ?? String(DEFAULT_labelW), 10),
+  );
+
+  useEffect(() => {
+    localStorage.setItem("timeline:labelW", String(labelW));
+  }, [labelW]);
+
   const [collapsedCategories, setCollapsedCategories] = useState<Set<Category>>(() => {
     try {
       const saved = localStorage.getItem("timeline:collapsedCategories");
@@ -416,7 +424,7 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     const curLeft = scrollEl.scrollLeft;
 
     const hiddenV = barRect.top < scrollRect.top || barRect.bottom > scrollRect.bottom;
-    const hiddenH = barRect.left < scrollRect.left + LABEL_W || barRect.right > scrollRect.right;
+    const hiddenH = barRect.left < scrollRect.left + labelW || barRect.right > scrollRect.right;
 
     if (!hiddenV && !hiddenH) return;
 
@@ -424,7 +432,7 @@ export function TimelineView({ events, filter, applyConfig }: { events: SandboxE
     const barCenterH = (barRect.left - scrollRect.left) + curLeft + barRect.width  / 2;
 
     if (hiddenV) scrollEl.scrollTop = Math.max(0, barCenterV - scrollRect.height / 2);
-    if (hiddenH) scrollEl.scrollLeft = Math.max(0, barCenterH - LABEL_W - (scrollRect.width - LABEL_W) / 2);
+    if (hiddenH) scrollEl.scrollLeft = Math.max(0, barCenterH - labelW - (scrollRect.width - labelW) / 2);
   }, []);
 
   useEffect(() => {
@@ -633,12 +641,45 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
     document.addEventListener("mouseup", onUp);
   }
 
+  function startLabelDrag(e: React.MouseEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = labelW;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function onMove(ev: MouseEvent) {
+      setLabelW(Math.max(120, Math.min(startW + ev.clientX - startX, 480)));
+    }
+
+    function onUp() {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
   return (
     <div ref={containerRef} className="flex flex-col h-full">
+      <div className="relative flex flex-col min-h-0 flex-1">
+
+      {/* Label column splitter */}
+      <div
+        className="absolute top-0 bottom-0 z-30 w-[5px] cursor-col-resize group/lsplit"
+        style={{ left: labelW - 2 }}
+        onMouseDown={startLabelDrag}
+      >
+        <div className="absolute inset-y-0 left-[2px] w-px bg-transparent group-hover/lsplit:bg-border transition-colors" />
+      </div>
 
       {/* Sticky ruler — scrolled programmatically to match rows */}
       <div className="shrink-0 text-xs cursor-default select-none border-b border-border">
-        <div className="flex" style={{ paddingLeft: LABEL_W }}>
+        <div className="flex" style={{ paddingLeft: labelW }}>
           <div ref={trackRef} className="flex-1 overflow-hidden">
             <div className="group/ruler relative h-6" style={{ width: contentTrackWidth }}>
               {/* Compressed-gap indicators */}
@@ -679,7 +720,7 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
         className="timeline-scroll min-h-0 flex-1 overflow-auto text-xs cursor-default select-none"
         onScroll={syncRuler}
       >
-        <div className="relative" style={{ width: LABEL_W + contentTrackWidth }}>
+        <div className="relative" style={{ width: labelW + contentTrackWidth }}>
           {displayItems.map((item) => {
             if (item.kind === "category") {
               const collapsed = collapsedCategories.has(item.category);
@@ -692,7 +733,7 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
                 >
                   <div
                     className="shrink-0 sticky left-0 z-10 flex items-center gap-1.5 px-2 bg-background"
-                    style={{ width: LABEL_W }}
+                    style={{ width: labelW }}
                   >
                     {collapsed
                       ? <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -749,8 +790,8 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
                     >
                       <div
                         className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 cursor-pointer ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
-                        style={{ width: LABEL_W }}
-                        onClick={() => { const first = laneBars[0]; if (first) setSelectedId(first.id); }}
+                        style={{ width: labelW }}
+                        onClick={() => { const first = laneBars[0]; if (first) setSelectedId(first.id === selectedId ? null : first.id); }}
                       >
                         <span className={`shrink-0 font-mono font-semibold ${methodClass(row)}`}>
                           {row.method?.toUpperCase()}
@@ -805,6 +846,8 @@ const contentTrackWidth = fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitS
           <div ref={bottomRef} />
         </div>
       </div>
+
+      </div>{/* end timeline area */}
 
       {selectedBar && (
         panelCollapsed ? (

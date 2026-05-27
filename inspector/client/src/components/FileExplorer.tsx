@@ -1,8 +1,9 @@
 import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Loader2, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { CodeViewer } from "@/components/CodeViewer";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import type { SandboxEvent } from "@/types";
 
 // Extensions that open in the Monaco viewer; all others trigger a download.
 const TEXT_LANGS: Record<string, string> = {
@@ -65,6 +66,7 @@ interface Props {
   sandboxId: string;
   serverUrl: string;
   controllerUrl: string;
+  events: Extract<SandboxEvent, { type: "fs.request" }>[];
 }
 
 function updateNode(
@@ -105,12 +107,33 @@ function toNodes(entries: DirEntry[]): TreeNode[] {
     .map((e) => ({ ...e, children: null, expanded: false, loading: false }));
 }
 
-export function FileExplorer({ sandboxId, serverUrl, controllerUrl }: Props) {
+
+function collectExpandedUnder(nodes: TreeNode[], mount: string, out: Set<string>) {
+  for (const n of nodes) {
+    if (!n.is_dir || !n.expanded || !n.children) continue;
+    if (n.path === mount || n.path.startsWith(mount + "/")) out.add(n.path);
+    collectExpandedUnder(n.children, mount, out);
+  }
+}
+
+function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
+  return newNodes.map(newNode => {
+    const old = oldNodes.find(o => o.path === newNode.path);
+    if (!old || !old.expanded || !old.children) return newNode;
+    return { ...newNode, expanded: true, children: old.children };
+  });
+}
+
+export function FileExplorer({ sandboxId, serverUrl, controllerUrl, events }: Props) {
   const [roots, setRoots] = useState<TreeNode[]>([]);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
+  const rootsRef = useRef<TreeNode[]>([]);
+  const lastProcessedIdxRef = useRef(0);
+  const pendingDirsRef = useRef<Set<string>>(new Set());
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fileUrl = useCallback(
     (path: string) => {
@@ -141,8 +164,35 @@ export function FileExplorer({ sandboxId, serverUrl, controllerUrl }: Props) {
     setConfigLoading(true);
     setConfigError(null);
     try {
-      const nodes = await fetchChildren("/");
-      setRoots(nodes);
+      const expandedPaths: string[] = [];
+      function collectExpanded(nodes: TreeNode[]) {
+        for (const n of nodes) {
+          if (n.expanded && n.children) {
+            expandedPaths.push(n.path);
+            collectExpanded(n.children);
+          }
+        }
+      }
+      collectExpanded(rootsRef.current);
+
+      const allPaths = ["/", ...expandedPaths];
+      const results = await Promise.all(
+        allPaths.map(p => fetchChildren(p).then(nodes => ({ path: p, nodes })).catch(() => null)),
+      );
+      const freshByPath = new Map(results.filter(r => r !== null).map(r => [r.path, r.nodes]));
+
+      function buildTree(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
+        return newNodes.map(newNode => {
+          const old = oldNodes.find(o => o.path === newNode.path);
+          if (!old?.expanded) return newNode;
+          const freshChildren = freshByPath.get(newNode.path);
+          const children = freshChildren ? buildTree(freshChildren, old.children ?? []) : old.children;
+          return { ...newNode, expanded: true, children: children ?? null };
+        });
+      }
+
+      const rootNodes = freshByPath.get("/") ?? rootsRef.current;
+      setRoots(prev => buildTree(rootNodes, prev));
     } catch (e) {
       setConfigError(String(e));
     } finally {
@@ -151,6 +201,39 @@ export function FileExplorer({ sandboxId, serverUrl, controllerUrl }: Props) {
   }, [fetchChildren]);
 
   useEffect(() => { loadMounts(); }, [loadMounts]);
+
+  useEffect(() => { rootsRef.current = roots; }, [roots]);
+
+  useEffect(() => {
+    // Reset index when events are cleared
+    if (events.length < lastProcessedIdxRef.current) {
+      lastProcessedIdxRef.current = 0;
+    }
+    if (events.length <= lastProcessedIdxRef.current) return;
+
+    const newEvents = events.slice(lastProcessedIdxRef.current);
+    lastProcessedIdxRef.current = events.length;
+
+    for (const event of newEvents) {
+      if (event.operation !== "write" || event.access !== "allowed") continue;
+      collectExpandedUnder(rootsRef.current, event.mount, pendingDirsRef.current);
+    }
+
+    if (pendingDirsRef.current.size === 0) return;
+
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      const dirs = new Set(pendingDirsRef.current);
+      pendingDirsRef.current.clear();
+      refreshTimerRef.current = null;
+
+      for (const dir of dirs) {
+        fetchChildren(dir).then(children => {
+          setRoots(prev => updateNode(prev, dir, n => ({ ...n, children: mergeExpanded(children, n.children ?? []) })));
+        }).catch(() => {});
+      }
+    }, 400);
+  }, [events, fetchChildren]);
 
   async function toggle(path: string) {
     const node = findNode(roots, path);
