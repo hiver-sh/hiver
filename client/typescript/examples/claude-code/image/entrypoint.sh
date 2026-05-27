@@ -50,7 +50,7 @@ fi
 
 # Propagate token and agent selection into SSH sessions
 : > /home/agent/.ssh/environment
-for var in CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY MODEL AGENT; do
+for var in CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY MODEL AGENT; do
   [ -n "${!var}" ] && echo "$var=${!var}" >> /home/agent/.ssh/environment
 done
 
@@ -60,6 +60,9 @@ chmod 600 /home/agent/.ssh/environment
 case "${AGENT:-claude-code}" in
   codex)
     AGENT_CMD="codex"
+    ;;
+  gemini)
+    AGENT_CMD="gemini"
     ;;
   *)
     AGENT_CMD="claude"

@@ -5,6 +5,8 @@
 //
 // For codex: run with: OPENAI_API_KEY='<key>' AGENT=codex npx tsx examples/claude-code
 //
+// For gemini: run with: GEMINI_API_KEY='<key>' AGENT=gemini npx tsx examples/claude-code
+//
 // For repro-cf: run with: AGENT=repro-cf npx tsx examples/claude-code
 //   Reads auth from ~/.codex/auth.json and ~/.codex/installation_id
 import { spawn } from "node:child_process";
@@ -19,19 +21,14 @@ const agent = process.env.AGENT ?? "claude-code";
 const model = process.env.MODEL;
 const claudeOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const openaiApiKey = process.env.OPENAI_API_KEY;
+const geminiApiKey = process.env.GEMINI_API_KEY;
 
-if (agent === "repro-cf") {
-  // auth loaded from ~/.codex/ below
-} else if (agent === "codex") {
-  if (!openaiApiKey) {
-    console.error("OPENAI_API_KEY is required when AGENT=codex");
-    process.exit(1);
-  }
+if (agent === "codex") {
+  // OPENAI_API_KEY is optional; codex CLI supports browser-based OAuth
+} else if (agent === "gemini") {
+  // GEMINI_API_KEY is optional; gemini CLI supports browser-based OAuth
 } else {
-  if (!claudeOAuthToken) {
-    console.error("CLAUDE_CODE_OAUTH_TOKEN is not set");
-    process.exit(1);
-  }
+  // CLAUDE_CODE_OAUTH_TOKEN is optional; claude CLI supports browser-based OAuth
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +48,7 @@ if (agent === "repro-cf") {
   sandboxEnv = {};
 
   console.log(`> Building image ${sourceImage}`);
-  // await buildImage(sourceImage, join(here, "image-2"));
+  await buildImage(sourceImage, join(here, "image-2"));
 } else {
   sourceImage = "hive-example-claude-worker";
   imageTag = "hive-example-claude-worker-bundle";
@@ -61,14 +58,15 @@ if (agent === "repro-cf") {
     ...(model && { MODEL: model }),
     ...(claudeOAuthToken && { CLAUDE_CODE_OAUTH_TOKEN: claudeOAuthToken }),
     ...(openaiApiKey && { OPENAI_API_KEY: openaiApiKey }),
+    ...(geminiApiKey && { GEMINI_API_KEY: geminiApiKey }),
   };
 
   console.log(`> Building image ${sourceImage}`);
-  // await buildImage(sourceImage, join(here, "image"));
+  await buildImage(sourceImage, join(here, "image"));
 }
 
 console.log(`> Building sandbox bundle ${imageTag}`);
-// await buildBundle(scriptPath, sourceImage, imageTag);
+await buildBundle(scriptPath, sourceImage, imageTag);
 
 console.log("> Starting sandbox");
 const sandbox = await hive.getOrCreateSandbox(sandboxName, {
@@ -83,12 +81,12 @@ const sandbox = await hive.getOrCreateSandbox(sandboxName, {
     },
   ],
   egress: [{ access: "allow", host: "*" }],
-  snapshot: {
-    restore_key: sandboxName,
-    include: [
-      "/home/agent/*"
-    ],
-  }
+  // snapshot: {
+  //   restore_key: sandboxName,
+  //   include: [
+  //     "/home/agent/*"
+  //   ],
+  // }
 });
 
 const { shutdown } = createShutdown(sandbox);
