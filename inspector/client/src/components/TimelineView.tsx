@@ -93,10 +93,9 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
         rawEvents: res ? [event, res] : [event],
       });
     } else if (event.type === "stdio") {
-      const text = (event.stdout ?? event.stderr ?? "").trimEnd();
       const method = event.stderr ? "err" : "out";
-      const key = `stdio:${event.id}`;
-      const row = getOrCreateRow(key, "stdio", text.slice(0, 120), method, true);
+      const key = `stdio:${method}`;
+      const row = getOrCreateRow(key, "stdio", method === "err" ? "stderr" : "stdout", method, true);
       row.bars.push({
         id: event.id,
         startTime: new Date(event.timestamp).getTime(),
@@ -673,9 +672,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
     } else {
       const section = vsections[vsections.length - 1];
       if (section && !section.collapsed) {
-        const lanes = item.row.isPoint
-          ? [item.row.bars]
-          : computeLanes(item.row.bars, realToDisplay, effectiveDur);
+        const lanes = computeLanes(item.row.bars, realToDisplay, effectiveDur);
         for (let li = 0; li < lanes.length; li++) {
           section.lanes.push({
             row: item.row,
@@ -804,7 +801,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                     className={`absolute top-0 flex flex-col transition-opacity group-has-[.gap-indicator:hover]/ruler:opacity-0 ${isLast ? "items-end" : isFirst ? "items-start" : "items-center"}`}
                     style={isFirst ? { left: 0 } : isLast ? { right: 0 } : { left: px, transform: "translateX(-50%)" }}
                   >
-                    <span className="whitespace-nowrap text-muted-foreground">{humanDuration(displayToReal(px) - minTime)}</span>
+                    <span className="whitespace-nowrap text-muted-foreground">{humanDuration(displayToReal(isLast ? contentTrackWidth : px) - minTime)}</span>
                     <div className="h-1.5 w-px bg-border" />
                   </div>
                 );
