@@ -129,6 +129,8 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
 }
 
 
+const LANE_GAP_PX = 1;
+
 function computeLanes(
   bars: TimelineBar[],
   toDisplay: (t: number) => number,
@@ -140,10 +142,10 @@ function computeLanes(
   const laneRightPx: number[] = [];
   for (const bar of sorted) {
     const leftPx = toDisplay(bar.startTime);
-    const rightPx = Math.max(leftPx + 1, toDisplay(bar.startTime + effectiveDurFn(bar)));
+    const rightPx = Math.max(leftPx + 2, toDisplay(bar.startTime + effectiveDurFn(bar)));
     let placed = false;
     for (let i = 0; i < lanes.length; i++) {
-      if (laneRightPx[i] + 1 <= leftPx) {
+      if (laneRightPx[i] + LANE_GAP_PX <= leftPx) {
         lanes[i].push(bar);
         laneRightPx[i] = rightPx;
         placed = true;
@@ -154,6 +156,7 @@ function computeLanes(
   }
   return lanes;
 }
+
 
 function barClass(bar: TimelineBar, type: "egress" | "fs" | "stdio"): string {
   if (bar.pending) return "bg-muted-foreground/40 border border-dashed border-muted-foreground/60";
@@ -355,7 +358,7 @@ interface VSection {
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
-export function TimelineView({ events, filter, applyConfig, onOpenFile }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void }) {
+export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void }) {
   const rows = useMemo(() => buildRows(events), [events]);
 
   const hasLive = rows.some((r) => r.bars.some(b => b.pending && b.access === "allowed"));
@@ -401,6 +404,27 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
   useEffect(() => {
     localStorage.setItem("timeline:collapsedCategories", JSON.stringify([...collapsedCategories]));
   }, [collapsedCategories]);
+
+  const [dragSel, setDragSel] = useState<{ startPx: number; endPx: number } | null>(null);
+  const rulerDragRef = useRef<{ startPx: number } | null>(null);
+  const dragHappenedRef = useRef(false);
+  const targetScrollLeftRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!zoomWindow) return;
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") setZoomWindow(null); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [zoomWindow]);
+
+  useEffect(() => {
+    if (zoomWindow == null) return;
+    requestAnimationFrame(() => {
+      const scrollTo = targetScrollLeftRef.current;
+      if (rowsScrollRef.current) { rowsScrollRef.current.scrollLeft = scrollTo; setScrollLeft(scrollTo); }
+      if (trackRef.current) trackRef.current.scrollLeft = scrollTo;
+    });
+  }, [zoomWindow]);
 
   // Virtual scroll state
   const [scrollTop, setScrollTop] = useState(0);
@@ -645,10 +669,100 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
     return segments.length > 0 ? segments[segments.length - 1].realEnd : minTime;
   }
 
+  // ─── Zoom transform ───────────────────────────────────────────────────────
+  let toDisplay: (t: number) => number;
+  let fromDisplay: (px: number) => number;
+  let effectiveTrackWidth: number;
+
+  if (zoomWindow) {
+    const zDispStart = realToDisplay(Math.max(minTime, zoomWindow.realStart));
+    const zDispEnd = realToDisplay(Math.min(rightEdge, zoomWindow.realEnd));
+    const zSpan = Math.max(1, zDispEnd - zDispStart);
+    const scale = trackWidth / zSpan;
+    toDisplay = (t: number) => realToDisplay(t) * scale;
+    fromDisplay = (px: number) => displayToReal(px / scale);
+    effectiveTrackWidth = Math.ceil(contentTrackWidth * scale);
+    targetScrollLeftRef.current = zDispStart * scale;
+  } else {
+    toDisplay = realToDisplay;
+    fromDisplay = displayToReal;
+    effectiveTrackWidth = contentTrackWidth;
+  }
+
+  function startDrag(startPx: number, immediate: boolean) {
+    rulerDragRef.current = { startPx };
+    dragHappenedRef.current = false;
+    let dragging = immediate;
+    if (immediate) setDragSel({ startPx, endPx: startPx });
+
+    function onMove(ev: MouseEvent) {
+      if (!rulerDragRef.current || !trackRef.current) return;
+      const r = trackRef.current.getBoundingClientRect();
+      const curSl = rowsScrollRef.current?.scrollLeft ?? 0;
+      const curPx = ev.clientX - r.left + curSl;
+      if (!dragging && Math.abs(curPx - rulerDragRef.current.startPx) > 5) {
+        dragging = true;
+        dragHappenedRef.current = true;
+        document.body.style.cursor = "crosshair";
+        document.body.style.userSelect = "none";
+      }
+      if (dragging) setDragSel({ startPx: rulerDragRef.current.startPx, endPx: curPx });
+    }
+
+    function onUp(ev: MouseEvent) {
+      if (!trackRef.current) return;
+      if (dragging && rulerDragRef.current) {
+        const r = trackRef.current.getBoundingClientRect();
+        const curSl = rowsScrollRef.current?.scrollLeft ?? 0;
+        const endPx = ev.clientX - r.left + curSl;
+        const minPx = Math.min(rulerDragRef.current.startPx, endPx);
+        const maxPx = Math.max(rulerDragRef.current.startPx, endPx);
+        if (maxPx - minPx > 5) {
+          setZoomWindow({ realStart: fromDisplay(minPx), realEnd: fromDisplay(maxPx) });
+        }
+      }
+      rulerDragRef.current = null;
+      setDragSel(null);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setTimeout(() => { dragHappenedRef.current = false; }, 0);
+    }
+
+    if (immediate) {
+      document.body.style.cursor = "crosshair";
+      document.body.style.userSelect = "none";
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function onRulerMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    const trackEl = trackRef.current;
+    if (!trackEl) return;
+    e.preventDefault();
+    const rect = trackEl.getBoundingClientRect();
+    const sl = rowsScrollRef.current?.scrollLeft ?? 0;
+    startDrag(e.clientX - rect.left + sl, true);
+  }
+
+  function onRowsMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    const trackEl = trackRef.current;
+    if (!trackEl) return;
+    const rect = trackEl.getBoundingClientRect();
+    if (e.clientX < rect.left) return;
+    e.preventDefault();
+    const sl = rowsScrollRef.current?.scrollLeft ?? 0;
+    startDrag(e.clientX - rect.left + sl, false);
+  }
+
   const tickPositions = Array.from(
-    { length: Math.floor(contentTrackWidth / 100) + 1 },
+    { length: Math.floor(effectiveTrackWidth / 100) + 1 },
     (_, i) => i * 100,
-  ).filter(px => !segments.some(s => s.isGap && px > s.dispStart && px < s.dispEnd));
+  ).filter(px => zoomWindow != null || !segments.some(s => s.isGap && px > s.dispStart && px < s.dispEnd));
 
   // ─── Build virtual sections ───────────────────────────────────────────────
 
@@ -672,7 +786,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
     } else {
       const section = vsections[vsections.length - 1];
       if (section && !section.collapsed) {
-        const lanes = computeLanes(item.row.bars, realToDisplay, effectiveDur);
+        const lanes = computeLanes(item.row.bars, toDisplay, effectiveDur);
         for (let li = 0; li < lanes.length; li++) {
           section.lanes.push({
             row: item.row,
@@ -693,7 +807,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
   }
 
   // Update ref so callbacks can access current render values
-  computedRef.current = { vsections, realToDisplay, effectiveDur, labelW };
+  computedRef.current = { vsections, realToDisplay: toDisplay, effectiveDur, labelW };
 
   // ─── Visibility windows ───────────────────────────────────────────────────
 
@@ -780,8 +894,13 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
       <div className="shrink-0 text-xs cursor-default select-none border-b border-border">
         <div className="flex" style={{ paddingLeft: labelW }}>
           <div ref={trackRef} className="flex-1 overflow-hidden">
-            <div className="group/ruler relative h-6" style={{ width: contentTrackWidth }}>
-              {segments.filter(s => s.isGap).map((seg, i) => (
+            <div
+              className="group/ruler relative h-6"
+              style={{ width: effectiveTrackWidth }}
+              onMouseDown={onRulerMouseDown}
+              onDoubleClick={() => setZoomWindow(null)}
+            >
+              {!zoomWindow && segments.filter(s => s.isGap).map((seg, i) => (
                 <div
                   key={`gap-${i}`}
                   className="gap-indicator group/gap absolute top-0 bottom-0 flex items-center justify-center border-x border-dashed border-zinc-500/30 bg-zinc-500/10 hover:bg-zinc-500/20 transition-colors"
@@ -801,11 +920,19 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                     className={`absolute top-0 flex flex-col transition-opacity group-has-[.gap-indicator:hover]/ruler:opacity-0 ${isLast ? "items-end" : isFirst ? "items-start" : "items-center"}`}
                     style={isFirst ? { left: 0 } : isLast ? { right: 0 } : { left: px, transform: "translateX(-50%)" }}
                   >
-                    <span className="whitespace-nowrap text-muted-foreground">{humanDuration(displayToReal(isLast ? contentTrackWidth : px) - minTime)}</span>
+                    <span className="whitespace-nowrap text-muted-foreground">{humanDuration(fromDisplay(isLast ? effectiveTrackWidth : px) - minTime)}</span>
                     <div className="h-1.5 w-px bg-border" />
                   </div>
                 );
               })}
+              {dragSel && (
+                <>
+                  <div className="absolute top-0 bottom-0 left-0 bg-black/75 pointer-events-none z-50"
+                    style={{ width: Math.min(dragSel.startPx, dragSel.endPx) }} />
+                  <div className="absolute top-0 bottom-0 right-0 bg-black/75 pointer-events-none z-50"
+                    style={{ left: Math.max(dragSel.startPx, dragSel.endPx) }} />
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -816,9 +943,10 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
         ref={rowsScrollRef}
         className="timeline-scroll min-h-0 flex-1 overflow-auto text-xs cursor-default select-none"
         onScroll={onScroll}
+        onMouseDown={onRowsMouseDown}
       >
         {/* Width wrapper — sections stack here in normal document flow */}
-        <div style={{ width: labelW + contentTrackWidth }}>
+        <div style={{ width: labelW + effectiveTrackWidth }}>
           {vsections.map(section => {
             const collapsed = section.collapsed;
 
@@ -854,7 +982,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                   </div>
 
                   {/* Track area */}
-                  <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
+                  <div className="relative self-stretch overflow-hidden" style={{ width: effectiveTrackWidth }}>
                     {visibleTicks.map((px) => (
                       <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
                     ))}
@@ -862,8 +990,8 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                       const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70" }[section.category];
                       const ranges = section.allBars
                         .map(b => ({
-                          left: realToDisplay(b.startTime),
-                          right: Math.max(realToDisplay(b.startTime) + 5, realToDisplay(b.startTime + effectiveDur(b))),
+                          left: toDisplay(b.startTime),
+                          right: Math.max(toDisplay(b.startTime) + 5, toDisplay(b.startTime + effectiveDur(b))),
                           isError: b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400),
                           isLive: b.pending && b.access === "allowed",
                         }))
@@ -909,6 +1037,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                             className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 cursor-pointer ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
                             style={{ width: labelW }}
                             onClick={() => {
+                              if (dragHappenedRef.current) return;
                               const first = vl.laneBars[0];
                               if (first) setSelectedId(first.id === selectedId ? null : first.id);
                             }}
@@ -922,19 +1051,22 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                           </div>
 
                           {/* Track cell — horizontal virtualization */}
-                          <div className="relative self-stretch overflow-hidden" style={{ width: contentTrackWidth }}>
+                          <div
+                            className="relative self-stretch overflow-hidden"
+                            style={{ width: effectiveTrackWidth }}
+                          >
                             {visibleTicks.map((px) => (
                               <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
                             ))}
                             {vl.laneBars
                               .filter(bar => {
-                                const l = realToDisplay(bar.startTime);
-                                const r = Math.max(l + 1, realToDisplay(bar.startTime + effectiveDur(bar)));
+                                const l = toDisplay(bar.startTime);
+                                const r = Math.max(l + 1, toDisplay(bar.startTime + effectiveDur(bar)));
                                 return r >= hVisLeft && l <= hVisRight;
                               })
                               .map(bar => {
-                                const leftPx  = realToDisplay(bar.startTime);
-                                const rightPx = Math.max(leftPx + 1, realToDisplay(bar.startTime + effectiveDur(bar)));
+                                const leftPx  = toDisplay(bar.startTime);
+                                const rightPx = Math.max(leftPx + 1, toDisplay(bar.startTime + effectiveDur(bar)));
                                 const isSelected = bar.id === selectedId;
                                 const isLive = bar.pending && bar.access === "allowed";
                                 if (vl.row.isPoint) {
@@ -944,7 +1076,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                                       className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
                                       style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
                                       title={vl.row.label}
-                                      onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
+                                      onClick={() => { if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
                                     />
                                   );
                                 }
@@ -953,7 +1085,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
                                     key={bar.id}
                                     className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
                                     style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
-                                    onClick={() => setSelectedId(bar.id === selectedId ? null : bar.id)}
+                                    onClick={() => { if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
                                   >
                                     <div
                                       className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, vl.row.type)}`}
@@ -977,6 +1109,14 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile }: { even
         </div>
       </div>
 
+      {dragSel && (
+        <>
+          <div className="pointer-events-none absolute top-0 bottom-0 bg-black/75 z-50"
+            style={{ left: 0, width: Math.max(0, labelW + Math.min(dragSel.startPx, dragSel.endPx) - scrollLeft) }} />
+          <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-black/75 z-50"
+            style={{ left: labelW + Math.max(dragSel.startPx, dragSel.endPx) - scrollLeft }} />
+        </>
+      )}
       </div>{/* end timeline area */}
 
       {selectedBar && (

@@ -31,6 +31,8 @@ export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown, o
   useEffect(() => { onConnectedChange?.(connected); }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
 const [shutdownLoading, setShutdownLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
+  const [zoomWindow, setZoomWindow] = useState<{ realStart: number; realEnd: number } | null>(null);
+
   const [filter, setFilter] = useState<FilterState>(() => {
     const kind = searchParams.get("filter-kind") ?? "all";
     const access = searchParams.get("filter-access") ?? "all";
@@ -274,13 +276,22 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
         {showTimeline && (
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
             {/* Toolbar: event count + filter + clear */}
-            <div className="flex items-center justify-between px-5 py-1.5 text-xs text-muted-foreground border-b border-border">
+            <div className="relative flex items-center justify-between px-5 py-1.5 text-xs text-muted-foreground border-b border-border">
               <span>
                 {isFilterActive(filter)
                   ? <>{filteredTotalBars} <span className="text-muted-foreground/40">/ {totalBars}</span></>
                   : totalBars
                 }{" "}event{totalBars !== 1 ? "s" : ""}
               </span>
+              {zoomWindow && (
+                <button
+                  className="absolute left-1/2 -translate-x-1/2 text-[11px] text-muted-foreground bg-muted/40 hover:bg-muted/70 border border-border rounded px-2 py-0.5 transition-colors"
+                  onClick={() => setZoomWindow(null)}
+                  title="Reset zoom (Esc)"
+                >
+                  × reset zoom
+                </button>
+              )}
               <div className="flex items-stretch gap-3">
                 <Popover>
                   <PopoverTrigger asChild>
@@ -363,7 +374,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} onOpenFile={openFile} />
+              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} onOpenFile={openFile} zoomWindow={zoomWindow} setZoomWindow={setZoomWindow} />
             </div>
           </div>
         )}

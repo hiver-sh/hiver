@@ -496,7 +496,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                   <span className="text-muted-foreground/70 select-text">path</span>
                   {onOpenFile && (req.operation === "read" || req.operation === "write") ? (
                     <button
-                      className="font-mono break-all select-text text-left text-blue-400 hover:underline"
+                      className="font-mono break-all select-text text-left"
                       onClick={() => onOpenFile(req.path)}
                     >
                       {req.path}
