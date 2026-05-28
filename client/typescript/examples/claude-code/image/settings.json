@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "defaultMode": "bypassPermissions"
-  },
-  "theme": "dark-ansi",
-  "autoUpdatesChannel": "stable",
-  "cleanupPeriodDays": 1,
-  "skipDangerousModePermissionPrompt": true
-}

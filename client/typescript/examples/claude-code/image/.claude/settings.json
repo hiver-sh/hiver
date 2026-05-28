@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "theme": "dark-ansi",
+  "autoUpdatesChannel": "stable",
+  "cleanupPeriodDays": 1,
+  "skipDangerousModePermissionPrompt": true,
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/agent/.claude/hooks/notify-hook.js"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -11,6 +11,8 @@
 //
 // For repro-cf: run with: AGENT=repro-cf npx tsx examples/claude-code
 //   Reads auth from ~/.codex/auth.json and ~/.codex/installation_id
+//
+// Set PROMPT='<text>' to seed the agent with an initial prompt on launch.
 import { spawn } from "node:child_process";
 import { writeFile, unlink } from "node:fs/promises";
 import { join, dirname } from "node:path";
@@ -21,6 +23,7 @@ import { createShutdown } from "../shutdown.js";
 
 const agent = process.env.AGENT ?? "claude-code";
 const model = process.env.MODEL;
+const prompt = process.env.PROMPT;
 const claudeOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -59,6 +62,7 @@ if (agent === "repro-cf") {
   sandboxEnv = {
     AGENT: agent,
     ...(model && { MODEL: model }),
+    ...(prompt && { PROMPT: prompt }),
     ...(claudeOAuthToken && { CLAUDE_CODE_OAUTH_TOKEN: claudeOAuthToken }),
     ...(openaiApiKey && { OPENAI_API_KEY: openaiApiKey }),
     ...(geminiApiKey && { GEMINI_API_KEY: geminiApiKey }),
