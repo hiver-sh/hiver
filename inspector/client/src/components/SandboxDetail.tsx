@@ -93,23 +93,23 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     if (!lang) return;
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/file`);
     url.searchParams.set("path", path);
-    url.searchParams.set("controller", controllerUrl);
+    url.searchParams.set("sandboxUrl", sandbox.endpoint);
     try {
       const content = await fetch(url).then((r) => r.text());
       setFilePreview({ path, content, lang });
     } catch { /* ignore */ }
-  }, [sandbox.id, serverUrl, controllerUrl]);
+  }, [sandbox.id, sandbox.endpoint, serverUrl]);
 
   const proposePolicy = useCallback(async (updater: (cfg: Record<string, unknown>) => Record<string, unknown>) => {
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/config`);
-    url.searchParams.set("controller", controllerUrl);
+    url.searchParams.set("sandboxUrl", sandbox.endpoint);
     const current = await fetch(url).then((r) => r.json() as Promise<Record<string, unknown>>);
     setConfigProposal({
       current: JSON.stringify(current, null, 2),
       proposed: JSON.stringify(updater(current), null, 2),
     });
     setShowConfig(true);
-  }, [sandbox.id, serverUrl, controllerUrl]);
+  }, [sandbox.id, sandbox.endpoint, serverUrl]);
 
   const fsWriteEvents = useMemo(
     () => events.filter((e): e is Extract<SandboxEvent, { type: "fs.request" }> => e.type === "fs.request" && (e as Extract<SandboxEvent, { type: "fs.request" }>).operation === "write"),
@@ -129,7 +129,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     setConnected(false);
 
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/events`);
-    url.searchParams.set("controller", controllerUrl);
+    url.searchParams.set("sandboxUrl", sandbox.endpoint);
     if (lastEventId !== undefined) url.searchParams.set("lastEventId", String(lastEventId));
 
     const es = new EventSource(url.toString());
@@ -152,7 +152,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       es.close();
       setConnected(false);
     });
-  }, [sandbox.id, serverUrl, controllerUrl]);
+  }, [sandbox.id, sandbox.endpoint, serverUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -414,8 +414,8 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               <Terminal
                 sandboxId={sandbox.id}
                 serverUrl={serverUrl}
-                sshHost={sandbox.exposed_endpoint?.split(":")[0] ?? "127.0.0.1"}
-                sshPort={parseInt(sandbox.exposed_endpoint?.split(":")[1] ?? "22")}
+                sandboxUrl={sandbox.endpoint}
+                exposedEndpoint={sandbox.exposed_endpoint}
               />
             </div>
           </>
@@ -436,7 +436,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               <FileExplorer
                 sandboxId={sandbox.id}
                 serverUrl={serverUrl}
-                controllerUrl={controllerUrl}
+                sandboxUrl={sandbox.endpoint}
                 events={fsWriteEvents}
               />
             </div>
@@ -460,7 +460,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       <SandboxConfigDialog
         sandboxId={sandbox.id}
         serverUrl={serverUrl}
-        controllerUrl={controllerUrl}
+        sandboxUrl={sandbox.endpoint}
         open={showConfig}
         onOpenChange={(open) => { setShowConfig(open); if (!open) setConfigProposal(undefined); }}
         proposal={configProposal}

@@ -1,18 +1,13 @@
 import { Router, type Request, type Response } from "express";
-import { type SandboxConfig, listSandboxes } from "hive";
-import { controllerUrl } from "../lib/controllerUrl.js";
+import type { SandboxConfig } from "hive";
+import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 
 const router = Router();
 
 router.get("/:id/config", async (req: Request, res: Response) => {
+  const sandbox = sandboxFromReq(req);
+  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   try {
-    const [sandbox] = await listSandboxes({ controllerUrl: controllerUrl(req) }).then(
-      (list) => list.filter((s) => s.id === req.params.id),
-    );
-    if (!sandbox) {
-      res.status(404).json({ error: "sandbox not found" });
-      return;
-    }
     const config = await sandbox.getConfig();
     res.json(config);
   } catch (err) {
@@ -21,14 +16,9 @@ router.get("/:id/config", async (req: Request, res: Response) => {
 });
 
 router.put("/:id/config", async (req: Request, res: Response) => {
+  const sandbox = sandboxFromReq(req);
+  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   try {
-    const [sandbox] = await listSandboxes({ controllerUrl: controllerUrl(req) }).then(
-      (list) => list.filter((s) => s.id === req.params.id),
-    );
-    if (!sandbox) {
-      res.status(404).json({ error: "sandbox not found" });
-      return;
-    }
     await sandbox.applyConfig(req.body as SandboxConfig);
     res.json({ ok: true });
   } catch (err) {

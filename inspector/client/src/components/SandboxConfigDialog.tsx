@@ -148,13 +148,13 @@ type Mode = "diff" | "editor";
 interface Props {
   sandboxId: string;
   serverUrl: string;
-  controllerUrl: string;
+  sandboxUrl: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   proposal?: ConfigProposal;
 }
 
-export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open, onOpenChange, proposal }: Props) {
+export function SandboxConfigDialog({ sandboxId, serverUrl, sandboxUrl, open, onOpenChange, proposal }: Props) {
   const [savedConfig, setSavedConfig] = useState("");
   const [editedConfig, setEditedConfig] = useState("");
   const [saving, setSaving] = useState(false);
@@ -166,13 +166,13 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open,
   useEffect(() => {
     if (!open) return;
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`);
-    url.searchParams.set("controller", controllerUrl);
+    url.searchParams.set("sandboxUrl", sandboxUrl);
     fetch(url).then((r) => r.json()).then((data) => {
       const str = JSON.stringify(data, null, 2);
       setSavedConfig(str);
       setEditedConfig(proposal?.proposed ?? str);
     });
-  }, [open, sandboxId, serverUrl, controllerUrl, proposal]);
+  }, [open, sandboxId, serverUrl, sandboxUrl, proposal]);
 
   useEffect(() => {
     if (open) setMode(proposal ? "diff" : "editor");
@@ -182,7 +182,7 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, controllerUrl, open,
     setSaving(true);
     try {
       const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`);
-      url.searchParams.set("controller", controllerUrl);
+      url.searchParams.set("sandboxUrl", sandboxUrl);
       await fetch(url, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

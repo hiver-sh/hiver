@@ -1,24 +1,11 @@
 import { Router, type Request, type Response } from "express";
-import { listSandboxes } from "hive";
-import { controllerUrl } from "../lib/controllerUrl.js";
+import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 
 const router = Router();
 
 router.get("/:id/events", async (req: Request, res: Response) => {
-  const controller = controllerUrl(req);
-  let sandboxes: Awaited<ReturnType<typeof listSandboxes>>;
-  try {
-    sandboxes = await listSandboxes({ controllerUrl: controller });
-  } catch (err) {
-    res.status(502).json({ error: String(err) });
-    return;
-  }
-
-  const sandbox = sandboxes.find((s) => s.id === req.params.id);
-  if (!sandbox) {
-    res.status(404).json({ error: "sandbox not found" });
-    return;
-  }
+  const sandbox = sandboxFromReq(req);
+  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");

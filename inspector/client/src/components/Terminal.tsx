@@ -7,13 +7,13 @@ import "@xterm/xterm/css/xterm.css";
 interface Props {
   sandboxId: string;
   serverUrl: string;
-  sshHost: string;
-  sshPort: number;
+  sandboxUrl: string;
+  exposedEndpoint?: string;
 }
 
 const FONT_FAMILY = '"MesloLGM Nerd Font Mono", Monaco, monospace';
 
-export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
+export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -97,26 +97,28 @@ export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
         return true;
       });
 
+      const sessionId = crypto.randomUUID();
       let abortCtrl: AbortController | null = null;
       let retryTimer: ReturnType<typeof setTimeout> | null = null;
       let everConnected = false;
-      let currentSessionId = "";
+      let connected = false;
 
       const ro = new ResizeObserver(() => {
         requestAnimationFrame(() => {
           fitAddon.fit();
-          if (currentSessionId) sendInput({ type: "resize", cols: term.cols, rows: term.rows });
+          if (connected) sendInput({ type: "resize", cols: term.cols, rows: term.rows });
         });
       });
       ro.observe(el);
 
       function sendInput(msg: { type: string; data?: string; cols?: number; rows?: number }) {
-        if (!currentSessionId) return;
+        if (!connected) return;
         const url = new URL(
           `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/input`,
           serverUrl,
         );
-        url.searchParams.set("sessionId", currentSessionId);
+        url.searchParams.set("sandboxUrl", sandboxUrl);
+        url.searchParams.set("sessionId", sessionId);
         fetch(url.toString(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -127,16 +129,18 @@ export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
       async function connect() {
         if (disposed) return;
 
-        currentSessionId = crypto.randomUUID();
+        connected = false;
         abortCtrl = new AbortController();
 
         const url = new URL(
           `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/stream`,
           serverUrl,
         );
-        url.searchParams.set("sessionId", currentSessionId);
         url.searchParams.set("cols", String(term.cols));
         url.searchParams.set("rows", String(term.rows));
+        url.searchParams.set("sandboxUrl", sandboxUrl);
+        url.searchParams.set("sessionId", sessionId);
+        if (exposedEndpoint) url.searchParams.set("exposedBackend", exposedEndpoint);
 
         let resp: Response;
         try {
@@ -179,8 +183,10 @@ export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
 
             if (eventName === "connected") {
               everConnected = true;
+              connected = true;
               term.focus();
             } else if (eventName === "close") {
+              connected = false;
               break outer;
             } else if (eventName === "message" && dataLine) {
               term.write(Uint8Array.from(atob(dataLine), (c) => c.charCodeAt(0)));
@@ -217,7 +223,7 @@ export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
       disposed = true;
       cleanup();
     };
-  }, [sandboxId, serverUrl, sshHost, sshPort]);
+  }, [sandboxId, serverUrl, sandboxUrl, exposedEndpoint]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden bg-[#000000] p-1" />;
 }

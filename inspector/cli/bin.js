@@ -16,9 +16,13 @@ if (!tsx) {
   process.stderr.write("error: tsx not found — run `npm install` from the inspector directory\n");
   process.exit(1);
 }
-const entry = resolve(__dirname, "src/index.ts");
+const command = process.argv[2];
+const entry =
+  command === "record"
+    ? resolve(__dirname, "src/record.ts")
+    : resolve(__dirname, "src/index.ts");
 
-const child = spawn(tsx, [entry, ...process.argv.slice(2)], {
-  stdio: "inherit",
-});
+const forwardArgs = command === "record" ? process.argv.slice(3) : process.argv.slice(2);
+
+const child = spawn(tsx, [entry, ...forwardArgs], { stdio: "inherit" });
 child.on("exit", (code) => process.exit(code ?? 0));

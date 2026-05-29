@@ -10,7 +10,6 @@ const SERVER_DIR = resolve(ROOT, "server");
 const CLIENT_DIR = resolve(ROOT, "client");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
-// ANSI helpers
 const R = "\x1b[0m";
 const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
@@ -66,7 +65,6 @@ const client = spawn(npm, ["run", "dev"], {
   env: { ...process.env },
 });
 
-// Open the browser once Vite signals it's ready.
 let opened = false;
 pipeLines(client, "client", MAGENTA, (line) => {
   if (!opened && line.includes("Local:") && line.includes("localhost")) {
@@ -78,11 +76,6 @@ pipeLines(client, "client", MAGENTA, (line) => {
   }
 });
 
-function cleanup() {
-  server.kill();
-  client.kill();
-}
-
 server.on("exit", (code) => {
   if (code !== null && code !== 0)
     process.stderr.write(tag("server", CYAN) + `exited with code ${code}\n`);
@@ -93,10 +86,12 @@ client.on("exit", (code) => {
 });
 
 process.on("SIGINT", () => {
-  cleanup();
+  server.kill();
+  client.kill();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
-  cleanup();
+  server.kill();
+  client.kill();
   process.exit(0);
 });

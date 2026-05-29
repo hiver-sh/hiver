@@ -1,8 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { spawn as ptySpawn } from "node-pty";
 import { Client as SshClient } from "ssh2";
-import { getSandbox } from "hive";
-import { controllerUrl } from "../lib/controllerUrl.js";
 
 const router = Router();
 
@@ -15,22 +12,6 @@ type TermInput = { type: "input"; data: string } | { type: "resize"; cols: numbe
 
 const termSessions = new Map<string, TermSession>();
 const termPending = new Map<string, TermInput[]>();
-
-function openHostSession(
-  cmd: string[], cols: number, rows: number,
-  onData: (buf: Buffer) => void, onExit: () => void,
-): TermSession {
-  const pty = ptySpawn("/bin/sh", ["-c", cmd.join(" ")], {
-    name: "xterm-256color", cols, rows, env: process.env as Record<string, string>,
-  });
-  pty.onData((d) => onData(Buffer.from(d)));
-  pty.onExit(() => onExit());
-  return {
-    write: (d) => pty.write(d),
-    resize: (c, r) => pty.resize(c, r),
-    close: () => pty.kill(),
-  };
-}
 
 function openSshSession(
   host: string, port: number, cols: number, rows: number,
@@ -62,18 +43,19 @@ function openSshSession(
 }
 
 router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
+  const sandboxUrl = req.query.sandboxUrl as string | undefined;
+  if (!sandboxUrl) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   const sessionId = req.query.sessionId as string | undefined;
   if (!sessionId) { res.status(400).json({ error: "missing sessionId" }); return; }
 
   const cols = Math.max(1, parseInt((req.query.cols as string) || "80"));
   const rows = Math.max(1, parseInt((req.query.rows as string) || "24"));
 
-  let detail: Awaited<ReturnType<typeof getSandbox>>;
-  try {
-    detail = await getSandbox(req.params.id, { controllerUrl: controllerUrl(req) });
-  } catch (e) {
-    res.status(502).json({ error: String(e) }); return;
-  }
+  const exposedEndpoint = req.query.exposedBackend as string | undefined;
+
+  // Close any existing session with this id before opening a new one
+  termSessions.get(sessionId)?.close();
+  termSessions.delete(sessionId);
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -102,17 +84,13 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
 
   let session: TermSession | null = null;
 
-  if (detail.exposed_endpoint) {
-    const i = detail.exposed_endpoint.lastIndexOf(":");
+  if (exposedEndpoint) {
+    const i = exposedEndpoint.lastIndexOf(":");
     session = await openSshSession(
-      detail.exposed_endpoint.slice(0, i),
-      parseInt(detail.exposed_endpoint.slice(i + 1)),
+      exposedEndpoint.slice(0, i),
+      parseInt(exposedEndpoint.slice(i + 1)),
       cols, rows, sendBytes, onExit,
     );
-  }
-
-  if (!session && detail.terminal_cmd) {
-    session = openHostSession(detail.terminal_cmd.split(" "), cols, rows, sendBytes, onExit);
   }
 
   if (!session) {
