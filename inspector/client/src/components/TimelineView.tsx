@@ -62,14 +62,16 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       const durationMs = res
         ? (lastChunk ? new Date(lastChunk.timestamp).getTime() - startMs : res.duration_ms)
         : 0;
-      let label = `${event.host}${event.path}`;
-      for (const provider of LLM_PROVIDERS) {
-        if (!provider.matches(event)) continue;
-        const extracted = provider.extractLabel(event);
-        if (extracted) { label = extracted; break; }
+      let label = event.host;
+      let key: string;
+      const matchedProvider = LLM_PROVIDERS.find(p => p.matches(event));
+      if (matchedProvider) {
+        label = matchedProvider.extractLabel(event) ?? event.host;
+        key = `llm:${label}`;
+      } else {
+        key = `egress:${event.host}`;
       }
-      const key = `egress:${event.method}:${label}`;
-      const row = getOrCreateRow(key, "egress", label, event.method);
+      const row = getOrCreateRow(key, "egress", label);
       row.bars.push({
         id: event.id,
         startTime: startMs,
@@ -135,7 +137,10 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
 
 
 const LANE_GAP_PX = 1;
-const MIN_BAR_PX = 1;
+const MIN_BAR_PX = 4;
+const MIN_CLICK_TARGET_BAR_PX = 16;
+const LANES_ENABLED = false;
+const MERGE_OVERLAPS = true;
 
 function computeLanes(
   bars: TimelineBar[],
@@ -179,7 +184,7 @@ function methodClass(row: TimelineRow): string {
   if (row.type === "resource") return row.key === "resource:cpu" ? "text-sky-400" : "text-emerald-400";
   switch (row.method) {
     case "GET":    return "text-green-400";
-    case "POST":   return "text-blue-400";
+    case "POST":   return "text-white";
     case "PUT":
     case "PATCH":  return "text-orange-400";
     case "DELETE": return "text-red-400";
@@ -900,7 +905,9 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
           section.laneCount++;
           absTop += 22;
         } else {
-          const lanes = computeLanes(item.row.bars, toDisplay, effectiveDur);
+          const lanes = LANES_ENABLED
+            ? computeLanes(item.row.bars, toDisplay, effectiveDur)
+            : [[...item.row.bars].sort((a, b) => a.startTime - b.startTime)];
           for (let li = 0; li < lanes.length; li++) {
             section.lanes.push({
               row: item.row,
@@ -1196,44 +1203,99 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                   height={22}
                                   onSelect={(bar) => setSelectedId(bar.id === selectedId ? null : bar.id)}
                                 />
-                              : vl.laneBars
-                              .filter(bar => {
-                                const l = toDisplay(bar.startTime);
-                                const r = Math.max(l + 1, toDisplay(bar.startTime + effectiveDur(bar)));
-                                return r >= hVisLeft && l <= hVisRight;
-                              })
-                              .map(bar => {
-                                const leftPx  = toDisplay(bar.startTime);
-                                const rightPx = Math.max(leftPx + MIN_BAR_PX, toDisplay(bar.startTime + effectiveDur(bar)));
-                                const isSelected = bar.id === selectedId;
-                                const isLive = bar.pending && bar.access === "allowed";
+                              : (() => {
+                                const visible = vl.laneBars.filter(bar => {
+                                  const l = toDisplay(bar.startTime);
+                                  const r = Math.max(l + 1, toDisplay(bar.startTime + effectiveDur(bar)));
+                                  return r >= hVisLeft && l <= hVisRight;
+                                });
                                 if (vl.row.isPoint) {
+                                  return visible.map(bar => {
+                                    const leftPx = toDisplay(bar.startTime);
+                                    const isSelected = bar.id === selectedId;
+                                    return (
+                                      <div
+                                        key={bar.id}
+                                        className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                        style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
+                                        title={vl.row.label}
+                                      >
+                                        <div
+                                          className="absolute inset-y-0 z-10 cursor-pointer"
+                                          style={{ left: "50%", transform: "translateX(-50%)", width: MIN_CLICK_TARGET_BAR_PX }}
+                                          onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
+                                        />
+                                      </div>
+                                    );
+                                  });
+                                }
+                                if (!MERGE_OVERLAPS) {
+                                  return visible.map(bar => {
+                                    const leftPx  = toDisplay(bar.startTime);
+                                    const rightPx = Math.max(leftPx + MIN_BAR_PX, toDisplay(bar.startTime + effectiveDur(bar)));
+                                    const isSelected = bar.id === selectedId;
+                                    const isLive = bar.pending && bar.access === "allowed";
+                                    return (
+                                      <div
+                                        key={bar.id}
+                                        className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                        style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
+                                      >
+                                        <div
+                                          className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, vl.row.type)}`}
+                                          title={isLive ? `in-flight · ${effectiveDur(bar)}ms` : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
+                                        >
+                                          {isLive && <div className="absolute inset-0 bar-in-flight" />}
+                                        </div>
+                                        <div
+                                          className="absolute inset-y-0 z-10 cursor-pointer"
+                                          style={{ left: "50%", transform: "translateX(-50%)", width: Math.max(rightPx - leftPx, MIN_CLICK_TARGET_BAR_PX) }}
+                                          onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
+                                        />
+                                      </div>
+                                    );
+                                  });
+                                }
+                                // Merge overlapping bars into a single visual block
+                                type Group = { bars: TimelineBar[]; leftPx: number; rightPx: number };
+                                const groups: Group[] = [];
+                                for (const bar of visible) {
+                                  const l = toDisplay(bar.startTime);
+                                  const r = Math.max(l + MIN_BAR_PX, toDisplay(bar.startTime + effectiveDur(bar)));
+                                  const last = groups[groups.length - 1];
+                                  if (last && l <= last.rightPx + LANE_GAP_PX) {
+                                    last.bars.push(bar);
+                                    last.rightPx = Math.max(last.rightPx, r);
+                                  } else {
+                                    groups.push({ bars: [bar], leftPx: l, rightPx: r });
+                                  }
+                                }
+                                return groups.map(group => {
+                                  const first = group.bars[0];
+                                  const isSelected = group.bars.some(b => b.id === selectedId);
+                                  const isLive = group.bars.some(b => b.pending && b.access === "allowed");
+                                  const w = group.rightPx - group.leftPx;
                                   return (
                                     <div
-                                      key={bar.id}
-                                      className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                      style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
-                                      title={vl.row.label}
-                                      onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
-                                    />
-                                  );
-                                }
-                                return (
-                                  <div
-                                    key={bar.id}
-                                    className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                    style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
-                                    onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
-                                  >
-                                    <div
-                                      className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, vl.row.type)}`}
-                                      title={isLive ? `in-flight · ${effectiveDur(bar)}ms` : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
+                                      key={first.id}
+                                      className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                      style={{ left: group.leftPx, width: w, maxWidth: `calc(100% - ${group.leftPx}px)` }}
                                     >
-                                      {isLive && <div className="absolute inset-0 bar-in-flight" />}
+                                      <div
+                                        className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(first, vl.row.type)}`}
+                                        title={group.bars.length > 1 ? `${group.bars.length} events` : isLive ? `in-flight · ${effectiveDur(first)}ms` : first.pending ? "no response received" : `${first.durationMs}ms${first.status ? ` · ${first.status}` : ""}${first.error ? ` · ${first.error}` : ""}`}
+                                      >
+                                        {isLive && <div className="absolute inset-0 bar-in-flight" />}
+                                      </div>
+                                      <div
+                                        className="absolute inset-y-0 z-10 cursor-pointer"
+                                        style={{ left: "50%", transform: "translateX(-50%)", width: Math.max(w, MIN_CLICK_TARGET_BAR_PX) }}
+                                        onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(first.id === selectedId ? null : first.id); }}
+                                      />
                                     </div>
-                                  </div>
-                                );
-                              })}
+                                  );
+                                });
+                              })()}
                           </div>
                         </div>
                       );

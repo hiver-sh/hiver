@@ -2,11 +2,13 @@ import cors from "cors";
 import express, { type Request, type Response } from "express";
 import { createServer } from "http";
 import { WebSocketServer, type WebSocket } from "ws";
+import { spawn as ptySpawn } from "node-pty";
 import { Client as SshClient } from "ssh2";
 import {
   DEFAULT_CONTROLLER_URL,
   type SandboxConfig,
   getOrCreateSandbox,
+  getSandbox,
   listSandboxes,
   shutdown,
 } from "hive";
@@ -185,32 +187,93 @@ app.get("/api/sandboxes/:id/events", async (req: Request, res: Response) => {
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
+// httpServer.on("upgrade", async (req, socket, head) => {
+//   const url = new URL(req.url ?? "/", "http://localhost");
+//   const match = url.pathname.match(/^\/api\/sandboxes\/([^/]+)\/terminal$/);
+//   if (!match) {
+//     socket.destroy();
+//     return;
+//   }
+
+//   const sandboxId = match[1];
+//   const ctrlUrl = url.searchParams.get("controller") ?? DEFAULT_URL;
+
+//   let terminalCmd: string;
+//   console.log('getting');
+//   try {
+//     const detail = await getSandbox(sandboxId, { controllerUrl: ctrlUrl });
+//     console.log(detail);
+//     if (!detail.terminal_cmd) {
+//       socket.destroy();
+//       return;
+//     }
+//     terminalCmd = detail.terminal_cmd;
+//   } catch (e) {
+//         console.log(e);
+
+//     socket.destroy();
+//     return;
+//   }
+
+//   wss.handleUpgrade(req, socket, head, (ws) => {
+//     handleHostTerminal(ws, terminalCmd.split(" "), url.searchParams);
+//   });
+// });
+
+// comment out the block below to fall back to SSH-based terminal
 httpServer.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", "http://localhost");
-  const match = url.pathname.match(/^\/api\/sandboxes\/([^/]+)\/terminal$/);
-  if (!match) {
-    socket.destroy();
-    return;
-  }
+  if (!url.pathname.match(/^\/api\/sandboxes\/[^/]+\/terminal$/)) return;
 
   const host = url.searchParams.get("host");
   const portStr = url.searchParams.get("port");
-  if (!host || !portStr) {
-    socket.destroy();
-    return;
-  }
+  if (!host || !portStr) return;
 
   wss.handleUpgrade(req, socket, head, (ws) => {
     handleTerminal(ws, host, parseInt(portStr), url.searchParams);
   });
 });
 
+function handleHostTerminal(ws: WebSocket, cmd: string[], params: URLSearchParams) {
+  let cols = Math.max(1, parseInt(params.get("cols") ?? "80"));
+  let rows = Math.max(1, parseInt(params.get("rows") ?? "24"));
+
+  const pending: string[] = [];
+  ws.on("message", (msg) => pending.push(msg.toString()));
+
+  const pty = ptySpawn("/bin/sh", ["-c", cmd.join(" ")], {
+    name: "xterm-256color", cols, rows, env: process.env as Record<string, string>,
+  });
+
+  function handleMessage(text: string) {
+    try {
+      const ctrl = JSON.parse(text);
+      if (ctrl.type === "resize" && typeof ctrl.cols === "number" && typeof ctrl.rows === "number") {
+        cols = ctrl.cols;
+        rows = ctrl.rows;
+        pty.resize(cols, rows);
+        return;
+      }
+    } catch { /* raw input */ }
+    pty.write(text);
+  }
+
+  ws.send(JSON.stringify({ type: "connected" }));
+  ws.removeAllListeners("message");
+  for (const msg of pending) handleMessage(msg);
+  pending.length = 0;
+  ws.on("message", (msg) => handleMessage(msg.toString()));
+
+  pty.onData((data) => { if (ws.readyState === ws.OPEN) ws.send(Buffer.from(data)); });
+  pty.onExit(() => ws.close());
+  ws.on("close", () => pty.kill());
+}
+
 
 async function handleTerminal(ws: WebSocket, host: string, port: number, params: URLSearchParams) {
   let cols = Math.max(1, parseInt(params.get("cols") ?? "80"));
   let rows = Math.max(1, parseInt(params.get("rows") ?? "24"));
 
-  // Buffer messages that arrive before the SSH shell is open.
   const pending: string[] = [];
   ws.on("message", (msg) => pending.push(msg.toString()));
 
@@ -239,28 +302,15 @@ async function handleTerminal(ws: WebSocket, host: string, port: number, params:
       }
 
       ws.send(JSON.stringify({ type: "connected" }));
-
-      // Switch to live message handling and flush anything buffered.
       ws.removeAllListeners("message");
       for (const msg of pending) handleMessage(msg);
       pending.length = 0;
       ws.on("message", (msg) => handleMessage(msg.toString()));
 
-      stream.on("data", (data: Buffer) => {
-        if (ws.readyState === ws.OPEN) ws.send(data);
-      });
-      stream.stderr?.on("data", (data: Buffer) => {
-        if (ws.readyState === ws.OPEN) ws.send(data);
-      });
-      stream.on("close", () => {
-        ws.close();
-        conn.end();
-      });
-
-      ws.on("close", () => {
-        stream.close();
-        conn.end();
-      });
+      stream.on("data", (data: Buffer) => { if (ws.readyState === ws.OPEN) ws.send(data); });
+      stream.stderr?.on("data", (data: Buffer) => { if (ws.readyState === ws.OPEN) ws.send(data); });
+      stream.on("close", () => { ws.close(); conn.end(); });
+      ws.on("close", () => { stream.close(); conn.end(); });
     });
   });
 
@@ -273,14 +323,7 @@ async function handleTerminal(ws: WebSocket, host: string, port: number, params:
     }
   });
 
-  conn.connect({
-    host,
-    port,
-    username: "agent",
-    password: "agent",
-    readyTimeout: 10000,
-    hostVerifier: () => true,
-  });
+  conn.connect({ host, port, username: "agent", password: "agent", readyTimeout: 10000, hostVerifier: () => true });
 }
 
 httpServer.listen(PORT, () => {

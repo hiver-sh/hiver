@@ -30,17 +30,6 @@ function tryPretty(body?: string): { content: string; isJson: boolean } | undefi
   catch { return { content: body, isJson: false }; }
 }
 
-function egressMethodCls(method: string): string {
-  switch (method) {
-    case "GET":    return "text-green-400";
-    case "POST":   return "text-blue-400";
-    case "PUT":
-    case "PATCH":  return "text-orange-400";
-    case "DELETE": return "text-red-400";
-    default:       return "text-muted-foreground";
-  }
-}
-
 function KV({ label, value, cls }: { label: string; value: string; cls?: string }) {
   return (
     <>
@@ -506,7 +495,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                 <KV label="id"   value={String(req.id)} />
                 <KV label="time" value={ts} />
                 {req.type === "egress.request" && <>
-                  <KV label="method" value={req.method} cls={egressMethodCls(req.method)} />
+                  <KV label="method" value={req.method} />
                   <KV label="host"   value={req.host} />
                   <KV label="path"   value={req.path} />
                   {req.query && <KV label="query" value={req.query} />}
