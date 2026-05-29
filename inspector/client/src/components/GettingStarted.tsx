@@ -54,7 +54,7 @@ export function GettingStarted() {
   const code = lang === "ts" ? TS_EXAMPLE : PY_EXAMPLE;
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto scroll-container">
       <div className="w-full max-w-4xl mx-auto flex flex-col gap-6 px-8 py-16">
         <div className="flex flex-col gap-1.5">
           <h1 className="text-lg font-semibold">Get started</h1>

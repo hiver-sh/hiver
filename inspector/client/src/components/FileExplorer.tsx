@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { CodeViewer } from "@/components/CodeViewer";
+import { CodeViewer, CODE_DIALOG_CLASS } from "@/components/CodeViewer";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import type { SandboxEvent } from "@/types";
 import { langForPath } from "@/lib/fileUtils";
@@ -311,7 +311,7 @@ export function FileExplorer({ sandboxId, serverUrl, controllerUrl, events }: Pr
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto py-1">
+        <div className="flex-1 overflow-y-auto scroll-container py-1">
           {configLoading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground/40">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -327,7 +327,7 @@ export function FileExplorer({ sandboxId, serverUrl, controllerUrl, events }: Pr
       </div>
 
       <Dialog open={preview !== null} onOpenChange={(open) => { if (!open) setPreview(null); }}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className={CODE_DIALOG_CLASS}>
           <div className="pr-6">
             <DialogTitle className="truncate font-mono text-sm font-normal text-muted-foreground">
               {preview?.path}

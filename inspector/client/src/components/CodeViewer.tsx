@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState } from "react";
-import { Check, Clipboard } from "lucide-react";
+import { Check, Clipboard, Maximize2 } from "lucide-react";
 import MonacoEditor, { loader } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import * as monaco from "monaco-editor";
 import { MONACO_THEME } from "@/monacoWorkers";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 
 loader.config({ monaco });
 
@@ -46,6 +47,8 @@ monaco.editor.defineTheme("hive-dark", {
 const LINE_HEIGHT = 19; // matches fontSize 13 + Monaco default line spacing
 const PADDING = 16;
 
+export const CODE_DIALOG_CLASS = "max-w-4xl";
+
 interface Props {
   content: string;
   lang?: string;
@@ -55,6 +58,8 @@ interface Props {
   /** When set, auto-sizes to content between minHeight and maxHeight instead of filling the parent. */
   maxHeight?: number;
   minHeight?: number;
+  /** Shows an expand button that opens the editor in a full-screen dialog. */
+  expandable?: boolean;
 }
 
 const LANG_MAP: Record<string, string> = {
@@ -64,8 +69,9 @@ const LANG_MAP: Record<string, string> = {
   text: "plaintext",
 };
 
-export function CodeViewer({ content, lang = "text", className, autoSize, maxHeight, minHeight = 0 }: Props) {
+export function CodeViewer({ content, lang = "text", className, autoSize, maxHeight, minHeight = 0, expandable }: Props) {
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const height = useMemo(() => {
@@ -92,35 +98,68 @@ export function CodeViewer({ content, lang = "text", className, autoSize, maxHei
     setTimeout(() => setCopied(false), 2000);
   }
 
+  const editorOptions: Monaco.editor.IStandaloneEditorConstructionOptions = {
+    readOnly: true,
+    minimap: { enabled: false },
+    lineNumbers: "off",
+    scrollBeyondLastLine: false,
+    wordWrap: "on",
+    tabSize: 2,
+    automaticLayout: true,
+    fontSize: 13,
+    padding: { top: 8, bottom: 8 },
+    folding: false,
+    scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+  };
+
+  const monacoLang = LANG_MAP[lang ?? ""] ?? lang ?? "plaintext";
+
   return (
-    <div ref={containerRef} className={`relative overflow-hidden h-full ${className ?? ""}`}>
-      <MonacoEditor
-        height={height}
-        onMount={handleMount}
-        language={LANG_MAP[lang ?? ""] ?? lang ?? "plaintext"}
-        value={content}
-        theme={MONACO_THEME}
-        options={{
-          readOnly: true,
-          minimap: { enabled: false },
-          lineNumbers: "off",
-          scrollBeyondLastLine: false,
-          wordWrap: "on",
-          tabSize: 2,
-          automaticLayout: true,
-          fontSize: 13,
-          padding: { top: 8, bottom: 8 },
-          folding: false,
-          scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
-        }}
-      />
-      <button
-        onClick={handleCopy}
-        className="absolute top-2 right-3 p-1.5 rounded-md bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors z-10"
-        title="Copy to clipboard"
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
-      </button>
-    </div>
+    <>
+      <div ref={containerRef} className={`relative overflow-hidden h-full ${className ?? ""}`}>
+        <MonacoEditor
+          height={height}
+          onMount={handleMount}
+          language={monacoLang}
+          value={content}
+          theme={MONACO_THEME}
+          options={editorOptions}
+        />
+        <div className="absolute top-2 right-3 flex gap-1 z-10">
+          {expandable && (
+            <button
+              onClick={() => setExpanded(true)}
+              className="p-1.5 rounded-md bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              title="Expand"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <button
+            onClick={handleCopy}
+            className="p-1.5 rounded-md bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            title="Copy to clipboard"
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {expandable && (
+        <Dialog open={expanded} onOpenChange={setExpanded}>
+          <DialogContent className={`${CODE_DIALOG_CLASS} p-0 flex flex-col overflow-hidden h-[55vh]`}>
+            <div className="flex-1 min-h-0 relative">
+              <MonacoEditor
+                height="100%"
+                language={monacoLang}
+                value={content}
+                theme={MONACO_THEME}
+                options={{ ...editorOptions, scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 } }}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
   );
 }

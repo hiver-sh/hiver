@@ -716,6 +716,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
 
   const rawIntervals: [number, number][] = [];
   for (const row of filteredRows) {
+    if (row.type === "resource") continue;
     for (const bar of row.bars) {
       rawIntervals.push([bar.startTime, bar.startTime + bar.durationMs]);
     }
@@ -1065,7 +1066,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
       {/* Rows — virtual scroll */}
       <div
         ref={rowsScrollRef}
-        className="timeline-scroll min-h-0 flex-1 overflow-auto text-xs cursor-default select-none"
+        className="timeline-scroll scroll-container min-h-0 flex-1 overflow-auto text-xs cursor-default select-none"
         onScroll={onScroll}
         onMouseDown={onRowsMouseDown}
       >

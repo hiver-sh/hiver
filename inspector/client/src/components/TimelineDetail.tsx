@@ -185,7 +185,7 @@ function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
   return (
     <div className={`flex flex-col rounded-md border border-border bg-muted/20 overflow-hidden min-h-0 ${className ?? ""}`}>
       <div className="flex-1 min-h-0">
-        <CodeViewer content={parsed.content} lang={parsed.isJson ? "json" : "text"} className="h-full" />
+        <CodeViewer content={parsed.content} lang={parsed.isJson ? "json" : "text"} className="h-full" expandable />
       </div>
     </div>
   );
@@ -286,7 +286,7 @@ function SummaryTab({ summary, prevSummary }: { summary: LLMSummaryData; prevSum
   }, [summary.messages, prevSummary?.messages]);
 
   return (
-    <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0">
+    <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0 scroll-container">
       {summary.system && (
         <Bubble role="system" defaultCollapsed>
           <PlainText text={summary.system} />
@@ -488,9 +488,9 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
       )}
 
       {tab === "request" && (
-        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto" : ""}`}>
+        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto scroll-container" : ""}`}>
           <div className={`rounded-md border border-border overflow-hidden min-w-0 ${!narrow && reqRawBody ? "flex-1" : narrow ? "shrink-0" : "w-full"}`}>
-            <div className={`p-3 overflow-auto ${narrow ? "" : "h-full"}`}>
+            <div className={`p-3 overflow-auto scroll-container ${narrow ? "" : "h-full"}`}>
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                 <KV label="id"   value={String(req.id)} />
                 <KV label="time" value={ts} />
@@ -540,9 +540,9 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
       )}
 
       {tab === "response" && (
-        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto" : ""}`}>
+        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto scroll-container" : ""}`}>
           <div className={`rounded-md border border-border overflow-hidden min-w-0 ${!narrow && chunks.length > 0 ? "flex-1" : narrow ? "shrink-0" : "w-full"}`}>
-            <div className={`p-3 overflow-auto ${narrow ? "" : "h-full"}`}>
+            <div className={`p-3 overflow-auto scroll-container ${narrow ? "" : "h-full"}`}>
               {res ? (
                 <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                   {res.type === "egress.response" && <>
@@ -564,7 +564,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
           {chunks.length > 0 && (
             <div className={`flex min-w-0 flex-col gap-2 ${narrow ? "flex-1 min-h-[400px]" : "flex-1 min-h-0 overflow-hidden"}`}>
               {isWebSocket ? (
-                <div className="flex flex-col flex-1 min-h-0 overflow-y-auto rounded-md border border-border bg-muted/20 py-1">
+                <div className="flex flex-col flex-1 min-h-0 overflow-y-auto scroll-container rounded-md border border-border bg-muted/20 py-1">
                   {chunks.map((chunk) => (
                     <WsChunkRow key={chunk.id} chunk={chunk} />
                   ))}
@@ -574,7 +574,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                 const pretty = tryPretty(raw);
                 return (
                   <div className="flex flex-1 min-h-0 flex-col rounded-md border border-border bg-muted/20 overflow-hidden">
-                    <CodeViewer content={pretty?.content ?? raw} lang={pretty?.isJson ? "json" : "text"} className="flex-1 min-h-0" />
+                    <CodeViewer content={pretty?.content ?? raw} lang={pretty?.isJson ? "json" : "text"} className="flex-1 min-h-0" expandable />
                   </div>
                 );
               })()}

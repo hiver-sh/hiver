@@ -1,5 +1,6 @@
 import type { SandboxEvent } from "@/types";
 import { anthropicProvider } from "./anthropicProvider";
+import { chatgptProvider } from "./chatgptProvider";
 import { geminiProvider } from "./geminiProvider";
 
 export type EgressRequest = Extract<SandboxEvent, { type: "egress.request" }>;
@@ -44,4 +45,4 @@ export interface LLMProvider {
   ): LLMSummaryData | null;
 }
 
-export const LLM_PROVIDERS: LLMProvider[] = [anthropicProvider, geminiProvider];
+export const LLM_PROVIDERS: LLMProvider[] = [anthropicProvider, chatgptProvider, geminiProvider];

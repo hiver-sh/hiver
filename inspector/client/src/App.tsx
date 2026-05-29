@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { DEFAULT_CONTROLLER_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } from "@/types";
 import { purgeOrphanEvents } from "@/lib/eventStore";
+import { useScrollbarVisibility } from "@/lib/useScrollbarVisibility";
 
 function ControllerUnreachable({ message, loading, onRetry }: { message: string; loading: boolean; onRetry: () => void }) {
   return (
@@ -120,6 +121,8 @@ export default function App() {
   useEffect(() => {
     fetchSandboxes();
   }, [fetchSandboxes]);
+
+  useScrollbarVisibility();
 
   const layoutProps: LayoutProps = {
     controllerUrl,
