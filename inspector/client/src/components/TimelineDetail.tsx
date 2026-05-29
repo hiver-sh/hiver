@@ -455,38 +455,43 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
 
   return (
     <div ref={containerRef} className="flex flex-col h-full text-xs">
-      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-        <SegmentedControl options={tabOptions} value={tab} onChange={setTab} />
-        <div className="ml-auto flex items-center gap-2">
-          {hasSummary && summaryData && tab === "summary" && (
-            <>
-              {summaryData.model && (
-                <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                  {summaryData.model}
-                </span>
-              )}
-              {summaryData.response?.stopReason && (
-                <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                  {summaryData.response.stopReason}
-                </span>
-              )}
-              {(summaryData.usage?.inputTokens != null || summaryData.usage?.outputTokens != null) && (
-                <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
-                  {summaryData.usage.inputTokens ?? "?"}↑ {summaryData.usage.outputTokens ?? "?"}↓
-                </span>
-              )}
-              {bar.pending && !summaryData.response?.stopReason && (
-                <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
-              )}
-            </>
-          )}
-          <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
-            <ArrowUp className="h-3.5 w-3.5" />
-          </Button>
-          <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
-            <ArrowDown className="h-3.5 w-3.5" />
-          </Button>
+      <div className="relative shrink-0">
+        <div className="detail-header-scroll overflow-x-auto">
+          <div className="flex items-center gap-2 px-3 py-2 min-w-max">
+          <SegmentedControl options={tabOptions} value={tab} onChange={setTab} />
+          <div className="ml-auto flex items-center gap-2">
+            {hasSummary && summaryData && tab === "summary" && (
+              <>
+                {summaryData.model && (
+                  <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
+                    {summaryData.model}
+                  </span>
+                )}
+                {summaryData.response?.stopReason && (
+                  <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
+                    {summaryData.response.stopReason}
+                  </span>
+                )}
+                {(summaryData.usage?.inputTokens != null || summaryData.usage?.outputTokens != null) && (
+                  <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
+                    {summaryData.usage.inputTokens ?? "?"}↑ {summaryData.usage.outputTokens ?? "?"}↓
+                  </span>
+                )}
+                {bar.pending && !summaryData.response?.stopReason && (
+                  <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
+                )}
+              </>
+            )}
+            <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
+              <ArrowUp className="h-3.5 w-3.5" />
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
+              <ArrowDown className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          </div>
         </div>
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
       </div>
 
       {tab === "summary" && summaryData && (

@@ -102,6 +102,8 @@
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.35); }
 ::-webkit-scrollbar-corner { background: transparent; }
 
+.detail-header-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+.detail-header-scroll::-webkit-scrollbar { display: none; }
 
 .bar-in-flight {
   background-image: repeating-linear-gradient(

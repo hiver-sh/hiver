@@ -135,6 +135,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
 
 
 const LANE_GAP_PX = 1;
+const MIN_BAR_PX = 2;
 
 function computeLanes(
   bars: TimelineBar[],
@@ -147,7 +148,7 @@ function computeLanes(
   const laneRightPx: number[] = [];
   for (const bar of sorted) {
     const leftPx = toDisplay(bar.startTime);
-    const rightPx = Math.max(leftPx + 2, toDisplay(bar.startTime + effectiveDurFn(bar)));
+    const rightPx = Math.max(leftPx + MIN_BAR_PX, toDisplay(bar.startTime + effectiveDurFn(bar)));
     let placed = false;
     for (let i = 0; i < lanes.length; i++) {
       if (laneRightPx[i] + LANE_GAP_PX <= leftPx) {
@@ -1188,7 +1189,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                               })
                               .map(bar => {
                                 const leftPx  = toDisplay(bar.startTime);
-                                const rightPx = Math.max(leftPx + 1, toDisplay(bar.startTime + effectiveDur(bar)));
+                                const rightPx = Math.max(leftPx + MIN_BAR_PX, toDisplay(bar.startTime + effectiveDur(bar)));
                                 const isSelected = bar.id === selectedId;
                                 const isLive = bar.pending && bar.access === "allowed";
                                 if (vl.row.isPoint) {
