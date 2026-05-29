@@ -69,17 +69,23 @@ func New(capacity, subDepth int) *Broker {
 // can't stall publishers (gaps are filled by ring replay on reconnect).
 // Returns the assigned id.
 func (b *Broker) Publish(build Factory) int64 {
+	return b.publish(build, true)
+}
+
+func (b *Broker) publish(build Factory, store bool) int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.nextID++
 	now := time.Now().UTC()
 	entry := Entry{ID: b.nextID, Event: build(b.nextID, now)}
 	b.lastPublishAt = now
-	if len(b.ring) < b.cap {
-		b.ring = append(b.ring, entry)
-	} else {
-		copy(b.ring, b.ring[1:])
-		b.ring[b.cap-1] = entry
+	if store {
+		if len(b.ring) < b.cap {
+			b.ring = append(b.ring, entry)
+		} else {
+			copy(b.ring, b.ring[1:])
+			b.ring[b.cap-1] = entry
+		}
 	}
 	for _, ch := range b.subs {
 		select {

@@ -12,6 +12,7 @@ export {
   FileSystem,
   FSRequestEvent,
   FSResponseEvent,
+  ResourceUsageEvent,
   GDriveFileSystem,
   HttpMethod,
   LocalFileSystem,

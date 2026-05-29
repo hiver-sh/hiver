@@ -22,6 +22,9 @@ chmod 600 /home/agent/.ssh/environment
 # the SSH environment (both are propagated above). When a var is unset, its part
 # of the command vanishes, leaving the agent's own default.
 case "${AGENT:-claude-code}" in
+  shell)
+    AGENT_CMD='bash'
+    ;;
   codex)
     # codex (a crossterm TUI) goes unresponsive after a zellij detach/reattach;
     # the Node agents don't. Wrapping it in its own tmux session gives codex a

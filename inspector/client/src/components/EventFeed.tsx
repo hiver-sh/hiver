@@ -43,6 +43,8 @@ function eventBadge(event: SandboxEvent): { label: string; variant: BadgeVariant
         label: `config ${event.success ? "✓" : "✗"}`,
         variant: event.success ? "orange" : "red",
       };
+    case "resource.usage":
+      return { label: `cpu ${event.cpu_percent.toFixed(1)}%`, variant: "green" };
     default:
       return { label: "unknown", variant: "default" };
   }
@@ -113,7 +115,21 @@ function EventDetail({ event }: { event: SandboxEvent }) {
           {event.success ? "applied" : `failed: ${event.errorMessage ?? "unknown"}`}
         </span>
       );
+    case "resource.usage":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          cpu <span className="text-emerald-400">{event.cpu_percent.toFixed(1)}%</span>
+          {" · "}mem <span className="text-emerald-400">{formatBytes(event.memory_bytes)}</span>
+        </span>
+      );
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
 }
 
 export function EventFeed({ events, filter }: Props) {

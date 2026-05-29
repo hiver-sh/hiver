@@ -8,9 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         openssh-server \
-        # codex (a crossterm TUI) goes unresponsive after a zellij detach/reattach;
-        # running it inside its own tmux session gives it a stable pty that survives
-        # the reattach. The other agents don't need it. See entrypoint.sh.
+        # Needed for codex.
         tmux \
     && ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \

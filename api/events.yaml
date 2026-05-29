@@ -13,6 +13,7 @@ components:
         - $ref: '#/components/schemas/FSRequestEvent'
         - $ref: '#/components/schemas/FSResponseEvent'
         - $ref: '#/components/schemas/StdioEvent'
+        - $ref: '#/components/schemas/ResourceUsageEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -23,6 +24,7 @@ components:
           fs.request: '#/components/schemas/FSRequestEvent'
           fs.response: '#/components/schemas/FSResponseEvent'
           stdio: '#/components/schemas/StdioEvent'
+          resource.usage: '#/components/schemas/ResourceUsageEvent'
 
     SandboxEventBase:
       type: object
@@ -302,3 +304,32 @@ components:
         id: 189
         timestamp: "2026-05-08T17:09:21Z"
         stdout: "hello world\n"
+
+    ResourceUsageEvent:
+      description: |
+        Emitted periodically to report sandbox resource consumption.
+        `cpu_percent` is the CPU utilisation over the last sample interval;
+        `memory_bytes` is the current resident set size.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, cpu_percent, memory_bytes]
+          properties:
+            type:
+              type: string
+              const: resource.usage
+            cpu_percent:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 100
+              description: CPU utilisation as a percentage (0–100) over the last sample interval.
+            memory_bytes:
+              type: integer
+              description: Resident set size of the sandbox process, in bytes.
+      example:
+        type: resource.usage
+        id: 210
+        timestamp: "2026-05-28T12:00:00Z"
+        cpu_percent: 42.5
+        memory_bytes: 134217728

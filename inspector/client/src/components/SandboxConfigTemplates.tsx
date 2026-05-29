@@ -80,7 +80,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
-        label: "Default",
+        label: "Sandbox MCP server",
         idPrefix: "mcp-server",
         apply: () => ({
           image: "hive-mcp-server-bundle",
@@ -93,6 +93,19 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
             restore_key: "mcp-server-agent",
             include: [ "/home/agent/*"],
           },
+        }),
+      },
+      {
+        label: "Shell",
+        idPrefix: "shell",
+        apply: () => ({
+          image: "hive-example-claude-worker-bundle",
+          fs: [{ backend: "local", mount: "/workspace" }],
+          env: { AGENT: "shell" },
+          egress: [
+            { host: "*", access: "allow" },
+          ],
+          ttl: 0,
         }),
       },
     ],

@@ -279,6 +279,12 @@ export const StdioEvent = SandboxEventBase.extend({
   stderr: z.string().optional(),
 });
 
+export const ResourceUsageEvent = SandboxEventBase.extend({
+  type: z.literal("resource.usage"),
+  cpu_percent: z.number(),
+  memory_bytes: z.number().int(),
+});
+
 export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
   EgressRequestEvent,
@@ -287,5 +293,6 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   FSRequestEvent,
   FSResponseEvent,
   StdioEvent,
+  ResourceUsageEvent,
 ]);
 export type SandboxEvent = z.infer<typeof SandboxEvent>;

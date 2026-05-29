@@ -214,6 +214,21 @@ type FSResponseEvent struct {
 	Type      string    `json:"type"`
 }
 
+// ResourceUsageEvent defines model for ResourceUsageEvent.
+type ResourceUsageEvent struct {
+	// CpuPercent CPU utilisation as a percentage (0–100) over the last sample interval.
+	CpuPercent float32 `json:"cpu_percent"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// MemoryBytes Resident set size of the sandbox process, in bytes.
+	MemoryBytes int       `json:"memory_bytes"`
+	Timestamp   time.Time `json:"timestamp"`
+	Type        string    `json:"type"`
+}
+
 // SandboxEvent A typed event emitted by the sandbox. The `type` field selects
 // the variant; consumers should switch on it to access
 // variant-specific fields.
@@ -443,6 +458,34 @@ func (t *SandboxEvent) MergeStdioEvent(v StdioEvent) error {
 	return err
 }
 
+// AsResourceUsageEvent returns the union data inside the SandboxEvent as a ResourceUsageEvent
+func (t SandboxEvent) AsResourceUsageEvent() (ResourceUsageEvent, error) {
+	var body ResourceUsageEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromResourceUsageEvent overwrites any union data inside the SandboxEvent as the provided ResourceUsageEvent
+func (t *SandboxEvent) FromResourceUsageEvent(v ResourceUsageEvent) error {
+	v.Type = "resource.usage"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeResourceUsageEvent performs a merge with any union data inside the SandboxEvent, using the provided ResourceUsageEvent
+func (t *SandboxEvent) MergeResourceUsageEvent(v ResourceUsageEvent) error {
+	v.Type = "resource.usage"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 func (t SandboxEvent) Discriminator() (string, error) {
 	var discriminator struct {
 		Discriminator string `json:"type"`
@@ -469,6 +512,8 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 		return t.AsFSRequestEvent()
 	case "fs.response":
 		return t.AsFSResponseEvent()
+	case "resource.usage":
+		return t.AsResourceUsageEvent()
 	case "stdio":
 		return t.AsStdioEvent()
 	default:

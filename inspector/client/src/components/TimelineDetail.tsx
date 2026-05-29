@@ -17,6 +17,13 @@ type DetailTab = "summary" | "request" | "response";
 
 // ─── generic helpers ────────────────────────────────────────────────────────
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+}
+
 function tryPretty(body?: string): { content: string; isJson: boolean } | undefined {
   if (!body) return undefined;
   try { return { content: JSON.stringify(JSON.parse(body), null, 2), isJson: true }; }
@@ -417,6 +424,22 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
         </div>
         <div className="flex-1 min-h-0">
           <CodeViewer content={text} className="h-full" />
+        </div>
+      </div>
+    );
+  }
+
+  if (req.type === "resource.usage") {
+    return (
+      <div className="flex flex-col h-full p-3 gap-2">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold shrink-0">
+          resource usage · {ts}
+        </div>
+        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 font-mono text-xs">
+          <span className="text-muted-foreground/70">cpu</span>
+          <span className="text-white">{req.cpu_percent.toFixed(1)}%</span>
+          <span className="text-muted-foreground/70">memory</span>
+          <span className="text-white">{formatBytes(req.memory_bytes)}</span>
         </div>
       </div>
     );

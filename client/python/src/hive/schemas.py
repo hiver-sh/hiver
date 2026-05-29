@@ -177,6 +177,12 @@ class StdioEvent(_SandboxEventBase):
     stderr: Optional[str] = None
 
 
+class ResourceUsageEvent(_SandboxEventBase):
+    type: Literal["resource.usage"]
+    cpu_percent: float
+    memory_bytes: int
+
+
 SandboxEvent = Annotated[
     Union[
         ConfigApplyEvent,
@@ -186,6 +192,7 @@ SandboxEvent = Annotated[
         FSRequestEvent,
         FSResponseEvent,
         StdioEvent,
+        ResourceUsageEvent,
     ],
     Field(discriminator="type"),
 ]

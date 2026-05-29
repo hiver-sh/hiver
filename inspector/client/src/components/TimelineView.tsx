@@ -19,7 +19,7 @@ export interface TimelineBar {
 
 export interface TimelineRow {
   key: string;
-  type: "egress" | "fs" | "stdio";
+  type: "egress" | "fs" | "stdio" | "resource";
   label: string;
   method?: string;
   isPoint: boolean;
@@ -103,6 +103,11 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
         pending: false,
         rawEvents: [event],
       });
+    } else if (event.type === "resource.usage") {
+      const t = new Date(event.timestamp).getTime();
+      const bar = { id: event.id, startTime: t, durationMs: 0, pending: false, rawEvents: [event] };
+      getOrCreateRow("resource:cpu", "resource", "cpu", undefined, true).bars.push(bar);
+      getOrCreateRow("resource:memory", "resource", "memory", undefined, true).bars.push({ ...bar });
     }
   }
 
@@ -158,7 +163,7 @@ function computeLanes(
 }
 
 
-function barClass(bar: TimelineBar, type: "egress" | "fs" | "stdio"): string {
+function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
   if (bar.pending) return "bg-muted-foreground/40 border border-dashed border-muted-foreground/60";
   if (bar.access === "denied" || bar.error) return "bg-red-500/80";
   if (type === "egress") {
@@ -170,6 +175,7 @@ function barClass(bar: TimelineBar, type: "egress" | "fs" | "stdio"): string {
 function methodClass(row: TimelineRow): string {
   if (row.type === "stdio") return row.method === "err" ? "text-red-400" : "text-zinc-400";
   if (row.type === "fs") return "text-purple-400";
+  if (row.type === "resource") return row.key === "resource:cpu" ? "text-sky-400" : "text-emerald-400";
   switch (row.method) {
     case "GET":    return "text-green-400";
     case "POST":   return "text-blue-400";
@@ -261,19 +267,21 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
 
 const DEFAULT_labelW = 220;
 
-type Category = "llm" | "fs" | "egress" | "stdio";
+type Category = "llm" | "fs" | "egress" | "stdio" | "resource";
 
-const CATEGORY_ORDER: Category[] = ["llm", "fs", "egress", "stdio"];
+const CATEGORY_ORDER: Category[] = ["llm", "fs", "egress", "stdio", "resource"];
 const CATEGORY_LABELS: Record<Category, string> = {
   llm: "LLM",
   fs: "File System",
   egress: "Egress",
   stdio: "Stdio",
+  resource: "Resources",
 };
 
 function getRowCategory(row: TimelineRow): Category {
   if (row.type === "stdio") return "stdio";
   if (row.type === "fs") return "fs";
+  if (row.type === "resource") return "resource";
   const e = row.bars[0]?.rawEvents[0];
   if (e?.type === "egress.request" && LLM_PROVIDERS.some(p => p.matches(e))) {
     return "llm";
@@ -357,6 +365,96 @@ interface VSection {
 }
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
+
+function formatResourceBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+}
+
+function ResourceLineChart({
+  bars, rowKey, toDisplay, width, height, onSelect,
+}: {
+  bars: TimelineBar[];
+  rowKey: string;
+  toDisplay: (t: number) => number;
+  width: number;
+  height: number;
+  onSelect?: (bar: TimelineBar) => void;
+}) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
+  const isCPU = rowKey === "resource:cpu";
+  const colors = isCPU
+    ? { fill: "fill-sky-500/15", stroke: "stroke-sky-500/60" }
+    : { fill: "fill-emerald-500/15", stroke: "stroke-emerald-500/60" };
+
+  type Pt = { x: number; value: number; bar: TimelineBar };
+  const pts: Pt[] = [];
+  for (const bar of bars) {
+    const ev = bar.rawEvents[0];
+    if (ev?.type !== "resource.usage") continue;
+    pts.push({ x: toDisplay(bar.startTime), value: isCPU ? ev.cpu_percent : ev.memory_bytes, bar });
+  }
+  if (pts.length === 0) return null;
+
+  const maxValue = isCPU ? 100 : Math.max(...pts.map(p => p.value), 1);
+  const pad = 2;
+  const chartH = height - pad * 2;
+  const toY = (v: number) => pad + chartH * (1 - Math.min(v / maxValue, 1));
+
+  const polyPoints = pts.map(p => `${p.x.toFixed(1)},${toY(p.value).toFixed(1)}`).join(" ");
+  const areaD = pts.length > 1
+    ? `M${pts[0].x.toFixed(1)},${toY(pts[0].value).toFixed(1)}` +
+      pts.slice(1).map(p => ` L${p.x.toFixed(1)},${toY(p.value).toFixed(1)}`).join("") +
+      ` L${pts[pts.length - 1].x.toFixed(1)},${(height - pad).toFixed(1)}` +
+      ` L${pts[0].x.toFixed(1)},${(height - pad).toFixed(1)} Z`
+    : "";
+
+  function onMouseMove(e: React.MouseEvent<SVGSVGElement>) {
+    const mouseX = e.clientX - e.currentTarget.getBoundingClientRect().left;
+    let best = 0, bestDist = Infinity;
+    pts.forEach((p, i) => { const d = Math.abs(p.x - mouseX); if (d < bestDist) { bestDist = d; best = i; } });
+    setHoverIdx(best);
+  }
+
+  const hov = hoverIdx !== null ? pts[hoverIdx] : null;
+  const hovLabel = hov ? (isCPU ? `${hov.value.toFixed(1)}%` : formatResourceBytes(hov.value)) : null;
+
+  function onClick(e: React.MouseEvent<SVGSVGElement>) {
+    e.stopPropagation();
+    const mouseX = e.clientX - e.currentTarget.getBoundingClientRect().left;
+    let best = 0, bestDist = Infinity;
+    pts.forEach((p, i) => { const d = Math.abs(p.x - mouseX); if (d < bestDist) { bestDist = d; best = i; } });
+    if (pts[best]) onSelect?.(pts[best].bar);
+  }
+
+  return (
+    <svg
+      className="absolute inset-0 cursor-pointer"
+      style={{ width, height }}
+      onMouseMove={onMouseMove}
+      onMouseLeave={() => setHoverIdx(null)}
+      onClick={onClick}
+    >
+      {areaD && <path d={areaD} className={colors.fill} />}
+      {pts.length > 1 && (
+        <polyline points={polyPoints} className={`${colors.stroke} fill-none`} strokeWidth="1.5" strokeLinejoin="round" />
+      )}
+      {hov && hovLabel && (() => {
+        const labelW = hovLabel.length * 5.5 + 8;
+        const labelX = Math.max(labelW / 2, Math.min(hov.x, width - labelW / 2));
+        return (
+          <>
+            <line x1={hov.x} y1={0} x2={hov.x} y2={height} stroke="white" strokeWidth="1" strokeOpacity="0.25" strokeDasharray="2,2" />
+            <rect x={labelX - labelW / 2} y={2} width={labelW} height={11} rx={2} fill="rgba(0,0,0,0.65)" />
+            <text x={labelX} y={10.5} textAnchor="middle" fill="white" fontSize={8} fontFamily="ui-monospace,monospace">{hovLabel}</text>
+          </>
+        );
+      })()}
+    </svg>
+  );
+}
 
 export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void }) {
   const rows = useMemo(() => buildRows(events), [events]);
@@ -786,18 +884,31 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
     } else {
       const section = vsections[vsections.length - 1];
       if (section && !section.collapsed) {
-        const lanes = computeLanes(item.row.bars, toDisplay, effectiveDur);
-        for (let li = 0; li < lanes.length; li++) {
+        if (item.row.type === "resource") {
           section.lanes.push({
             row: item.row,
-            laneIdx: li,
-            laneBars: lanes[li],
-            lanes,
+            laneIdx: 0,
+            laneBars: item.row.bars,
+            lanes: [item.row.bars],
             localTop: section.laneCount * 22,
             absoluteTop: section.absoluteRowsTop + section.laneCount * 22,
           });
           section.laneCount++;
           absTop += 22;
+        } else {
+          const lanes = computeLanes(item.row.bars, toDisplay, effectiveDur);
+          for (let li = 0; li < lanes.length; li++) {
+            section.lanes.push({
+              row: item.row,
+              laneIdx: li,
+              laneBars: lanes[li],
+              lanes,
+              localTop: section.laneCount * 22,
+              absoluteTop: section.absoluteRowsTop + section.laneCount * 22,
+            });
+            section.laneCount++;
+            absTop += 22;
+          }
         }
       }
     }
@@ -927,9 +1038,9 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
               })}
               {dragSel && (
                 <>
-                  <div className="absolute top-0 bottom-0 left-0 bg-black/75 pointer-events-none z-50"
+                  <div className="absolute top-0 bottom-0 left-0 bg-black/40 pointer-events-none z-50"
                     style={{ width: Math.min(dragSel.startPx, dragSel.endPx) }} />
-                  <div className="absolute top-0 bottom-0 right-0 bg-black/75 pointer-events-none z-50"
+                  <div className="absolute top-0 bottom-0 right-0 bg-black/40 pointer-events-none z-50"
                     style={{ left: Math.max(dragSel.startPx, dragSel.endPx) }} />
                 </>
               )}
@@ -987,7 +1098,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                       <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
                     ))}
                     {collapsed && (() => {
-                      const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70" }[section.category];
+                      const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70", resource: "bg-emerald-500/70" }[section.category];
                       const ranges = section.allBars
                         .map(b => ({
                           left: toDisplay(b.startTime),
@@ -1029,18 +1140,20 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                         <div
                           key={`${vl.row.key}:${vl.laneIdx}`}
                           ref={vl.laneIdx === 0 ? (el) => { if (el) rowRefMap.current.set(vl.row.key, el); else rowRefMap.current.delete(vl.row.key); } : undefined}
-                          className={`group flex border-b border-border/40 ${isLaneSelected ? "bg-accent/60" : "hover:bg-muted/30"}`}
+                          className={`group flex border-b border-border/40 cursor-pointer ${isLaneSelected ? "bg-accent" : "hover:bg-muted"}`}
                           style={{ position: "absolute", top: vl.localTop, left: 0, right: 0, height: 22 }}
+                          onClick={() => {
+                            if (dragHappenedRef.current) return;
+                            const rowHasSelected = vl.lanes.flat().some(b => b.id === selectedId);
+                            if (rowHasSelected) { setSelectedId(null); return; }
+                            const first = vl.lanes[0]?.[0];
+                            if (first) setSelectedId(first.id);
+                          }}
                         >
                           {/* Label cell — sticky horizontally */}
                           <div
-                            className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 cursor-pointer ${isLaneSelected ? "bg-accent/60" : "bg-background group-hover:bg-muted/30"}`}
+                            className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isLaneSelected ? "bg-accent" : "bg-background group-hover:bg-muted"}`}
                             style={{ width: labelW }}
-                            onClick={() => {
-                              if (dragHappenedRef.current) return;
-                              const first = vl.laneBars[0];
-                              if (first) setSelectedId(first.id === selectedId ? null : first.id);
-                            }}
                           >
                             <span className={`shrink-0 font-mono font-semibold ${methodClass(vl.row)}`}>
                               {vl.row.method?.toUpperCase()}
@@ -1058,7 +1171,16 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                             {visibleTicks.map((px) => (
                               <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
                             ))}
-                            {vl.laneBars
+                            {vl.row.type === "resource"
+                              ? <ResourceLineChart
+                                  bars={vl.row.bars}
+                                  rowKey={vl.row.key}
+                                  toDisplay={toDisplay}
+                                  width={effectiveTrackWidth}
+                                  height={22}
+                                  onSelect={(bar) => setSelectedId(bar.id === selectedId ? null : bar.id)}
+                                />
+                              : vl.laneBars
                               .filter(bar => {
                                 const l = toDisplay(bar.startTime);
                                 const r = Math.max(l + 1, toDisplay(bar.startTime + effectiveDur(bar)));
@@ -1076,7 +1198,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                       className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm cursor-pointer ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
                                       style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
                                       title={vl.row.label}
-                                      onClick={() => { if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
+                                      onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
                                     />
                                   );
                                 }
@@ -1085,7 +1207,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                     key={bar.id}
                                     className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 cursor-pointer ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
                                     style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
-                                    onClick={() => { if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
+                                    onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
                                   >
                                     <div
                                       className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, vl.row.type)}`}
@@ -1111,9 +1233,9 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
 
       {dragSel && (
         <>
-          <div className="pointer-events-none absolute top-0 bottom-0 bg-black/75 z-50"
+          <div className="pointer-events-none absolute top-0 bottom-0 bg-black/40 z-50"
             style={{ left: 0, width: Math.max(0, labelW + Math.min(dragSel.startPx, dragSel.endPx) - scrollLeft) }} />
-          <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-black/75 z-50"
+          <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-black/40 z-50"
             style={{ left: labelW + Math.max(dragSel.startPx, dragSel.endPx) - scrollLeft }} />
         </>
       )}

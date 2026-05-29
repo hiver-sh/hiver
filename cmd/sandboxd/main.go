@@ -389,6 +389,8 @@ func main() {
 		log.Fatalf("start agent (runc): %v", err)
 	}
 
+	go api.PollResourceUsage(ctx, broker, "/sandbox-"+podHostname)
+
 	s := api.NewSandboxServer(
 		*apiServerPort,
 		broker,
