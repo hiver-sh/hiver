@@ -135,7 +135,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
 
 
 const LANE_GAP_PX = 1;
-const MIN_BAR_PX = 2;
+const MIN_BAR_PX = 1;
 
 function computeLanes(
   bars: TimelineBar[],
@@ -270,7 +270,7 @@ const DEFAULT_labelW = 220;
 
 type Category = "llm" | "fs" | "egress" | "stdio" | "resource";
 
-const CATEGORY_ORDER: Category[] = ["llm", "fs", "egress", "stdio", "resource"];
+const CATEGORY_ORDER: Category[] = ["resource", "llm", "fs", "egress", "stdio"];
 const CATEGORY_LABELS: Record<Category, string> = {
   llm: "LLM",
   fs: "File System",
@@ -538,7 +538,8 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
     realToDisplay: (t: number) => number;
     effectiveDur: (b: TimelineBar) => number;
     labelW: number;
-  }>({ vsections: [], realToDisplay: () => 0, effectiveDur: () => 0, labelW: DEFAULT_labelW });
+    resourceStickyHeight: number;
+  }>({ vsections: [], realToDisplay: () => 0, effectiveDur: () => 0, labelW: DEFAULT_labelW, resourceStickyHeight: 0 });
 
   function toggleCategory(cat: Category) {
     setCollapsedCategories(prev => {
@@ -567,7 +568,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   const scrollSelectedIntoView = useCallback(() => {
     const scrollEl = rowsScrollRef.current;
     if (!scrollEl || selectedId === null) return;
-    const { vsections, realToDisplay, effectiveDur, labelW: lw } = computedRef.current;
+    const { vsections, realToDisplay, effectiveDur, labelW: lw, resourceStickyHeight: stickyH } = computedRef.current;
 
     for (const section of vsections) {
       for (const lane of section.lanes) {
@@ -584,12 +585,14 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
         const curScrollTop = scrollEl.scrollTop;
         const curScrollLeft = scrollEl.scrollLeft;
 
-        const hiddenV = laneTop < curScrollTop || laneBottom > curScrollTop + viewH;
+        // The sticky resource section covers the top stickyH px of the viewport
+        const topCover = section.category === "resource" ? 0 : stickyH;
+        const hiddenV = laneTop < curScrollTop + topCover || laneBottom > curScrollTop + viewH;
         const hiddenH = barLeft < curScrollLeft + lw || barRight > curScrollLeft + viewW;
 
         if (!hiddenV && !hiddenH) return;
 
-        if (hiddenV) scrollEl.scrollTop = Math.max(0, laneTop + 11 - viewH / 2);
+        if (hiddenV) scrollEl.scrollTop = Math.max(0, laneTop - topCover + 11 - (viewH - topCover) / 2);
         if (hiddenH) scrollEl.scrollLeft = Math.max(0, (barLeft + barRight) / 2 - lw - (viewW - lw) / 2);
         return;
       }
@@ -661,7 +664,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   if (rows.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        No events yet.
+        No events yet
       </div>
     );
   }
@@ -918,8 +921,10 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
     s.totalHeight = 24 + s.laneCount * 22;
   }
 
+  const resourceStickyHeight = vsections.find(s => s.category === "resource")?.totalHeight ?? 0;
+
   // Update ref so callbacks can access current render values
-  computedRef.current = { vsections, realToDisplay: toDisplay, effectiveDur, labelW };
+  computedRef.current = { vsections, realToDisplay: toDisplay, effectiveDur, labelW, resourceStickyHeight };
 
   // ─── Visibility windows ───────────────────────────────────────────────────
 
@@ -995,7 +1000,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
 
       {/* Label column splitter */}
       <div
-        className="absolute top-0 bottom-0 z-30 w-[5px] cursor-col-resize group/lsplit"
+        className="absolute top-0 bottom-0 z-[31] w-[5px] cursor-col-resize group/lsplit"
         style={{ left: labelW - 2 }}
         onMouseDown={startLabelDrag}
       >
@@ -1062,22 +1067,32 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
           {vsections.map(section => {
             const collapsed = section.collapsed;
 
-            // Vertical: compute which lanes are in the visible window for this section
+            // Vertical: compute which lanes are in the visible window for this section.
+            // Sticky sections are always visible regardless of scroll position.
             const localVisTop    = scrollTop - section.absoluteRowsTop - V_OVERSCAN_PX;
             const localVisBottom = scrollTop + viewportHeight - section.absoluteRowsTop + V_OVERSCAN_PX;
-            const visLanes = section.lanes.filter(
-              vl => vl.localTop + 22 > localVisTop && vl.localTop < localVisBottom,
-            );
+            const visLanes = section.category === "resource"
+              ? section.lanes
+              : section.lanes.filter(
+                  vl => vl.localTop + 22 > localVisTop && vl.localTop < localVisBottom,
+                );
 
             return (
               // Section div has explicit height so sticky headers from later sections
               // push earlier ones out correctly via normal document flow.
-              <div key={section.category} style={{ height: section.totalHeight }}>
+              <div
+                key={section.category}
+                style={{
+                  height: section.totalHeight,
+                  ...(section.category === "resource" ? { position: "sticky", top: 0, zIndex: 30 } : {}),
+                }}
+                className={section.category === "resource" ? "bg-background" : ""}
+              >
 
                 {/* Category header — sticky within its section */}
                 <div
-                  className="flex border-b border-border/60 bg-background cursor-pointer sticky top-0 z-20"
-                  style={{ height: 24 }}
+                  className="flex border-b border-border/60 bg-background cursor-pointer sticky z-20"
+                  style={{ height: 24, top: section.category === "resource" ? 0 : resourceStickyHeight }}
                   onClick={() => toggleCategory(section.category)}
                 >
                   {/* Label cell — also sticky horizontally */}
@@ -1136,24 +1151,24 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                 {!collapsed && (
                   <div style={{ position: "relative", height: section.laneCount * 22 }}>
                     {visLanes.map(vl => {
-                      const isLaneSelected = vl.laneBars.some(b => b.id === selectedId);
+                      const isResource = vl.row.type === "resource";
+                      const isLaneSelected = !isResource && vl.laneBars.some(b => b.id === selectedId);
                       return (
                         <div
                           key={`${vl.row.key}:${vl.laneIdx}`}
                           ref={vl.laneIdx === 0 ? (el) => { if (el) rowRefMap.current.set(vl.row.key, el); else rowRefMap.current.delete(vl.row.key); } : undefined}
-                          className={`group flex border-b border-border/40 cursor-pointer ${isLaneSelected ? "bg-accent" : "hover:bg-muted"}`}
+                          className={`group flex border-b border-border/40 ${isResource ? "cursor-default" : `cursor-pointer ${isLaneSelected ? "bg-accent" : "hover:bg-muted"}`}`}
                           style={{ position: "absolute", top: vl.localTop, left: 0, right: 0, height: 22 }}
                           onClick={() => {
-                            if (dragHappenedRef.current) return;
-                            const rowHasSelected = vl.lanes.flat().some(b => b.id === selectedId);
-                            if (rowHasSelected) { setSelectedId(null); return; }
-                            const first = vl.lanes[0]?.[0];
-                            if (first) setSelectedId(first.id);
+                            if (isResource || dragHappenedRef.current) return;
+                            const first = vl.laneBars[0];
+                            if (!first) return;
+                            setSelectedId(first.id === selectedId ? null : first.id);
                           }}
                         >
                           {/* Label cell — sticky horizontally */}
                           <div
-                            className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isLaneSelected ? "bg-accent" : "bg-background group-hover:bg-muted"}`}
+                            className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isLaneSelected ? "bg-accent" : isResource ? "bg-background" : "bg-background group-hover:bg-muted"}`}
                             style={{ width: labelW }}
                           >
                             <span className={`shrink-0 font-mono font-semibold ${methodClass(vl.row)}`}>
