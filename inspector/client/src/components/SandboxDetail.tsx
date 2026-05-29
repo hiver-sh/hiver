@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { langForPath } from "@/lib/fileUtils";
 import type { SandboxEvent, SandboxRef } from "@/types";
 import { loadEvents, appendEvent, clearEvents } from "@/lib/eventStore";
+import { useTransport } from "@/lib/transport";
 
 interface Props {
   sandbox: SandboxRef;
@@ -27,6 +28,7 @@ interface Props {
 }
 
 export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown, onConnectedChange }: Props) {
+  const { transport, player } = useTransport();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
   const [connected, setConnected] = useState(false);
   useEffect(() => { onConnectedChange?.(connected); }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -95,21 +97,21 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     url.searchParams.set("path", path);
     url.searchParams.set("sandboxUrl", sandbox.endpoint);
     try {
-      const content = await fetch(url).then((r) => r.text());
+      const content = await transport.fetch(url).then((r) => r.text());
       setFilePreview({ path, content, lang });
     } catch { /* ignore */ }
-  }, [sandbox.id, sandbox.endpoint, serverUrl]);
+  }, [sandbox.id, sandbox.endpoint, serverUrl, transport]);
 
   const proposePolicy = useCallback(async (updater: (cfg: Record<string, unknown>) => Record<string, unknown>) => {
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/config`);
     url.searchParams.set("sandboxUrl", sandbox.endpoint);
-    const current = await fetch(url).then((r) => r.json() as Promise<Record<string, unknown>>);
+    const current = await transport.fetch(url).then((r) => r.json() as Promise<Record<string, unknown>>);
     setConfigProposal({
       current: JSON.stringify(current, null, 2),
       proposed: JSON.stringify(updater(current), null, 2),
     });
     setShowConfig(true);
-  }, [sandbox.id, sandbox.endpoint, serverUrl]);
+  }, [sandbox.id, sandbox.endpoint, serverUrl, transport]);
 
   const fsWriteEvents = useMemo(
     () => events.filter((e): e is Extract<SandboxEvent, { type: "fs.request" }> => e.type === "fs.request" && (e as Extract<SandboxEvent, { type: "fs.request" }>).operation === "write"),
@@ -132,13 +134,13 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     url.searchParams.set("sandboxUrl", sandbox.endpoint);
     if (lastEventId !== undefined) url.searchParams.set("lastEventId", String(lastEventId));
 
-    const es = new EventSource(url.toString());
+    const es = transport.openEventSource(url);
     es.onopen = () => setConnected(true);
-    es.onmessage = (e: MessageEvent<string>) => {
+    es.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data) as SandboxEvent;
         setEvents((prev) => [...prev, event]);
-        void appendEvent(sandbox.id, event);
+        if (!player) void appendEvent(sandbox.id, event);
       } catch {
         // ignore malformed frames
       }
@@ -152,11 +154,19 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       es.close();
       setConnected(false);
     });
-  }, [sandbox.id, sandbox.endpoint, serverUrl]);
+  }, [sandbox.id, sandbox.endpoint, serverUrl, transport]);
 
   useEffect(() => {
     let cancelled = false;
     setEvents([]);
+    if (player) {
+      // In trace mode: skip stored events, replay from the start
+      startStream();
+      return () => {
+        cancelled = true;
+        abortRef.current?.abort();
+      };
+    }
     loadEvents(sandbox.id)
       .then((stored) => {
         if (cancelled) return;
@@ -170,7 +180,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [startStream]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [startStream, player]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleShutdown() {
     if (!confirm(`Shut down sandbox "${sandbox.id}"?`)) return;
@@ -180,7 +190,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
         `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/shutdown`,
       );
       url.searchParams.set("controller", controllerUrl);
-      await fetch(url, { method: "POST" });
+      await transport.fetch(url, { method: "POST" });
       void clearEvents(sandbox.id);
       onShutdown();
     } finally {

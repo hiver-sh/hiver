@@ -5,6 +5,7 @@ import configRoutes from "./routes/config.js";
 import fileRoutes from "./routes/files.js";
 import eventsRoutes from "./routes/events.js";
 import terminalRoutes from "./routes/terminal.js";
+import traceRoutes from "./routes/trace.js";
 import { DEFAULT_URL } from "./lib/controllerUrl.js";
 
 const app = express();
@@ -18,6 +19,7 @@ app.use("/api/sandboxes", configRoutes);
 app.use("/api/sandboxes", fileRoutes);
 app.use("/api/sandboxes", eventsRoutes);
 app.use("/api/sandboxes", terminalRoutes);
+app.use("/api/trace", traceRoutes);
 
 app.listen(PORT, () => {
   console.log(`Inspector server on http://localhost:${PORT}`);

@@ -5,6 +5,7 @@ import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
 import { GettingStarted } from "@/components/GettingStarted";
 import { SandboxDetail } from "@/components/SandboxDetail";
 import { SandboxList } from "@/components/SandboxList";
+import { TraceDialog } from "@/components/TraceDialog";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +21,7 @@ import { Separator } from "@/components/ui/separator";
 import { DEFAULT_CONTROLLER_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } from "@/types";
 import { purgeOrphanEvents } from "@/lib/eventStore";
 import { useScrollbarVisibility } from "@/lib/useScrollbarVisibility";
+import { TransportProvider, useTransport } from "@/lib/transport";
 
 function ControllerUnreachable({ message, loading, onRetry }: { message: string; loading: boolean; onRetry: () => void }) {
   return (
@@ -74,11 +76,13 @@ function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxe
   );
 }
 
-export default function App() {
+function AppContent() {
+  const { transport } = useTransport();
   const [controllerUrl, setControllerUrl] = useState(DEFAULT_CONTROLLER_URL);
   const [serverUrl] = useState(DEFAULT_INSPECTOR_SERVER);
   const [controllerInput, setControllerInput] = useState(DEFAULT_CONTROLLER_URL);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [traceOpen, setTraceOpen] = useState(false);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem("app:sidebarCollapsed") === "true",
@@ -102,7 +106,7 @@ export default function App() {
     try {
       const url = new URL(`${serverUrl}/api/sandboxes`);
       url.searchParams.set("controller", controllerUrl);
-      const res = await fetch(url);
+      const res = await transport.fetch(url);
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: res.statusText }));
         setFetchError((body as { error?: string }).error ?? res.statusText);
@@ -116,11 +120,17 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [serverUrl, controllerUrl]);
+  }, [serverUrl, controllerUrl, transport]);
 
   useEffect(() => {
     fetchSandboxes();
   }, [fetchSandboxes]);
+
+  // Expose loadTrace() on window for console access
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).loadTrace = () => setTraceOpen(true);
+    return () => { delete (window as unknown as Record<string, unknown>).loadTrace; };
+  }, []);
 
   useScrollbarVisibility();
 
@@ -249,6 +259,16 @@ export default function App() {
           />
         </Routes>
       </main>
+
+      <TraceDialog open={traceOpen} onOpenChange={setTraceOpen} />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <TransportProvider>
+      <AppContent />
+    </TransportProvider>
   );
 }

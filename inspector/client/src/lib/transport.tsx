@@ -1,0 +1,343 @@
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+
+export type TraceRecord = {
+  time: number; // ms from recording start
+  payload: string;
+  headers: Record<string, string>;
+};
+
+export type TraceData = Record<string, TraceRecord[]>;
+
+export interface EventSourceLike {
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: string }) => void) | null;
+  onerror: (() => void) | null;
+  close(): void;
+}
+
+export interface Transport {
+  fetch(url: string | URL, init?: RequestInit): Promise<Response>;
+  openEventSource(url: string | URL): EventSourceLike;
+}
+
+// Parse any URL (absolute or relative) into pathname + decoded param map.
+// Relative URLs like "/api/foo?path=/bar" have raw (un-encoded) param values;
+// we split on "&" and decode each side manually so they compare equal to the
+// percent-encoded values the browser produces via URLSearchParams.
+function parseUrlParts(url: string | URL): { pathname: string; params: Map<string, string> } {
+  if (url instanceof URL) {
+    return { pathname: url.pathname, params: new Map(url.searchParams) };
+  }
+  try {
+    const u = new URL(url);
+    return { pathname: u.pathname, params: new Map(u.searchParams) };
+  } catch {
+    // Relative URL — split manually
+    const qIdx = url.indexOf("?");
+    const pathname = qIdx === -1 ? url : url.slice(0, qIdx);
+    const params = new Map<string, string>();
+    if (qIdx !== -1) {
+      for (const part of url.slice(qIdx + 1).split("&")) {
+        const eq = part.indexOf("=");
+        if (eq === -1) continue;
+        try {
+          params.set(decodeURIComponent(part.slice(0, eq)), decodeURIComponent(part.slice(eq + 1)));
+        } catch { /* skip malformed */ }
+      }
+    }
+    return { pathname, params };
+  }
+}
+
+function buildIndex(trace: TraceData): Map<string, TraceRecord[]> {
+  const index = new Map<string, TraceRecord[]>();
+  for (const [key, records] of Object.entries(trace)) {
+    const { pathname, params } = parseUrlParts(key);
+    // Canonical key: pathname + sorted decoded params re-encoded consistently
+    const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const qs = new URLSearchParams(sorted).toString();
+    index.set(pathname + (qs ? `?${qs}` : ""), records);
+  }
+  return index;
+}
+
+function parseSseData(payload: string): string | null {
+  for (const line of payload.split("\n")) {
+    if (line.startsWith("data: ")) return line.slice(6);
+  }
+  return null;
+}
+
+class NativeEventSource implements EventSourceLike {
+  private _es: EventSource;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  constructor(url: string | URL) {
+    this._es = new EventSource(url.toString());
+    this._es.onopen = () => this.onopen?.();
+    this._es.onmessage = (e) => this.onmessage?.({ data: e.data });
+    this._es.onerror = () => this.onerror?.();
+  }
+
+  close() {
+    this._es.close();
+  }
+}
+
+export const liveTransport: Transport = {
+  fetch: (url, init) => globalThis.fetch(url, init),
+  openEventSource: (url) => new NativeEventSource(url),
+};
+
+export class TracePlayer {
+  private _trace: TraceData;
+  private _index: Map<string, TraceRecord[]>;
+  private _speed: number;
+  private _baseReplayMs = 0;
+  private _baseWallMs: number;
+
+  constructor(trace: TraceData, speed = 1) {
+    this._trace = trace;
+    this._index = buildIndex(trace);
+    this._speed = speed;
+    this._baseWallMs = Date.now();
+  }
+
+  get speed() {
+    return this._speed;
+  }
+
+  setSpeed(newSpeed: number) {
+    this._baseReplayMs = this.elapsedReplayMs;
+    this._baseWallMs = Date.now();
+    this._speed = newSpeed;
+  }
+
+  get elapsedReplayMs(): number {
+    return this._baseReplayMs + (Date.now() - this._baseWallMs) * this._speed;
+  }
+
+  waitUntil(traceTimeMs: number): Promise<void> {
+    const remaining = traceTimeMs - this.elapsedReplayMs;
+    if (remaining <= 0) return Promise.resolve();
+    return new Promise((resolve) => setTimeout(resolve, remaining / this._speed));
+  }
+
+  findEntries(url: string | URL): TraceRecord[] | null {
+    const { pathname, params: clientParams } = parseUrlParts(url);
+
+    // Build the canonical key the same way buildIndex does and try exact match first.
+    const sorted = [...clientParams.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const qs = new URLSearchParams(sorted).toString();
+    const canonicalKey = pathname + (qs ? `?${qs}` : "");
+    if (this._index.has(canonicalKey)) {
+      console.log("[trace] exact hit", canonicalKey);
+      return this._index.get(canonicalKey)!;
+    }
+
+    // Connection-specific params that change every session and should not block
+    // matching. sandboxUrl and controller are dynamic ports; the sandbox identity
+    // is already encoded in the pathname. exposedBackend changes similarly.
+    const IGNORE_PARAMS = new Set(["sessionId", "cols", "rows", "sandboxUrl", "controller", "exposedBackend", "lastEventId"]);
+
+    let best: TraceRecord[] | null = null;
+    let bestKey = "";
+
+    for (const [traceKey, records] of Object.entries(this._trace)) {
+      const { pathname: tracePath, params: traceParams } = parseUrlParts(traceKey);
+      if (tracePath !== pathname) continue;
+
+      // All trace params must match the client, except ignored ephemeral ones.
+      let allMatch = true;
+      for (const [name, value] of traceParams) {
+        if (IGNORE_PARAMS.has(name)) continue;
+        if (clientParams.get(name) !== value) { allMatch = false; break; }
+      }
+      if (!allMatch) continue;
+
+      console.log("[trace] candidate", traceKey,
+        "client params", Object.fromEntries(clientParams),
+        "trace params", Object.fromEntries(traceParams));
+
+      // Prefer the entry with more matching params (more specific).
+      if (best === null || traceParams.size > parseUrlParts(bestKey).params.size) {
+        best = records;
+        bestKey = traceKey;
+      }
+    }
+
+    if (best) console.log("[trace] best match", bestKey);
+    else console.log("[trace] no match for", canonicalKey);
+    return best;
+  }
+}
+
+class TraceEventSource implements EventSourceLike {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  private _closed = false;
+
+  constructor(entries: TraceRecord[], player: TracePlayer) {
+    (async () => {
+      await Promise.resolve(); // yield so caller can set onopen/onmessage
+      if (this._closed) return;
+      this.onopen?.();
+
+      for (const entry of entries) {
+        await player.waitUntil(entry.time);
+        if (this._closed) return;
+        const data = parseSseData(entry.payload);
+        if (data !== null) this.onmessage?.({ data });
+      }
+    })();
+  }
+
+  close() {
+    this._closed = true;
+  }
+}
+
+export class TraceTransport implements Transport {
+  constructor(private _player: TracePlayer) {}
+
+  async fetch(url: string | URL, init?: RequestInit): Promise<Response> {
+    console.log("[trace] fetch called", url.toString());
+    if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") {
+      return new Response(null, { status: 204 });
+    }
+
+    const entries = this._player.findEntries(url);
+    if (!entries || entries.length === 0) {
+      return globalThis.fetch(url, init);
+    }
+
+    const first = entries[0];
+    const contentType = first.headers["content-type"] ?? "";
+
+    if (contentType.includes("text/event-stream")) {
+      const stream = this._buildSseStream(entries, init?.signal);
+      return new Response(stream, { status: 200, headers: first.headers });
+    }
+
+    // Pick the most recent snapshot at or before the current replay time.
+    // Falls back to the first entry if replay hasn't reached any entry yet.
+    const elapsed = this._player.elapsedReplayMs;
+    const atOrBefore = entries.filter(e => e.time <= elapsed);
+    const entry = atOrBefore.length > 0 ? atOrBefore[atOrBefore.length - 1] : first;
+
+    await this._player.waitUntil(entry.time);
+    if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    return new Response(entry.payload, { status: 200, headers: entry.headers });
+  }
+
+  openEventSource(url: string | URL): EventSourceLike {
+    const entries = this._player.findEntries(url);
+    if (!entries || entries.length === 0) {
+      return new NativeEventSource(url);
+    }
+    return new TraceEventSource(entries, this._player);
+  }
+
+  private _buildSseStream(entries: TraceRecord[], signal?: AbortSignal): ReadableStream<Uint8Array> {
+    const player = this._player;
+    const encoder = new TextEncoder();
+
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (signal) {
+          signal.addEventListener(
+            "abort",
+            () => controller.error(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }
+
+        (async () => {
+          for (const entry of entries) {
+            if (signal?.aborted) return;
+            await player.waitUntil(entry.time);
+            if (signal?.aborted) return;
+            const text = entry.payload.endsWith("\n\n") ? entry.payload : entry.payload + "\n\n";
+            try {
+              controller.enqueue(encoder.encode(text));
+            } catch {
+              return; // controller already closed/errored
+            }
+          }
+          try {
+            controller.close();
+          } catch {
+            // already closed
+          }
+        })();
+      },
+    });
+  }
+}
+
+export interface TransportContextValue {
+  transport: Transport;
+  player: TracePlayer | null;
+  playbackSpeed: number;
+  setPlaybackSpeed: (speed: number) => void;
+  loadTraceFromData: (data: TraceData) => void;
+  clearTrace: () => void;
+}
+
+export const TransportContext = createContext<TransportContextValue>({
+  transport: liveTransport,
+  player: null,
+  playbackSpeed: 1,
+  setPlaybackSpeed: () => {},
+  loadTraceFromData: () => {},
+  clearTrace: () => {},
+});
+
+export function useTransport(): TransportContextValue {
+  return useContext(TransportContext);
+}
+
+export function TransportProvider({ children }: { children: ReactNode }) {
+  const [player, setPlayer] = useState<TracePlayer | null>(null);
+  const [playbackSpeed, setPlaybackSpeedState] = useState(1);
+
+  const transport = useMemo(
+    () => (player ? new TraceTransport(player) : liveTransport),
+    [player],
+  );
+
+  const setPlaybackSpeed = useCallback(
+    (speed: number) => {
+      setPlaybackSpeedState(speed);
+      player?.setSpeed(speed);
+    },
+    [player],
+  );
+
+  const loadTraceFromData = useCallback(
+    (data: TraceData) => {
+      setPlayer(new TracePlayer(data, playbackSpeed));
+    },
+    [playbackSpeed],
+  );
+
+  const clearTrace = useCallback(() => {
+    setPlayer(null);
+    setPlaybackSpeedState(1);
+  }, []);
+
+  return (
+    <TransportContext.Provider
+      value={{ transport, player, playbackSpeed, setPlaybackSpeed, loadTraceFromData, clearTrace }}
+    >
+      {children}
+    </TransportContext.Provider>
+  );
+}

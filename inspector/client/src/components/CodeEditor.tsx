@@ -61,6 +61,8 @@ export function CodeEditor({ value, onChange, className }: Props) {
           fontSize: 13,
           padding: { top: 8, bottom: 8 },
           folding: false,
+          inlayHints: { enabled: "off" },
+          breadcrumbs: { enabled: false },
         }}
       />
       <button

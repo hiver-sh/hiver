@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTransport } from "@/lib/transport";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -15,6 +16,7 @@ const FONT_FAMILY = '"MesloLGM Nerd Font Mono", Monaco, monospace';
 
 export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const { transport } = useTransport();
 
   useEffect(() => {
     const el = containerRef.current;
@@ -119,7 +121,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
         );
         url.searchParams.set("sandboxUrl", sandboxUrl);
         url.searchParams.set("sessionId", sessionId);
-        fetch(url.toString(), {
+        transport.fetch(url.toString(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(msg),
@@ -144,7 +146,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
 
         let resp: Response;
         try {
-          resp = await fetch(url.toString(), { signal: abortCtrl.signal });
+          resp = await transport.fetch(url.toString(), { signal: abortCtrl.signal });
         } catch {
           if (!disposed) retryTimer = setTimeout(connect, 2000);
           return;
@@ -223,7 +225,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
       disposed = true;
       cleanup();
     };
-  }, [sandboxId, serverUrl, sandboxUrl, exposedEndpoint]);
+  }, [sandboxId, serverUrl, sandboxUrl, exposedEndpoint, transport]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden bg-[#000000] p-1" />;
 }

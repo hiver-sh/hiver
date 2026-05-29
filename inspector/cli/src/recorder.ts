@@ -121,7 +121,7 @@ export class EventRecorder {
     })();
   }
 
-  private trackDirectory(sandboxId: string, sandboxEndpoint: string, dirPath: string): void {
+  private trackDirectory(sandboxId: string, sandboxEndpoint: string, dirPath: string, recurse: boolean = false): void {
     const key = `${sandboxId}:${dirPath}`;
     if (this.knownDirs.has(key)) return;
     this.knownDirs.add(key);
@@ -138,10 +138,13 @@ export class EventRecorder {
           lastPayload = text;
           this.addEvent(traceKey, text, this.headersToMap(res.headers));
         }
+        if (!recurse) {
+          return;
+        }
         const { entries } = JSON.parse(text) as { entries: DirEntry[] };
         for (const entry of entries) {
           if (entry.is_dir) {
-            this.trackDirectory(sandboxId, sandboxEndpoint, entry.path);
+            this.trackDirectory(sandboxId, sandboxEndpoint, entry.path, recurse);
           } else {
             const ext = entry.path.slice(entry.path.lastIndexOf("."));
             if (TEXT_EXTS.has(ext)) this.trackFile(sandboxId, sandboxEndpoint, entry.path);
@@ -199,7 +202,7 @@ export class EventRecorder {
         // config unavailable — fall back to root only
       }
       this.trackDirectory(id, sandboxEndpoint, "/");
-      for (const mount of mountPaths) this.trackDirectory(id, sandboxEndpoint, mount);
+      for (const mount of mountPaths) this.trackDirectory(id, sandboxEndpoint, mount, true);
     })();
 
     this.pollEndpoint(configUrl);

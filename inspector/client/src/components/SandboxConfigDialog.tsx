@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTransport } from "@/lib/transport";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/CodeEditor";
@@ -155,6 +156,7 @@ interface Props {
 }
 
 export function SandboxConfigDialog({ sandboxId, serverUrl, sandboxUrl, open, onOpenChange, proposal }: Props) {
+  const { transport } = useTransport();
   const [savedConfig, setSavedConfig] = useState("");
   const [editedConfig, setEditedConfig] = useState("");
   const [saving, setSaving] = useState(false);
@@ -167,12 +169,12 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, sandboxUrl, open, on
     if (!open) return;
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`);
     url.searchParams.set("sandboxUrl", sandboxUrl);
-    fetch(url).then((r) => r.json()).then((data) => {
+    transport.fetch(url).then((r) => r.json()).then((data) => {
       const str = JSON.stringify(data, null, 2);
       setSavedConfig(str);
       setEditedConfig(proposal?.proposed ?? str);
     });
-  }, [open, sandboxId, serverUrl, sandboxUrl, proposal]);
+  }, [open, sandboxId, serverUrl, sandboxUrl, proposal, transport]);
 
   useEffect(() => {
     if (open) setMode(proposal ? "diff" : "editor");
@@ -183,7 +185,7 @@ export function SandboxConfigDialog({ sandboxId, serverUrl, sandboxUrl, open, on
     try {
       const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`);
       url.searchParams.set("sandboxUrl", sandboxUrl);
-      await fetch(url, {
+      await transport.fetch(url, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: editedConfig,

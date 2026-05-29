@@ -5,6 +5,7 @@ import { CodeViewer, CODE_DIALOG_CLASS } from "@/components/CodeViewer";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import type { SandboxEvent } from "@/types";
 import { langForPath } from "@/lib/fileUtils";
+import { useTransport } from "@/lib/transport";
 
 interface DirEntry {
   name: string;
@@ -88,6 +89,7 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
 }
 
 export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props) {
+  const { transport } = useTransport();
   const [roots, setRoots] = useState<TreeNode[]>([]);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -117,10 +119,11 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
       );
       url.searchParams.set("path", path);
       url.searchParams.set("sandboxUrl", sandboxUrl);
-      const data = await fetch(url).then((r) => r.json() as Promise<{ entries: DirEntry[] }>);
+      console.log("[FileExplorer] fetchChildren", path, "transport:", transport.constructor?.name ?? transport);
+      const data = await transport.fetch(url).then((r) => r.json() as Promise<{ entries: DirEntry[] }>);
       return toNodes(data.entries);
     },
-    [sandboxId, serverUrl, sandboxUrl],
+    [sandboxId, serverUrl, sandboxUrl, transport],
   );
 
   const loadMounts = useCallback(async () => {
@@ -239,7 +242,7 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
     }
     setLoadingPath(path);
     try {
-      const content = await fetch(fileUrl(path)).then((r) => r.text());
+      const content = await transport.fetch(fileUrl(path)).then((r) => r.text());
       setPreview({ path, content, lang });
     } catch {
       downloadFile(path);
