@@ -1,8 +1,4 @@
 // Package spec defines the on-wire format that drives sandboxd.
-//
-// Files may be YAML or JSON — sigs.k8s.io/yaml decodes via JSON internally
-// so the existing `json:"…"` struct tags drive both formats. The tests
-// keep the spec next to the agent fixture as `spec.yaml` for readability.
 package spec
 
 import (
@@ -12,8 +8,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-
-	"sigs.k8s.io/yaml"
 
 	"github.com/blasten/hive/internal/fusefs"
 	"github.com/blasten/hive/internal/proxy"
@@ -267,7 +261,7 @@ func Parse(path string) (*Spec, error) {
 		return nil, fmt.Errorf("spec: read %s: %w", path, err)
 	}
 	var s Spec
-	if err := yaml.Unmarshal(data, &s); err != nil {
+	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("spec: parse %s: %w", path, err)
 	}
 	return &s, nil

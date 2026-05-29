@@ -9,10 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"encoding/json"
+
 	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/spec"
-	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -74,8 +75,30 @@ func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
 	return sandboxes, nil
 }
 
+func (r *DockerRuntime) Get(id string) (gen.SandboxDetail, error) {
+	name := containerNameFor(id)
+	_, running, err := containerState(name)
+	if err != nil {
+		return gen.SandboxDetail{}, err
+	}
+	if !running {
+		return gen.SandboxDetail{}, ErrSandboxNotFound
+	}
+	hostPort, err := lookupHostPort(name, sandboxAPIPort)
+	if err != nil {
+		return gen.SandboxDetail{}, err
+	}
+	cmd := fmt.Sprintf("docker exec -it %s sandbox-exec", name)
+	return gen.SandboxDetail{
+		Id:              id,
+		Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
+		ExposedEndpoint: lookupTCPProxyEndpoint(name),
+		TerminalCmd:     &cmd,
+	}, nil
+}
+
 func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
-	specBytes, err := yaml.Marshal(cfg)
+	specBytes, err := json.Marshal(cfg)
 	if err != nil {
 		return gen.Sandbox{}, fmt.Errorf("marshal spec: %w", err)
 	}
@@ -141,14 +164,14 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 
 	createArgs = append(createArgs,
 		image,
-		"--spec", "/mnt/spec.yaml",
+		"--spec", "/mnt/spec.json",
 		"--snapshot-dir", "/snapshots",
 	)
 	if out, err := exec.Command("docker", createArgs...).CombinedOutput(); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("docker create: %v: %s", err, out)
 	}
 
-	if out, err := exec.Command("docker", "cp", specPath, containerName+":/mnt/spec.yaml").CombinedOutput(); err != nil {
+	if out, err := exec.Command("docker", "cp", specPath, containerName+":/mnt/spec.json").CombinedOutput(); err != nil {
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
 		return gen.Sandbox{}, fmt.Errorf("docker cp spec: %v: %s", err, out)
 	}

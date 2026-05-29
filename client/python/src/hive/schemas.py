@@ -114,6 +114,11 @@ class SandboxRef(BaseModel):
     exposed_endpoint: Optional[str] = None
 
 
+class SandboxDetail(SandboxRef):
+    """Extended sandbox record returned by GET /v1/sandboxes/{id}."""
+    terminal_cmd: Optional[str] = None
+
+
 class _SandboxEventBase(BaseModel):
     id: int
     timestamp: str

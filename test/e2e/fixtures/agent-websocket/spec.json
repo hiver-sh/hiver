@@ -1,0 +1,28 @@
+{
+  "image": ".",
+  "fs": [
+    {
+      "backend": "local",
+      "mount": "/workspace",
+      "acls": [
+        {
+          "path": "/workspace",
+          "access": "rw"
+        },
+        {
+          "path": "/workspace/**",
+          "access": "rw"
+        }
+      ]
+    }
+  ],
+  "egress": [
+    {
+      "access": "allow",
+      "host": "upstream-ws",
+      "ports": [
+        17082
+      ]
+    }
+  ]
+}

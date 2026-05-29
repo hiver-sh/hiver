@@ -1,4 +1,4 @@
-import { ApiError, SandboxConfig, SandboxRef } from "./schemas";
+import { ApiError, SandboxConfig, SandboxDetail, SandboxRef } from "./schemas";
 import { Sandbox, SandboxError, toError } from "./sandbox";
 
 export const DEFAULT_CONTROLLER_URL = "http://localhost:9000";
@@ -112,6 +112,36 @@ async function waitUntilReachable(
     0,
     `sandbox ${sandbox.id} did not become reachable at ${sandbox.apiServerUrl} within ${timeoutMs}ms${detail}`,
   );
+}
+
+/**
+ * Fetch the detail record for a single sandbox, including the terminal attach command.
+ * Throws a SandboxError with status 404 if the sandbox does not exist.
+ */
+export async function getSandbox(
+  id: string,
+  opts: ControllerOptions = {},
+): Promise<SandboxDetail> {
+  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(/\/+$/, "");
+  const fetchImpl = opts.fetch ?? fetch;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/v1/sandboxes/${encodeURIComponent(id)}`);
+  } catch (err) {
+    if (isConnectionRefused(err)) {
+      throw new SandboxError(
+        "getSandbox",
+        0,
+        `controller is not reachable at ${base} (connection refused). Is it running?`,
+      );
+    }
+    throw err;
+  }
+  if (res.status !== 200) {
+    throw await toError(res, "getSandbox");
+  }
+  return SandboxDetail.parse(await res.json());
 }
 
 /**

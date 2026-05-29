@@ -17,6 +17,7 @@ export {
   HttpMethod,
   LocalFileSystem,
   SandboxConfig,
+  SandboxDetail,
   SandboxEvent,
   SandboxRef,
   StdioEvent,
@@ -32,6 +33,7 @@ export {
 export {
   DEFAULT_CONTROLLER_URL,
   getOrCreateSandbox,
+  getSandbox,
   listSandboxes,
   shutdown,
   type ControllerOptions,

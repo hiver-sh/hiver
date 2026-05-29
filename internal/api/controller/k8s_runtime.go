@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"encoding/json"
+
 	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	corev1 "k8s.io/api/core/v1"
@@ -13,7 +15,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"sigs.k8s.io/yaml"
 )
 
 // K8sRuntime implements SandboxRuntime using the Kubernetes API.
@@ -80,20 +81,42 @@ func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 	return sandboxes, nil
 }
 
+func (r *K8sRuntime) Get(id string) (gen.SandboxDetail, error) {
+	name := containerNameFor(id)
+	pod, err := r.client.CoreV1().Pods(r.namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return gen.SandboxDetail{}, ErrSandboxNotFound
+		}
+		return gen.SandboxDetail{}, fmt.Errorf("get pod %s: %w", name, err)
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		return gen.SandboxDetail{}, ErrSandboxNotFound
+	}
+	ep := r.tcpProxyEndpoint(name)
+	cmd := fmt.Sprintf("kubectl exec -it -n %s %s -c sandbox -- sandbox-exec", r.namespace, name)
+	return gen.SandboxDetail{
+		Id:              id,
+		Endpoint:        r.endpointFor(name),
+		ExposedEndpoint: &ep,
+		TerminalCmd:     &cmd,
+	}, nil
+}
+
 func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	ctx := context.Background()
 	name := containerNameFor(id)
 
 	labels := map[string]string{labelSandboxID: id}
 
-	specBytes, err := yaml.Marshal(cfg)
+	specBytes, err := json.Marshal(cfg)
 	if err != nil {
 		return gen.Sandbox{}, fmt.Errorf("marshal spec: %w", err)
 	}
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.namespace, Labels: labels},
-		Data:       map[string]string{"spec.yaml": string(specBytes)},
+		Data:       map[string]string{"spec.json": string(specBytes)},
 	}
 	if _, err := r.client.CoreV1().ConfigMaps(r.namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("create configmap: %w", err)
@@ -108,7 +131,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 				{
 					Name:  "sandbox",
 					Image: r.imageFor(cfg),
-					Args:  []string{"--spec", "/mnt/spec.yaml"},
+					Args:  []string{"--spec", "/mnt/spec.json"},
 					Ports: []corev1.ContainerPort{
 						{ContainerPort: sandboxAPIPort},
 						{ContainerPort: sandboxTCPProxyPort},

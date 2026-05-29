@@ -25,7 +25,7 @@ const (
 	moduleRoot          = "../.."
 	sandboxRuntimeImage = "hive-sandbox-runtime" // :latest — sandboxd + sidecars + runc
 	// Pinned ports for the host-side upstream HTTP servers. They have
-	// to be fixed because the spec.yaml fixture references them
+	// to be fixed because the spec.json fixture references them
 	// literally (no template substitution). Picked high enough to
 	// avoid common dev-tool collisions.
 	upstreamAllowedPort = 17080
@@ -37,7 +37,7 @@ const (
 
 // RunFixtureE2E orchestrates a single end-to-end run for the named
 // fixture under test/e2e/fixtures/<fixtureName>/. The fixture must
-// contain Dockerfile + spec.yaml + expectations.yaml; everything else
+// contain Dockerfile + spec.json + expectations.yaml; everything else
 // (sandbox-runtime image, host upstreams, audit assertions) is shared.
 // RunFixtureE2E orchestrates a full E2E run for the named fixture.
 //
@@ -82,7 +82,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	if err != nil {
 		t.Fatalf("abs fixture dir: %v", err)
 	}
-	specPath := filepath.Join(fixtureDir, "spec.yaml")
+	specPath := filepath.Join(fixtureDir, "spec.json")
 	// Parse without validating so mutators can fix up missing fields
 	// (e.g. fill in auth tokens) before Validate runs.
 	sp, err := spec.Parse(specPath)
@@ -98,11 +98,11 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 	if len(mutators) > 0 {
 		// Re-render the mutated spec to a tmpfile so the pod sees the
 		// runtime-supplied fields.
-		rendered, err := yaml.Marshal(sp)
+		rendered, err := json.Marshal(sp)
 		if err != nil {
 			t.Fatalf("re-render spec: %v", err)
 		}
-		specPath = filepath.Join(t.TempDir(), "spec.yaml")
+		specPath = filepath.Join(t.TempDir(), "spec.json")
 		if err := os.WriteFile(specPath, rendered, 0o644); err != nil {
 			t.Fatalf("write spec tmpfile: %v", err)
 		}
@@ -154,7 +154,7 @@ func runFixture(t *testing.T, fixtureName string, cfg fixtureRun) {
 
 	// (1) Substring assertions against the pod's combined stdout/stderr.
 	// Expected lines live in the fixture's expectations.yaml so the
-	// fixture is self-describing (Dockerfile + agent.py + spec.yaml +
+	// fixture is self-describing (Dockerfile + agent.py + spec.json +
 	// expectations.yaml all in one directory). Most entries assert
 	// agent-printed "[sandbox:out] …" lines, but any substring of the
 	// container output is fair game (sandboxd lifecycle, audit-tail
@@ -359,7 +359,7 @@ func BuildSandboxBundle(t *testing.T, agentImage, bundleTag string) {
 }
 
 // startUpstreams spins up two HTTP servers on the host on the ports the
-// fixture's spec.yaml pins. Both bind to all interfaces (so Docker can
+// fixture's spec.json pins. Both bind to all interfaces (so Docker can
 // reach them via the host-gateway alias). They're aliased inside the
 // container as:
 //
@@ -370,7 +370,7 @@ func startUpstreams(t *testing.T) (stop func()) {
 	mkServer := func(port int, handler http.HandlerFunc) *http.Server {
 		l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 		if err != nil {
-			t.Fatalf("listen :%d: %v (port collision? the spec.yaml pins this port)", port, err)
+			t.Fatalf("listen :%d: %v (port collision? the spec.json pins this port)", port, err)
 		}
 		srv := &http.Server{Handler: handler}
 		go func() { _ = srv.Serve(l) }()
@@ -378,7 +378,7 @@ func startUpstreams(t *testing.T) (stop func()) {
 	}
 	stopWS := StartWSEchoServer(t)
 	allowedSrv := mkServer(upstreamAllowedPort, func(w http.ResponseWriter, r *http.Request) {
-		// Header override: spec.yaml has the rule inject
+		// Header override: spec.json has the rule inject
 		// "X-Sandbox-Agent: agent-python". If the proxy isn't applying
 		// the override, the agent's request reaches the upstream
 		// without it — which would be a silent escape.
@@ -503,9 +503,9 @@ func runSandboxPod(t *testing.T, bundleImage, specPath string, expectations []Ex
 		// subscribe to /v1/events while the workload runs.
 		"-p", fmt.Sprintf("%d:%d", apiServerPort, apiServerPort),
 		"-p", "18000:18000",
-		"-v", specPath + ":/mnt/spec.yaml:ro",
+		"-v", specPath + ":/mnt/spec.json:ro",
 		bundleImage,
-		"--spec", "/mnt/spec.yaml",
+		"--spec", "/mnt/spec.json",
 	}
 	// Start the pod detached. With -d, `docker run` returns once the
 	// container exists; we then fetch its combined stdout+stderr via

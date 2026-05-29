@@ -218,6 +218,13 @@ export const SandboxRef = z.object({
 });
 export type SandboxRef = z.infer<typeof SandboxRef>;
 
+/** Extended sandbox record returned by GET /v1/sandboxes/{id}. */
+export const SandboxDetail = SandboxRef.extend({
+  /** Shell command the host can run to attach a PTY terminal to the sandbox container. */
+  terminal_cmd: z.string().optional(),
+});
+export type SandboxDetail = z.infer<typeof SandboxDetail>;
+
 const SandboxEventBase = z.object({
   id: z.number().int(),
   timestamp: z.string(),

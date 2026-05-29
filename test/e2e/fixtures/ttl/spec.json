@@ -1,0 +1,20 @@
+{
+  "image": "../../../../docker/mcpserver.Dockerfile",
+  "ttl": 5,
+  "fs": [
+    {
+      "backend": "local",
+      "mount": "/workspace",
+      "acls": [
+        {
+          "path": "/workspace",
+          "access": "rw"
+        },
+        {
+          "path": "/workspace/**",
+          "access": "rw"
+        }
+      ]
+    }
+  ]
+}

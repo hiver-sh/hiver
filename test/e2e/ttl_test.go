@@ -29,7 +29,7 @@ func TestTTLE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abs fixture: %v", err)
 	}
-	specPath := filepath.Join(fixtureDir, "spec.yaml")
+	specPath := filepath.Join(fixtureDir, "spec.json")
 	sp, err := spec.Load(specPath)
 	if err != nil {
 		t.Fatalf("load spec: %v", err)
@@ -64,9 +64,9 @@ func TestTTLE2E(t *testing.T) {
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8080:8080",
-		"-v", specPath + ":/mnt/spec.yaml:ro",
+		"-v", specPath + ":/mnt/spec.json:ro",
 		bundleImage,
-		"--spec", "/mnt/spec.yaml",
+		"--spec", "/mnt/spec.json",
 	}
 
 	var podOut bytes.Buffer

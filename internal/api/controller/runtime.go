@@ -17,6 +17,11 @@ type SandboxRuntime interface {
 	// descriptor. Returns (false, gen.Sandbox{}, nil) when no sandbox exists.
 	Lookup(id string) (running bool, sandbox gen.Sandbox, err error)
 
+	// Get returns a SandboxDetail for the given id, including runtime-specific
+	// connection details such as a terminal attach command.
+	// Returns ErrSandboxNotFound if no sandbox exists for id.
+	Get(id string) (gen.SandboxDetail, error)
+
 	// Start creates and starts a new sandbox from cfg, returning its descriptor.
 	Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error)
 

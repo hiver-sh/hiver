@@ -1,0 +1,47 @@
+{
+  "image": "../../../../docker/mcpserver.Dockerfile",
+  "fs": [
+    {
+      "backend": "gdrive",
+      "mount": "/workspace",
+      "acls": [
+        {
+          "path": "/workspace",
+          "access": "rw"
+        },
+        {
+          "path": "/workspace/**",
+          "access": "rw"
+        }
+      ],
+      "gdrive_access_token": "",
+      "gdrive_folder_id": ""
+    },
+    {
+      "backend": "local",
+      "mount": "/scratch",
+      "acls": [
+        {
+          "path": "/scratch",
+          "access": "rw"
+        },
+        {
+          "path": "/scratch/**",
+          "access": "rw"
+        }
+      ]
+    }
+  ],
+  "egress": [
+    {
+      "access": "allow",
+      "host": "go.dev",
+      "methods": [
+        "GET"
+      ],
+      "paths": [
+        "/solutions/case-studies/*"
+      ]
+    }
+  ]
+}

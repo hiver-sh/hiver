@@ -15,7 +15,6 @@ import (
 	"github.com/blasten/hive/internal/spec"
 	"github.com/blasten/hive/test/e2e/setup"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -133,7 +132,7 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 	if err != nil {
 		t.Fatalf("abs fixture dir: %v", err)
 	}
-	sp, err := spec.Parse(filepath.Join(fixtureDir, "spec.yaml"))
+	sp, err := spec.Parse(filepath.Join(fixtureDir, "spec.json"))
 	if err != nil {
 		t.Fatalf("parse spec: %v", err)
 	}
@@ -146,11 +145,11 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 	if err := sp.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	rendered, err := yaml.Marshal(sp)
+	rendered, err := json.Marshal(sp)
 	if err != nil {
 		t.Fatalf("re-render spec: %v", err)
 	}
-	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	specPath := filepath.Join(t.TempDir(), "spec.json")
 	if err := os.WriteFile(specPath, rendered, 0o644); err != nil {
 		t.Fatalf("write spec: %v", err)
 	}
@@ -207,9 +206,9 @@ func startMCPPod(t *testing.T, bundleImage, specPath string) *mcpPod {
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8080:8080",
 		"-p", "8081:8081",
-		"-v", specPath + ":/mnt/spec.yaml:ro",
+		"-v", specPath + ":/mnt/spec.json:ro",
 		bundleImage,
-		"--spec", "/mnt/spec.yaml",
+		"--spec", "/mnt/spec.json",
 	}
 
 	pod := &mcpPod{}
