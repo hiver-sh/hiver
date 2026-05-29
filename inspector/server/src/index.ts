@@ -183,62 +183,57 @@ app.get("/api/sandboxes/:id/events", async (req: Request, res: Response) => {
   res.end();
 });
 
-// WS /api/sandboxes/:id/terminal — attach to the sandbox's tmux session over SSH
+// WS /api/sandboxes/:id/terminal — SSH first, fall back to terminal_cmd
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
-// httpServer.on("upgrade", async (req, socket, head) => {
-//   const url = new URL(req.url ?? "/", "http://localhost");
-//   const match = url.pathname.match(/^\/api\/sandboxes\/([^/]+)\/terminal$/);
-//   if (!match) {
-//     socket.destroy();
-//     return;
-//   }
-
-//   const sandboxId = match[1];
-//   const ctrlUrl = url.searchParams.get("controller") ?? DEFAULT_URL;
-
-//   let terminalCmd: string;
-//   console.log('getting');
-//   try {
-//     const detail = await getSandbox(sandboxId, { controllerUrl: ctrlUrl });
-//     console.log(detail);
-//     if (!detail.terminal_cmd) {
-//       socket.destroy();
-//       return;
-//     }
-//     terminalCmd = detail.terminal_cmd;
-//   } catch (e) {
-//         console.log(e);
-
-//     socket.destroy();
-//     return;
-//   }
-
-//   wss.handleUpgrade(req, socket, head, (ws) => {
-//     handleHostTerminal(ws, terminalCmd.split(" "), url.searchParams);
-//   });
-// });
-
-// comment out the block below to fall back to SSH-based terminal
-httpServer.on("upgrade", (req, socket, head) => {
+httpServer.on("upgrade", async (req, socket, head) => {
   const url = new URL(req.url ?? "/", "http://localhost");
-  if (!url.pathname.match(/^\/api\/sandboxes\/[^/]+\/terminal$/)) return;
+  const match = url.pathname.match(/^\/api\/sandboxes\/([^/]+)\/terminal$/);
+  if (!match) {
+    socket.destroy();
+    return;
+  }
 
-  const host = url.searchParams.get("host");
-  const portStr = url.searchParams.get("port");
-  if (!host || !portStr) return;
+  const sandboxId = match[1];
+  const ctrlUrl = url.searchParams.get("controller") ?? DEFAULT_URL;
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    handleTerminal(ws, host, parseInt(portStr), url.searchParams);
+  let detail: Awaited<ReturnType<typeof getSandbox>>;
+  try {
+    detail = await getSandbox(sandboxId, { controllerUrl: ctrlUrl });
+  } catch (e) {
+    console.error("getSandbox failed:", e);
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, async (ws) => {
+    const pending: string[] = [];
+    const collectPending = (msg: Buffer) => pending.push(msg.toString());
+    ws.on("message", collectPending);
+
+    if (detail.exposed_endpoint) {
+      const colonIdx = detail.exposed_endpoint.lastIndexOf(":");
+      const sshHost = detail.exposed_endpoint.slice(0, colonIdx);
+      const sshPort = parseInt(detail.exposed_endpoint.slice(colonIdx + 1));
+      const connected = await trySshTerminal(ws, sshHost, sshPort, url.searchParams, pending);
+      if (connected) return;
+    }
+
+    ws.off("message", collectPending);
+    if (detail.terminal_cmd) {
+      handleHostTerminal(ws, detail.terminal_cmd.split(" "), url.searchParams, pending);
+    } else {
+      ws.close();
+    }
   });
 });
 
-function handleHostTerminal(ws: WebSocket, cmd: string[], params: URLSearchParams) {
+function handleHostTerminal(ws: WebSocket, cmd: string[], params: URLSearchParams, prePending: string[] = []) {
   let cols = Math.max(1, parseInt(params.get("cols") ?? "80"));
   let rows = Math.max(1, parseInt(params.get("rows") ?? "24"));
 
-  const pending: string[] = [];
+  const pending = [...prePending];
   ws.on("message", (msg) => pending.push(msg.toString()));
 
   const pty = ptySpawn("/bin/sh", ["-c", cmd.join(" ")], {
@@ -270,60 +265,64 @@ function handleHostTerminal(ws: WebSocket, cmd: string[], params: URLSearchParam
 }
 
 
-async function handleTerminal(ws: WebSocket, host: string, port: number, params: URLSearchParams) {
-  let cols = Math.max(1, parseInt(params.get("cols") ?? "80"));
-  let rows = Math.max(1, parseInt(params.get("rows") ?? "24"));
+function trySshTerminal(ws: WebSocket, host: string, port: number, params: URLSearchParams, pending: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    let cols = Math.max(1, parseInt(params.get("cols") ?? "80"));
+    let rows = Math.max(1, parseInt(params.get("rows") ?? "24"));
+    let resolved = false;
+    const conn = new SshClient();
 
-  const pending: string[] = [];
-  ws.on("message", (msg) => pending.push(msg.toString()));
+    conn.on("ready", () => {
+      conn.shell({ term: "xterm-256color", cols, rows }, (err, stream) => {
+        if (err) {
+          conn.end();
+          if (!resolved) { resolved = true; resolve(false); }
+          return;
+        }
 
-  const conn = new SshClient();
+        resolved = true;
+        resolve(true);
 
-  conn.on("ready", () => {
-    conn.shell({ term: "xterm-256color", cols, rows }, (err, stream) => {
-      if (err) {
-        ws.send(`\r\nSSH shell error: ${err}\r\n`);
-        ws.close();
-        conn.end();
-        return;
-      }
+        function handleMessage(text: string) {
+          try {
+            const ctrl = JSON.parse(text);
+            if (ctrl.type === "resize" && typeof ctrl.cols === "number" && typeof ctrl.rows === "number") {
+              cols = ctrl.cols;
+              rows = ctrl.rows;
+              stream.setWindow(rows, cols, 0, 0);
+              return;
+            }
+          } catch { /* raw input */ }
+          stream.write(text);
+        }
 
-      function handleMessage(text: string) {
-        try {
-          const ctrl = JSON.parse(text);
-          if (ctrl.type === "resize" && typeof ctrl.cols === "number" && typeof ctrl.rows === "number") {
-            cols = ctrl.cols;
-            rows = ctrl.rows;
-            stream.setWindow(rows, cols, 0, 0);
-            return;
-          }
-        } catch { /* raw input */ }
-        stream.write(text);
-      }
+        ws.send(JSON.stringify({ type: "connected" }));
+        ws.removeAllListeners("message");
+        for (const msg of pending) handleMessage(msg);
+        pending.length = 0;
+        ws.on("message", (msg) => handleMessage(msg.toString()));
 
-      ws.send(JSON.stringify({ type: "connected" }));
-      ws.removeAllListeners("message");
-      for (const msg of pending) handleMessage(msg);
-      pending.length = 0;
-      ws.on("message", (msg) => handleMessage(msg.toString()));
-
-      stream.on("data", (data: Buffer) => { if (ws.readyState === ws.OPEN) ws.send(data); });
-      stream.stderr?.on("data", (data: Buffer) => { if (ws.readyState === ws.OPEN) ws.send(data); });
-      stream.on("close", () => { ws.close(); conn.end(); });
-      ws.on("close", () => { stream.close(); conn.end(); });
+        stream.on("data", (data: Buffer) => { if (ws.readyState === ws.OPEN) ws.send(data); });
+        stream.stderr?.on("data", (data: Buffer) => { if (ws.readyState === ws.OPEN) ws.send(data); });
+        stream.on("close", () => { ws.close(); conn.end(); });
+        ws.on("close", () => { stream.close(); conn.end(); });
+      });
     });
-  });
 
-  conn.on("error", (err) => {
-    if (ws.readyState === ws.OPEN) {
-      if (!err.message.includes("before handshake")) {
-        ws.send(`\r\nSSH error: ${err.message}\r\n`);
+    conn.on("error", (err) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(false);
+      } else if (ws.readyState === ws.OPEN) {
+        if (!err.message.includes("before handshake")) {
+          ws.send(`\r\nSSH error: ${err.message}\r\n`);
+        }
+        ws.close();
       }
-      ws.close();
-    }
-  });
+    });
 
-  conn.connect({ host, port, username: "agent", password: "agent", readyTimeout: 10000, hostVerifier: () => true });
+    conn.connect({ host, port, username: "agent", password: "agent", readyTimeout: 10000, hostVerifier: () => true });
+  });
 }
 
 httpServer.listen(PORT, () => {

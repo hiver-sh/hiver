@@ -16,6 +16,7 @@ import { CodeViewer } from "@/components/CodeViewer";
 import { cn } from "@/lib/utils";
 import { langForPath } from "@/lib/fileUtils";
 import type { SandboxEvent, SandboxRef } from "@/types";
+import { loadEvents, appendEvent, clearEvents } from "@/lib/eventStore";
 
 interface Props {
   sandbox: SandboxRef;
@@ -111,7 +112,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   }, [sandbox.id, serverUrl, controllerUrl]);
 
   const fsWriteEvents = useMemo(
-    () => events.filter(e => e.type === "fs.request" && e.operation === "write"),
+    () => events.filter((e): e is Extract<SandboxEvent, { type: "fs.request" }> => e.type === "fs.request" && (e as Extract<SandboxEvent, { type: "fs.request" }>).operation === "write"),
     [events],
   );
 
@@ -121,15 +122,15 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   const totalBars = useMemo(() => rows.reduce((sum, r) => sum + r.bars.length, 0), [rows]);
   const filteredTotalBars = useMemo(() => filteredRows.reduce((sum, r) => sum + r.bars.length, 0), [filteredRows]);
 
-  const startStream = useCallback(() => {
+  const startStream = useCallback((lastEventId?: number) => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
-    setEvents([]);
     setConnected(false);
 
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/events`);
     url.searchParams.set("controller", controllerUrl);
+    if (lastEventId !== undefined) url.searchParams.set("lastEventId", String(lastEventId));
 
     const es = new EventSource(url.toString());
     es.onopen = () => setConnected(true);
@@ -137,6 +138,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       try {
         const event = JSON.parse(e.data) as SandboxEvent;
         setEvents((prev) => [...prev, event]);
+        void appendEvent(sandbox.id, event);
       } catch {
         // ignore malformed frames
       }
@@ -153,9 +155,22 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   }, [sandbox.id, serverUrl, controllerUrl]);
 
   useEffect(() => {
-    startStream();
-    return () => abortRef.current?.abort();
-  }, [startStream]);
+    let cancelled = false;
+    setEvents([]);
+    loadEvents(sandbox.id)
+      .then((stored) => {
+        if (cancelled) return;
+        setEvents(stored);
+        startStream(stored[stored.length - 1]?.id);
+      })
+      .catch(() => {
+        if (!cancelled) startStream();
+      });
+    return () => {
+      cancelled = true;
+      abortRef.current?.abort();
+    };
+  }, [startStream]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleShutdown() {
     if (!confirm(`Shut down sandbox "${sandbox.id}"?`)) return;
@@ -166,6 +181,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       );
       url.searchParams.set("controller", controllerUrl);
       await fetch(url, { method: "POST" });
+      void clearEvents(sandbox.id);
       onShutdown();
     } finally {
       setShutdownLoading(false);
@@ -365,7 +381,11 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                 </Popover>
                 {events.length > 0 && (
                   <button
-                    onClick={() => setEvents([])}
+                    onClick={() => {
+                      setEvents([]);
+                      void clearEvents(sandbox.id);
+                      startStream();
+                    }}
                     className="hover:text-foreground transition-colors"
                   >
                     Clear

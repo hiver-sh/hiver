@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { DEFAULT_CONTROLLER_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } from "@/types";
+import { purgeOrphanEvents } from "@/lib/eventStore";
 
 function ControllerUnreachable({ message, loading, onRetry }: { message: string; loading: boolean; onRetry: () => void }) {
   return (
@@ -108,6 +109,7 @@ export default function App() {
       }
       const list = (await res.json()) as SandboxRef[];
       setSandboxes(list);
+      void purgeOrphanEvents(list.map((s) => s.id));
     } catch (err) {
       setFetchError(String(err));
     } finally {

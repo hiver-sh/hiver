@@ -1217,7 +1217,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                       <div
                                         key={bar.id}
                                         className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                        style={{ left: leftPx, width: 1, maxWidth: `calc(100% - ${leftPx}px)` }}
+                                        style={{ left: leftPx, width: MIN_BAR_PX, maxWidth: `calc(100% - ${leftPx}px)` }}
                                         title={vl.row.label}
                                       >
                                         <div
