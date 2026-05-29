@@ -88,8 +88,27 @@ async function listStoredSandboxIds(): Promise<string[]> {
   });
 }
 
+const PURGE_GRACE_MS = 30_000;
+const absentSince = new Map<string, number>();
+
 export async function purgeOrphanEvents(activeSandboxIds: string[]): Promise<void> {
   const stored = await listStoredSandboxIds();
   const active = new Set(activeSandboxIds);
-  await Promise.all(stored.filter((id) => !active.has(id)).map((id) => clearEvents(id)));
+  const now = Date.now();
+
+  for (const id of stored) {
+    if (active.has(id)) {
+      absentSince.delete(id);
+    } else if (!absentSince.has(id)) {
+      absentSince.set(id, now);
+    }
+  }
+  for (const id of absentSince.keys()) {
+    if (!stored.includes(id)) absentSince.delete(id);
+  }
+
+  const toEvict = stored.filter(
+    (id) => !active.has(id) && now - (absentSince.get(id) ?? now) > PURGE_GRACE_MS,
+  );
+  await Promise.all(toEvict.map((id) => { absentSince.delete(id); return clearEvents(id); }));
 }

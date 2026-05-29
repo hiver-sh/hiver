@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Label } from "@/components/ui/label";
 import { useTransport, type TraceData } from "@/lib/transport";
 
-const SPEEDS = [1, 10, 100] as const;
+const SPEEDS = [1, 5, 10, 100] as const;
 
 interface Props {
   open: boolean;
@@ -54,20 +54,6 @@ export function TraceDialog({ open, onOpenChange }: Props) {
           )}
 
           <div className="grid gap-1.5">
-            <Label>Trace file</Label>
-            <Button variant="outline" onClick={() => inputRef.current?.click()}>
-              Browse…
-            </Button>
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".json,application/json"
-              className="hidden"
-              onChange={handleFile}
-            />
-          </div>
-
-          <div className="grid gap-1.5">
             <Label>Playback speed</Label>
             <div className="flex gap-2">
               {SPEEDS.map((s) => (
@@ -82,6 +68,20 @@ export function TraceDialog({ open, onOpenChange }: Props) {
                 </Button>
               ))}
             </div>
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label>Trace file</Label>
+            <Button variant="outline" onClick={() => inputRef.current?.click()}>
+              Browse…
+            </Button>
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleFile}
+            />
           </div>
 
           {error && <p className="text-xs text-red-400">{error}</p>}

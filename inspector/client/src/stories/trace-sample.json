@@ -1,0 +1,89 @@
+{
+  "/api/sandboxes/sandbox-demo/events": [
+    {
+      "time": 0,
+      "payload": "data: {\"id\":1,\"timestamp\":\"2024-11-01T10:00:00.000Z\",\"type\":\"egress.request\",\"access\":\"allowed\",\"host\":\"api.anthropic.com\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"query\":\"\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 120,
+      "payload": "data: {\"id\":2,\"timestamp\":\"2024-11-01T10:00:00.120Z\",\"type\":\"egress.chunk\",\"request_id\":1,\"body\":\"Hello! I'll help you write that script.\",\"label\":\"text\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 240,
+      "payload": "data: {\"id\":3,\"timestamp\":\"2024-11-01T10:00:00.240Z\",\"type\":\"egress.chunk\",\"request_id\":1,\"body\":\" Let me create a Python file for you.\",\"label\":\"text\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 400,
+      "payload": "data: {\"id\":4,\"timestamp\":\"2024-11-01T10:00:00.400Z\",\"type\":\"egress.response\",\"request_id\":1,\"status\":200,\"duration_ms\":400}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 500,
+      "payload": "data: {\"id\":5,\"timestamp\":\"2024-11-01T10:00:00.500Z\",\"type\":\"fs.request\",\"access\":\"allowed\",\"mount\":\"/workspace\",\"path\":\"/workspace/solution.py\",\"operation\":\"write\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 520,
+      "payload": "data: {\"id\":6,\"timestamp\":\"2024-11-01T10:00:00.520Z\",\"type\":\"fs.response\",\"backend\":\"local\",\"request_id\":5,\"duration_ms\":20}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 600,
+      "payload": "data: {\"id\":7,\"timestamp\":\"2024-11-01T10:00:00.600Z\",\"type\":\"fs.request\",\"access\":\"allowed\",\"mount\":\"/workspace\",\"path\":\"/workspace/solution.py\",\"operation\":\"read\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 615,
+      "payload": "data: {\"id\":8,\"timestamp\":\"2024-11-01T10:00:00.615Z\",\"type\":\"fs.response\",\"backend\":\"local\",\"request_id\":7,\"duration_ms\":15}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 700,
+      "payload": "data: {\"id\":9,\"timestamp\":\"2024-11-01T10:00:00.700Z\",\"type\":\"stdio\",\"stdout\":\"Running tests...\\n\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 800,
+      "payload": "data: {\"id\":10,\"timestamp\":\"2024-11-01T10:00:00.800Z\",\"type\":\"stdio\",\"stdout\":\"All 3 tests passed.\\n\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 1000,
+      "payload": "data: {\"id\":11,\"timestamp\":\"2024-11-01T10:00:01.000Z\",\"type\":\"resource.usage\",\"cpu_percent\":12.4,\"memory_bytes\":134217728}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 1200,
+      "payload": "data: {\"id\":12,\"timestamp\":\"2024-11-01T10:00:01.200Z\",\"type\":\"egress.request\",\"access\":\"allowed\",\"host\":\"api.anthropic.com\",\"method\":\"POST\",\"path\":\"/v1/messages\",\"query\":\"\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 1350,
+      "payload": "data: {\"id\":13,\"timestamp\":\"2024-11-01T10:00:01.350Z\",\"type\":\"egress.chunk\",\"request_id\":12,\"body\":\"The tests all pass. The solution looks correct.\",\"label\":\"text\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 1500,
+      "payload": "data: {\"id\":14,\"timestamp\":\"2024-11-01T10:00:01.500Z\",\"type\":\"egress.response\",\"request_id\":12,\"status\":200,\"duration_ms\":300}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 1600,
+      "payload": "data: {\"id\":15,\"timestamp\":\"2024-11-01T10:00:01.600Z\",\"type\":\"fs.request\",\"access\":\"denied\",\"mount\":\"/etc\",\"path\":\"/etc/passwd\",\"operation\":\"read\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 1620,
+      "payload": "data: {\"id\":16,\"timestamp\":\"2024-11-01T10:00:01.620Z\",\"type\":\"fs.response\",\"backend\":\"local\",\"request_id\":15,\"duration_ms\":20,\"error\":\"access denied\"}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    },
+    {
+      "time": 2000,
+      "payload": "data: {\"id\":17,\"timestamp\":\"2024-11-01T10:00:02.000Z\",\"type\":\"resource.usage\",\"cpu_percent\":3.1,\"memory_bytes\":131072000}\n\n",
+      "headers": { "content-type": "text/event-stream" }
+    }
+  ]
+}

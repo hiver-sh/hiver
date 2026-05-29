@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 export type TraceRecord = {
@@ -134,7 +134,6 @@ export class TracePlayer {
     const qs = new URLSearchParams(sorted).toString();
     const canonicalKey = pathname + (qs ? `?${qs}` : "");
     if (this._index.has(canonicalKey)) {
-      console.log("[trace] exact hit", canonicalKey);
       return this._index.get(canonicalKey)!;
     }
 
@@ -158,19 +157,12 @@ export class TracePlayer {
       }
       if (!allMatch) continue;
 
-      console.log("[trace] candidate", traceKey,
-        "client params", Object.fromEntries(clientParams),
-        "trace params", Object.fromEntries(traceParams));
-
       // Prefer the entry with more matching params (more specific).
       if (best === null || traceParams.size > parseUrlParts(bestKey).params.size) {
         best = records;
         bestKey = traceKey;
       }
     }
-
-    if (best) console.log("[trace] best match", bestKey);
-    else console.log("[trace] no match for", canonicalKey);
     return best;
   }
 }
@@ -205,7 +197,6 @@ export class TraceTransport implements Transport {
   constructor(private _player: TracePlayer) {}
 
   async fetch(url: string | URL, init?: RequestInit): Promise<Response> {
-    console.log("[trace] fetch called", url.toString());
     if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
     const method = (init?.method ?? "GET").toUpperCase();
@@ -222,7 +213,7 @@ export class TraceTransport implements Transport {
     const contentType = first.headers["content-type"] ?? "";
 
     if (contentType.includes("text/event-stream")) {
-      const stream = this._buildSseStream(entries, init?.signal);
+      const stream = this._buildSseStream(entries, init?.signal || undefined);
       return new Response(stream, { status: 200, headers: first.headers });
     }
 
@@ -304,7 +295,7 @@ export function useTransport(): TransportContextValue {
   return useContext(TransportContext);
 }
 
-export function TransportProvider({ children }: { children: ReactNode }) {
+export function TransportProvider({ children, tracePath, traceData: initialTraceData }: { children: ReactNode; tracePath?: string; traceData?: TraceData }) {
   const [player, setPlayer] = useState<TracePlayer | null>(null);
   const [playbackSpeed, setPlaybackSpeedState] = useState(1);
 
@@ -332,6 +323,18 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     setPlayer(null);
     setPlaybackSpeedState(1);
   }, []);
+
+  useEffect(() => {
+    if (initialTraceData) setPlayer(new TracePlayer(initialTraceData));
+  }, [initialTraceData]);
+
+  useEffect(() => {
+    if (!tracePath) return;
+    globalThis.fetch(tracePath)
+      .then((r) => r.json())
+      .then((data: TraceData) => setPlayer(new TracePlayer(data)))
+      .catch((e) => console.error("Failed to load trace:", e));
+  }, [tracePath]);
 
   return (
     <TransportContext.Provider

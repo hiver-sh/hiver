@@ -141,6 +141,7 @@ const MIN_BAR_PX = 4;
 const MIN_CLICK_TARGET_BAR_PX = 16;
 const LANES_ENABLED = false;
 const MERGE_OVERLAPS = true;
+const VIRTUAL_SCROLL = false;
 
 function computeLanes(
   bars: TimelineBar[],
@@ -943,7 +944,9 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   const V_OVERSCAN_PX = 5 * 22;
 
   // Pre-filter ticks to visible horizontal window (shared by all rows)
-  const visibleTicks = tickPositions.filter(px => px >= hVisLeft && px <= hVisRight);
+  const visibleTicks = VIRTUAL_SCROLL
+    ? tickPositions.filter(px => px >= hVisLeft && px <= hVisRight)
+    : tickPositions;
 
   // ─── Interaction handlers ─────────────────────────────────────────────────
 
@@ -951,6 +954,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
     if (trackRef.current && rowsScrollRef.current) {
       trackRef.current.scrollLeft = rowsScrollRef.current.scrollLeft;
     }
+    if (!VIRTUAL_SCROLL) return;
     if (rafScrollRef.current) cancelAnimationFrame(rafScrollRef.current);
     rafScrollRef.current = requestAnimationFrame(() => {
       const el = rowsScrollRef.current;
@@ -1079,7 +1083,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
             // Sticky sections are always visible regardless of scroll position.
             const localVisTop    = scrollTop - section.absoluteRowsTop - V_OVERSCAN_PX;
             const localVisBottom = scrollTop + viewportHeight - section.absoluteRowsTop + V_OVERSCAN_PX;
-            const visLanes = section.category === "resource"
+            const visLanes = !VIRTUAL_SCROLL || section.category === "resource"
               ? section.lanes
               : section.lanes.filter(
                   vl => vl.localTop + 22 > localVisTop && vl.localTop < localVisBottom,
@@ -1205,7 +1209,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                   onSelect={(bar) => setSelectedId(bar.id === selectedId ? null : bar.id)}
                                 />
                               : (() => {
-                                const visible = vl.laneBars.filter(bar => {
+                                const visible = !VIRTUAL_SCROLL ? vl.laneBars : vl.laneBars.filter(bar => {
                                   const l = toDisplay(bar.startTime);
                                   const r = Math.max(l + 1, toDisplay(bar.startTime + effectiveDur(bar)));
                                   return r >= hVisLeft && l <= hVisRight;
@@ -1310,14 +1314,17 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
         </div>
       </div>
 
-      {dragSel && (
-        <>
-          <div className="pointer-events-none absolute top-0 bottom-0 bg-black/40 z-50"
-            style={{ left: 0, width: Math.max(0, labelW + Math.min(dragSel.startPx, dragSel.endPx) - scrollLeft) }} />
-          <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-black/40 z-50"
-            style={{ left: labelW + Math.max(dragSel.startPx, dragSel.endPx) - scrollLeft }} />
-        </>
-      )}
+      {dragSel && (() => {
+        const sl = rowsScrollRef.current?.scrollLeft ?? scrollLeft;
+        return (
+          <>
+            <div className="pointer-events-none absolute top-0 bottom-0 bg-black/40 z-50"
+              style={{ left: 0, width: Math.max(0, labelW + Math.min(dragSel.startPx, dragSel.endPx) - sl) }} />
+            <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-black/40 z-50"
+              style={{ left: labelW + Math.max(dragSel.startPx, dragSel.endPx) - sl }} />
+          </>
+        );
+      })()}
       </div>{/* end timeline area */}
 
       {selectedBar && (

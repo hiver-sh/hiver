@@ -19,6 +19,13 @@ import type { SandboxEvent, SandboxRef } from "@/types";
 import { loadEvents, appendEvent, clearEvents } from "@/lib/eventStore";
 import { useTransport } from "@/lib/transport";
 
+const MIN_TIMELINE_WIDTH = 300;
+const MIN_TERMINAL_WIDTH = 240;
+const MIN_FILES_WIDTH = 200;
+const DRAG_HANDLE_WIDTH = 5;
+const DEFAULT_TERMINAL_WIDTH = 480;
+const DEFAULT_FILES_WIDTH = 256;
+
 interface Props {
   sandbox: SandboxRef;
   serverUrl: string;
@@ -70,7 +77,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     localStorage.setItem("sandbox:showFiles", String(showFiles));
   }, [showFiles]);
   const [filesWidth, setFilesWidth] = useState(
-    () => parseInt(localStorage.getItem("sandbox:filesWidth") ?? "256", 10),
+    () => parseInt(localStorage.getItem("sandbox:filesWidth") ?? String(DEFAULT_FILES_WIDTH), 10),
   );
 
   useEffect(() => {
@@ -80,7 +87,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [configProposal, setConfigProposal] = useState<ConfigProposal | undefined>();
   const [terminalWidth, setTerminalWidth] = useState(
-    () => parseInt(localStorage.getItem("sandbox:terminalWidth") ?? "480", 10),
+    () => parseInt(localStorage.getItem("sandbox:terminalWidth") ?? String(DEFAULT_TERMINAL_WIDTH), 10),
   );
 
   useEffect(() => {
@@ -198,18 +205,24 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     }
   }
 
-  function makeDragHandler(setWidth: (w: number) => void, currentWidth: number) {
+  function makeDragHandler(
+    setWidth: (w: number) => void,
+    currentWidth: number,
+    minWidth: number,
+    getMaxWidth: () => number,
+  ) {
     return function startDrag(e: React.MouseEvent) {
       e.preventDefault();
       const startX = e.clientX;
       const startWidth = currentWidth;
+      const maxWidth = getMaxWidth();
 
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
 
       function onMove(e: MouseEvent) {
         const delta = startX - e.clientX;
-        setWidth(Math.max(240, Math.min(startWidth + delta, 1200)));
+        setWidth(Math.max(minWidth, Math.min(startWidth + delta, maxWidth)));
       }
 
       function onUp() {
@@ -298,9 +311,9 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       <Separator />
 
       {/* Content */}
-      <div ref={contentRef} className="min-h-0 flex-1 flex overflow-hidden">
+      <div ref={contentRef} className="min-h-0 flex-1 flex overflow-x-auto overflow-y-hidden">
         {showTimeline && (
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="flex flex-1 flex-col overflow-hidden" style={{ minWidth: MIN_TIMELINE_WIDTH }}>
             {/* Toolbar: event count + filter + clear */}
             <div className="relative flex items-center justify-between px-5 py-1.5 text-xs text-muted-foreground border-b border-border">
               <span>
@@ -413,13 +426,17 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <>
             {showTimeline && (
               <div
-                className="w-[5px] shrink-0 cursor-col-resize bg-border hover:bg-white/40 transition-colors"
-                onMouseDown={makeDragHandler(setTerminalWidth, terminalWidth)}
+                className="shrink-0 cursor-col-resize bg-border hover:bg-white/40 transition-colors"
+                style={{ width: DRAG_HANDLE_WIDTH }}
+                onMouseDown={makeDragHandler(setTerminalWidth, terminalWidth, MIN_TERMINAL_WIDTH, () => {
+                  const w = contentRef.current?.getBoundingClientRect().width ?? 1200;
+                  return w - MIN_TIMELINE_WIDTH - (showFiles ? filesWidth + DRAG_HANDLE_WIDTH : 0) - DRAG_HANDLE_WIDTH;
+                })}
               />
             )}
             <div
               className="overflow-hidden"
-              style={showTimeline ? { width: terminalWidth, flexShrink: 0 } : { flex: 1 }}
+              style={showTimeline ? { width: terminalWidth, flexShrink: 0, minWidth: MIN_TERMINAL_WIDTH } : { flex: 1, minWidth: MIN_TERMINAL_WIDTH }}
             >
               <Terminal
                 sandboxId={sandbox.id}
@@ -435,13 +452,17 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <>
             {(showTimeline || showTerminal) && (
               <div
-                className="w-[5px] shrink-0 cursor-col-resize bg-border hover:bg-white/40 transition-colors"
-                onMouseDown={makeDragHandler(setFilesWidth, filesWidth)}
+                className="shrink-0 cursor-col-resize bg-border hover:bg-white/40 transition-colors"
+                style={{ width: DRAG_HANDLE_WIDTH }}
+                onMouseDown={makeDragHandler(setFilesWidth, filesWidth, MIN_FILES_WIDTH, () => {
+                  const w = contentRef.current?.getBoundingClientRect().width ?? 1200;
+                  return w - MIN_TIMELINE_WIDTH - (showTerminal ? terminalWidth + DRAG_HANDLE_WIDTH : 0) - DRAG_HANDLE_WIDTH;
+                })}
               />
             )}
             <div
               className="overflow-hidden"
-              style={(showTimeline || showTerminal) ? { width: filesWidth, flexShrink: 0 } : { flex: 1 }}
+              style={(showTimeline || showTerminal) ? { width: filesWidth, flexShrink: 0, minWidth: MIN_FILES_WIDTH } : { flex: 1, minWidth: MIN_FILES_WIDTH }}
             >
               <FileExplorer
                 sandboxId={sandbox.id}
