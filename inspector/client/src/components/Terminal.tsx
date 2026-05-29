@@ -94,70 +94,113 @@ export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
           const text = term.getSelection();
           if (text) navigator.clipboard?.writeText(text).catch(() => {});
         }
-        return true; // let xterm process the key normally (fires copy ClipboardEvent for Cmd+C)
+        return true;
       });
 
-      let ws: WebSocket | null = null;
+      let abortCtrl: AbortController | null = null;
       let retryTimer: ReturnType<typeof setTimeout> | null = null;
       let everConnected = false;
+      let currentSessionId = "";
 
       const ro = new ResizeObserver(() => {
         requestAnimationFrame(() => {
           fitAddon.fit();
-          if (ws?.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-          }
+          if (currentSessionId) sendInput({ type: "resize", cols: term.cols, rows: term.rows });
         });
       });
       ro.observe(el);
 
-      function connect() {
+      function sendInput(msg: { type: string; data?: string; cols?: number; rows?: number }) {
+        if (!currentSessionId) return;
+        const url = new URL(
+          `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/input`,
+          serverUrl,
+        );
+        url.searchParams.set("sessionId", currentSessionId);
+        fetch(url.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(msg),
+        }).catch(() => {});
+      }
+
+      async function connect() {
         if (disposed) return;
 
-        const wsBase = serverUrl.replace(/^http/, "ws");
+        currentSessionId = crypto.randomUUID();
+        abortCtrl = new AbortController();
+
         const url = new URL(
-          `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal`,
-          wsBase,
+          `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/stream`,
+          serverUrl,
         );
-        url.searchParams.set("host", sshHost);
-        url.searchParams.set("port", String(sshPort));
+        url.searchParams.set("sessionId", currentSessionId);
         url.searchParams.set("cols", String(term.cols));
         url.searchParams.set("rows", String(term.rows));
 
-        ws = new WebSocket(url.toString());
-        ws.binaryType = "arraybuffer";
+        let resp: Response;
+        try {
+          resp = await fetch(url.toString(), { signal: abortCtrl.signal });
+        } catch {
+          if (!disposed) retryTimer = setTimeout(connect, 2000);
+          return;
+        }
 
-        ws.onopen = () => {
-          term.focus();
-          ws!.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-        };
-        ws.onmessage = (e) => {
-          if (typeof e.data === "string") {
-            try {
-              const msg = JSON.parse(e.data);
-              if (msg.type === "connected") { everConnected = true; return; }
-            } catch { /* raw text, fall through */ }
+        if (!resp.ok || !resp.body) {
+          if (!disposed) retryTimer = setTimeout(connect, 2000);
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+
+        outer: while (true) {
+          let done: boolean, value: Uint8Array | undefined;
+          try {
+            ({ done, value } = await reader.read());
+          } catch {
+            break;
           }
-          term.write(e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : (e.data as string));
-        };
-        ws.onclose = () => {
-          if (disposed) return;
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+
+          let sep: number;
+          while ((sep = buf.indexOf("\n\n")) !== -1) {
+            const block = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+
+            let eventName = "message";
+            let dataLine = "";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event: ")) eventName = line.slice(7);
+              else if (line.startsWith("data: ")) dataLine = line.slice(6);
+            }
+
+            if (eventName === "connected") {
+              everConnected = true;
+              term.focus();
+            } else if (eventName === "close") {
+              break outer;
+            } else if (eventName === "message" && dataLine) {
+              term.write(Uint8Array.from(atob(dataLine), (c) => c.charCodeAt(0)));
+            }
+          }
+        }
+
+        if (!disposed) {
           if (everConnected) {
             term.write("\r\n\x1b[2m[disconnected]\x1b[0m\r\n");
           } else {
             retryTimer = setTimeout(connect, 2000);
           }
-        };
-        ws.onerror = () => {};
+        }
       }
 
       const rafId = requestAnimationFrame(() => {
         fitAddon.fit();
         connect();
-
-        term.onData((data) => {
-          if (ws?.readyState === WebSocket.OPEN) ws!.send(data);
-        });
+        term.onData((data) => sendInput({ type: "input", data }));
       });
 
       cleanup = () => {
@@ -165,7 +208,7 @@ export function Terminal({ sandboxId, serverUrl, sshHost, sshPort }: Props) {
         ro.disconnect();
         el.removeEventListener("mouseup", onMouseUp);
         if (retryTimer !== null) clearTimeout(retryTimer);
-        ws?.close();
+        abortCtrl?.abort();
         term.dispose();
       };
     });
