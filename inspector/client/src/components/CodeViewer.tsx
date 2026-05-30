@@ -3,12 +3,12 @@ import { Check, Clipboard, Maximize2 } from "lucide-react";
 import MonacoEditor, { loader } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import * as monaco from "monaco-editor";
-import { MONACO_THEME } from "@/monacoWorkers";
+import { MONACO_DARK_THEME, MONACO_LIGHT_THEME, useMonacoTheme } from "@/lib/useMonacoTheme";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 
 loader.config({ monaco });
 
-monaco.editor.defineTheme("hive-dark", {
+monaco.editor.defineTheme(MONACO_DARK_THEME, {
   base: "vs-dark",
   inherit: false,
   rules: [
@@ -44,6 +44,42 @@ monaco.editor.defineTheme("hive-dark", {
   },
 });
 
+monaco.editor.defineTheme(MONACO_LIGHT_THEME, {
+  base: "vs",
+  inherit: false,
+  rules: [
+    { token: "",                  foreground: "18181b" },
+    { token: "comment",           foreground: "71717a", fontStyle: "italic" },
+    { token: "keyword",           foreground: "7c3aed", fontStyle: "bold" },
+    { token: "keyword.operator",  foreground: "71717a" },
+    { token: "string",            foreground: "0369a1" },
+    { token: "number",            foreground: "c2410c" },
+    { token: "type",              foreground: "18181b" },
+    { token: "type.identifier",   foreground: "18181b" },
+    { token: "delimiter",         foreground: "71717a" },
+    { token: "operator",          foreground: "71717a" },
+    { token: "identifier",        foreground: "18181b" },
+    { token: "variable",          foreground: "18181b" },
+    { token: "regexp",            foreground: "0369a1" },
+  ],
+  colors: {
+    "editor.background":                  "#ffffff",
+    "editor.foreground":                  "#18181b",
+    "editor.lineHighlightBackground":     "#f4f4f5",
+    "editor.selectionBackground":         "#dbeafe",
+    "editor.inactiveSelectionBackground": "#e0e7ff",
+    "editorCursor.foreground":            "#18181b",
+    "editorLineNumber.foreground":        "#d4d4d8",
+    "editorIndentGuide.background1":      "#e4e4e7",
+    "editorWidget.background":            "#f4f4f5",
+    "editorHoverWidget.background":       "#f4f4f5",
+    "editorHoverWidget.border":           "#e4e4e7",
+    "scrollbar.shadow":                   "#00000000",
+    "scrollbarSlider.background":         "#d4d4d866",
+    "scrollbarSlider.hoverBackground":    "#a1a1aaaa",
+  },
+});
+
 const LINE_HEIGHT = 19; // matches fontSize 13 + Monaco default line spacing
 const PADDING = 16;
 
@@ -73,6 +109,7 @@ export function CodeViewer({ content, lang = "text", className, autoSize, maxHei
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const monacoTheme = useMonacoTheme();
 
   const height = useMemo(() => {
     if (autoSize) return "100%";
@@ -111,7 +148,6 @@ export function CodeViewer({ content, lang = "text", className, autoSize, maxHei
     folding: false,
     scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
     inlayHints: { enabled: "off" },
-    breadcrumbs: { enabled: false },
   };
 
   const monacoLang = LANG_MAP[lang ?? ""] ?? lang ?? "plaintext";
@@ -124,7 +160,7 @@ export function CodeViewer({ content, lang = "text", className, autoSize, maxHei
           onMount={handleMount}
           language={monacoLang}
           value={content}
-          theme={MONACO_THEME}
+          theme={monacoTheme}
           options={editorOptions}
         />
         <div className="absolute top-2 right-3 flex gap-1 z-10">
@@ -155,7 +191,7 @@ export function CodeViewer({ content, lang = "text", className, autoSize, maxHei
                 height="100%"
                 language={monacoLang}
                 value={content}
-                theme={MONACO_THEME}
+                theme={monacoTheme}
                 options={{ ...editorOptions, scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 } }}
               />
             </div>

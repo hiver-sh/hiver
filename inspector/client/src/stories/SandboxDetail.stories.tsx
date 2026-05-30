@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { MemoryRouter } from "react-router-dom";
 import { SandboxDetail } from "@/components/SandboxDetail";
 import { TransportProvider } from "@/lib/transport";
+import { UserPreferencesProvider } from "@/lib/userPreferences";
 import traceData from "./trace-sample.json";
 
 const SANDBOX = {
@@ -22,11 +23,13 @@ const meta: Meta<typeof SandboxDetail> = {
   decorators: [
     (Story, { parameters }) => (
       <MemoryRouter>
-        <TransportProvider traceData={traceData}>
-          <div className={`h-screen bg-background text-foreground${parameters.dark ? " dark" : ""}`}>
-            <Story />
-          </div>
-        </TransportProvider>
+        <UserPreferencesProvider initialPreferences={{ theme: parameters.dark ? "dark" : "light" }}>
+          <TransportProvider traceData={traceData}>
+            <div className="h-screen bg-background text-foreground">
+              <Story />
+            </div>
+          </TransportProvider>
+        </UserPreferencesProvider>
       </MemoryRouter>
     ),
   ],

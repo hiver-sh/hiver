@@ -4,7 +4,7 @@ import MonacoEditor, { loader } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import * as monaco from "monaco-editor";
 import { SANDBOX_CONFIG_SCHEMA } from "@/sandboxConfigSchema";
-import { MONACO_THEME } from "@/monacoWorkers";
+import { useMonacoTheme } from "@/lib/useMonacoTheme";
 
 loader.config({ monaco });
 
@@ -28,6 +28,7 @@ function configureJsonSchema(m: typeof monaco) {
 export function CodeEditor({ value, onChange, className }: Props) {
   const [copied, setCopied] = useState(false);
   const [focused, setFocused] = useState(false);
+  const monacoTheme = useMonacoTheme();
 
   function handleMount(ed: editor.IStandaloneCodeEditor, m: typeof monaco) {
     configureJsonSchema(m);
@@ -48,7 +49,7 @@ export function CodeEditor({ value, onChange, className }: Props) {
         defaultLanguage="json"
         value={value}
         onChange={(v: string | undefined) => onChange(v ?? "")}
-        theme={MONACO_THEME}
+        theme={monacoTheme}
         onMount={handleMount}
         options={{
           minimap: { enabled: false },

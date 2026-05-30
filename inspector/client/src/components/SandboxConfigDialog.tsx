@@ -93,10 +93,10 @@ function JsonLine({ text }: { text: string }) {
   return (
     <>
       {tokens.map((t, i) => {
-        if (t.k === "key") return <span key={i} className="text-sky-300">{t.v}</span>;
-        if (t.k === "str") return <span key={i} className="text-amber-300">{t.v}</span>;
-        if (t.k === "num") return <span key={i} className="text-violet-300">{t.v}</span>;
-        if (t.k === "kw")  return <span key={i} className="text-blue-300">{t.v}</span>;
+        if (t.k === "key") return <span key={i} className="text-sky-600 dark:text-sky-300">{t.v}</span>;
+        if (t.k === "str") return <span key={i} className="text-amber-700 dark:text-amber-300">{t.v}</span>;
+        if (t.k === "num") return <span key={i} className="text-violet-600 dark:text-violet-300">{t.v}</span>;
+        if (t.k === "kw")  return <span key={i} className="text-blue-600 dark:text-blue-300">{t.v}</span>;
         return <span key={i}>{t.v}</span>;
       })}
     </>
@@ -118,15 +118,15 @@ function DiffView({ oldStr, newStr }: { oldStr: string; newStr: string }) {
     <div className="font-mono text-xs select-text">
       {hunks.map((hunk, hi) => (
         <div key={hi}>
-          <div className="bg-blue-900/30 text-blue-400/80 px-4 py-0.5 select-none text-[11px]">
+          <div className="bg-blue-100/80 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400/80 px-4 py-0.5 select-none text-[11px]">
             @@ -{hunk.oldStart},{hunk.oldCount} +{hunk.newStart},{hunk.newCount} @@
           </div>
           {hunk.lines.map((line, li) => (
             <div
               key={li}
               className={`flex px-4 py-px whitespace-pre ${
-                line.type === "+" ? "bg-green-500/15 text-green-100" :
-                line.type === "-" ? "bg-red-500/15 text-red-100" :
+                line.type === "+" ? "bg-green-100 text-green-900 dark:bg-green-500/15 dark:text-green-100" :
+                line.type === "-" ? "bg-red-100 text-red-900 dark:bg-red-500/15 dark:text-red-100" :
                 "text-muted-foreground"
               }`}
             >

@@ -1,4 +1,4 @@
-import { Activity, ExternalLink, Filter, FolderTree, Loader2, Power, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
+import { Activity, ExternalLink, Filter, FolderTree, Loader2, LocateFixed, Power, SlidersHorizontal, SquareTerminal, Trash2, X } from "lucide-react";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -18,15 +18,14 @@ import { langForPath } from "@/lib/fileUtils";
 import type { SandboxEvent, SandboxRef } from "@/types";
 import { loadEvents, appendEvent, clearEvents } from "@/lib/eventStore";
 import { useTransport } from "@/lib/transport";
+import { useUserPreferences } from "@/lib/userPreferences";
 
 const MIN_TIMELINE_WIDTH = 300;
 const MIN_TERMINAL_WIDTH = 240;
 const MIN_FILES_WIDTH = 200;
 const DRAG_HANDLE_WIDTH = 5;
-const DEFAULT_TERMINAL_WIDTH = 480;
-const DEFAULT_FILES_WIDTH = 256;
 
-interface Props {
+export interface SandboxDetailProps {
   sandbox: SandboxRef;
   serverUrl: string;
   controllerUrl: string;
@@ -34,14 +33,17 @@ interface Props {
   onConnectedChange?: (connected: boolean) => void;
 }
 
-export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown, onConnectedChange }: Props) {
+export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown, onConnectedChange }: SandboxDetailProps) {
   const { transport, player } = useTransport();
+  const { prefs, setPref } = useUserPreferences();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
   const [connected, setConnected] = useState(false);
   useEffect(() => { onConnectedChange?.(connected); }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
 const [shutdownLoading, setShutdownLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const [zoomWindow, setZoomWindow] = useState<{ realStart: number; realEnd: number } | null>(null);
+  const follow = prefs.followEvents;
+  const setFollow = (v: boolean) => setPref("followEvents", v);
 
   const [filter, setFilter] = useState<FilterState>(() => {
     const kind = searchParams.get("filter-kind") ?? "all";
@@ -62,37 +64,18 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       return next;
     }, { replace: true });
   }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [showTerminal, setShowTerminal] = useState(
-    () => localStorage.getItem("sandbox:showTerminal") === "true",
-  );
-
-  useEffect(() => {
-    localStorage.setItem("sandbox:showTerminal", String(showTerminal));
-  }, [showTerminal]);
-  const [showFiles, setShowFiles] = useState(
-    () => localStorage.getItem("sandbox:showFiles") === "true",
-  );
-
-  useEffect(() => {
-    localStorage.setItem("sandbox:showFiles", String(showFiles));
-  }, [showFiles]);
-  const [filesWidth, setFilesWidth] = useState(
-    () => parseInt(localStorage.getItem("sandbox:filesWidth") ?? String(DEFAULT_FILES_WIDTH), 10),
-  );
-
-  useEffect(() => {
-    localStorage.setItem("sandbox:filesWidth", String(filesWidth));
-  }, [filesWidth]);
-  const [showTimeline, setShowTimeline] = useState(true);
+  const showTerminal = prefs.showTerminal;
+  const setShowTerminal = (v: boolean) => setPref("showTerminal", v);
+  const showFiles = prefs.showFiles;
+  const setShowFiles = (v: boolean) => setPref("showFiles", v);
+  const filesWidth = prefs.filesWidth;
+  const setFilesWidth = (v: number) => setPref("filesWidth", v);
+  const showTimeline = prefs.showTimeline;
+  const setShowTimeline = (v: boolean) => setPref("showTimeline", v);
+  const terminalWidth = prefs.terminalWidth;
+  const setTerminalWidth = (v: number) => setPref("terminalWidth", v);
   const [showConfig, setShowConfig] = useState(false);
   const [configProposal, setConfigProposal] = useState<ConfigProposal | undefined>();
-  const [terminalWidth, setTerminalWidth] = useState(
-    () => parseInt(localStorage.getItem("sandbox:terminalWidth") ?? String(DEFAULT_TERMINAL_WIDTH), 10),
-  );
-
-  useEffect(() => {
-    localStorage.setItem("sandbox:terminalWidth", String(terminalWidth));
-  }, [terminalWidth]);
   const contentRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [filePreview, setFilePreview] = useState<{ path: string; content: string; lang: string } | null>(null);
@@ -259,7 +242,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <Button
             size="sm"
             variant={showTimeline ? "secondary" : "ghost"}
-            onClick={() => setShowTimeline((v) => !v)}
+            onClick={() => setShowTimeline(!showTimeline)}
             title="Toggle timeline"
           >
             <Activity className="h-4 w-4" />
@@ -271,7 +254,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               if (!showTerminal && contentRef.current) {
                 setTerminalWidth(Math.floor(contentRef.current.getBoundingClientRect().width / 2));
               }
-              setShowTerminal((v) => !v);
+              setShowTerminal(!showTerminal);
             }}
             title="Toggle terminal panel"
           >
@@ -280,7 +263,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <Button
             size="sm"
             variant={showFiles ? "secondary" : "ghost"}
-            onClick={() => setShowFiles((v) => !v)}
+            onClick={() => setShowFiles(!showFiles)}
             title="Toggle file explorer"
           >
             <FolderTree className="h-4 w-4" />
@@ -337,7 +320,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                     <button className={cn(
                       "flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors",
                       isFilterActive(filter)
-                        ? "border-blue-500/60 bg-blue-500/10 text-blue-400"
+                        ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
                         : "border-border text-muted-foreground hover:bg-muted/40",
                     )}>
                       <Filter className="h-3 w-3" />
@@ -367,7 +350,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                           className={cn(
                             "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
                             filter.kind === opt.value
-                              ? "border-blue-500/60 bg-blue-500/10 text-blue-400"
+                              ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
                               : "border-border text-muted-foreground hover:bg-muted/40",
                           )}
                         >
@@ -384,7 +367,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                           className={cn(
                             "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
                             filter.access === opt.value
-                              ? "border-blue-500/60 bg-blue-500/10 text-blue-400"
+                              ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
                               : "border-border text-muted-foreground hover:bg-muted/40",
                           )}
                         >
@@ -402,6 +385,18 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                     )}
                   </PopoverContent>
                 </Popover>
+                <button
+                  onClick={() => setFollow(!follow)}
+                  title="Follow latest events"
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors",
+                    follow
+                      ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+                      : "border-border text-muted-foreground hover:bg-muted/40",
+                  )}
+                >
+                  <LocateFixed className="h-3 w-3" />
+                </button>
                 {events.length > 0 && (
                   <button
                     onClick={() => {
@@ -409,15 +404,16 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                       void clearEvents(sandbox.id);
                       startStream();
                     }}
-                    className="hover:text-foreground transition-colors"
+                    title="Clear events"
+                    className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
                   >
-                    Clear
+                    <Trash2 className="h-3 w-3" />
                   </button>
                 )}
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} onOpenFile={openFile} zoomWindow={zoomWindow} setZoomWindow={setZoomWindow} />
+              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} onOpenFile={openFile} zoomWindow={zoomWindow} setZoomWindow={setZoomWindow} follow={follow} />
             </div>
           </div>
         )}
@@ -426,7 +422,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <>
             {showTimeline && (
               <div
-                className="shrink-0 cursor-col-resize bg-border hover:bg-white/40 transition-colors"
+                className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
                 style={{ width: DRAG_HANDLE_WIDTH }}
                 onMouseDown={makeDragHandler(setTerminalWidth, terminalWidth, MIN_TERMINAL_WIDTH, () => {
                   const w = contentRef.current?.getBoundingClientRect().width ?? 1200;
@@ -452,7 +448,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <>
             {(showTimeline || showTerminal) && (
               <div
-                className="shrink-0 cursor-col-resize bg-border hover:bg-white/40 transition-colors"
+                className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
                 style={{ width: DRAG_HANDLE_WIDTH }}
                 onMouseDown={makeDragHandler(setFilesWidth, filesWidth, MIN_FILES_WIDTH, () => {
                   const w = contentRef.current?.getBoundingClientRect().width ?? 1200;

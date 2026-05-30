@@ -23,9 +23,9 @@ export function WsChunkRow({ chunk }: { chunk: Extract<SandboxEvent, { type: "eg
       >
         <div className="flex items-center gap-1 shrink-0 w-10 text-[10px] font-mono font-semibold">
           {chunk.label === "up"
-            ? <><ArrowUp className="h-3 w-3 text-blue-400" /><span className="text-blue-400">up</span></>
+            ? <><ArrowUp className="h-3 w-3 text-blue-600 dark:text-blue-400" /><span className="text-blue-600 dark:text-blue-400">up</span></>
             : chunk.label === "down"
-            ? <><ArrowDown className="h-3 w-3 text-green-400" /><span className="text-green-400">down</span></>
+            ? <><ArrowDown className="h-3 w-3 text-green-600 dark:text-green-400" /><span className="text-green-600 dark:text-green-400">down</span></>
             : null}
         </div>
         <span className="font-mono text-xs text-foreground/60 truncate">{snippet}</span>
@@ -35,9 +35,9 @@ export function WsChunkRow({ chunk }: { chunk: Extract<SandboxEvent, { type: "eg
           <DialogHeader className="px-4 py-3 shrink-0 border-b border-border">
             <DialogTitle className="text-sm flex items-center gap-1.5">
               {chunk.label === "up"
-                ? <><ArrowUp className="h-3.5 w-3.5 text-blue-400" /><span className="text-blue-400">up</span></>
+                ? <><ArrowUp className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" /><span className="text-blue-600 dark:text-blue-400">up</span></>
                 : chunk.label === "down"
-                ? <><ArrowDown className="h-3.5 w-3.5 text-green-400" /><span className="text-green-400">down</span></>
+                ? <><ArrowDown className="h-3.5 w-3.5 text-green-600 dark:text-green-400" /><span className="text-green-600 dark:text-green-400">down</span></>
                 : <span>chunk</span>}
               <span className="text-muted-foreground font-normal ml-1 text-xs">WebSocket message</span>
             </DialogTitle>

@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, Pencil, RefreshCw, ServerCrash } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight, Monitor, Moon, Pencil, RefreshCw, ServerCrash, Settings, Sun } from "lucide-react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useMatch, useNavigate, useParams } from "react-router-dom";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
 import { GettingStarted } from "@/components/GettingStarted";
@@ -22,6 +22,45 @@ import { DEFAULT_CONTROLLER_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } fro
 import { purgeOrphanEvents } from "@/lib/eventStore";
 import { useScrollbarVisibility } from "@/lib/useScrollbarVisibility";
 import { TransportProvider, useTransport } from "@/lib/transport";
+import { UserPreferencesProvider, useUserPreferences, type Theme } from "@/lib/userPreferences";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+
+const THEME_OPTIONS: { value: Theme; label: string; icon: React.ReactNode }[] = [
+  { value: "light", label: "Light", icon: <Sun className="h-3.5 w-3.5" /> },
+  { value: "dark", label: "Dark", icon: <Moon className="h-3.5 w-3.5" /> },
+  { value: "system", label: "System", icon: <Monitor className="h-3.5 w-3.5" /> },
+];
+
+function ThemeToggle() {
+  const { prefs, setPref } = useUserPreferences();
+  const theme = prefs.theme;
+  const setTheme = (t: Theme) => setPref("theme", t);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button className="text-muted-foreground/50 hover:text-muted-foreground transition-colors" title="Settings">
+          <Settings className="h-4 w-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="right" align="end" className="w-36 p-1">
+        <p className="px-2 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Color theme</p>
+        {THEME_OPTIONS.map(({ value, label, icon }) => (
+          <button
+            key={value}
+            onClick={() => setTheme(value)}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent",
+              theme === value && "bg-accent text-accent-foreground font-medium",
+            )}
+          >
+            {icon}
+            {label}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function ControllerUnreachable({ message, loading, onRetry }: { message: string; loading: boolean; onRetry: () => void }) {
   return (
@@ -78,19 +117,15 @@ function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxe
 
 function AppContent() {
   const { transport } = useTransport();
+  const { prefs, setPref } = useUserPreferences();
   const [controllerUrl, setControllerUrl] = useState(DEFAULT_CONTROLLER_URL);
   const [serverUrl] = useState(DEFAULT_INSPECTOR_SERVER);
   const [controllerInput, setControllerInput] = useState(DEFAULT_CONTROLLER_URL);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => localStorage.getItem("app:sidebarCollapsed") === "true",
-  );
-
-  useEffect(() => {
-    localStorage.setItem("app:sidebarCollapsed", String(sidebarCollapsed));
-  }, [sidebarCollapsed]);
+  const sidebarCollapsed = prefs.sidebarCollapsed;
+  const setSidebarCollapsed = (v: boolean) => setPref("sidebarCollapsed", v);
   const [sandboxes, setSandboxes] = useState<SandboxRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -168,8 +203,8 @@ function AppContent() {
                 onClick={() => navigate(`/sandboxes/${sb.id}`)}
                 title={sb.id}
                 className={cn(
-                  "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-accent",
-                  selectedId === sb.id && "bg-accent",
+                  "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent",
+                  selectedId === sb.id && "bg-sidebar-accent",
                 )}
               >
                 <span className={cn(
@@ -180,6 +215,9 @@ function AppContent() {
               </button>
             ))}
           </div>
+          <div className="mt-auto pb-3">
+            <ThemeToggle />
+          </div>
         </aside>
       ) : (
         <aside className="flex w-72 flex-none flex-col sidebar">
@@ -187,7 +225,7 @@ function AppContent() {
           <div className="h-[70px] flex flex-col justify-center">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
               <button onClick={() => navigate("/")} className="flex items-center gap-1.5 text-sm font-semibold tracking-tight hover:opacity-80 transition-opacity">
-                <img src="/favicon.svg" alt="" className="h-4 w-4" />
+                <img src="/favicon.svg" alt="" className="h-4 w-4 invert dark:invert-0" />
                 Hive Inspector
               </button>
               <button
@@ -199,7 +237,7 @@ function AppContent() {
             </div>
             <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
               <DialogTrigger asChild>
-                <div className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-white/10 transition-colors">
+                <div className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-foreground/10 transition-colors">
                   <span className="font-mono text-[11px] text-muted-foreground leading-none group-hover:text-foreground transition-colors">
                     {controllerUrl}
                   </span>
@@ -246,6 +284,9 @@ function AppContent() {
             serverUrl={serverUrl}
             controllerUrl={controllerUrl}
           />
+          <div className="flex items-center px-4 py-3 border-t border-border/50">
+            <ThemeToggle />
+          </div>
         </aside>
       )}
 
@@ -267,8 +308,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <TransportProvider>
-      <AppContent />
-    </TransportProvider>
+    <UserPreferencesProvider>
+      <TransportProvider>
+        <AppContent />
+      </TransportProvider>
+    </UserPreferencesProvider>
   );
 }

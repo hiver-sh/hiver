@@ -67,7 +67,7 @@ function EventDetail({ event }: { event: SandboxEvent }) {
       return (
         <span className="font-mono text-xs text-muted-foreground">
           <span className="text-zinc-500">#{event.id}</span>{" "}
-          <span className="text-blue-400">{event.method}</span>{" "}
+          <span className="text-blue-600 dark:text-blue-400">{event.method}</span>{" "}
           {event.host}{event.path}
           {event.query ? `?${event.query}` : ""}
         </span>
@@ -76,7 +76,7 @@ function EventDetail({ event }: { event: SandboxEvent }) {
       return (
         <span className="font-mono text-xs text-muted-foreground">
           req#{event.request_id}{" "}
-          <span className={event.status >= 400 ? "text-red-400" : "text-green-400"}>
+          <span className={event.status >= 400 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}>
             {event.status}
           </span>{" "}
           {event.duration_ms}ms
@@ -87,7 +87,7 @@ function EventDetail({ event }: { event: SandboxEvent }) {
         <span className="font-mono text-xs text-muted-foreground">
           req#{event.request_id} chunk
           {event.label ? (
-            <span className={`ml-1 ${event.label === "up" ? "text-blue-400" : "text-green-400"}`}>
+            <span className={`ml-1 ${event.label === "up" ? "text-blue-600 dark:text-blue-400" : "text-green-600 dark:text-green-400"}`}>
               {event.label === "up" ? "↑" : "↓"} {event.label}
             </span>
           ) : null}{" "}
@@ -98,7 +98,7 @@ function EventDetail({ event }: { event: SandboxEvent }) {
       return (
         <span className="font-mono text-xs text-muted-foreground">
           <span className="text-zinc-500">#{event.id}</span>{" "}
-          <span className="text-purple-400">{event.operation}</span>{" "}
+          <span className="text-purple-600 dark:text-purple-400">{event.operation}</span>{" "}
           {event.path}
         </span>
       );
@@ -106,7 +106,7 @@ function EventDetail({ event }: { event: SandboxEvent }) {
       return (
         <span className="font-mono text-xs text-muted-foreground">
           req#{event.request_id} {event.backend} {event.duration_ms}ms
-          {event.error ? <span className="text-red-400"> {event.error}</span> : null}
+          {event.error ? <span className="text-red-600 dark:text-red-400"> {event.error}</span> : null}
         </span>
       );
     case "config.apply":
@@ -118,8 +118,8 @@ function EventDetail({ event }: { event: SandboxEvent }) {
     case "resource.usage":
       return (
         <span className="font-mono text-xs text-muted-foreground">
-          cpu <span className="text-emerald-400">{event.cpu_percent.toFixed(1)}%</span>
-          {" · "}mem <span className="text-emerald-400">{formatBytes(event.memory_bytes)}</span>
+          cpu <span className="text-emerald-600 dark:text-emerald-400">{event.cpu_percent.toFixed(1)}%</span>
+          {" · "}mem <span className="text-emerald-600 dark:text-emerald-400">{formatBytes(event.memory_bytes)}</span>
         </span>
       );
   }

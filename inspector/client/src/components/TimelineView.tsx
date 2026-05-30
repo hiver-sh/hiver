@@ -180,15 +180,15 @@ function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
 }
 
 function methodClass(row: TimelineRow): string {
-  if (row.type === "stdio") return row.method === "err" ? "text-red-400" : "text-zinc-400";
-  if (row.type === "fs") return "text-purple-400";
-  if (row.type === "resource") return row.key === "resource:cpu" ? "text-sky-400" : "text-emerald-400";
+  if (row.type === "stdio") return row.method === "err" ? "text-red-600 dark:text-red-400" : "text-muted-foreground";
+  if (row.type === "fs") return "text-purple-600 dark:text-purple-400";
+  if (row.type === "resource") return row.key === "resource:cpu" ? "text-sky-600 dark:text-sky-400" : "text-emerald-600 dark:text-emerald-400";
   switch (row.method) {
-    case "GET":    return "text-green-400";
-    case "POST":   return "text-white";
+    case "GET":    return "text-green-600 dark:text-green-400";
+    case "POST":   return "text-foreground";
     case "PUT":
-    case "PATCH":  return "text-orange-400";
-    case "DELETE": return "text-red-400";
+    case "PATCH":  return "text-orange-600 dark:text-orange-400";
+    case "DELETE": return "text-red-600 dark:text-red-400";
     default:       return "text-muted-foreground";
   }
 }
@@ -453,9 +453,9 @@ function ResourceLineChart({
         const labelX = Math.max(labelW / 2, Math.min(hov.x, width - labelW / 2));
         return (
           <>
-            <line x1={hov.x} y1={0} x2={hov.x} y2={height} stroke="white" strokeWidth="1" strokeOpacity="0.25" strokeDasharray="2,2" />
-            <rect x={labelX - labelW / 2} y={2} width={labelW} height={11} rx={2} fill="rgba(0,0,0,0.65)" />
-            <text x={labelX} y={10.5} textAnchor="middle" fill="white" fontSize={8} fontFamily="ui-monospace,monospace">{hovLabel}</text>
+            <line x1={hov.x} y1={0} x2={hov.x} y2={height} stroke="var(--chart-crosshair)" strokeWidth="1" strokeOpacity="1" strokeDasharray="2,2" />
+            <rect x={labelX - labelW / 2} y={2} width={labelW} height={11} rx={2} fill="var(--chart-tooltip-bg)" />
+            <text x={labelX} y={10.5} textAnchor="middle" fill="var(--chart-tooltip-text)" fontSize={8} fontFamily="ui-monospace,monospace">{hovLabel}</text>
           </>
         );
       })()}
@@ -463,7 +463,7 @@ function ResourceLineChart({
   );
 }
 
-export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void }) {
+export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow, follow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void; follow?: boolean }) {
   const rows = useMemo(() => buildRows(events), [events]);
 
   const hasLive = rows.some((r) => r.bars.some(b => b.pending && b.access === "allowed"));
@@ -494,6 +494,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   const [labelW, setLabelW] = useState(
     () => parseInt(localStorage.getItem("timeline:labelW") ?? String(DEFAULT_labelW), 10),
   );
+  const [labelDragging, setLabelDragging] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("timeline:labelW", String(labelW));
@@ -591,15 +592,16 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
         const curScrollTop = scrollEl.scrollTop;
         const curScrollLeft = scrollEl.scrollLeft;
 
-        // The sticky resource section covers the top stickyH px of the viewport
-        const topCover = section.category === "resource" ? 0 : stickyH;
+        // topCover: resource section is sticky at top=0; other sections have resource sticky + 24px category header
+        const topCover = section.category === "resource" ? 0 : stickyH + 24;
+        const trackW = viewW - lw;
         const hiddenV = laneTop < curScrollTop + topCover || laneBottom > curScrollTop + viewH;
-        const hiddenH = barLeft < curScrollLeft + lw || barRight > curScrollLeft + viewW;
+        const hiddenH = barLeft < curScrollLeft || barRight > curScrollLeft + trackW;
 
         if (!hiddenV && !hiddenH) return;
 
         if (hiddenV) scrollEl.scrollTop = Math.max(0, laneTop - topCover + 11 - (viewH - topCover) / 2);
-        if (hiddenH) scrollEl.scrollLeft = Math.max(0, (barLeft + barRight) / 2 - lw - (viewW - lw) / 2);
+        if (hiddenH) scrollEl.scrollLeft = Math.max(0, (barLeft + barRight) / 2 - trackW / 2);
         return;
       }
     }
@@ -642,6 +644,14 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   useEffect(() => {
     lastEventReceivedRef.current = Date.now();
   }, [events.length]);
+
+  useEffect(() => {
+    if (!follow) return;
+    requestAnimationFrame(() => {
+      const el = rowsScrollRef.current;
+      if (el) el.scrollLeft = el.scrollWidth - el.clientWidth;
+    });
+  }, [follow, events.length]);
 
   useEffect(() => {
     if (!hasLive) return;
@@ -989,12 +999,14 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
     e.preventDefault();
     const startX = e.clientX;
     const startW = labelW;
+    setLabelDragging(true);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     function onMove(ev: MouseEvent) {
       setLabelW(Math.max(120, Math.min(startW + ev.clientX - startX, 480)));
     }
     function onUp() {
+      setLabelDragging(false);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMove);
@@ -1016,7 +1028,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
         style={{ left: labelW - 2 }}
         onMouseDown={startLabelDrag}
       >
-        <div className="absolute inset-y-0 left-[2px] w-px bg-transparent group-hover/lsplit:bg-border transition-colors" />
+        <div className={`absolute inset-y-0 left-[2px] w-px transition-colors ${labelDragging ? "bg-blue-700 dark:bg-blue-400" : "bg-transparent group-hover/lsplit:bg-border"}`} />
       </div>
 
       {/* Sticky ruler */}
@@ -1035,7 +1047,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                   className="gap-indicator group/gap absolute top-0 bottom-0 flex items-center justify-center border-x border-dashed border-zinc-500/30 bg-zinc-500/10 hover:bg-zinc-500/20 transition-colors"
                   style={{ left: seg.dispStart, width: seg.dispEnd - seg.dispStart }}
                 >
-                  <span className="text-[9px] text-zinc-400 whitespace-nowrap opacity-0 group-hover/gap:opacity-100 transition-opacity">
+                  <span className="text-[9px] text-muted-foreground whitespace-nowrap opacity-0 group-hover/gap:opacity-100 transition-opacity">
                     ~{humanDuration(seg.realEnd - seg.realStart)}
                   </span>
                 </div>
@@ -1054,14 +1066,6 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                   </div>
                 );
               })}
-              {dragSel && (
-                <>
-                  <div className="absolute top-0 bottom-0 left-0 bg-black/40 pointer-events-none z-50"
-                    style={{ width: Math.min(dragSel.startPx, dragSel.endPx) }} />
-                  <div className="absolute top-0 bottom-0 right-0 bg-black/40 pointer-events-none z-50"
-                    style={{ left: Math.max(dragSel.startPx, dragSel.endPx) }} />
-                </>
-              )}
             </div>
           </div>
         </div>
@@ -1109,7 +1113,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                 >
                   {/* Label cell — also sticky horizontally */}
                   <div
-                    className="shrink-0 sticky left-0 z-[21] flex items-center gap-1.5 px-2 bg-background"
+                    className="shrink-0 sticky left-0 z-[21] flex items-center gap-1.5 px-2 bg-background overflow-hidden"
                     style={{ width: labelW }}
                   >
                     {collapsed
@@ -1186,7 +1190,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                             <span className={`shrink-0 font-mono font-semibold ${methodClass(vl.row)}`}>
                               {vl.row.method?.toUpperCase()}
                             </span>
-                            <span className={`truncate font-mono ${selectedId !== null && isLaneSelected ? "text-white" : "text-muted-foreground"}`}>
+                            <span className={`truncate font-mono ${selectedId !== null && isLaneSelected ? "text-foreground" : "text-muted-foreground"}`}>
                               {vl.row.label}
                             </span>
                           </div>
@@ -1318,9 +1322,9 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
         const sl = rowsScrollRef.current?.scrollLeft ?? scrollLeft;
         return (
           <>
-            <div className="pointer-events-none absolute top-0 bottom-0 bg-black/40 z-50"
+            <div className="pointer-events-none absolute top-0 bottom-0 bg-white/65 dark:bg-black/70 z-50"
               style={{ left: 0, width: Math.max(0, labelW + Math.min(dragSel.startPx, dragSel.endPx) - sl) }} />
-            <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-black/40 z-50"
+            <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-white/65 dark:bg-black/70 z-50"
               style={{ left: labelW + Math.max(dragSel.startPx, dragSel.endPx) - sl }} />
           </>
         );
@@ -1337,10 +1341,10 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
         ) : (
           <>
             <div
-              className="h-[5px] shrink-0 cursor-row-resize bg-border hover:bg-white/40 transition-colors"
+              className="h-[5px] shrink-0 cursor-row-resize bg-border hover:bg-foreground/20 transition-colors"
               onMouseDown={startPanelDrag}
             />
-            <div className="shrink-0 flex flex-col overflow-hidden" style={{ height: panelHeight }}>
+            <div className="shrink-0 flex flex-col overflow-x-hidden overflow-y-auto scroll-container" style={{ height: panelHeight }}>
               <RowDetailPanel
                 key={selectedBar.id}
                 bar={selectedBar}

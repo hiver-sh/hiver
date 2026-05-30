@@ -81,7 +81,7 @@ function AccessCell({
 
   return (
     <div className="flex items-center gap-2">
-      <span className={`font-mono break-all select-text ${access === "denied" ? "text-red-400" : "text-green-400"}`}>
+      <span className={`font-mono break-all select-text ${access === "denied" ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
         {access}
       </span>
       {applyConfig && (
@@ -89,7 +89,7 @@ function AccessCell({
           <button
             onClick={() => void handleAction("allow")}
             disabled={!!applying}
-            className="text-[10px] px-1.5 py-0.5 rounded border border-green-600/40 text-green-500 hover:bg-green-500/10 transition-colors disabled:opacity-40 font-mono"
+            className="text-[10px] px-1.5 py-0.5 rounded border border-green-700/40 text-green-700 hover:bg-green-700/10 dark:border-green-600/40 dark:text-green-500 dark:hover:bg-green-500/10 transition-colors disabled:opacity-40 font-mono"
           >
             {applying === "allow" ? "…" : "allow"}
           </button>
@@ -97,7 +97,7 @@ function AccessCell({
           <button
             onClick={() => void handleAction("deny")}
             disabled={!!applying}
-            className="text-[10px] px-1.5 py-0.5 rounded border border-red-600/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40 font-mono"
+            className="text-[10px] px-1.5 py-0.5 rounded border border-red-700/40 text-red-700 hover:bg-red-700/10 dark:border-red-600/40 dark:text-red-400 dark:hover:bg-red-500/10 transition-colors disabled:opacity-40 font-mono"
           >
             {applying === "deny" ? "…" : "deny"}
           </button>
@@ -183,10 +183,9 @@ function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
   const parsed = useMemo(() => tryPretty(raw), [raw]);
   if (!parsed) return null;
   return (
-    <div className={`flex flex-col rounded-md border border-border bg-muted/20 overflow-hidden min-h-0 ${className ?? ""}`}>
-      <div className="flex-1 min-h-0">
-        <CodeViewer content={parsed.content} lang={parsed.isJson ? "json" : "text"} className="h-full" expandable />
-      </div>
+    <div className={`flex flex-col bg-muted/20 overflow-hidden ${className ?? ""}`}>
+      <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium border-b border-border shrink-0 bg-background">Body</div>
+      <CodeViewer content={parsed.content} lang={parsed.isJson ? "json" : "text"} className="min-h-[300px]" expandable />
     </div>
   );
 }
@@ -200,10 +199,10 @@ function prettyJson(s?: string): string {
 
 function Bubble({ role, children, defaultCollapsed = false, repeated = false }: { role: string; children: ReactNode; defaultCollapsed?: boolean; repeated?: boolean }) {
   const roleColor: Record<string, string> = {
-    user: "text-green-400",
-    assistant: "text-blue-400",
-    system: "text-yellow-500",
-    tool: "text-purple-400",
+    user: "text-green-600 dark:text-green-400",
+    assistant: "text-blue-600 dark:text-blue-400",
+    system: "text-yellow-600 dark:text-yellow-500",
+    tool: "text-purple-600 dark:text-purple-400",
   };
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   return (
@@ -242,7 +241,7 @@ function ToolUseBlock({ name, input }: { name: string; input?: unknown }) {
   const pretty = useMemo(() => prettyJson(input !== undefined ? JSON.stringify(input) : undefined), [input]);
   return (
     <div className="flex flex-col gap-1">
-      <span className="font-mono text-[10px] text-purple-400 font-semibold">{name}</span>
+      <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400 font-semibold">{name}</span>
       {pretty && (
         <div className="rounded border border-border overflow-hidden">
           <CodeViewer content={pretty} lang="json" minHeight={60} maxHeight={160} />
@@ -263,7 +262,7 @@ function renderBlocks(blocks: LLMContentBlock[]): ReactNode {
       const { content: pretty, isJson } = tryPretty(raw) ?? { content: raw ?? "", isJson: false };
       return (
         <div key={i} className="flex flex-col gap-1">
-          <span className="font-mono text-[10px] text-purple-400/70">result · {blk.toolId}</span>
+          <span className="font-mono text-[10px] text-purple-600/70 dark:text-purple-400/70">result · {blk.toolId}</span>
           <div className="rounded border border-border overflow-hidden">
             <CodeViewer content={pretty} lang={isJson ? "json" : "text"} minHeight={60} maxHeight={320} />
           </div>
@@ -286,7 +285,7 @@ function SummaryTab({ summary, prevSummary }: { summary: LLMSummaryData; prevSum
   }, [summary.messages, prevSummary?.messages]);
 
   return (
-    <div className="flex flex-col gap-3 px-3 pb-3 overflow-y-auto flex-1 min-h-0 scroll-container">
+    <div className="flex flex-col gap-3 px-3 pb-3">
       {summary.system && (
         <Bubble role="system" defaultCollapsed>
           <PlainText text={summary.system} />
@@ -396,7 +395,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
     const el = containerRef.current;
     if (!el) return;
     const observer = new ResizeObserver(([entry]) => {
-      setNarrow(entry.contentRect.width < 700);
+      setNarrow(entry.contentRect.width < 600);
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -407,28 +406,26 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
   if (req.type === "stdio") {
     const text = (req.stdout ?? req.stderr ?? "").trimEnd();
     return (
-      <div className="flex flex-col h-full p-3 gap-2">
+      <div className="flex flex-col p-3 gap-2">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold shrink-0">
           {req.stderr ? "stderr" : "stdout"} · {ts}
         </div>
-        <div className="flex-1 min-h-0">
-          <CodeViewer content={text} className="h-full" />
-        </div>
+        <CodeViewer content={text} className="min-h-[300px]" />
       </div>
     );
   }
 
   if (req.type === "resource.usage") {
     return (
-      <div className="flex flex-col h-full p-3 gap-2">
+      <div className="flex flex-col p-3 gap-2">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold shrink-0">
           resource usage · {ts}
         </div>
         <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 font-mono text-xs">
           <span className="text-muted-foreground/70">cpu</span>
-          <span className="text-white">{req.cpu_percent.toFixed(1)}%</span>
+          <span className="text-foreground">{req.cpu_percent.toFixed(1)}%</span>
           <span className="text-muted-foreground/70">memory</span>
-          <span className="text-white">{formatBytes(req.memory_bytes)}</span>
+          <span className="text-foreground">{formatBytes(req.memory_bytes)}</span>
         </div>
       </div>
     );
@@ -443,7 +440,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
   ];
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full text-xs">
+    <div ref={containerRef} className="flex flex-col min-h-full shrink-0 text-xs">
       <div className="relative shrink-0">
         <div className="detail-header-scroll overflow-x-auto">
           <div className="flex items-center gap-2 px-3 py-2 min-w-max">
@@ -467,7 +464,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                   </span>
                 )}
                 {bar.pending && !summaryData.response?.stopReason && (
-                  <span className="font-mono text-[10px] text-blue-400/70">streaming…</span>
+                  <span className="font-mono text-[10px] text-blue-600/70 dark:text-blue-400/70">streaming…</span>
                 )}
               </>
             )}
@@ -488,9 +485,9 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
       )}
 
       {tab === "request" && (
-        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto scroll-container" : ""}`}>
-          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${!narrow && reqRawBody ? "flex-1" : narrow ? "shrink-0" : "w-full"}`}>
-            <div className={`p-3 overflow-auto scroll-container ${narrow ? "" : "h-full"}`}>
+        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 ${narrow ? "flex-col" : ""}`}>
+          <div className={`overflow-hidden ${!narrow && reqRawBody ? "w-64 shrink-0 border-r border-border" : narrow && reqRawBody ? "shrink-0 border-b border-border" : "flex-1"}`}>
+            <div className="p-3">
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                 <KV label="id"   value={String(req.id)} />
                 <KV label="time" value={ts} />
@@ -534,26 +531,26 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
             </div>
           </div>
           {reqRawBody && (
-            <BodyBlock raw={reqRawBody} className={narrow ? "flex-1 min-h-[400px]" : "flex-1 min-w-0"} />
+            <BodyBlock raw={reqRawBody} className={narrow ? "min-h-[300px]" : "flex-1 min-w-0 min-h-[300px]"} />
           )}
         </div>
       )}
 
       {tab === "response" && (
-        <div className={`flex flex-1 min-h-0 gap-3 px-3 pb-3 ${narrow ? "flex-col overflow-y-auto scroll-container" : ""}`}>
-          <div className={`rounded-md border border-border overflow-hidden min-w-0 ${!narrow && chunks.length > 0 ? "flex-1" : narrow ? "shrink-0" : "w-full"}`}>
-            <div className={`p-3 overflow-auto scroll-container ${narrow ? "" : "h-full"}`}>
+        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 ${narrow ? "flex-col" : ""}`}>
+          <div className={`overflow-hidden ${!narrow && chunks.length > 0 ? "w-64 shrink-0 border-r border-border" : narrow && chunks.length > 0 ? "shrink-0 border-b border-border" : "flex-1"}`}>
+            <div className="p-3">
               {res ? (
                 <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                   {res.type === "egress.response" && <>
-                    <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-400" : "text-green-400"} />
+                    <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"} />
                     {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
                     {res.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={res.headers} /></div>}
                   </>}
                   {res.type === "fs.response" && <>
                     <KV label="backend"  value={res.backend} />
                     {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
-                    {res.error && <KV label="error" value={res.error} cls="text-red-400" />}
+                    {res.error && <KV label="error" value={res.error} cls="text-red-600 dark:text-red-400" />}
                   </>}
                 </div>
               ) : (
@@ -562,9 +559,10 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
             </div>
           </div>
           {chunks.length > 0 && (
-            <div className={`flex min-w-0 flex-col gap-2 ${narrow ? "flex-1 min-h-[400px]" : "flex-1 min-h-0 overflow-hidden"}`}>
+            <div className={`flex flex-col bg-muted/20 overflow-hidden min-h-[300px] ${narrow ? "" : "flex-1 min-w-0"}`}>
+              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium border-b border-border shrink-0 bg-background">Body</div>
               {isWebSocket ? (
-                <div className="flex flex-col flex-1 min-h-0 overflow-y-auto scroll-container rounded-md border border-border bg-muted/20 py-1">
+                <div className="flex flex-col py-1">
                   {chunks.map((chunk) => (
                     <WsChunkRow key={chunk.id} chunk={chunk} />
                   ))}
@@ -573,9 +571,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                 const raw = chunks.map((c) => c.body).join("\n\n");
                 const pretty = tryPretty(raw);
                 return (
-                  <div className="flex flex-1 min-h-0 flex-col rounded-md border border-border bg-muted/20 overflow-hidden">
-                    <CodeViewer content={pretty?.content ?? raw} lang={pretty?.isJson ? "json" : "text"} className="flex-1 min-h-0" expandable />
-                  </div>
+                  <CodeViewer content={pretty?.content ?? raw} lang={pretty?.isJson ? "json" : "text"} className="min-h-[300px]" expandable />
                 );
               })()}
             </div>

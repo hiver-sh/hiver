@@ -281,9 +281,9 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
           </span>
           {node.is_dir ? (
             node.expanded ? (
-              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-blue-400" />
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
             ) : (
-              <Folder className="h-3.5 w-3.5 shrink-0 text-blue-400" />
+              <Folder className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
             )
           ) : (
             <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
@@ -320,7 +320,7 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
               <Loader2 className="h-4 w-4 animate-spin" />
             </div>
           ) : configError ? (
-            <p className="p-3 text-xs text-red-400">{configError}</p>
+            <p className="p-3 text-xs text-red-600 dark:text-red-400">{configError}</p>
           ) : roots.length === 0 ? (
             <p className="p-3 text-xs text-muted-foreground/50">No mounts configured.</p>
           ) : (

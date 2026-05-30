@@ -45,8 +45,8 @@ export function TraceDialog({ open, onOpenChange }: Props) {
 
         <div className="grid gap-4 py-2">
           {player && (
-            <div className="flex items-center justify-between rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2">
-              <span className="text-xs text-green-400">Replaying — {playbackSpeed}×</span>
+            <div className="flex items-center justify-between rounded-md border border-green-700/30 bg-green-600/10 dark:border-green-500/30 dark:bg-green-500/10 px-3 py-2">
+              <span className="text-xs text-green-700 dark:text-green-400">Replaying — {playbackSpeed}×</span>
               <Button variant="ghost" size="sm" onClick={handleStop}>
                 Stop
               </Button>
@@ -84,7 +84,7 @@ export function TraceDialog({ open, onOpenChange }: Props) {
             />
           </div>
 
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
         </div>
       </DialogContent>
     </Dialog>

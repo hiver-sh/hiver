@@ -14,6 +14,40 @@ interface Props {
 
 const FONT_FAMILY = '"MesloLGM Nerd Font Mono", Monaco, monospace';
 
+const DARK_THEME = {
+  background: "#000000",
+  foreground: "#dddddd",
+  cursor: "#dddddd",
+  cursorAccent: "#000000",
+  selectionBackground: "#4c83c4",
+  selectionForeground: "#ffffff",
+  black: "#000000",      brightBlack: "#686868",
+  red: "#c91b00",        brightRed: "#ff6e67",
+  green: "#00c200",      brightGreen: "#5ffa68",
+  yellow: "#c97800",     brightYellow: "#ff8c00",
+  blue: "#0225c7",       brightBlue: "#6871ff",
+  magenta: "#c930c7",    brightMagenta: "#ff77ff",
+  cyan: "#00c5c7",       brightCyan: "#60fdff",
+  white: "#c7c7c7",      brightWhite: "#ffffff",
+};
+
+const LIGHT_THEME = {
+  background: "#ffffff",
+  foreground: "#000000",
+  cursor: "#000000",
+  cursorAccent: "#ffffff",
+  selectionBackground: "#4c83c4",
+  selectionForeground: "#ffffff",
+  black: "#000000",      brightBlack: "#444444",
+  red: "#aa0000",        brightRed: "#cc0000",
+  green: "#005500",      brightGreen: "#006600",
+  yellow: "#c97800",     brightYellow: "#ff8c00",
+  blue: "#0000aa",       brightBlue: "#0000cc",
+  magenta: "#770077",    brightMagenta: "#990099",
+  cyan: "#006b6b",       brightCyan: "#008080",
+  white: "#888888",      brightWhite: "#444444",
+};
+
 export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
@@ -28,6 +62,8 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
     document.fonts.load(`13px ${FONT_FAMILY}`).finally(() => {
       if (disposed) return;
 
+      const isDark = () => document.documentElement.classList.contains("dark");
+
       const term = new XTerm({
         allowProposedApi: true,
         cursorBlink: false,
@@ -37,23 +73,14 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
         fontFamily: FONT_FAMILY,
         drawBoldTextInBrightColors: true,
         scrollback: 10000,
-        theme: {
-          background: "#000000",
-          foreground: "#dddddd",
-          cursor: "#dddddd",
-          cursorAccent: "#000000",
-          selectionBackground: "#4c83c4",
-          selectionForeground: "#ffffff",
-          black: "#000000",      brightBlack: "#686868",
-          red: "#c91b00",        brightRed: "#ff6e67",
-          green: "#00c200",      brightGreen: "#5ffa68",
-          yellow: "#c7c400",     brightYellow: "#fffc67",
-          blue: "#0225c7",       brightBlue: "#6871ff",
-          magenta: "#c930c7",    brightMagenta: "#ff77ff",
-          cyan: "#00c5c7",       brightCyan: "#60fdff",
-          white: "#c7c7c7",      brightWhite: "#ffffff",
-        },
+        theme: isDark() ? DARK_THEME : LIGHT_THEME,
       });
+
+      const themeObs = new MutationObserver(() => {
+        term.options.theme = isDark() ? DARK_THEME : LIGHT_THEME;
+        el.style.backgroundColor = isDark() ? DARK_THEME.background : LIGHT_THEME.background;
+      });
+      themeObs.observe(document.documentElement, { attributeFilter: ["class"] });
 
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
@@ -214,6 +241,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
       cleanup = () => {
         cancelAnimationFrame(rafId);
         ro.disconnect();
+        themeObs.disconnect();
         el.removeEventListener("mouseup", onMouseUp);
         if (retryTimer !== null) clearTimeout(retryTimer);
         abortCtrl?.abort();
@@ -227,5 +255,5 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
     };
   }, [sandboxId, serverUrl, sandboxUrl, exposedEndpoint, transport]);
 
-  return <div ref={containerRef} className="h-full w-full overflow-hidden bg-[#000000] p-1" />;
+  return <div ref={containerRef} className="h-full w-full overflow-hidden p-1" />;
 }

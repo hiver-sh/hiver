@@ -61,8 +61,8 @@ export function SandboxList({
               key={sb.id}
               onClick={() => onSelect(sb.id)}
               className={cn(
-                "flex w-full items-center gap-2 px-5 py-2 text-left text-sm transition-colors hover:bg-accent",
-                selectedId === sb.id && "bg-accent text-accent-foreground",
+                "flex w-full items-center gap-2 px-5 py-2 text-left text-sm transition-colors hover:bg-sidebar-accent",
+                selectedId === sb.id && "bg-sidebar-accent text-sidebar-accent-foreground",
               )}
             >
               <span
