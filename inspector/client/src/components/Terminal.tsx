@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useTransport } from "@/lib/transport";
+import { useUserPreferences } from "@/lib/userPreferences";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -51,6 +52,14 @@ const LIGHT_THEME = {
 export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
+  const { prefs, terminalScrollPassthrough } = useUserPreferences();
+
+  // Read the latest preference from a ref so toggling it doesn't tear down and
+  // recreate the terminal (which would drop the session).
+  const clipboardCopyRef = useRef(prefs.terminalClipboardCopy);
+  clipboardCopyRef.current = prefs.terminalClipboardCopy;
+  const scrollPassthroughRef = useRef(terminalScrollPassthrough);
+  scrollPassthroughRef.current = terminalScrollPassthrough;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -82,6 +91,13 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
       });
       themeObs.observe(document.documentElement, { attributeFilter: ["class"] });
 
+      // Skip clipboard writes when the user has disabled copy, which avoids the
+      // browser's clipboard-permission prompt entirely.
+      const copyToClipboard = (text: string) => {
+        if (!text || !clipboardCopyRef.current) return;
+        navigator.clipboard?.writeText(text).catch(() => {});
+      };
+
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(el);
@@ -94,8 +110,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
         const b64 = data.slice(idx + 1);
         if (!b64 || b64 === "?") return false;
         try {
-          const text = atob(b64);
-          if (text) navigator.clipboard?.writeText(text).catch(() => {});
+          copyToClipboard(atob(b64));
         } catch { /* invalid base64 */ }
         return true;
       });
@@ -108,10 +123,20 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
       // Only uses navigator.clipboard (no temp textarea) to avoid stealing focus
       // from xterm's textarea, which would clear the selection.
       const onMouseUp = () => {
-        const text = term.getSelection();
-        if (text) navigator.clipboard?.writeText(text).catch(() => {});
+        copyToClipboard(term.getSelection());
       };
       el.addEventListener("mouseup", onMouseUp);
+
+      const onWheel = (ev: WheelEvent) => {
+        if (scrollPassthroughRef.current) {
+          ev.stopPropagation();
+          // Prevent xterm from consuming the event, then re-dispatch on the
+          // nearest scrollable ancestor so the page scrolls instead.
+          const parent = el.parentElement;
+          if (parent) parent.dispatchEvent(new WheelEvent("wheel", ev));
+        }
+      };
+      el.addEventListener("wheel", onWheel, { capture: true });
 
       // Cmd+C / Ctrl+Shift+C: use xterm's own key interception API so we run
       // inside xterm's trusted keydown handler. Return true so xterm also fires
@@ -120,8 +145,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
         if (ev.type !== "keydown") return true;
         const isCopy = (ev.metaKey && ev.key === "c") || (ev.ctrlKey && ev.shiftKey && ev.key === "C");
         if (isCopy) {
-          const text = term.getSelection();
-          if (text) navigator.clipboard?.writeText(text).catch(() => {});
+          copyToClipboard(term.getSelection());
         }
         return true;
       });
@@ -223,12 +247,8 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
           }
         }
 
-        if (!disposed) {
-          if (everConnected) {
-            term.write("\r\n\x1b[2m[disconnected]\x1b[0m\r\n");
-          } else {
-            retryTimer = setTimeout(connect, 2000);
-          }
+        if (!disposed && !everConnected) {
+          retryTimer = setTimeout(connect, 2000);
         }
       }
 
@@ -243,6 +263,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
         ro.disconnect();
         themeObs.disconnect();
         el.removeEventListener("mouseup", onMouseUp);
+        el.removeEventListener("wheel", onWheel, { capture: true });
         if (retryTimer !== null) clearTimeout(retryTimer);
         abortCtrl?.abort();
         term.dispose();

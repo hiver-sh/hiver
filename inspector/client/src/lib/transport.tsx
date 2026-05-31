@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { useUserPreferences } from "./userPreferences";
 
 export type TraceRecord = {
   time: number; // ms from recording start
@@ -92,6 +93,7 @@ export const liveTransport: Transport = {
   openEventSource: (url) => new NativeEventSource(url),
 };
 
+
 export class TracePlayer {
   private _trace: TraceData;
   private _index: Map<string, TraceRecord[]>;
@@ -167,6 +169,21 @@ export class TracePlayer {
   }
 }
 
+// A no-op EventSource used during trace playback when a request has no
+// recorded entries. It never opens and never errors, so it can't trigger
+// reconnect loops or any network activity.
+class NoopEventSource implements EventSourceLike {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  close() {}
+}
+
+export const noopTransport: Transport = {
+  fetch: () => Promise.resolve(new Response(null, { status: 503, statusText: "Network disabled" })),
+  openEventSource: () => new NoopEventSource(),
+};
+
 class TraceEventSource implements EventSourceLike {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
@@ -206,7 +223,9 @@ export class TraceTransport implements Transport {
 
     const entries = this._player.findEntries(url);
     if (!entries || entries.length === 0) {
-      return globalThis.fetch(url, init);
+      // During trace playback we never hit the network — a request with no
+      // recorded entry resolves to an empty "not recorded" response.
+      return new Response(null, { status: 404, statusText: "Not recorded" });
     }
 
     const first = entries[0];
@@ -231,7 +250,8 @@ export class TraceTransport implements Transport {
   openEventSource(url: string | URL): EventSourceLike {
     const entries = this._player.findEntries(url);
     if (!entries || entries.length === 0) {
-      return new NativeEventSource(url);
+      // No recorded stream — stay silent rather than opening a real connection.
+      return new NoopEventSource();
     }
     return new TraceEventSource(entries, this._player);
   }
@@ -295,13 +315,21 @@ export function useTransport(): TransportContextValue {
   return useContext(TransportContext);
 }
 
-export function TransportProvider({ children, tracePath, traceData: initialTraceData }: { children: ReactNode; tracePath?: string; traceData?: TraceData }) {
+export interface TransportProviderProps {
+  children: ReactNode;
+  tracePath?: string;
+  traceData?: TraceData;
+  speed?: number;
+}
+
+export function TransportProvider({ children, tracePath, traceData: initialTraceData, speed = 1 }: TransportProviderProps) {
+  const { enableNetworkRequests } = useUserPreferences();
   const [player, setPlayer] = useState<TracePlayer | null>(null);
-  const [playbackSpeed, setPlaybackSpeedState] = useState(1);
+  const [playbackSpeed, setPlaybackSpeedState] = useState(speed);
 
   const transport = useMemo(
-    () => (player ? new TraceTransport(player) : liveTransport),
-    [player],
+    () => player ? new TraceTransport(player) : enableNetworkRequests ? liveTransport : noopTransport,
+    [player, enableNetworkRequests],
   );
 
   const setPlaybackSpeed = useCallback(
@@ -325,14 +353,14 @@ export function TransportProvider({ children, tracePath, traceData: initialTrace
   }, []);
 
   useEffect(() => {
-    if (initialTraceData) setPlayer(new TracePlayer(initialTraceData));
+    if (initialTraceData) setPlayer(new TracePlayer(initialTraceData, speed));
   }, [initialTraceData]);
 
   useEffect(() => {
     if (!tracePath) return;
     globalThis.fetch(tracePath)
       .then((r) => r.json())
-      .then((data: TraceData) => setPlayer(new TracePlayer(data)))
+      .then((data: TraceData) => setPlayer(new TracePlayer(data, speed)))
       .catch((e) => console.error("Failed to load trace:", e));
   }, [tracePath]);
 

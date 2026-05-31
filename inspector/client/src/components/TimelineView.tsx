@@ -1024,11 +1024,11 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
 
       {/* Label column splitter */}
       <div
-        className="absolute top-0 bottom-0 z-[31] w-[5px] cursor-col-resize group/lsplit"
-        style={{ left: labelW - 2 }}
+        className="absolute top-0 z-[31] w-[5px] cursor-col-resize group/lsplit"
+        style={{ left: labelW - 2, bottom: 10 }}
         onMouseDown={startLabelDrag}
       >
-        <div className={`absolute inset-y-0 left-[2px] w-px transition-colors ${labelDragging ? "bg-blue-700 dark:bg-blue-400" : "bg-transparent group-hover/lsplit:bg-border"}`} />
+        <div className={`absolute inset-y-0 left-[2px] w-px transition-colors ${labelDragging ? "bg-blue-700 dark:bg-blue-400" : "bg-border/40 group-hover/lsplit:bg-border"}`} />
       </div>
 
       {/* Sticky ruler */}

@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import type { SandboxEvent } from "@/types";
 import { langForPath } from "@/lib/fileUtils";
 import { useTransport } from "@/lib/transport";
+import { useUserPreferences } from "@/lib/userPreferences";
 
 interface DirEntry {
   name: string;
@@ -90,15 +91,19 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
 
 export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props) {
   const { transport } = useTransport();
+  const { prefs, toggleExpandedPath } = useUserPreferences();
   const [roots, setRoots] = useState<TreeNode[]>([]);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const rootsRef = useRef<TreeNode[]>([]);
+  const expandedPathsPrefRef = useRef<string[]>(prefs.expandedPaths);
   const lastProcessedIdxRef = useRef(0);
   const pendingDirsRef = useRef<Set<string>>(new Set());
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => { expandedPathsPrefRef.current = prefs.expandedPaths; }, [prefs.expandedPaths]);
 
   const fileUrl = useCallback(
     (path: string) => {
@@ -130,18 +135,18 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
     setConfigLoading(true);
     setConfigError(null);
     try {
-      const expandedPaths: string[] = [];
+      const treeExpandedPaths: string[] = [];
       function collectExpanded(nodes: TreeNode[]) {
         for (const n of nodes) {
           if (n.expanded && n.children) {
-            expandedPaths.push(n.path);
+            treeExpandedPaths.push(n.path);
             collectExpanded(n.children);
           }
         }
       }
       collectExpanded(rootsRef.current);
 
-      const allPaths = ["/", ...expandedPaths];
+      const allPaths = ["/", ...new Set([...treeExpandedPaths, ...expandedPathsPrefRef.current])];
       const results = await Promise.all(
         allPaths.map(p => fetchChildren(p).then(nodes => ({ path: p, nodes })).catch(() => null)),
       );
@@ -150,10 +155,11 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
       function buildTree(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
         return newNodes.map(newNode => {
           const old = oldNodes.find(o => o.path === newNode.path);
-          if (!old?.expanded) return newNode;
+          const shouldExpand = old?.expanded || expandedPathsPrefRef.current.includes(newNode.path);
+          if (!shouldExpand) return newNode;
           const freshChildren = freshByPath.get(newNode.path);
-          const children = freshChildren ? buildTree(freshChildren, old.children ?? []) : old.children;
-          return { ...newNode, expanded: true, children: children ?? null };
+          const children = freshChildren ? buildTree(freshChildren, old?.children ?? []) : (old?.children ?? null);
+          return { ...newNode, expanded: !!children, children };
         });
       }
 
@@ -206,9 +212,11 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
     if (!node || !node.is_dir) return;
 
     if (node.expanded) {
+      toggleExpandedPath(path);
       setRoots((prev) => updateNode(prev, path, (n) => ({ ...n, expanded: false })));
       return;
     }
+    toggleExpandedPath(path);
     if (node.children !== null) {
       setRoots((prev) => updateNode(prev, path, (n) => ({ ...n, expanded: true })));
       return;

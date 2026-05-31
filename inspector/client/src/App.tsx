@@ -1,11 +1,10 @@
-import { ChevronLeft, ChevronRight, Monitor, Moon, Pencil, RefreshCw, ServerCrash, Settings, Sun } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Monitor, Moon, Pencil, RefreshCw, ServerCrash, Settings, Sun } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useMatch, useNavigate, useParams } from "react-router-dom";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
 import { GettingStarted } from "@/components/GettingStarted";
 import { SandboxDetail } from "@/components/SandboxDetail";
 import { SandboxList } from "@/components/SandboxList";
-import { TraceDialog } from "@/components/TraceDialog";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,7 +41,7 @@ function ThemeToggle() {
           <Settings className="h-4 w-4" />
         </button>
       </PopoverTrigger>
-      <PopoverContent side="right" align="end" className="w-36 p-1">
+      <PopoverContent side="right" align="end" className="w-48 p-1">
         <p className="px-2 py-1 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Color theme</p>
         {THEME_OPTIONS.map(({ value, label, icon }) => (
           <button
@@ -122,7 +121,6 @@ function AppContent() {
   const [serverUrl] = useState(DEFAULT_INSPECTOR_SERVER);
   const [controllerInput, setControllerInput] = useState(DEFAULT_CONTROLLER_URL);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [traceOpen, setTraceOpen] = useState(false);
 
   const sidebarCollapsed = prefs.sidebarCollapsed;
   const setSidebarCollapsed = (v: boolean) => setPref("sidebarCollapsed", v);
@@ -160,12 +158,6 @@ function AppContent() {
   useEffect(() => {
     fetchSandboxes();
   }, [fetchSandboxes]);
-
-  // Expose loadTrace() on window for console access
-  useEffect(() => {
-    (window as unknown as Record<string, unknown>).loadTrace = () => setTraceOpen(true);
-    return () => { delete (window as unknown as Record<string, unknown>).loadTrace; };
-  }, []);
 
   useScrollbarVisibility();
 
@@ -300,8 +292,6 @@ function AppContent() {
           />
         </Routes>
       </main>
-
-      <TraceDialog open={traceOpen} onOpenChange={setTraceOpen} />
     </div>
   );
 }
