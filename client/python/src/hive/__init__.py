@@ -1,5 +1,5 @@
 from .controller import DEFAULT_CONTROLLER_URL, get_or_create_sandbox, list_sandboxes, shutdown
-from .sandbox import Sandbox, SandboxError
+from .sandbox import ExecProcess, Sandbox, SandboxError
 from .schemas import (
     ACLRule,
     ApplyResult,
@@ -34,6 +34,7 @@ __all__ = [
     "list_sandboxes",
     "shutdown",
     # sandbox
+    "ExecProcess",
     "Sandbox",
     "SandboxError",
     # schemas

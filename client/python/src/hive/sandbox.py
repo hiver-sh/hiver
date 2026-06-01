@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import AsyncGenerator, Optional, Union
+import uuid
+from typing import AsyncGenerator, Callable, Coroutine, Any, AsyncIterable, Optional, Union
 
 import httpx
 
@@ -43,6 +44,30 @@ def _to_error(res: httpx.Response, operation: str) -> SandboxError:
         pass
     message = (body or {}).get("error") or text or str(res.status_code)
     return SandboxError(operation, res.status_code, message, body)
+
+
+class ExecProcess:
+    """
+    Handle to a running exec-stream process. Returned by `Sandbox.exec_stream`.
+    Stream output via `pipes`, write to stdin via `write_stdin()`, and
+    await the exit code via `exit_code`.
+    """
+
+    def __init__(
+        self,
+        id: str,
+        pipes: AsyncIterable[dict[str, str]],
+        exit_code: asyncio.Future[int],
+        write_stdin_fn: Callable[[str], Coroutine[Any, Any, None]],
+    ) -> None:
+        self.id = id
+        self.pipes = pipes
+        self.exit_code = exit_code
+        self._write_stdin_fn = write_stdin_fn
+
+    async def write_stdin(self, data: str) -> None:
+        """Send `data` to the process's stdin."""
+        await self._write_stdin_fn(data)
 
 
 class Sandbox:
@@ -124,28 +149,92 @@ class Sandbox:
         self,
         command: str,
         cwd: Optional[str] = None,
-    ) -> AsyncGenerator[dict[str, object], None]:
+        tty: bool = False,
+    ) -> ExecProcess:
         """
-        Run `command` inside the sandbox and stream output as an async
-        generator of dicts. Each dict has a `type` key of "stdout",
-        "stderr", or "exit". The final dict is the "exit" event.
+        Run `command` inside the sandbox and return an ExecProcess handle.
+        Stream output via `exec.pipes`, write to stdin via `exec.write_stdin()`,
+        and await the exit code via `exec.exit_code`.
+
+        The returned coroutine resolves once the server has accepted the
+        connection and registered the process — at that point `write_stdin`
+        is safe to call.
         """
-        body: dict[str, str] = {"command": command}
+        exec_id = str(uuid.uuid4())
+        stream_url = f"{self.api_server_url}/v1/exec-stream/{exec_id}"
+        stdin_url = f"{self.api_server_url}/v1/exec-stream/{exec_id}/stdin"
+
+        body: dict[str, object] = {"command": command}
         if cwd is not None:
             body["cwd"] = cwd
-        sse_timeout = httpx.Timeout(None, connect=_FETCH_TIMEOUT.connect)
-        async with self._client.stream(
-            "POST",
-            f"{self.api_server_url}/v1/exec-stream",
-            json=body,
-            headers={"accept": "text/event-stream"},
-            timeout=sse_timeout,
-        ) as res:
+        if tty:
+            body["tty"] = tty
+
+        queue: asyncio.Queue[Optional[dict[str, str]]] = asyncio.Queue()
+        exit_future: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        ready = asyncio.Event()
+        start_error: list[Exception] = []
+
+        client = self._client
+
+        async def _reader() -> None:
+            sse_timeout = httpx.Timeout(None, connect=_FETCH_TIMEOUT.connect)
+            try:
+                async with client.stream(
+                    "POST",
+                    stream_url,
+                    json=body,
+                    headers={"accept": "text/event-stream"},
+                    timeout=sse_timeout,
+                ) as res:
+                    if not res.is_success:
+                        await res.aread()
+                        start_error.append(_to_error(res, "exec_stream"))
+                        ready.set()
+                        return
+                    ready.set()
+                    async for frame in parse_sse(res, None):
+                        event: dict[str, object] = json.loads(frame.data)
+                        etype = event.get("type")
+                        if etype == "stdout":
+                            await queue.put({"stdout": str(event["text"])})
+                        elif etype == "stderr":
+                            await queue.put({"stderr": str(event["text"])})
+                        elif etype == "exit":
+                            if not exit_future.done():
+                                exit_future.set_result(int(event["code"]))  # type: ignore[arg-type]
+                            await queue.put(None)
+            except Exception as exc:
+                if not ready.is_set():
+                    start_error.append(exc)
+                    ready.set()
+                if not exit_future.done():
+                    exit_future.set_exception(exc)
+                await queue.put(None)
+
+        asyncio.create_task(_reader())
+        await ready.wait()
+        if start_error:
+            raise start_error[0]
+
+        async def _pipes() -> AsyncGenerator[dict[str, str], None]:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                yield item
+
+        async def _write_stdin(data: str) -> None:
+            res = await client.post(stdin_url, json={"data": data})
             if not res.is_success:
-                await res.aread()
-                raise _to_error(res, "exec_stream")
-            async for frame in parse_sse(res, None):
-                yield json.loads(frame.data)
+                raise _to_error(res, "exec_stream_stdin")
+
+        return ExecProcess(
+            id=exec_id,
+            pipes=_pipes(),
+            exit_code=exit_future,
+            write_stdin_fn=_write_stdin,
+        )
 
     async def list_directory(self, path: str) -> list[dict[str, object]]:
         """

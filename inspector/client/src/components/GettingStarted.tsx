@@ -3,49 +3,49 @@ import { Check, Clipboard } from "lucide-react";
 import { CodeViewer } from "@/components/CodeViewer";
 
 const TS_EXAMPLE = `import * as hive from "hive";
-import Anthropic from "@anthropic-ai/sdk";
 
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
+const sandbox = await hive.getOrCreateSandbox("node-sandbox", {
+  image: "hive-node-sandbox",
+  entrypoint: "tail -f /dev/null",
   fs: [{ mount: "/workspace", backend: "local" }],
-  egress: [
-    { host: "api.anthropic.com", access: "allow" },
-    { host: "*.amazonaws.com", ports: [443], access: "allow" },
-  ],
 });
 
-const client = new Anthropic({ baseURL: \`\${sandbox.apiServerUrl}/proxy\` });
+const exec = await sandbox.execStream(
+  \`node -e "console.log('Hello, world!')"\`,
+  { cwd: "/workspace" },
+);
 
-const message = await client.messages.create({
-  model: "claude-opus-4-7",
-  max_tokens: 1024,
-  messages: [{ role: "user", content: "Write a file to /workspace/hello.txt" }],
-});
-console.log(message.content);`;
+for await (const pipe of exec.pipes) {
+  if (pipe.stdout) process.stdout.write(pipe.stdout);
+  if (pipe.stderr) process.stderr.write(pipe.stderr);
+}
+
+console.log("exit code:", await exec.exitCode);`;
 
 const PY_EXAMPLE = `import asyncio
+import sys
 import hive
-import anthropic
 
 async def main():
     sandbox = await hive.get_or_create_sandbox(
-        "my-sandbox",
+        "python-sandbox",
         hive.SandboxConfig(
+            image="hive-python-sandbox",
+            entrypoint="tail -f /dev/null",
             fs=[hive.LocalFileSystem(mount="/workspace", backend="local")],
-            egress=[
-                hive.EgressRule(host="api.anthropic.com", access="allow"),
-                hive.EgressRule(host="*.amazonaws.com", ports=[443], access="allow"),
-            ],
         ),
     )
 
-    client = anthropic.Anthropic(base_url=f"{sandbox.api_server_url}/proxy")
+    script = "print('Hello, world!')"
+    exec = await sandbox.exec_stream(f"python3 -c '{script}'", cwd="/workspace")
 
-    message = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": "Write a file to /workspace/hello.txt"}],
-    )
-    print(message.content)
+    async for pipe in exec.pipes:
+        if pipe.stdout:
+            print(pipe.stdout, end="")
+        if pipe.stderr:
+            print(pipe.stderr, end="", file=sys.stderr)
+
+    print("exit code:", await exec.exit_code)
 
 asyncio.run(main())`;
 
