@@ -313,8 +313,8 @@ function SummaryTab({ summary, prevSummary }: { summary: LLMSummaryData; prevSum
 export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOpenFile }: { bar: TimelineBar; prevBar?: TimelineBar | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void }) {
   const req = bar.rawEvents[0];
   const res = bar.rawEvents.find(
-    (e): e is Extract<SandboxEvent, { type: "egress.response" | "fs.response" }> =>
-      e.type === "egress.response" || e.type === "fs.response",
+    (e): e is Extract<SandboxEvent, { type: "egress.response" | "fs.response" | "exec.response" }> =>
+      e.type === "egress.response" || e.type === "fs.response" || e.type === "exec.response",
   );
   const chunks = bar.rawEvents.filter(
     (e): e is Extract<SandboxEvent, { type: "egress.chunk" }> =>
@@ -406,11 +406,72 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
   if (req.type === "stdio") {
     const text = (req.stdout ?? req.stderr ?? "").trimEnd();
     return (
-      <div className="flex flex-col p-3 gap-2">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold shrink-0">
-          {req.stderr ? "stderr" : "stdout"} · {ts}
+      <div ref={containerRef} className="flex flex-col min-h-full shrink-0 text-xs">
+        <div className="relative shrink-0">
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+              {req.stderr ? "stderr" : "stdout"}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
+                <ArrowUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
+                <ArrowDown className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
         </div>
-        <CodeViewer content={text} className="min-h-[300px]" />
+        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 flex-1 min-h-0 ${narrow ? "flex-col" : ""}`}>
+          <div className={`overflow-hidden shrink-0 ${narrow ? "border-b border-border" : "w-48 border-r border-border"}`}>
+            <div className="p-3">
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+                <KV label="id"     value={String(req.id)} />
+                <KV label="time"   value={ts} />
+                <KV label="stream" value={req.stderr ? "stderr" : "stdout"} />
+              </div>
+            </div>
+          </div>
+          <CodeViewer content={text} className="flex-1 min-h-[300px]" />
+        </div>
+      </div>
+    );
+  }
+
+  if (req.type === "exec.request") {
+    const durationMs = res ? Math.round(new Date(res.timestamp).getTime() - new Date(req.timestamp).getTime()) : null;
+    return (
+      <div ref={containerRef} className="flex flex-col min-h-full shrink-0 flex-1 text-xs">
+        <div className="relative shrink-0">
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+              exec
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
+                <ArrowUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
+                <ArrowDown className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
+        </div>
+        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 flex-1 min-h-0 ${narrow ? "flex-col" : ""}`}>
+          <div className={`overflow-hidden shrink-0 ${narrow ? "border-b border-border" : "w-48 border-r border-border"}`}>
+            <div className="p-3">
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+                <KV label="id"   value={String(req.id)} />
+                <KV label="time" value={ts} />
+                <KV label="cwd"  value={req.cwd} />
+                {durationMs != null && <KV label="duration" value={humanDuration(durationMs)} />}
+              </div>
+            </div>
+          </div>
+          <CodeViewer content={req.command} className="flex-1 min-h-0" />
+        </div>
       </div>
     );
   }

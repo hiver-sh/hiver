@@ -7,11 +7,28 @@ import {
 } from "./schemas";
 import { parseSSE } from "./sse";
 
-const SANDBOX_FETCH_TIMEOUT_MS = 3_000;
+const DEFAULT_TIMEOUT_MS = 5_000;
 
 export interface SandboxOptions {
   /** Override the global fetch (e.g. for testing or proxying). */
   fetch?: typeof fetch;
+}
+
+export interface RequestOptions {
+  /** Abort after this many milliseconds. Defaults to 5 000 for short operations. */
+  timeoutMs?: number;
+}
+
+export interface ExecOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface ExecStreamOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export interface EventsStreamOptions {
@@ -33,7 +50,7 @@ export interface EventsStreamOptions {
  */
 export class Sandbox {
   readonly id: string;
-  /** Base URL of the per-sandbox API server (no trailing slash). */
+  /** Base URL of the per-sandbox API server. */
   readonly apiServerUrl: string;
   /**
    * Host and port of the HTTP service the sandbox image exposes (the first
@@ -48,13 +65,7 @@ export class Sandbox {
     this.id = ref.id;
     this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
     this.exposedEndpoint = ref.exposed_endpoint;
-    const baseFetch = opts.fetch ?? fetch;
-
-    this.fetchImpl = (input, init) => {
-      const signal =
-        init?.signal ?? AbortSignal.timeout(SANDBOX_FETCH_TIMEOUT_MS);
-      return baseFetch(input, { ...init, signal });
-    };
+    this.fetchImpl = opts.fetch ?? fetch;
   }
 
   /**
@@ -62,14 +73,16 @@ export class Sandbox {
    * `setInterval(sandbox.ping, 10_000)` works without an explicit
    * `.bind(sandbox)`.
    */
-  ping = async (): Promise<void> => {
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`);
+  ping = async (opts?: RequestOptions): Promise<void> => {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`, { signal });
     if (!res.ok) throw await toError(res, "ping");
   };
 
   /** Read the current `SandboxConfig`. */
-  async getConfig(): Promise<SandboxConfig> {
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`);
+  async getConfig(opts?: RequestOptions): Promise<SandboxConfig> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`, { signal });
     if (!res.ok) throw await toError(res, "getConfig");
     return SandboxConfig.parse(await res.json());
   }
@@ -79,12 +92,14 @@ export class Sandbox {
    * `applied` field reports whether the change was committed or
    * rolled back.
    */
-  async applyConfig(config: SandboxConfig): Promise<ApplyResult> {
+  async applyConfig(config: SandboxConfig, opts?: RequestOptions): Promise<ApplyResult> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const validated = SandboxConfig.parse(config);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(validated),
+      signal,
     });
     if (!res.ok) throw await toError(res, "applyConfig");
     return ApplyResult.parse(await res.json());
@@ -148,12 +163,6 @@ export class Sandbox {
     if (lastEventId !== undefined) {
       url.searchParams.set("lastEventId", String(lastEventId));
     }
-    // Timeout pattern for SSE: the first-event window matches the
-    // per-request timeout (sandbox should be reachable and have at
-    // least one event in the ring/about to publish within that
-    // budget). After the first frame the stream is known healthy
-    // and the timeout is cleared — the connection then stays open
-    // for as long as the server keeps writing.
     const ac = new AbortController();
     if (signal) {
       if (signal.aborted) ac.abort(signal.reason);
@@ -176,13 +185,14 @@ export class Sandbox {
    * Run `command` inside the sandbox and return buffered stdout, stderr,
    * and exit code once the process finishes.
    */
-  async exec(command: string, cwd?: string): Promise<ExecResult> {
+  async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
     const body: Record<string, string> = { command };
-    if (cwd !== undefined) body.cwd = cwd;
+    if (opts?.cwd !== undefined) body.cwd = opts.cwd;
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/exec`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal: resolveSignal(opts),
     });
     if (!res.ok) throw await toError(res, "exec");
     return res.json() as Promise<ExecResult>;
@@ -194,11 +204,11 @@ export class Sandbox {
    */
   async *execStream(
     command: string,
-    cwd?: string,
-    signal?: AbortSignal,
+    opts?: ExecStreamOptions,
   ): AsyncGenerator<ExecStreamEvent, void, void> {
     const body: Record<string, string> = { command };
-    if (cwd !== undefined) body.cwd = cwd;
+    if (opts?.cwd !== undefined) body.cwd = opts.cwd;
+    const signal = resolveSignal(opts);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/exec-stream`, {
       method: "POST",
       headers: {
@@ -220,10 +230,12 @@ export class Sandbox {
    */
   async listDirectory(
     path: string,
+    opts?: RequestOptions,
   ): Promise<{ name: string; path: string; is_dir: boolean; size: number }[]> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const url = new URL(`${this.apiServerUrl}/v1/directories`);
     url.searchParams.set("path", path);
-    const res = await this.fetchImpl(url);
+    const res = await this.fetchImpl(url, { signal });
     if (!res.ok) throw await toError(res, "listDirectory");
     const body = (await res.json()) as {
       entries: { name: string; path: string; is_dir: boolean; size: number }[];
@@ -235,10 +247,11 @@ export class Sandbox {
    * Download a file from a sandbox mount. `path` is the agent-visible
    * absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
    */
-  async downloadFile(path: string): Promise<Uint8Array> {
+  async downloadFile(path: string, opts?: RequestOptions): Promise<Uint8Array> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const url = new URL(`${this.apiServerUrl}/v1/file`);
     url.searchParams.set("path", path);
-    const res = await this.fetchImpl(url);
+    const res = await this.fetchImpl(url, { signal });
     if (!res.ok) throw await toError(res, "downloadFile");
     return new Uint8Array(await res.arrayBuffer());
   }
@@ -253,13 +266,16 @@ export class Sandbox {
     destination: string,
     filename: string,
     content: Blob | Uint8Array | ArrayBuffer | string,
+    opts?: RequestOptions,
   ): Promise<{ path: string; bytes: number }> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const form = new FormData();
     form.append("destination", destination);
     form.append("file", toBlob(content), filename);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/file`, {
       method: "POST",
       body: form,
+      signal,
     });
     if (!res.ok) throw await toError(res, "uploadFile");
     const body = (await res.json()) as { path: string; bytes: number };
@@ -277,6 +293,23 @@ export type ExecStreamEvent =
   | { type: "stdout"; text: string }
   | { type: "stderr"; text: string }
   | { type: "exit"; code: number };
+
+// Merge timeoutMs and signal into a single AbortSignal. If both are
+// provided, abort whichever fires first.
+function resolveSignal(
+  opts: { signal?: AbortSignal; timeoutMs?: number } | undefined,
+): AbortSignal | undefined {
+  const { signal, timeoutMs } = opts ?? {};
+  if (timeoutMs === undefined) return signal;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (!signal) return timeout;
+  const ac = new AbortController();
+  if (signal.aborted) { ac.abort(signal.reason); return ac.signal; }
+  if (timeout.aborted) { ac.abort(timeout.reason); return ac.signal; }
+  signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
+  timeout.addEventListener("abort", () => ac.abort(timeout.reason), { once: true });
+  return ac.signal;
+}
 
 function isAbortError(err: unknown): boolean {
   return (

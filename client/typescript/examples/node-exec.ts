@@ -19,7 +19,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-node-exec", {
 
 const result = await sandbox.exec(
   `node -e "console.log('Hello, world!')"`,
-  "/workspace",
+  { cwd: "/workspace" },
 );
 
 console.info("stdout: " + result.stdout);

@@ -14,13 +14,16 @@ const sandbox = await hive.getOrCreateSandbox("hive-node-exec-stream", {
       acls: [{ path: "/workspace/**", access: "rw" }],
     },
   ],
+  ttl: 0,
 });
 
 async function greet(name: string): Promise<void> {
   console.log(`Hello, ${name}!`);
-  await new Promise(resolve => setTimeout(resolve, 500));
-  console.log(`Hello, ${name} again after  500ms!`);
-  await new Promise(resolve => setTimeout(resolve, 500));
+  for (let i = 0; i < 100; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    console.log(`Hello, ${name} again after ${i+1}s!`);
+  }
+  await new Promise(resolve => setTimeout(resolve, 1000));
   console.error(`Bye!`);
 }
 
@@ -33,11 +36,11 @@ function execFunction(fn: (...args: any[]) => unknown, ...args: unknown[]): stri
 
 for await (const event of sandbox.execStream(
   execFunction(greet, "world"),
-  "/workspace"
+  { cwd: "/workspace" },
 )) {
   if (event.type === "stdout") process.stdout.write("stdout: " + event.text);
   else if (event.type === "stderr") process.stderr.write("stderr: " + event.text);
   else console.info("exit code:", event.code);
 }
 
-await hive.shutdown(sandbox);
+// await hive.shutdown(sandbox);

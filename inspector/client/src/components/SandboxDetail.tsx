@@ -413,7 +413,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} onOpenFile={openFile} zoomWindow={zoomWindow} setZoomWindow={setZoomWindow} follow={follow} />
+              <TimelineView events={events} filter={filter} applyConfig={proposePolicy} onOpenFile={openFile} zoomWindow={zoomWindow} setZoomWindow={setZoomWindow} follow={follow} onDisableFollow={() => setFollow(false)} />
             </div>
           </div>
         )}

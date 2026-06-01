@@ -31,7 +31,7 @@ greet("world")
 
 for await (const event of sandbox.execStream(
   `python3 -c '${script}'`,
-  "/workspace"
+  { cwd: "/workspace" },
 )) {
   if (event.type === "stdout") process.stdout.write("stdout: " + event.text);
   else if (event.type === "stderr") process.stderr.write("stderr: " + event.text);

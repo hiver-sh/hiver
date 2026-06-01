@@ -45,6 +45,10 @@ function eventBadge(event: SandboxEvent): { label: string; variant: BadgeVariant
       };
     case "resource.usage":
       return { label: `cpu ${event.cpu_percent.toFixed(1)}%`, variant: "green" };
+    case "exec.request":
+      return { label: "exec", variant: "zinc" };
+    case "exec.response":
+      return { label: "exec.res", variant: "zinc" };
     default:
       return { label: "unknown", variant: "default" };
   }
@@ -120,6 +124,19 @@ function EventDetail({ event }: { event: SandboxEvent }) {
         <span className="font-mono text-xs text-muted-foreground">
           cpu <span className="text-emerald-600 dark:text-emerald-400">{event.cpu_percent.toFixed(1)}%</span>
           {" · "}mem <span className="text-emerald-600 dark:text-emerald-400">{formatBytes(event.memory_bytes)}</span>
+        </span>
+      );
+    case "exec.request":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          <span className="text-zinc-500">{event.cwd}</span>{" "}
+          {event.command}
+        </span>
+      );
+    case "exec.response":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          req#{event.request_id}
         </span>
       );
   }

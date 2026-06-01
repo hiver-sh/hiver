@@ -16,7 +16,9 @@ export type SandboxEvent =
   | { id: number; timestamp: string; type: "fs.request"; access: "allowed" | "denied"; mount: string; path: string; operation: "read" | "write" }
   | { id: number; timestamp: string; type: "fs.response"; backend: string; request_id: number; duration_ms: number; error?: string }
   | { id: number; timestamp: string; type: "stdio"; stdout?: string; stderr?: string }
-  | { id: number; timestamp: string; type: "resource.usage"; cpu_percent: number; memory_bytes: number };
+  | { id: number; timestamp: string; type: "resource.usage"; cpu_percent: number; memory_bytes: number }
+  | { id: number; timestamp: string; type: "exec.request"; cwd: string; command: string }
+  | { id: number; timestamp: string; type: "exec.response"; request_id: number };
 
 export const DEFAULT_INSPECTOR_SERVER = "http://localhost:3001";
 export const DEFAULT_CONTROLLER_URL = "http://localhost:9000";

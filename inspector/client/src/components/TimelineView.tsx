@@ -19,7 +19,7 @@ export interface TimelineBar {
 
 export interface TimelineRow {
   key: string;
-  type: "egress" | "fs" | "stdio" | "resource";
+  type: "egress" | "fs" | "stdio" | "resource" | "exec";
   label: string;
   method?: string;
   isPoint: boolean;
@@ -30,6 +30,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
   const chunkMap = new Map<number, Extract<SandboxEvent, { type: "egress.chunk" }>[]>();
   const egressResMap = new Map<number, Extract<SandboxEvent, { type: "egress.response" }>>();
   const fsResMap = new Map<number, Extract<SandboxEvent, { type: "fs.response" }>>();
+  const execResMap = new Map<number, Extract<SandboxEvent, { type: "exec.response" }>>();
   const rowMap = new Map<string, TimelineRow>();
   const rowOrder: string[] = [];
 
@@ -42,6 +43,8 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       egressResMap.set(event.request_id, event);
     } else if (event.type === "fs.response") {
       fsResMap.set(event.request_id, event);
+    } else if (event.type === "exec.response") {
+      execResMap.set(event.request_id, event);
     }
   }
 
@@ -97,13 +100,26 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
     } else if (event.type === "stdio") {
       const method = event.stderr ? "err" : "out";
       const key = `stdio:${method}`;
-      const row = getOrCreateRow(key, "stdio", method === "err" ? "stderr" : "stdout", method, true);
+      const row = getOrCreateRow(key, "stdio", method === "err" ? "stderr" : "stdout", method, false);
       row.bars.push({
         id: event.id,
         startTime: new Date(event.timestamp).getTime(),
         durationMs: 0,
         pending: false,
         rawEvents: [event],
+      });
+    } else if (event.type === "exec.request") {
+      const res = execResMap.get(event.id);
+      const startMs = new Date(event.timestamp).getTime();
+      const durationMs = res ? new Date(res.timestamp).getTime() - startMs : 0;
+      const truncCmd = event.command.length > 48 ? event.command.slice(0, 48) + "…" : event.command;
+      const row = getOrCreateRow(`exec:${event.id}`, "exec", truncCmd, "exec", false);
+      row.bars.push({
+        id: event.id,
+        startTime: startMs,
+        durationMs,
+        pending: !res,
+        rawEvents: res ? [event, res] : [event],
       });
     } else if (event.type === "resource.usage") {
       const t = new Date(event.timestamp).getTime();
@@ -170,17 +186,34 @@ function computeLanes(
 }
 
 
+function isLiveBar(bar: TimelineBar): boolean {
+  if (!bar.pending) return false;
+  if (bar.access === "allowed") return true;
+  return bar.rawEvents[0]?.type === "exec.request";
+}
+
+function liveBarClass(row: TimelineRow): string {
+  if (row.type === "exec") return "bg-emerald-500/50 border border-emerald-400/60";
+  return "bg-blue-500/50 border border-blue-400/60";
+}
+
 function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
   if (bar.pending) return "bg-muted-foreground/40 border border-dashed border-muted-foreground/60";
   if (bar.access === "denied" || bar.error) return "bg-red-500/80";
   if (type === "egress") {
     return bar.status !== undefined && bar.status >= 400 ? "bg-red-500/80" : "bg-blue-500/80";
   }
+  if (type === "exec") return "bg-emerald-500/80";
+  if (type === "stdio") {
+    const ev = bar.rawEvents[0];
+    return ev?.type === "stdio" && ev.stderr ? "bg-red-400/70" : "bg-zinc-500/70";
+  }
   return "bg-purple-500/80";
 }
 
 function methodClass(row: TimelineRow): string {
   if (row.type === "stdio") return row.method === "err" ? "text-red-600 dark:text-red-400" : "text-muted-foreground";
+  if (row.type === "exec") return "text-emerald-500 dark:text-emerald-400";
   if (row.type === "fs") return "text-purple-600 dark:text-purple-400";
   if (row.type === "resource") return row.key === "resource:cpu" ? "text-sky-600 dark:text-sky-400" : "text-emerald-600 dark:text-emerald-400";
   switch (row.method) {
@@ -265,6 +298,7 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
       if (e.type === "egress.request") return `${e.host}${e.path}`.toLowerCase().includes(q);
       if (e.type === "fs.request") return e.path.toLowerCase().includes(q);
       if (e.type === "stdio") return (e.stdout ?? e.stderr ?? "").toLowerCase().includes(q);
+      if (e.type === "exec.request") return e.command.toLowerCase().includes(q) || e.cwd.toLowerCase().includes(q);
       return true;
     });
   }
@@ -286,7 +320,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
 };
 
 function getRowCategory(row: TimelineRow): Category {
-  if (row.type === "stdio") return "stdio";
+  if (row.type === "stdio" || row.type === "exec") return "stdio";
   if (row.type === "fs") return "fs";
   if (row.type === "resource") return "resource";
   const e = row.bars[0]?.rawEvents[0];
@@ -463,10 +497,10 @@ function ResourceLineChart({
   );
 }
 
-export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow, follow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void; follow?: boolean }) {
+export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow, follow, onDisableFollow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void; follow?: boolean; onDisableFollow?: () => void }) {
   const rows = useMemo(() => buildRows(events), [events]);
 
-  const hasLive = rows.some((r) => r.bars.some(b => b.pending && b.access === "allowed"));
+  const hasLive = rows.some((r) => r.bars.some(b => isLiveBar(b)));
   const [, forceUpdate] = useState(0);
   const [trackWidth, setTrackWidth] = useState(600);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -714,7 +748,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   const totalSpan = rawSpan + rightPad;
 
   function effectiveDur(bar: TimelineBar): number {
-    if (bar.pending && bar.access === "allowed") {
+    if (isLiveBar(bar)) {
       return Math.max(totalSpan - (bar.startTime - minTime), 0);
     }
     return bar.durationMs;
@@ -961,8 +995,10 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   // ─── Interaction handlers ─────────────────────────────────────────────────
 
   function onScroll() {
-    if (trackRef.current && rowsScrollRef.current) {
-      trackRef.current.scrollLeft = rowsScrollRef.current.scrollLeft;
+    const el = rowsScrollRef.current;
+    if (trackRef.current && el) {
+      trackRef.current.scrollLeft = el.scrollLeft;
+      if (el.scrollLeft < el.scrollWidth - el.clientWidth - 1) onDisableFollow?.();
     }
     if (!VIRTUAL_SCROLL) return;
     if (rafScrollRef.current) cancelAnimationFrame(rafScrollRef.current);
@@ -1136,7 +1172,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                           left: toDisplay(b.startTime),
                           right: Math.max(toDisplay(b.startTime) + 5, toDisplay(b.startTime + effectiveDur(b))),
                           isError: b.access === "denied" || !!b.error || (b.status !== undefined && b.status >= 400),
-                          isLive: b.pending && b.access === "allowed",
+                          isLive: isLiveBar(b),
                         }))
                         .sort((a, b) => a.left - b.left);
                       const merged: { left: number; right: number; isError: boolean; isLive: boolean }[] = [];
@@ -1243,7 +1279,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                     const leftPx  = toDisplay(bar.startTime);
                                     const rightPx = Math.max(leftPx + MIN_BAR_PX, toDisplay(bar.startTime + effectiveDur(bar)));
                                     const isSelected = bar.id === selectedId;
-                                    const isLive = bar.pending && bar.access === "allowed";
+                                    const isLive = isLiveBar(bar);
                                     return (
                                       <div
                                         key={bar.id}
@@ -1251,7 +1287,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                         style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
                                       >
                                         <div
-                                          className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(bar, vl.row.type)}`}
+                                          className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? liveBarClass(vl.row) : barClass(bar, vl.row.type)}`}
                                           title={isLive ? `in-flight · ${effectiveDur(bar)}ms` : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
                                         >
                                           {isLive && <div className="absolute inset-0 bar-in-flight" />}
@@ -1265,14 +1301,15 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                     );
                                   });
                                 }
-                                // Merge overlapping bars into a single visual block
+                                // Merge bars whose display footprints are within LANE_GAP_PX of each other.
+                                // rightPx includes MIN_BAR_PX so zero-duration bars have a footprint too.
                                 type Group = { bars: TimelineBar[]; leftPx: number; rightPx: number };
                                 const groups: Group[] = [];
                                 for (const bar of visible) {
                                   const l = toDisplay(bar.startTime);
                                   const r = Math.max(l + MIN_BAR_PX, toDisplay(bar.startTime + effectiveDur(bar)));
                                   const last = groups[groups.length - 1];
-                                  if (last && l <= last.rightPx + LANE_GAP_PX) {
+                                  if (last && l < last.rightPx + LANE_GAP_PX) {
                                     last.bars.push(bar);
                                     last.rightPx = Math.max(last.rightPx, r);
                                   } else {
@@ -1282,7 +1319,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                 return groups.map(group => {
                                   const first = group.bars[0];
                                   const isSelected = group.bars.some(b => b.id === selectedId);
-                                  const isLive = group.bars.some(b => b.pending && b.access === "allowed");
+                                  const isLive = group.bars.some(b => isLiveBar(b));
                                   const w = group.rightPx - group.leftPx;
                                   return (
                                     <div
@@ -1291,7 +1328,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                       style={{ left: group.leftPx, width: w, maxWidth: `calc(100% - ${group.leftPx}px)` }}
                                     >
                                       <div
-                                        className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? "bg-blue-500/50 border border-blue-400/60" : barClass(first, vl.row.type)}`}
+                                        className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? liveBarClass(vl.row) : barClass(first, vl.row.type)}`}
                                         title={group.bars.length > 1 ? `${group.bars.length} events` : isLive ? `in-flight · ${effectiveDur(first)}ms` : first.pending ? "no response received" : `${first.durationMs}ms${first.status ? ` · ${first.status}` : ""}${first.error ? ` · ${first.error}` : ""}`}
                                       >
                                         {isLive && <div className="absolute inset-0 bar-in-flight" />}
@@ -1320,12 +1357,18 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
 
       {dragSel && (() => {
         const sl = rowsScrollRef.current?.scrollLeft ?? scrollLeft;
+        const selLeft = Math.max(0, labelW + Math.min(dragSel.startPx, dragSel.endPx) - sl);
+        const selRight = labelW + Math.max(dragSel.startPx, dragSel.endPx) - sl;
         return (
           <>
             <div className="pointer-events-none absolute top-0 bottom-0 bg-white/65 dark:bg-black/70 z-50"
-              style={{ left: 0, width: Math.max(0, labelW + Math.min(dragSel.startPx, dragSel.endPx) - sl) }} />
+              style={{ left: 0, width: selLeft }} />
             <div className="pointer-events-none absolute top-0 bottom-0 right-0 bg-white/65 dark:bg-black/70 z-50"
-              style={{ left: labelW + Math.max(dragSel.startPx, dragSel.endPx) - sl }} />
+              style={{ left: selRight }} />
+            <div className="pointer-events-none absolute top-0 bottom-0 w-px bg-blue-400/80 z-50"
+              style={{ left: selLeft }} />
+            <div className="pointer-events-none absolute top-0 bottom-0 w-px bg-blue-400/80 z-50"
+              style={{ left: selRight }} />
           </>
         );
       })()}
