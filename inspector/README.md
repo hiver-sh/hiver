@@ -1,4 +1,4 @@
-# Hive Sandbox Inspector
+# Hive Inspector
 
 A local dev tool for listing, creating, shutting down, and inspecting events from Hive sandboxes.
 
