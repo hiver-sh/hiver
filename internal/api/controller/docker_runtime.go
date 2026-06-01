@@ -42,7 +42,7 @@ func (r *DockerRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	}
 	hostPort, err := lookupHostPort(name, sandboxAPIPort)
 	if err != nil {
-		return false, gen.Sandbox{}, err
+		return false, gen.Sandbox{}, withContainerLogs(err, name)
 	}
 	sb := gen.Sandbox{
 		Id:              id,
@@ -64,7 +64,7 @@ func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
 		id := strings.TrimPrefix(name, prefix)
 		hostPort, err := lookupHostPort(name, sandboxAPIPort)
 		if err != nil {
-			return nil, err
+			return nil, withContainerLogs(err, name)
 		}
 		sandboxes = append(sandboxes, gen.Sandbox{
 			Id:              id,
@@ -86,7 +86,7 @@ func (r *DockerRuntime) Get(id string) (gen.SandboxDetail, error) {
 	}
 	hostPort, err := lookupHostPort(name, sandboxAPIPort)
 	if err != nil {
-		return gen.SandboxDetail{}, err
+		return gen.SandboxDetail{}, withContainerLogs(err, name)
 	}
 	cmd := fmt.Sprintf("docker exec -it %s sandbox-exec", name)
 	return gen.SandboxDetail{
@@ -168,7 +168,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--snapshot-dir", "/snapshots",
 	)
 	if out, err := exec.Command("docker", createArgs...).CombinedOutput(); err != nil {
-		return gen.Sandbox{}, fmt.Errorf("docker create: %v: %s", err, out)
+		return gen.Sandbox{}, fmt.Errorf("docker create %s: %v: %s", image, err, out)
 	}
 
 	if out, err := exec.Command("docker", "cp", specPath, containerName+":/mnt/spec.json").CombinedOutput(); err != nil {
@@ -178,13 +178,13 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 
 	if out, err := exec.Command("docker", "start", containerName).CombinedOutput(); err != nil {
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
-		return gen.Sandbox{}, fmt.Errorf("docker start: %v: %s", err, out)
+		return gen.Sandbox{}, fmt.Errorf("docker start %s: %v: %s", image, err, out)
 	}
 
 	hostPort, err := lookupHostPort(containerName, sandboxAPIPort)
 	if err != nil {
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
-		return gen.Sandbox{}, err
+		defer exec.Command("docker", "rm", "-f", containerName).Run()
+		return gen.Sandbox{}, withContainerLogs(err, containerName)
 	}
 	return gen.Sandbox{
 		Id:              id,
@@ -235,11 +235,31 @@ func containerState(name string) (exists, running bool, err error) {
 	return true, strings.TrimSpace(string(out)) == "true", nil
 }
 
+// containerImage returns the image name a container was started from.
+func containerImage(name string) string {
+	out, _ := exec.Command("docker", "inspect", "-f", "{{.Config.Image}}", name).Output()
+	return strings.TrimSpace(string(out))
+}
+
+// containerLogs returns recent log output for a container, or empty string if
+// unavailable (e.g. the container was already removed).
+func containerLogs(name string) string {
+	out, _ := exec.Command("docker", "logs", "--tail", "100", name).CombinedOutput()
+	return strings.TrimSpace(string(out))
+}
+
+// withContainerLogs appends the container's recent logs to err, if any exist.
+func withContainerLogs(err error, container string) error {
+	logs := containerLogs(container)
+	return fmt.Errorf("%w\n\ncontainer logs:\n%s\n", err, logs)
+
+}
+
 // lookupHostPort returns the host-side port docker bound to container:port.
 func lookupHostPort(container string, containerPort int) (string, error) {
 	out, err := exec.Command("docker", "port", container, fmt.Sprintf("%d/tcp", containerPort)).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("docker port %s: %v: %s", container, err, out)
+		return "", fmt.Errorf("container %s: port %d/tcp is not published — ensure the image `%s` was built with `hive image`", container, containerPort, containerImage(container))
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if !strings.HasPrefix(line, "0.0.0.0:") {
@@ -251,7 +271,7 @@ func lookupHostPort(container string, containerPort int) (string, error) {
 		}
 		return port, nil
 	}
-	return "", fmt.Errorf("no IPv4 host mapping for %s:%d in %q", container, containerPort, out)
+	return "", fmt.Errorf("container %s: port %d is not published — ensure the image `%s` was built with `hive image`", container, containerPort, containerImage(container))
 }
 
 // lookupTCPProxyEndpoint returns "localhost:<hostPort>" for the container's

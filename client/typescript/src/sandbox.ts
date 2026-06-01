@@ -10,12 +10,6 @@ import { parseSSE } from "./sse";
 const SANDBOX_FETCH_TIMEOUT_MS = 3_000;
 
 export interface SandboxOptions {
-  /**
-   * Base URL of the controller that produced this handle. Stored so
-   * controller-side operations (e.g. `hive.shutdown`) can reach back
-   * without the caller having to remember it.
-   */
-  controllerUrl: string;
   /** Override the global fetch (e.g. for testing or proxying). */
   fetch?: typeof fetch;
 }
@@ -41,8 +35,6 @@ export class Sandbox {
   readonly id: string;
   /** Base URL of the per-sandbox API server (no trailing slash). */
   readonly apiServerUrl: string;
-  /** Base URL of the controller that created this sandbox (no trailing slash). */
-  readonly controllerUrl: string;
   /**
    * Host and port of the HTTP service the sandbox image exposes (the first
    * TCP port from its EXPOSE directive), e.g. `"localhost:32768"`.
@@ -55,7 +47,6 @@ export class Sandbox {
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
-    this.controllerUrl = opts.controllerUrl.replace(/\/+$/, "");
     this.exposedEndpoint = ref.exposed_endpoint;
     const baseFetch = opts.fetch ?? fetch;
 
@@ -182,6 +173,48 @@ export class Sandbox {
   }
 
   /**
+   * Run `command` inside the sandbox and return buffered stdout, stderr,
+   * and exit code once the process finishes.
+   */
+  async exec(command: string, cwd?: string): Promise<ExecResult> {
+    const body: Record<string, string> = { command };
+    if (cwd !== undefined) body.cwd = cwd;
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/exec`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw await toError(res, "exec");
+    return res.json() as Promise<ExecResult>;
+  }
+
+  /**
+   * Run `command` inside the sandbox and stream output as an async
+   * iterator of `ExecStreamEvent`s. The final event has `type: "exit"`.
+   */
+  async *execStream(
+    command: string,
+    cwd?: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ExecStreamEvent, void, void> {
+    const body: Record<string, string> = { command };
+    if (cwd !== undefined) body.cwd = cwd;
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/exec-stream`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok || !res.body) throw await toError(res, "execStream");
+    for await (const frame of parseSSE(res.body, signal)) {
+      yield JSON.parse(frame.data) as ExecStreamEvent;
+    }
+  }
+
+  /**
    * List the immediate children of a directory under a sandbox mount.
    * `path` is the agent-visible absolute path (e.g. `/workspace`).
    */
@@ -233,6 +266,17 @@ export class Sandbox {
     return body;
   }
 }
+
+export interface ExecResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+}
+
+export type ExecStreamEvent =
+  | { type: "stdout"; text: string }
+  | { type: "stderr"; text: string }
+  | { type: "exit"; code: number };
 
 function isAbortError(err: unknown): boolean {
   return (

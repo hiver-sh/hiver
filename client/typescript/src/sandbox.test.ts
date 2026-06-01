@@ -6,7 +6,6 @@ const REF = { id: "sb-1", endpoint: "http://sandbox:8080" };
 
 function makeSandbox(mockFetch: ReturnType<typeof vi.fn>): Sandbox {
   return new Sandbox(REF, {
-    controllerUrl: "http://controller:9000",
     fetch: mockFetch as unknown as typeof fetch,
   });
 }

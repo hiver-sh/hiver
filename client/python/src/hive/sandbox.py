@@ -54,12 +54,10 @@ class Sandbox:
     def __init__(
         self,
         ref: SandboxRef,
-        controller_url: str,
         client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self.id = ref.id
         self.api_server_url = ref.endpoint.rstrip("/")
-        self.controller_url = controller_url.rstrip("/")
         self.exposed_endpoint: Optional[str] = ref.exposed_endpoint
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
@@ -101,6 +99,53 @@ class Sandbox:
         if not res.is_success:
             raise _to_error(res, "apply_config")
         return ApplyResult.model_validate(res.json())
+
+    async def exec(
+        self,
+        command: str,
+        cwd: Optional[str] = None,
+    ) -> dict[str, object]:
+        """
+        Run `command` inside the sandbox and return buffered stdout, stderr,
+        and exit_code once the process finishes.
+        """
+        body: dict[str, str] = {"command": command}
+        if cwd is not None:
+            body["cwd"] = cwd
+        res = await self._client.post(
+            f"{self.api_server_url}/v1/exec",
+            json=body,
+        )
+        if not res.is_success:
+            raise _to_error(res, "exec")
+        return res.json()
+
+    async def exec_stream(
+        self,
+        command: str,
+        cwd: Optional[str] = None,
+    ) -> AsyncGenerator[dict[str, object], None]:
+        """
+        Run `command` inside the sandbox and stream output as an async
+        generator of dicts. Each dict has a `type` key of "stdout",
+        "stderr", or "exit". The final dict is the "exit" event.
+        """
+        body: dict[str, str] = {"command": command}
+        if cwd is not None:
+            body["cwd"] = cwd
+        sse_timeout = httpx.Timeout(None, connect=_FETCH_TIMEOUT.connect)
+        async with self._client.stream(
+            "POST",
+            f"{self.api_server_url}/v1/exec-stream",
+            json=body,
+            headers={"accept": "text/event-stream"},
+            timeout=sse_timeout,
+        ) as res:
+            if not res.is_success:
+                await res.aread()
+                raise _to_error(res, "exec_stream")
+            async for frame in parse_sse(res, None):
+                yield json.loads(frame.data)
 
     async def list_directory(self, path: str) -> list[dict[str, object]]:
         """

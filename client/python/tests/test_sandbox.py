@@ -26,7 +26,7 @@ STDIO_EVENT = {
 
 
 def make_sandbox(client: httpx.AsyncClient) -> Sandbox:
-    return Sandbox(REF, controller_url="http://controller:9000", client=client)
+    return Sandbox(REF, client=client)
 
 
 def sse_body(*events: object) -> bytes:

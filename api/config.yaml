@@ -9,9 +9,16 @@ components:
         image:
           type: string
           description: >
-            Reference to the agent image to launch.
+            The Docker image to run.
             This cannot be changed after the sandbox is initialized.
           example: my-agent:latest
+        entrypoint:
+          type: string
+          description: >
+            Override the entrypoint used when the container is run.
+            When omitted, the image's default entrypoint is used.
+            e.g. "tail -f /dev/null" blocks indefinitely with near-zero CPU.
+          example: "tail -f /dev/null"
         env:
           type: object
           additionalProperties:

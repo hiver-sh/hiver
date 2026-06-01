@@ -1,14 +1,19 @@
 package api
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
@@ -16,6 +21,10 @@ import (
 	"github.com/blasten/hive/internal/spec"
 	"github.com/gin-gonic/gin"
 )
+
+// agentContainerID is the runc container ID sandboxd always assigns the
+// agent. sandboxd runs as PID 1 in the sandbox pod, so os.Getpid() == 1.
+const agentContainerID = "agent-1"
 
 type SandboxHandlers struct {
 	broker   *events.Broker
@@ -367,6 +376,211 @@ func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) 
 func (h *SandboxHandlers) Ping(c *gin.Context) {
 	h.lifetime.Reset()
 	c.Status(http.StatusOK)
+}
+
+// Exec runs a shell command inside the agent container and returns the
+// complete buffered stdout, stderr, and exit code once the process finishes.
+// Each line is also published to the broker as a StdioEvent.
+func (h *SandboxHandlers) Exec(c *gin.Context) {
+	var req gen.ExecRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
+		return
+	}
+
+	if err := waitForContainer(c.Request.Context(), agentContainerID); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gen.Error{Error: "container not ready: " + err.Error()})
+		return
+	}
+
+	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req)...)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+
+	var (
+		wg                 sync.WaitGroup
+		stdoutBuf          strings.Builder
+		stderrBuf          strings.Builder
+		stdoutMu, stderrMu sync.Mutex
+	)
+	collect := func(r io.Reader, stream string, buf *strings.Builder, mu *sync.Mutex) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			line := sc.Text() + "\n"
+			h.publishStdioLine(stream, line)
+			mu.Lock()
+			buf.WriteString(line)
+			mu.Unlock()
+		}
+	}
+
+	wg.Add(2)
+	go collect(stdoutPipe, "stdout", &stdoutBuf, &stdoutMu)
+	go collect(stderrPipe, "stderr", &stderrBuf, &stderrMu)
+	wg.Wait()
+
+	exitCode := 0
+	if err := cmd.Wait(); err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+			return
+		}
+		exitCode = exitErr.ExitCode()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"stdout":    stdoutBuf.String(),
+		"stderr":    stderrBuf.String(),
+		"exit_code": exitCode,
+	})
+}
+
+// ExecStream runs a shell command inside the agent container and streams
+// its output as Server-Sent Events. Each frame has an `event:` field of
+// "stdout", "stderr", or "exit"; the final "exit" frame closes the stream.
+// Each line is also published to the broker as a StdioEvent.
+func (h *SandboxHandlers) ExecStream(c *gin.Context) {
+	var req gen.ExecRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
+		return
+	}
+
+	if err := waitForContainer(c.Request.Context(), agentContainerID); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gen.Error{Error: "container not ready: " + err.Error()})
+		return
+	}
+
+	w := c.Writer
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req)...)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+
+	hdr := w.Header()
+	hdr.Set("Content-Type", "text/event-stream")
+	hdr.Set("Cache-Control", "no-cache")
+	hdr.Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	var (
+		wg    sync.WaitGroup
+		sseMu sync.Mutex
+	)
+	emitSSE := func(eventType, text string) {
+		payload, _ := json.Marshal(map[string]string{"type": eventType, "text": text})
+		sseMu.Lock()
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, payload)
+		flusher.Flush()
+		sseMu.Unlock()
+	}
+	pipe := func(r io.Reader, stream string) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			line := sc.Text() + "\n"
+			h.publishStdioLine(stream, line)
+			emitSSE(stream, line)
+		}
+	}
+
+	wg.Add(2)
+	go pipe(stdoutPipe, "stdout")
+	go pipe(stderrPipe, "stderr")
+	wg.Wait()
+
+	exitCode := 0
+	if err := cmd.Wait(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+
+	exitPayload, _ := json.Marshal(map[string]any{"type": "exit", "code": exitCode})
+	fmt.Fprintf(w, "event: exit\ndata: %s\n\n", exitPayload)
+	flusher.Flush()
+}
+
+// publishStdioLine publishes a single line of exec output as a StdioEvent
+// to the sandbox broker, mirroring the agent's own stdio stream.
+func (h *SandboxHandlers) publishStdioLine(stream, line string) {
+	h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		stdio := gen.StdioEvent{Id: int(id), Timestamp: ts}
+		if stream == "stdout" {
+			stdio.Stdout = &line
+		} else {
+			stdio.Stderr = &line
+		}
+		_ = ev.FromStdioEvent(stdio)
+		return ev
+	})
+}
+
+// waitForContainer polls `runc state` until the container is in the "running"
+// state or ctx is cancelled. It returns an error if the deadline is exceeded
+// or the container reaches a terminal state before running.
+func waitForContainer(ctx context.Context, containerID string) error {
+	type runcState struct {
+		Status string `json:"status"`
+	}
+	for {
+		out, err := exec.CommandContext(ctx, "runc", "state", containerID).Output()
+		if err == nil {
+			var s runcState
+			if json.Unmarshal(out, &s) == nil && s.Status == "running" {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// buildRuncExecArgs constructs the argument slice for `runc exec`.
+func buildRuncExecArgs(req gen.ExecRequest) []string {
+	args := []string{"exec"}
+	if req.Cwd != nil && *req.Cwd != "" {
+		args = append(args, "--cwd", *req.Cwd)
+	}
+	args = append(args, agentContainerID, "sh", "-c", req.Command)
+	return args
 }
 
 // writeSSEFrame emits a single SSE event:

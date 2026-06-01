@@ -20,6 +20,8 @@ tags:
     description: Move file contents into the sandbox.
   - name: Proxy
     description: Reach the HTTP service exposed by the sandbox container.
+  - name: Execution
+    description: Run commands inside the sandbox.
 
 paths:
   /v1/config:
@@ -327,6 +329,98 @@ paths:
                   Server-Sent Events stream. Each `data:` payload is a
                   JSON-encoded `SandboxEvent`.
 
+  /v1/exec:
+    post:
+      tags: [Execution]
+      summary: Execute a command and return buffered output.
+      operationId: exec
+      description: |
+        Runs a command inside the sandbox and waits for it to finish.
+        Returns the complete stdout, stderr, and exit code in a single
+        JSON response. Use `/v1/exec-stream` instead when you need
+        output incrementally.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExecRequest' }
+      responses:
+        '200':
+          description: Command finished. Inspect `exit_code` for success/failure.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stdout, stderr, exit_code]
+                additionalProperties: false
+                properties:
+                  stdout:
+                    type: string
+                    description: Complete text written to stdout.
+                  stderr:
+                    type: string
+                    description: Complete text written to stderr.
+                  exit_code:
+                    type: integer
+                    description: Process exit code.
+        '400':
+          description: The request body is malformed.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
+  /v1/exec-stream:
+    post:
+      tags: [Execution]
+      summary: Execute a command and stream output as SSE.
+      operationId: execStream
+      description: |
+        Runs a command inside the sandbox and streams its output as a
+        Server-Sent Events stream. Each SSE frame carries an `event:`
+        field of `stdout`, `stderr`, or `exit`, and a `data:` field
+        with the payload.
+
+        `stdout` and `stderr` frames carry the raw text written to the
+        respective stream. The `exit` frame is always the last frame;
+        its `data:` is a JSON object `{"code": <int>}` with the
+        process exit code.
+
+        The stream closes after the `exit` frame is written. Use
+        `/v1/exec` instead when you only need the final buffered result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExecRequest' }
+      responses:
+        '200':
+          description: |
+            SSE stream opened. Frames arrive in order with `event:` set
+            to `stdout`, `stderr`, or `exit`. The stream closes after
+            the `exit` frame.
+          content:
+            text/event-stream:
+              schema:
+                description: |
+                  Server-Sent Events stream. Each `data:` payload is a
+                  JSON-encoded `ExecEvent`. The `event:` field matches
+                  the `type` discriminator.
+                oneOf:
+                  - $ref: '#/components/schemas/ExecStdoutEvent'
+                  - $ref: '#/components/schemas/ExecStderrEvent'
+                  - $ref: '#/components/schemas/ExecExitEvent'
+                discriminator:
+                  propertyName: type
+                  mapping:
+                    stdout: '#/components/schemas/ExecStdoutEvent'
+                    stderr: '#/components/schemas/ExecStderrEvent'
+                    exit:   '#/components/schemas/ExecExitEvent'
+        '400':
+          description: The request body is malformed.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
   /v1/ping:
     get:
       tags: [Configuration]
@@ -336,3 +430,55 @@ paths:
       responses:
         '200':
           description: Ping received.
+
+components:
+  schemas:
+    ExecRequest:
+      type: object
+      required: [command]
+      additionalProperties: false
+      properties:
+        command:
+          type: string
+          description: Command to run, passed to a shell.
+          example: python3 script.py
+        cwd:
+          type: string
+          description: Working directory for the command. Defaults to `/`.
+          example: /workspace
+
+    ExecStdoutEvent:
+      type: object
+      required: [type, text]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [stdout]
+        text:
+          type: string
+          description: Text written to stdout.
+
+    ExecStderrEvent:
+      type: object
+      required: [type, text]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [stderr]
+        text:
+          type: string
+          description: Text written to stderr.
+
+    ExecExitEvent:
+      type: object
+      required: [type, code]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [exit]
+        code:
+          type: integer
+          description: Process exit code.

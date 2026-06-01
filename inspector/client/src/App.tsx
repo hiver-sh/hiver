@@ -12,7 +12,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -61,15 +60,21 @@ function ThemeToggle() {
   );
 }
 
-function ControllerUnreachable({ message, loading, onRetry }: { message: string; loading: boolean; onRetry: () => void }) {
+function ControllerUnreachable({ message, loading, onRetry, onOpenSettings }: { message: string; loading: boolean; onRetry: () => void; onOpenSettings: () => void }) {
   return (
     <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-foreground">
       <ServerCrash className="h-10 w-10 text-muted-foreground/40" />
       <p className="font-mono text-sm text-muted-foreground max-w-lg text-center">{message}</p>
-      <Button variant="outline" size="sm" onClick={onRetry} disabled={loading}>
-        <RefreshCw className={cn("mr-2 h-3.5 w-3.5", loading && "animate-spin")} />
-        Retry
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button variant="outline" size="sm" onClick={onOpenSettings}>
+          <Pencil className="mr-2 h-3.5 w-3.5" />
+          Change URL
+        </Button>
+        <Button variant="outline" size="sm" onClick={onRetry} disabled={loading}>
+          <RefreshCw className={cn("mr-2 h-3.5 w-3.5", loading && "animate-spin")} />
+          Retry
+        </Button>
+      </div>
     </div>
   );
 }
@@ -172,8 +177,42 @@ function AppContent() {
     onConnectedChange: (id, c) => setConnectedId(c ? id : null),
   };
 
+  const controllerDialog = (
+    <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Controller URL</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-4 py-2">
+          <div className="grid gap-1.5">
+            <Label htmlFor="ctrl-url">Controller URL</Label>
+            <Input
+              id="ctrl-url"
+              value={controllerInput}
+              onChange={(e) => setControllerInput(e.target.value)}
+              placeholder={DEFAULT_CONTROLLER_URL}
+            />
+          </div>
+          <Button
+            onClick={() => {
+              setControllerUrl(controllerInput.trim() || DEFAULT_CONTROLLER_URL);
+              setSettingsOpen(false);
+            }}
+          >
+            Apply
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
   if (fetchError) {
-    return <ControllerUnreachable message={fetchError} loading={loading} onRetry={fetchSandboxes} />;
+    return (
+      <>
+        {controllerDialog}
+        <ControllerUnreachable message={fetchError} loading={loading} onRetry={fetchSandboxes} onOpenSettings={() => setSettingsOpen(true)} />
+      </>
+    );
   }
 
   return (
@@ -227,40 +266,15 @@ function AppContent() {
                 <ChevronLeft className="h-5 w-5" />
               </button>
             </div>
-            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-              <DialogTrigger asChild>
-                <div className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-foreground/10 transition-colors">
-                  <span className="font-mono text-[11px] text-muted-foreground leading-none group-hover:text-foreground transition-colors">
-                    {controllerUrl}
-                  </span>
-                  <Pencil style={{ width: 12, height: 12 }} className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
-                </div>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-sm">
-                <DialogHeader>
-                  <DialogTitle>Controller URL</DialogTitle>
-                </DialogHeader>
-                <div className="grid gap-4 py-2">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ctrl-url">Controller URL</Label>
-                    <Input
-                      id="ctrl-url"
-                      value={controllerInput}
-                      onChange={(e) => setControllerInput(e.target.value)}
-                      placeholder={DEFAULT_CONTROLLER_URL}
-                    />
-                  </div>
-                  <Button
-                    onClick={() => {
-                      setControllerUrl(controllerInput.trim() || DEFAULT_CONTROLLER_URL);
-                      setSettingsOpen(false);
-                    }}
-                  >
-                    Apply
-                  </Button>
-                </div>
-              </DialogContent>
-            </Dialog>
+            <div
+              onClick={() => setSettingsOpen(true)}
+              className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-foreground/10 transition-colors"
+            >
+              <span className="font-mono text-[11px] text-muted-foreground leading-none group-hover:text-foreground transition-colors">
+                {controllerUrl}
+              </span>
+              <Pencil style={{ width: 12, height: 12 }} className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
+            </div>
           </div>
 
           <Separator />
@@ -285,7 +299,7 @@ function AppContent() {
       {/* Main */}
       <main className="min-w-0 flex-1">
         <Routes>
-          <Route path="/" element={<GettingStarted />} />
+          <Route path="/" element={<GettingStarted controllerUrl={controllerUrl} />} />
           <Route
             path="/sandboxes/:id"
             element={<SandboxDetailRoute {...layoutProps} />}

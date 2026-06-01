@@ -3,9 +3,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/sandboxd ./cmd/sandboxd \
- && CGO_ENABLED=0 go build -o /out/sbxproxy ./cmd/sbxproxy \
- && go build -o /out/sbxfuse ./cmd/sbxfuse
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /out/sandboxd ./cmd/sandboxd \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /out/sbxproxy ./cmd/sbxproxy \
+ && go build -ldflags="-s -w" -trimpath -o /out/sbxfuse ./cmd/sbxfuse
 
 FROM debian:bookworm-slim
 # fuse3:    /workspace passthrough mount (sbxfuse).

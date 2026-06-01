@@ -21,12 +21,13 @@ const BackendSuffix = "-backend"
 
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
-	Image    string            `json:"image,omitempty"`
-	Ttl      *int              `json:"ttl,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-	FS       []FS              `json:"fs"`
-	Egress   []proxy.EgressRule `json:"egress,omitempty"`
-	Snapshot *Snapshot         `json:"snapshot,omitempty"`
+	Image      string             `json:"image,omitempty"`
+	Entrypoint string             `json:"entrypoint,omitempty"`
+	Ttl        *int               `json:"ttl,omitempty"`
+	Env        map[string]string  `json:"env,omitempty"`
+	FS         []FS               `json:"fs"`
+	Egress     []proxy.EgressRule `json:"egress,omitempty"`
+	Snapshot   *Snapshot          `json:"snapshot,omitempty"`
 }
 
 // Snapshot controls how the sandbox upper layer is persisted and restored.

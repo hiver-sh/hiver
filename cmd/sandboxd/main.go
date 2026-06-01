@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -262,6 +263,10 @@ func main() {
 	imgCfg, err := runc.ExtractImageConfig()
 	if err != nil {
 		log.Fatalf("unpack sandbox config: %v", err)
+	}
+	if sp.Entrypoint != "" {
+		imgCfg.Entrypoint = strings.Fields(sp.Entrypoint)
+		imgCfg.Cmd = nil
 	}
 
 	// Seed each FUSE backend from the agent image's own rootfs: any

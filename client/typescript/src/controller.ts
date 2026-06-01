@@ -11,16 +11,14 @@ export interface ControllerOptions {
   /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
   /**
-   * How long `getOrCreateSandbox` waits for the sandbox's `/v1/ping`
-   * to succeed before giving up, in milliseconds. The controller
-   * returns as soon as the container starts; the API server inside
-   * needs another moment to bind. Defaults to 30s. Pass `0` to skip
-   * the readiness wait and return immediately.
+   * Timeout in milliseconds applied to every controller fetch operation and
+   * to the readiness polling loop in `getOrCreateSandbox`. Defaults to 30s.
+   * Pass `0` to disable timeouts and skip the readiness wait.
    */
-  readinessTimeoutMs?: number;
+  timeoutMs?: number;
 }
 
-const DEFAULT_READINESS_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 const READINESS_POLL_INTERVAL_MS = 200;
 
 /**
@@ -49,13 +47,32 @@ export async function getOrCreateSandbox(
     "",
   );
   const fetchImpl = opts.fetch ?? fetch;
+  const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  try {
+    return await provisionSandbox(id, validated, base, fetchImpl, timeout);
+  } catch (err) {
+    if (err instanceof SandboxError && err.status === 0 && timeout > 0) {
+      return provisionSandbox(id, validated, base, fetchImpl, timeout);
+    }
+    throw err;
+  }
+}
+
+async function provisionSandbox(
+  id: string,
+  config: SandboxConfig,
+  base: string,
+  fetchImpl: typeof fetch,
+  timeout: number,
+): Promise<Sandbox> {
   let res: Response;
   try {
     res = await fetchImpl(`${base}/v1/sandboxes/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(validated),
+      body: JSON.stringify(config),
+      signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
     });
   } catch (err) {
     if (isConnectionRefused(err)) {
@@ -83,8 +100,7 @@ export async function getOrCreateSandbox(
     );
   }
   const ref = SandboxRef.parse(await res.json());
-  const sandbox = new Sandbox(ref, { controllerUrl: base, fetch: fetchImpl });
-  const timeout = opts.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
+  const sandbox = new Sandbox(ref, { fetch: fetchImpl });
   if (timeout > 0) await waitUntilReachable(sandbox, timeout);
   return sandbox;
 }
@@ -124,10 +140,13 @@ export async function getSandbox(
 ): Promise<SandboxDetail> {
   const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
+  const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/v1/sandboxes/${encodeURIComponent(id)}`);
+    res = await fetchImpl(`${base}/v1/sandboxes/${encodeURIComponent(id)}`, {
+      signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
+    });
   } catch (err) {
     if (isConnectionRefused(err)) {
       throw new SandboxError(
@@ -155,10 +174,13 @@ export async function listSandboxes(
     "",
   );
   const fetchImpl = opts.fetch ?? fetch;
+  const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/v1/sandboxes`);
+    res = await fetchImpl(`${base}/v1/sandboxes`, {
+      signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
+    });
   } catch (err) {
     if (isConnectionRefused(err)) {
       throw new SandboxError(
@@ -175,25 +197,32 @@ export async function listSandboxes(
   const refs = ((await res.json()) as unknown[]).map((r) =>
     SandboxRef.parse(r),
   );
-  return refs.map(
-    (ref) => new Sandbox(ref, { controllerUrl: base, fetch: fetchImpl }),
-  );
+  return refs.map((ref) => new Sandbox(ref, { fetch: fetchImpl }));
 }
 
 /**
  * Stop the sandbox container and remove it.
  */
-export async function shutdown(sandbox: Sandbox): Promise<void> {
-  const url = `${sandbox.controllerUrl}/v1/shutdown/${encodeURIComponent(sandbox.id)}`;
+export async function shutdown(
+  sandbox: Sandbox,
+  opts: ControllerOptions = {},
+): Promise<void> {
+  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(/\/+$/, "");
+  const fetchImpl = opts.fetch ?? fetch;
+  const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const url = `${base}/v1/shutdown/${encodeURIComponent(sandbox.id)}`;
   let res: Response;
   try {
-    res = await sandbox.fetchImpl(url, { method: "POST" });
+    res = await fetchImpl(url, {
+      method: "POST",
+      signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
+    });
   } catch (err) {
     if (isConnectionRefused(err)) {
       throw new SandboxError(
         "shutdown",
         0,
-        `controller is not reachable at ${sandbox.controllerUrl} (connection refused). Is it running?`,
+        `controller is not reachable at ${base} (connection refused). Is it running?`,
       );
     }
     throw err;

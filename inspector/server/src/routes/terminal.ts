@@ -1,5 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { Client as SshClient } from "ssh2";
+import * as pty from "node-pty";
+import { getSandbox } from "hive";
+import { controllerUrl } from "../lib/controllerUrl.js";
 
 const router = Router();
 
@@ -40,6 +43,25 @@ function openSshSession(
     });
     conn.connect({ host, port, username: "agent", password: "agent", readyTimeout: 10000, hostVerifier: () => true });
   });
+}
+
+function openPtySession(
+  cmd: string, cols: number, rows: number,
+  onData: (buf: Buffer) => void, onExit: () => void,
+): TermSession {
+  const proc = pty.spawn("sh", ["-c", cmd], {
+    name: "xterm-256color",
+    cols,
+    rows,
+    env: process.env as Record<string, string>,
+  });
+  proc.onData((d) => onData(Buffer.from(d)));
+  proc.onExit(() => onExit());
+  return {
+    write: (d) => proc.write(d),
+    resize: (c, r) => proc.resize(c, r),
+    close: () => proc.kill(),
+  };
 }
 
 router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
@@ -91,6 +113,17 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
       parseInt(exposedEndpoint.slice(i + 1)),
       cols, rows, sendBytes, onExit,
     );
+  }
+
+  if (!session) {
+    try {
+      const detail = await getSandbox(req.params.id, { controllerUrl: controllerUrl(req) });
+      if (detail.terminal_cmd) {
+        session = openPtySession(detail.terminal_cmd, cols, rows, sendBytes, onExit);
+      }
+    } catch {
+      // controller unreachable or sandbox not found — fall through to error below
+    }
   }
 
   if (!session) {

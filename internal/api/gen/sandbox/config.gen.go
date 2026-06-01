@@ -375,6 +375,9 @@ type SandboxConfig struct {
 	// are denied.
 	Egress *[]EgressRule `json:"egress,omitempty"`
 
+	// Entrypoint Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. e.g. "tail -f /dev/null" blocks indefinitely with near-zero CPU.
+	Entrypoint *string `json:"entrypoint,omitempty"`
+
 	// Env Additional environment variables as a key/value map. This cannot be changed after the sandbox is initialized.
 	Env *map[string]string `json:"env,omitempty"`
 
@@ -383,7 +386,7 @@ type SandboxConfig struct {
 	// be a parent directory of another mount path).
 	Fs []FileSystem `json:"fs"`
 
-	// Image Reference to the agent image to launch. This cannot be changed after the sandbox is initialized.
+	// Image The Docker image to run. This cannot be changed after the sandbox is initialized.
 	Image *string `json:"image,omitempty"`
 
 	// Snapshot Snapshot configuration. A snapshot is captured automatically before

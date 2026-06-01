@@ -7,14 +7,14 @@ from typing import Optional
 
 import httpx
 
-from .sandbox import Sandbox, SandboxError, _FETCH_TIMEOUT, _to_error
+from .sandbox import Sandbox, SandboxError, _to_error
 from .schemas import SandboxConfig, SandboxDetail, SandboxRef
 
 DEFAULT_CONTROLLER_URL = "http://localhost:9000"
 
 _SANDBOX_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_DEFAULT_READINESS_TIMEOUT_S = 30.0
+_DEFAULT_TIMEOUT_S = 30.0
 _READINESS_POLL_INTERVAL_S = 0.2
 
 
@@ -23,7 +23,7 @@ async def get_or_create_sandbox(
     config: SandboxConfig,
     controller_url: str = DEFAULT_CONTROLLER_URL,
     client: Optional[httpx.AsyncClient] = None,
-    readiness_timeout_s: float = _DEFAULT_READINESS_TIMEOUT_S,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> Sandbox:
     """
     Idempotent provision against PUT /v1/sandboxes/{id}. If a sandbox
@@ -42,13 +42,15 @@ async def get_or_create_sandbox(
     validated = SandboxConfig.model_validate(config.model_dump(exclude_none=True))
     base = controller_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
+    http = client or httpx.AsyncClient()
+    req_timeout = timeout_s if timeout_s > 0 else None
 
     try:
         try:
             res = await http.put(
                 f"{base}/v1/sandboxes/{id}",
                 json=validated.model_dump(exclude_none=True),
+                timeout=req_timeout,
             )
         except httpx.ConnectError as err:
             if _is_connection_refused(err):
@@ -76,9 +78,9 @@ async def get_or_create_sandbox(
             )
 
         ref = SandboxRef.model_validate(res.json())
-        sandbox = Sandbox(ref, base, client=http if not owns_client else None)
-        if readiness_timeout_s > 0:
-            await _wait_until_reachable(sandbox, readiness_timeout_s)
+        sandbox = Sandbox(ref, client=http if not owns_client else None)
+        if timeout_s > 0:
+            await _wait_until_reachable(sandbox, timeout_s)
         return sandbox
     except Exception:
         if owns_client:
@@ -90,6 +92,7 @@ async def get_sandbox(
     id: str,
     controller_url: str = DEFAULT_CONTROLLER_URL,
     client: Optional[httpx.AsyncClient] = None,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> SandboxDetail:
     """
     Fetch the detail record for a single sandbox, including the terminal attach command.
@@ -97,11 +100,12 @@ async def get_sandbox(
     """
     base = controller_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
+    http = client or httpx.AsyncClient()
+    req_timeout = timeout_s if timeout_s > 0 else None
 
     try:
         try:
-            res = await http.get(f"{base}/v1/sandboxes/{id}")
+            res = await http.get(f"{base}/v1/sandboxes/{id}", timeout=req_timeout)
         except httpx.ConnectError as err:
             if _is_connection_refused(err):
                 raise SandboxError(
@@ -124,15 +128,17 @@ async def get_sandbox(
 async def list_sandboxes(
     controller_url: str = DEFAULT_CONTROLLER_URL,
     client: Optional[httpx.AsyncClient] = None,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> list[Sandbox]:
     """Return all currently running sandboxes."""
     base = controller_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
+    http = client or httpx.AsyncClient()
+    req_timeout = timeout_s if timeout_s > 0 else None
 
     try:
         try:
-            res = await http.get(f"{base}/v1/sandboxes")
+            res = await http.get(f"{base}/v1/sandboxes", timeout=req_timeout)
         except httpx.ConnectError as err:
             if _is_connection_refused(err):
                 raise SandboxError(
@@ -146,26 +152,38 @@ async def list_sandboxes(
             raise _to_error(res, "list_sandboxes")
 
         refs = [SandboxRef.model_validate(r) for r in res.json()]
-        return [Sandbox(ref, base, client=http if not owns_client else None) for ref in refs]
+        return [Sandbox(ref, client=http if not owns_client else None) for ref in refs]
     except Exception:
         if owns_client:
             await http.aclose()
         raise
 
 
-async def shutdown(sandbox: Sandbox) -> None:
+async def shutdown(
+    sandbox: Sandbox,
+    controller_url: str = DEFAULT_CONTROLLER_URL,
+    client: Optional[httpx.AsyncClient] = None,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+) -> None:
     """Stop the sandbox container and remove it."""
-    url = f"{sandbox.controller_url}/v1/shutdown/{sandbox.id}"
+    base = controller_url.rstrip("/")
+    owns_client = client is None
+    http = client or httpx.AsyncClient()
+    req_timeout = timeout_s if timeout_s > 0 else None
+    url = f"{base}/v1/shutdown/{sandbox.id}"
     try:
-        res = await sandbox._client.post(url)
+        res = await http.post(url, timeout=req_timeout)
     except httpx.ConnectError as err:
         if _is_connection_refused(err):
             raise SandboxError(
                 "shutdown",
                 0,
-                f"controller is not reachable at {sandbox.controller_url} (connection refused). Is it running?",
+                f"controller is not reachable at {base} (connection refused). Is it running?",
             ) from err
         raise
+    finally:
+        if owns_client:
+            await http.aclose()
 
     if res.status_code == 204:
         return

@@ -140,6 +140,8 @@ export type Snapshot = z.infer<typeof Snapshot>;
 export const SandboxConfig = z.object({
   /** Reference to the agent image to launch. This cannot be changed after the sandbox is initialized. */
   image: z.string().optional(),
+  /** Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. */
+  entrypoint: z.string().optional(),
   /** Additional environment variables in `KEY=VALUE` form. This cannot be changed after the sandbox is initialized. */
   env: z.record(z.string(), z.string()).optional(),
   /**

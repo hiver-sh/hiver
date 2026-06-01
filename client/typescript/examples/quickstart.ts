@@ -41,6 +41,6 @@ const events = (async () => {
 ping = setInterval(sandbox.ping, 10_000);
 
 // Stop after 30 seconds.
-setTimeout(() => shutdown(0), 30_000);
+setTimeout(() => shutdown(0), 30_000*100);
 
 await events.catch(() => {});
