@@ -170,6 +170,33 @@ type EgressResponseEvent struct {
 	Type      string    `json:"type"`
 }
 
+// ExecRequestEvent defines model for ExecRequestEvent.
+type ExecRequestEvent struct {
+	// Command The command string that was executed.
+	Command string `json:"command"`
+
+	// Cwd Working directory in which the command was invoked.
+	Cwd string `json:"cwd"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id        int       `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
+// ExecResponseEvent defines model for ExecResponseEvent.
+type ExecResponseEvent struct {
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// RequestId Unique identifier correlating this result to its `ExecRequestEvent`.
+	RequestId int       `json:"request_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
 // FSRequestEvent defines model for FSRequestEvent.
 type FSRequestEvent struct {
 	Access FSRequestEventAccess `json:"access"`
@@ -486,6 +513,62 @@ func (t *SandboxEvent) MergeResourceUsageEvent(v ResourceUsageEvent) error {
 	return err
 }
 
+// AsExecRequestEvent returns the union data inside the SandboxEvent as a ExecRequestEvent
+func (t SandboxEvent) AsExecRequestEvent() (ExecRequestEvent, error) {
+	var body ExecRequestEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromExecRequestEvent overwrites any union data inside the SandboxEvent as the provided ExecRequestEvent
+func (t *SandboxEvent) FromExecRequestEvent(v ExecRequestEvent) error {
+	v.Type = "exec.request"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeExecRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided ExecRequestEvent
+func (t *SandboxEvent) MergeExecRequestEvent(v ExecRequestEvent) error {
+	v.Type = "exec.request"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsExecResponseEvent returns the union data inside the SandboxEvent as a ExecResponseEvent
+func (t SandboxEvent) AsExecResponseEvent() (ExecResponseEvent, error) {
+	var body ExecResponseEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromExecResponseEvent overwrites any union data inside the SandboxEvent as the provided ExecResponseEvent
+func (t *SandboxEvent) FromExecResponseEvent(v ExecResponseEvent) error {
+	v.Type = "exec.response"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeExecResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided ExecResponseEvent
+func (t *SandboxEvent) MergeExecResponseEvent(v ExecResponseEvent) error {
+	v.Type = "exec.response"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 func (t SandboxEvent) Discriminator() (string, error) {
 	var discriminator struct {
 		Discriminator string `json:"type"`
@@ -508,6 +591,10 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 		return t.AsEgressRequestEvent()
 	case "egress.response":
 		return t.AsEgressResponseEvent()
+	case "exec.request":
+		return t.AsExecRequestEvent()
+	case "exec.response":
+		return t.AsExecResponseEvent()
 	case "fs.request":
 		return t.AsFSRequestEvent()
 	case "fs.response":

@@ -14,6 +14,8 @@ components:
         - $ref: '#/components/schemas/FSResponseEvent'
         - $ref: '#/components/schemas/StdioEvent'
         - $ref: '#/components/schemas/ResourceUsageEvent'
+        - $ref: '#/components/schemas/ExecRequestEvent'
+        - $ref: '#/components/schemas/ExecResponseEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -25,6 +27,8 @@ components:
           fs.response: '#/components/schemas/FSResponseEvent'
           stdio: '#/components/schemas/StdioEvent'
           resource.usage: '#/components/schemas/ResourceUsageEvent'
+          exec.request: '#/components/schemas/ExecRequestEvent'
+          exec.response: '#/components/schemas/ExecResponseEvent'
 
     SandboxEventBase:
       type: object
@@ -333,3 +337,48 @@ components:
         timestamp: "2026-05-28T12:00:00Z"
         cpu_percent: 42.5
         memory_bytes: 134217728
+
+    ExecRequestEvent:
+      description: |
+        Emitted when a command is dispatched for execution inside the sandbox.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, cwd, command]
+          properties:
+            type:
+              type: string
+              const: exec.request
+            cwd:
+              type: string
+              description: Working directory in which the command was invoked.
+            command:
+              type: string
+              description: The command string that was executed.
+      example:
+        type: exec.request
+        id: 220
+        timestamp: "2026-05-31T10:15:00Z"
+        cwd: /workspace
+        command: "npm install"
+
+    ExecResponseEvent:
+      description: |
+        Emitted when a command execution completes. The `request_id` matches
+        the `id` of the originating `ExecRequestEvent`.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, request_id]
+          properties:
+            type:
+              type: string
+              const: exec.response
+            request_id:
+              type: integer
+              description: Unique identifier correlating this result to its `ExecRequestEvent`.
+      example:
+        type: exec.response
+        id: 221
+        timestamp: "2026-05-31T10:15:04Z"
+        request_id: 220

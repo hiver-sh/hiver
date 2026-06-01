@@ -294,6 +294,17 @@ export const ResourceUsageEvent = SandboxEventBase.extend({
   memory_bytes: z.number().int(),
 });
 
+export const ExecRequestEvent = SandboxEventBase.extend({
+  type: z.literal("exec.request"),
+  cwd: z.string(),
+  command: z.string(),
+});
+
+export const ExecResponseEvent = SandboxEventBase.extend({
+  type: z.literal("exec.response"),
+  request_id: z.number().int(),
+});
+
 export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
   EgressRequestEvent,
@@ -303,5 +314,7 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   FSResponseEvent,
   StdioEvent,
   ResourceUsageEvent,
+  ExecRequestEvent,
+  ExecResponseEvent,
 ]);
 export type SandboxEvent = z.infer<typeof SandboxEvent>;

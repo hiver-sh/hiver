@@ -393,6 +393,8 @@ func (h *SandboxHandlers) Exec(c *gin.Context) {
 		return
 	}
 
+	reqEventID := h.publishExecRequest(req)
+
 	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req)...)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -442,6 +444,8 @@ func (h *SandboxHandlers) Exec(c *gin.Context) {
 		exitCode = exitErr.ExitCode()
 	}
 
+	h.publishExecResponse(reqEventID)
+
 	c.JSON(http.StatusOK, gin.H{
 		"stdout":    stdoutBuf.String(),
 		"stderr":    stderrBuf.String(),
@@ -471,6 +475,8 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
+
+	reqEventID := h.publishExecRequest(req)
 
 	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req)...)
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -529,9 +535,42 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context) {
 		}
 	}
 
+	h.publishExecResponse(reqEventID)
+
 	exitPayload, _ := json.Marshal(map[string]any{"type": "exit", "code": exitCode})
 	fmt.Fprintf(w, "event: exit\ndata: %s\n\n", exitPayload)
 	flusher.Flush()
+}
+
+// publishExecRequest publishes an ExecRequestEvent and returns its assigned id.
+func (h *SandboxHandlers) publishExecRequest(req gen.ExecRequest) int64 {
+	cwd := "/"
+	if req.Cwd != nil && *req.Cwd != "" {
+		cwd = *req.Cwd
+	}
+	return h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromExecRequestEvent(gen.ExecRequestEvent{
+			Id:        int(id),
+			Timestamp: ts,
+			Cwd:       cwd,
+			Command:   req.Command,
+		})
+		return ev
+	})
+}
+
+// publishExecResponse publishes an ExecResponseEvent correlated to the given request id.
+func (h *SandboxHandlers) publishExecResponse(requestID int64) {
+	h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromExecResponseEvent(gen.ExecResponseEvent{
+			Id:        int(id),
+			Timestamp: ts,
+			RequestId: int(requestID),
+		})
+		return ev
+	})
 }
 
 // publishStdioLine publishes a single line of exec output as a StdioEvent

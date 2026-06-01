@@ -189,6 +189,17 @@ class ResourceUsageEvent(_SandboxEventBase):
     memory_bytes: int
 
 
+class ExecRequestEvent(_SandboxEventBase):
+    type: Literal["exec.request"]
+    cwd: str
+    command: str
+
+
+class ExecResponseEvent(_SandboxEventBase):
+    type: Literal["exec.response"]
+    request_id: int
+
+
 SandboxEvent = Annotated[
     Union[
         ConfigApplyEvent,
@@ -199,6 +210,8 @@ SandboxEvent = Annotated[
         FSResponseEvent,
         StdioEvent,
         ResourceUsageEvent,
+        ExecRequestEvent,
+        ExecResponseEvent,
     ],
     Field(discriminator="type"),
 ]
