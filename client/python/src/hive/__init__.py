@@ -1,4 +1,4 @@
-from .controller import DEFAULT_CONTROLLER_URL, get_or_create_sandbox, get_sandbox, list_sandboxes, shutdown
+from .controller import DEFAULT_CONTROLLER_URL, get_or_create_sandbox, list_sandboxes, shutdown
 from .sandbox import Sandbox, SandboxError
 from .schemas import (
     ACLRule,
@@ -21,7 +21,6 @@ from .schemas import (
     LocalFileSystem,
     ResourceUsageEvent,
     SandboxConfig,
-    SandboxDetail,
     SandboxEvent,
     SandboxRef,
     StdioEvent,
@@ -32,7 +31,6 @@ __all__ = [
     # controller
     "DEFAULT_CONTROLLER_URL",
     "get_or_create_sandbox",
-    "get_sandbox",
     "list_sandboxes",
     "shutdown",
     # sandbox
@@ -59,7 +57,6 @@ __all__ = [
     "LocalFileSystem",
     "ResourceUsageEvent",
     "SandboxConfig",
-    "SandboxDetail",
     "SandboxEvent",
     "SandboxRef",
     "StdioEvent",

@@ -1,8 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { Client as SshClient } from "ssh2";
-import * as pty from "node-pty";
-import { getSandbox } from "hive";
-import { controllerUrl } from "../lib/controllerUrl.js";
+import { Sandbox } from "hive";
+
 
 const router = Router();
 
@@ -45,22 +44,29 @@ function openSshSession(
   });
 }
 
-function openPtySession(
-  cmd: string, cols: number, rows: number,
-  onData: (buf: Buffer) => void, onExit: () => void,
-): TermSession {
-  const proc = pty.spawn("sh", ["-c", cmd], {
-    name: "xterm-256color",
-    cols,
-    rows,
-    env: process.env as Record<string, string>,
-  });
-  proc.onData((d) => onData(Buffer.from(d)));
-  proc.onExit(() => onExit());
+async function openExecStreamSession(
+  sandboxUrl: string,
+  sandboxId: string,
+  onData: (buf: Buffer) => void,
+  onExit: () => void,
+): Promise<TermSession> {
+  const ac = new AbortController();
+  const sandbox = new Sandbox({ id: sandboxId, endpoint: sandboxUrl }, {});
+  const config = await sandbox.getConfig().catch(() => null);
+  const cwd = config?.fs?.[0]?.mount ?? undefined;
+  const exec = await sandbox.execStream("/bin/sh", { tty: true, cwd, signal: ac.signal });
+  exec.exitCode.catch(() => {});
+
+  (async () => {
+    for await (const pipe of exec.pipes) {
+      if (pipe.stdout) onData(Buffer.from(pipe.stdout));
+    }
+  })().catch(() => {}).finally(() => onExit());
+
   return {
-    write: (d) => proc.write(d),
-    resize: (c, r) => proc.resize(c, r),
-    close: () => proc.kill(),
+    write: (d) => { exec.writeStdin(d).catch(() => {}); },
+    resize: (_c, _r) => {},
+    close: () => ac.abort(),
   };
 }
 
@@ -105,6 +111,7 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
   });
 
   let session: TermSession | null = null;
+  let isFallback = false;
 
   if (exposedEndpoint) {
     const i = exposedEndpoint.lastIndexOf(":");
@@ -117,12 +124,10 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
 
   if (!session) {
     try {
-      const detail = await getSandbox(req.params.id, { controllerUrl: controllerUrl(req) });
-      if (detail.terminal_cmd) {
-        session = openPtySession(detail.terminal_cmd, cols, rows, sendBytes, onExit);
-      }
+      session = await openExecStreamSession(sandboxUrl, req.params.id, sendBytes, onExit);
+      isFallback = true;
     } catch {
-      // controller unreachable or sandbox not found — fall through to error below
+      // sandbox unreachable — fall through to error below
     }
   }
 
@@ -134,6 +139,7 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
 
   termSessions.set(sessionId, session);
   sendCtrl("connected", {});
+  if (isFallback) sendBytes(Buffer.from("\x1b[H\x1b[2J"));
 
   const pending = termPending.get(sessionId);
   if (pending) {

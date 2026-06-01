@@ -8,7 +8,7 @@ from typing import Optional
 import httpx
 
 from .sandbox import Sandbox, SandboxError, _to_error
-from .schemas import SandboxConfig, SandboxDetail, SandboxRef
+from .schemas import SandboxConfig, SandboxRef
 
 DEFAULT_CONTROLLER_URL = "http://localhost:9000"
 
@@ -82,43 +82,6 @@ async def get_or_create_sandbox(
         if timeout_s > 0:
             await _wait_until_reachable(sandbox, timeout_s)
         return sandbox
-    except Exception:
-        if owns_client:
-            await http.aclose()
-        raise
-
-
-async def get_sandbox(
-    id: str,
-    controller_url: str = DEFAULT_CONTROLLER_URL,
-    client: Optional[httpx.AsyncClient] = None,
-    timeout_s: float = _DEFAULT_TIMEOUT_S,
-) -> SandboxDetail:
-    """
-    Fetch the detail record for a single sandbox, including the terminal attach command.
-    Raises SandboxError with status 404 if the sandbox does not exist.
-    """
-    base = controller_url.rstrip("/")
-    owns_client = client is None
-    http = client or httpx.AsyncClient()
-    req_timeout = timeout_s if timeout_s > 0 else None
-
-    try:
-        try:
-            res = await http.get(f"{base}/v1/sandboxes/{id}", timeout=req_timeout)
-        except httpx.ConnectError as err:
-            if _is_connection_refused(err):
-                raise SandboxError(
-                    "get_sandbox",
-                    0,
-                    f"controller is not reachable at {base} (connection refused). Is it running?",
-                ) from err
-            raise
-
-        if res.status_code != 200:
-            raise _to_error(res, "get_sandbox")
-
-        return SandboxDetail.model_validate(res.json())
     except Exception:
         if owns_client:
             await http.aclose()

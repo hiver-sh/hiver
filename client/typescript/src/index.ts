@@ -20,23 +20,25 @@ export {
   HttpMethod,
   LocalFileSystem,
   SandboxConfig,
-  SandboxDetail,
   SandboxEvent,
   SandboxRef,
   StdioEvent,
 } from "./schemas";
 
 export {
+  ExecProcess,
   Sandbox,
   SandboxError,
   type EventsStreamOptions,
+  type ExecOptions,
+  type ExecPipeEvent,
+  type ExecStreamOptions,
   type SandboxOptions,
 } from "./sandbox";
 
 export {
   DEFAULT_CONTROLLER_URL,
   getOrCreateSandbox,
-  getSandbox,
   listSandboxes,
   shutdown,
   type ControllerOptions,

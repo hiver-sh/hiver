@@ -1,4 +1,4 @@
-import { Activity, ExternalLink, Filter, FolderTree, Loader2, LocateFixed, Power, SlidersHorizontal, SquareTerminal, Trash2, X } from "lucide-react";
+import { Activity, ExternalLink, Filter, FolderTree, Loader2, LocateFixed, Pause, Play, Power, SlidersHorizontal, SquareTerminal, Trash2, X } from "lucide-react";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -44,6 +44,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   const [zoomWindow, setZoomWindow] = useState<{ realStart: number; realEnd: number } | null>(null);
   const follow = prefs.followEvents;
   const setFollow = (v: boolean) => setPref("followEvents", v);
+  const [streamingPaused, setStreamingPaused] = useState(false);
 
   const [filter, setFilter] = useState<FilterState>(() => {
     const kind = searchParams.get("filter-kind") ?? "all";
@@ -78,6 +79,8 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   const [configProposal, setConfigProposal] = useState<ConfigProposal | undefined>();
   const contentRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const esRef = useRef<import("@/lib/transport").EventSourceLike | null>(null);
+  const resumeFromIdRef = useRef<number | undefined>(undefined);
   const [filePreview, setFilePreview] = useState<{ path: string; content: string; lang: string } | null>(null);
 
   const openFile = useCallback(async (path: string) => {
@@ -125,6 +128,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     if (lastEventId !== undefined) url.searchParams.set("lastEventId", String(lastEventId));
 
     const es = transport.openEventSource(url);
+    esRef.current = es;
     es.onopen = () => setConnected(true);
     es.onmessage = (e) => {
       try {
@@ -386,6 +390,25 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                   </PopoverContent>
                 </Popover>
                 <button
+                  onClick={() => {
+                    if (streamingPaused) {
+                      setStreamingPaused(false);
+                      startStream(resumeFromIdRef.current);
+                      resumeFromIdRef.current = undefined;
+                    } else {
+                      resumeFromIdRef.current = events[events.length - 1]?.id;
+                      setStreamingPaused(true);
+                      esRef.current?.close();
+                      esRef.current = null;
+                      setConnected(false);
+                    }
+                  }}
+                  title={streamingPaused ? "Resume streaming" : "Pause streaming"}
+                  className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
+                >
+                  {streamingPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                </button>
+                <button
                   onClick={() => setFollow(!follow)}
                   title="Follow latest events"
                   className={cn(
@@ -402,7 +425,6 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                     onClick={() => {
                       setEvents([]);
                       void clearEvents(sandbox.id);
-                      startStream();
                     }}
                     title="Clear events"
                     className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"

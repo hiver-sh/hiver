@@ -27,6 +27,7 @@ export interface ExecOptions {
 
 export interface ExecStreamOptions {
   cwd?: string;
+  tty?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -199,17 +200,26 @@ export class Sandbox {
   }
 
   /**
-   * Run `command` inside the sandbox and stream output as an async
-   * iterator of `ExecStreamEvent`s. The final event has `type: "exit"`.
+   * Run `command` inside the sandbox and return an `ExecProcess` handle.
+   * Stream output via `exec.pipes`, write to stdin via `exec.writeStdin()`,
+   * and await the exit code via `exec.exitCode`.
+   *
+   * The returned promise resolves once the server has accepted the connection
+   * and registered the process — at that point `writeStdin` is safe to call.
    */
-  async *execStream(
-    command: string,
-    opts?: ExecStreamOptions,
-  ): AsyncGenerator<ExecStreamEvent, void, void> {
-    const body: Record<string, string> = { command };
+  async execStream(command: string, opts?: ExecStreamOptions): Promise<ExecProcess> {
+    const id = crypto.randomUUID();
+    const streamUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}`;
+    const stdinUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}/stdin`;
+
+    const body: Record<string, unknown> = { command };
     if (opts?.cwd !== undefined) body.cwd = opts.cwd;
+    if (opts?.tty !== undefined) body.tty = opts.tty;
     const signal = resolveSignal(opts);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/exec-stream`, {
+
+    // Await the response headers — the server stores the process before
+    // sending 200, so once this resolves writeStdin is safe to call.
+    const res = await this.fetchImpl(streamUrl, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -219,9 +229,65 @@ export class Sandbox {
       signal,
     });
     if (!res.ok || !res.body) throw await toError(res, "execStream");
-    for await (const frame of parseSSE(res.body, signal)) {
-      yield JSON.parse(frame.data) as ExecStreamEvent;
+
+    // Queue bridging the SSE reader goroutine → pipes async iterable.
+    const queue: (ExecPipeEvent | null)[] = [];
+    let notify: (() => void) | null = null;
+    const push = (item: ExecPipeEvent | null) => {
+      queue.push(item);
+      notify?.();
+      notify = null;
+    };
+
+    let resolveExit!: (code: number) => void;
+    let rejectExit!: (err: unknown) => void;
+    const exitCode = new Promise<number>((res, rej) => {
+      resolveExit = res;
+      rejectExit = rej;
+    });
+
+    const fetchImpl = this.fetchImpl;
+
+    // Consume the SSE body in the background; the caller drives it via `pipes`.
+    (async () => {
+      for await (const frame of parseSSE(res.body!, signal)) {
+        const event = JSON.parse(frame.data) as ExecStreamEvent;
+        if (event.type === "stdout") push({ stdout: event.text });
+        else if (event.type === "stderr") push({ stderr: event.text });
+        else if (event.type === "exit") { resolveExit(event.code); push(null); }
+      }
+    })().catch(err => {
+      rejectExit(err);
+      push(null);
+    });
+
+    async function* pipesGen(): AsyncGenerator<ExecPipeEvent> {
+      while (true) {
+        if (queue.length > 0) {
+          const item = queue.shift()!;
+          if (item === null) return;
+          yield item;
+        } else {
+          await new Promise<void>(r => { notify = r; });
+        }
+      }
     }
+
+    const writeStdin = async (data: string): Promise<void> => {
+      const res = await fetchImpl(stdinUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data }),
+      });
+      if (!res.ok) throw await toError(res, "execStreamStdin");
+    };
+
+    return new ExecProcess({
+      id,
+      pipes: { [Symbol.asyncIterator]: pipesGen },
+      exitCode,
+      writeStdin,
+    });
   }
 
   /**
@@ -287,6 +353,34 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   exit_code: number;
+}
+
+export interface ExecPipeEvent {
+  stdout?: string;
+  stderr?: string;
+}
+
+export class ExecProcess {
+  readonly id: string;
+  readonly pipes: AsyncIterable<ExecPipeEvent>;
+  readonly exitCode: Promise<number>;
+  private readonly _writeStdin: (data: string) => Promise<void>;
+
+  constructor(opts: {
+    id: string;
+    pipes: AsyncIterable<ExecPipeEvent>;
+    exitCode: Promise<number>;
+    writeStdin: (data: string) => Promise<void>;
+  }) {
+    this.id = opts.id;
+    this.pipes = opts.pipes;
+    this.exitCode = opts.exitCode;
+    this._writeStdin = opts.writeStdin;
+  }
+
+  writeStdin(data: string): Promise<void> {
+    return this._writeStdin(data);
+  }
 }
 
 export type ExecStreamEvent =

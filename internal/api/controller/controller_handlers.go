@@ -46,21 +46,6 @@ func (h *ControllerHandlers) ListSandboxes(c *gin.Context) {
 	c.JSON(http.StatusOK, sandboxes)
 }
 
-// GetSandbox returns the detail record for a single sandbox, including the
-// terminal attach command. Returns 404 if no sandbox with that id is running.
-func (h *ControllerHandlers) GetSandbox(c *gin.Context, id string) {
-	detail, err := h.runtime.Get(id)
-	if err != nil {
-		if errors.Is(err, ErrSandboxNotFound) {
-			c.JSON(http.StatusNotFound, sandboxgen.Error{Error: fmt.Sprintf("sandbox %q does not exist", id)})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, detail)
-}
-
 // GetOrCreateSandbox is idempotent on id: if a sandbox for id is already
 // running its existing endpoint is returned (200); otherwise a new sandbox
 // is booted from the request body (201).

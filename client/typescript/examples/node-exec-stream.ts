@@ -34,13 +34,11 @@ function execFunction(fn: (...args: any[]) => unknown, ...args: unknown[]): stri
   return `node -e '${script}'`;
 }
 
-for await (const event of sandbox.execStream(
-  execFunction(greet, "world"),
-  { cwd: "/workspace" },
-)) {
-  if (event.type === "stdout") process.stdout.write("stdout: " + event.text);
-  else if (event.type === "stderr") process.stderr.write("stderr: " + event.text);
-  else console.info("exit code:", event.code);
+const exec = await sandbox.execStream(execFunction(greet, "world"), { cwd: "/workspace" });
+
+for await (const pipe of exec.pipes) {
+  if (pipe.stdout) process.stdout.write("stdout: " + pipe.stdout);
+  if (pipe.stderr) process.stderr.write("stderr: " + pipe.stderr);
 }
 
-// await hive.shutdown(sandbox);
+console.info("exit code:", await exec.exitCode);

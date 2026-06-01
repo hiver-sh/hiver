@@ -81,28 +81,6 @@ func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 	return sandboxes, nil
 }
 
-func (r *K8sRuntime) Get(id string) (gen.SandboxDetail, error) {
-	name := containerNameFor(id)
-	pod, err := r.client.CoreV1().Pods(r.namespace).Get(context.Background(), name, metav1.GetOptions{})
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return gen.SandboxDetail{}, ErrSandboxNotFound
-		}
-		return gen.SandboxDetail{}, fmt.Errorf("get pod %s: %w", name, err)
-	}
-	if pod.Status.Phase != corev1.PodRunning {
-		return gen.SandboxDetail{}, ErrSandboxNotFound
-	}
-	ep := r.tcpProxyEndpoint(name)
-	cmd := fmt.Sprintf("kubectl exec -it -n %s %s -c sandbox -- sandbox-exec", r.namespace, name)
-	return gen.SandboxDetail{
-		Id:              id,
-		Endpoint:        r.endpointFor(name),
-		ExposedEndpoint: &ep,
-		TerminalCmd:     &cmd,
-	}, nil
-}
-
 func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	ctx := context.Background()
 	name := containerNameFor(id)

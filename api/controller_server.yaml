@@ -30,32 +30,6 @@ paths:
                 items: { $ref: '#/components/schemas/Sandbox' }
 
   /v1/sandboxes/{id}:
-    get:
-      tags: [Sandboxes]
-      summary: Get a sandbox by id.
-      operationId: getSandbox
-      description: Returns the sandbox with the given `id`, including host-side connection details.
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-            pattern: '^[A-Za-z0-9_-]{1,64}$'
-          description: The sandbox id.
-          example: tenant-acme-build-42
-      responses:
-        '200':
-          description: The sandbox record.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SandboxDetail' }
-        '404':
-          description: No sandbox with that id exists.
-          content:
-            application/json:
-              schema: { $ref: './config.yaml#/components/schemas/Error' }
-
     put:
       tags: [Sandboxes]
       summary: Get or create a sandbox.
@@ -171,14 +145,3 @@ components:
             Host and port of the sandbox's exposed port on the host network,
             if the sandbox has an exposed port. Absent when no port is exposed.
           example: localhost:32768
-    SandboxDetail:
-      allOf:
-        - $ref: '#/components/schemas/Sandbox'
-        - type: object
-          properties:
-            terminal_cmd:
-              type: string
-              description: |
-                Shell command the host can run to attach a PTY terminal to the
-                sandbox container. Suitable for passing directly to a terminal
-                emulator or exec'd in a shell.

@@ -369,7 +369,7 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/exec-stream:
+  /v1/exec-stream/{id}:
     post:
       tags: [Execution]
       summary: Execute a command and stream output as SSE.
@@ -387,11 +387,18 @@ paths:
 
         The stream closes after the `exit` frame is written. Use
         `/v1/exec` instead when you only need the final buffered result.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Client-set unique identifier for this process.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ExecRequest' }
+            schema: { $ref: '#/components/schemas/ExecStreamRequest' }
       responses:
         '200':
           description: |
@@ -421,6 +428,42 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
+  /v1/exec-stream/{id}/stdin:
+    post:
+      tags: [Execution]
+      summary: Write to a running process's stdin.
+      operationId: execStreamStdin
+      description: |
+        Sends data to the stdin of a process started with `/v1/exec-stream/{id}`.
+        Returns 404 if no process with the given id is running.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The id of the running process.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              additionalProperties: false
+              properties:
+                data:
+                  type: string
+                  description: Text to write to the process's stdin.
+      responses:
+        '204':
+          description: Data written to stdin.
+        '404':
+          description: No running process found with the given id.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
   /v1/ping:
     get:
       tags: [Configuration]
@@ -446,6 +489,23 @@ components:
           type: string
           description: Working directory for the command. Defaults to `/`.
           example: /workspace
+
+    ExecStreamRequest:
+      type: object
+      required: [command]
+      additionalProperties: false
+      properties:
+        command:
+          type: string
+          description: Command to run, passed to a shell.
+          example: python3 script.py
+        cwd:
+          type: string
+          description: Working directory for the command. Defaults to `/`.
+          example: /workspace
+        tty:
+          type: boolean
+          description: Allocate a pseudo-TTY for the process. Defaults to false.
 
     ExecStdoutEvent:
       type: object

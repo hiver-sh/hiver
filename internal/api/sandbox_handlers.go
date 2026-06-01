@@ -19,7 +19,9 @@ import (
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/events"
 	"github.com/blasten/hive/internal/spec"
+	"github.com/creack/pty"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/term"
 )
 
 // agentContainerID is the runc container ID sandboxd always assigns the
@@ -27,10 +29,11 @@ import (
 const agentContainerID = "agent-1"
 
 type SandboxHandlers struct {
-	broker   *events.Broker
-	store    *ConfigStore
-	lifetime *Lifetime
-	upperDir string // host-side path of the overlayfs upper layer
+	broker    *events.Broker
+	store     *ConfigStore
+	lifetime  *Lifetime
+	upperDir  string   // host-side path of the overlayfs upper layer
+	processes sync.Map // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
 }
 
 func NewSandboxHandlers(broker *events.Broker, store *ConfigStore, lifetime *Lifetime, upperDir string) *SandboxHandlers {
@@ -395,7 +398,7 @@ func (h *SandboxHandlers) Exec(c *gin.Context) {
 
 	reqEventID := h.publishExecRequest(req)
 
-	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req)...)
+	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req.Command, req.Cwd, false)...)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
@@ -457,28 +460,135 @@ func (h *SandboxHandlers) Exec(c *gin.Context) {
 // its output as Server-Sent Events. Each frame has an `event:` field of
 // "stdout", "stderr", or "exit"; the final "exit" frame closes the stream.
 // Each line is also published to the broker as a StdioEvent.
-func (h *SandboxHandlers) ExecStream(c *gin.Context) {
-	var req gen.ExecRequest
+func (h *SandboxHandlers) ExecStream(c *gin.Context, id string) {
+	var req gen.ExecStreamRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
 		return
 	}
-
 	if err := waitForContainer(c.Request.Context(), agentContainerID); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gen.Error{Error: "container not ready: " + err.Error()})
 		return
 	}
-
-	w := c.Writer
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
+	reqEventID := h.publishExecRequest(gen.ExecRequest{Command: req.Command, Cwd: req.Cwd})
+	if req.Tty != nil && *req.Tty {
+		h.execStreamTTY(c, id, req, flusher, reqEventID)
+	} else {
+		h.execStreamPipes(c, id, req, flusher, reqEventID)
+	}
+}
 
-	reqEventID := h.publishExecRequest(req)
+func (h *SandboxHandlers) execStreamTTY(c *gin.Context, id string, req gen.ExecStreamRequest, flusher http.Flusher, reqEventID int64) {
+	w := c.Writer
 
-	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req)...)
+	// Interactive runc tty mode: runc allocates the container's pty itself
+	// and proxies bytes through its OWN stdio, which must be a terminal. So
+	// we hand runc our pty slave as stdin/stdout/stderr and keep the master.
+	// runc puts the slave into raw mode and relays to the in-container pty,
+	// giving the process a real controlling terminal (isatty() true inside).
+	//
+	// --console-socket is NOT used: runc rejects it unless --detach is also
+	// set ("cannot use console socket if runc will not detach or allocate
+	// tty"), and detaching would forfeit the exec exit code from cmd.Wait().
+	master, slave, err := pty.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: "open pty: " + err.Error()})
+		return
+	}
+
+	// The outer pty is pure transport between sandboxd and runc; put it in
+	// raw mode so it never echoes or line-edits. The in-container pty that
+	// runc allocates is the real terminal the process drives. Without this,
+	// input written before runc/the program switch the line discipline to
+	// raw gets echoed back here on top of the program's own echo.
+	if _, err := term.MakeRaw(int(slave.Fd())); err != nil {
+		master.Close()
+		slave.Close()
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: "set raw: " + err.Error()})
+		return
+	}
+
+	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req.Command, req.Cwd, true)...)
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+	if err := cmd.Start(); err != nil {
+		master.Close()
+		slave.Close()
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	slave.Close() // runc dup'd it at exec; the parent no longer needs it.
+
+	// Gate stdin until the program is up: client writes that arrive while the
+	// program is still starting are buffered and flushed once it produces its
+	// first output (a prompt etc.), so they reach a program that has already
+	// switched the terminal to raw mode instead of being echoed as type-ahead.
+	// A timeout flushes anyway for programs that read before printing.
+	stdin := &gatedWriter{w: master}
+	h.processes.Store(id, stdin)
+	defer func() {
+		h.processes.Delete(id)
+		master.Close()
+	}()
+	relTimer := time.AfterFunc(2*time.Second, func() { _ = stdin.release() })
+	defer relTimer.Stop()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	emitSSE := func(eventType, text string) {
+		payload, _ := json.Marshal(map[string]string{"type": eventType, "text": text})
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, payload)
+		flusher.Flush()
+	}
+
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := master.Read(buf)
+		if n > 0 {
+			_ = stdin.release() // program produced output → safe to deliver stdin
+			chunk := string(buf[:n])
+			h.publishStdioLine("stdout", chunk)
+			emitSSE("stdout", chunk)
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	exitCode := 0
+	if err := cmd.Wait(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+
+	h.publishExecResponse(reqEventID)
+
+	exitPayload, _ := json.Marshal(map[string]any{"type": "exit", "code": exitCode})
+	fmt.Fprintf(w, "event: exit\ndata: %s\n\n", exitPayload)
+	flusher.Flush()
+}
+
+func (h *SandboxHandlers) execStreamPipes(c *gin.Context, id string, req gen.ExecStreamRequest, flusher http.Flusher, reqEventID int64) {
+	w := c.Writer
+
+	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req.Command, req.Cwd, false)...)
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
@@ -494,10 +604,15 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context) {
 		return
 	}
 
-	hdr := w.Header()
-	hdr.Set("Content-Type", "text/event-stream")
-	hdr.Set("Cache-Control", "no-cache")
-	hdr.Set("Connection", "keep-alive")
+	h.processes.Store(id, stdinPipe)
+	defer func() {
+		h.processes.Delete(id)
+		stdinPipe.Close()
+	}()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
@@ -540,6 +655,62 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context) {
 	exitPayload, _ := json.Marshal(map[string]any{"type": "exit", "code": exitCode})
 	fmt.Fprintf(w, "event: exit\ndata: %s\n\n", exitPayload)
 	flusher.Flush()
+}
+
+func (h *SandboxHandlers) ExecStreamStdin(c *gin.Context, id string) {
+	val, ok := h.processes.Load(id)
+	if !ok {
+		c.JSON(http.StatusNotFound, gen.Error{Error: "no running process with id: " + id})
+		return
+	}
+	var body gen.ExecStreamStdinJSONRequestBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
+		return
+	}
+	stdin := val.(io.Writer)
+	if _, err := io.WriteString(stdin, body.Data); err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// gatedWriter buffers writes until release, then flushes them in order and
+// lets subsequent writes pass through to w. It gates client stdin against a
+// pty whose program is still starting: input written before the program
+// switches the terminal to raw mode would otherwise be echoed as type-ahead.
+type gatedWriter struct {
+	mu       sync.Mutex
+	w        io.Writer
+	released bool
+	buf      []byte
+}
+
+func (g *gatedWriter) Write(b []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.released {
+		g.buf = append(g.buf, b...)
+		return len(b), nil
+	}
+	return g.w.Write(b)
+}
+
+// release flushes any buffered input and opens the gate. Idempotent.
+func (g *gatedWriter) release() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.released {
+		return nil
+	}
+	g.released = true
+	if len(g.buf) == 0 {
+		return nil
+	}
+	_, err := g.w.Write(g.buf)
+	g.buf = nil
+	return err
 }
 
 // publishExecRequest publishes an ExecRequestEvent and returns its assigned id.
@@ -613,12 +784,18 @@ func waitForContainer(ctx context.Context, containerID string) error {
 }
 
 // buildRuncExecArgs constructs the argument slice for `runc exec`.
-func buildRuncExecArgs(req gen.ExecRequest) []string {
+// When tty is set, --tty puts runc in interactive terminal mode (it proxies
+// the container pty through its own stdio, which the caller supplies as a
+// pty slave).
+func buildRuncExecArgs(command string, cwd *string, tty bool) []string {
 	args := []string{"exec"}
-	if req.Cwd != nil && *req.Cwd != "" {
-		args = append(args, "--cwd", *req.Cwd)
+	if tty {
+		args = append(args, "--tty")
 	}
-	args = append(args, agentContainerID, "sh", "-c", req.Command)
+	if cwd != nil && *cwd != "" {
+		args = append(args, "--cwd", *cwd)
+	}
+	args = append(args, agentContainerID, "sh", "-c", command)
 	return args
 }
 

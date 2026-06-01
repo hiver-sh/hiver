@@ -75,28 +75,6 @@ func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
 	return sandboxes, nil
 }
 
-func (r *DockerRuntime) Get(id string) (gen.SandboxDetail, error) {
-	name := containerNameFor(id)
-	_, running, err := containerState(name)
-	if err != nil {
-		return gen.SandboxDetail{}, err
-	}
-	if !running {
-		return gen.SandboxDetail{}, ErrSandboxNotFound
-	}
-	hostPort, err := lookupHostPort(name, sandboxAPIPort)
-	if err != nil {
-		return gen.SandboxDetail{}, withContainerLogs(err, name)
-	}
-	cmd := fmt.Sprintf("docker exec -it %s sandbox-exec", name)
-	return gen.SandboxDetail{
-		Id:              id,
-		Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
-		ExposedEndpoint: lookupTCPProxyEndpoint(name),
-		TerminalCmd:     &cmd,
-	}, nil
-}
-
 func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	specBytes, err := json.Marshal(cfg)
 	if err != nil {
