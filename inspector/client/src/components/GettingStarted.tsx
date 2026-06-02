@@ -13,8 +13,7 @@ const LANG_TABS: { id: Lang; icon: string }[] = [
 
 const TS_EXAMPLE = `import * as hive from "hive-runtime/client";
 
-const sandbox = await hive.getOrCreateSandbox("claude", {
-  image: "hive-example-claude-worker-bundle",
+const sandbox = await hive.getOrCreateSandbox("agent-1", {
   fs: [
     {
       backend: "local",
@@ -29,8 +28,7 @@ console.log(result.stdout);`;
 
 const PY_EXAMPLE = `import hive_runtime as hive
 
-sandbox = hive.get_or_create_sandbox("claude", {
-    "image": "hive-example-claude-worker-bundle",
+sandbox = hive.get_or_create_sandbox("agent-1", {
     "fs": [
         {
             "backend": "local",
@@ -45,8 +43,7 @@ print(result.stdout)`;
 
 const GO_EXAMPLE = `import "github.com/hive-run/hive-runtime/client"
 
-sandbox, _ := hive.GetOrCreateSandbox("claude", hive.SandboxConfig{
-    Image: "hive-example-claude-worker-bundle",
+sandbox, _ := hive.GetOrCreateSandbox("agent-1", hive.SandboxConfig{
     FS: []hive.Mount{
         {
             Backend: "local",
