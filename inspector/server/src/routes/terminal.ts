@@ -19,6 +19,7 @@ async function openExecStreamSession(
   sandboxId: string,
   onData: (buf: Buffer) => void,
   onExit: () => void,
+  initCommand?: string,
 ): Promise<TermSession> {
   const ac = new AbortController();
   const sandbox = new Sandbox({ id: sandboxId, endpoint: sandboxUrl }, {});
@@ -28,7 +29,7 @@ async function openExecStreamSession(
     "TERM": "xterm-256color",
     "COLORTERM": "truecolor",
   };
-  const exec = await sandbox.execStream("/bin/sh", { tty: true, cwd, signal: ac.signal, env });
+  const exec = await sandbox.execStream(initCommand ?? "/bin/sh", { tty: true, cwd, signal: ac.signal, env });
   exec.exitCode.catch(() => {});
 
   (async () => {
@@ -79,9 +80,11 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
     }
   });
 
+  const initCommand = req.query.initCommand as string | undefined;
+
   let session: TermSession;
   try {
-    session = await openExecStreamSession(sandboxUrl, req.params.id, sendBytes, onExit);
+    session = await openExecStreamSession(sandboxUrl, req.params.id, sendBytes, onExit, initCommand);
   } catch {
     sendCtrl("error", { message: "no terminal available" });
     res.end();

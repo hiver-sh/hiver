@@ -29,11 +29,8 @@ const sandbox = await hive.getOrCreateSandbox("hive-mcp-inspector", {
   ],
 });
 
-if (!sandbox.exposedEndpoint) {
-  console.error("sandbox image has no EXPOSE port; cannot connect MCP Inspector");
-  process.exit(1);
-}
-const mcpURL = `http://${sandbox.exposedEndpoint}`;
+
+const mcpURL = `http://${sandbox.mcpEndpoint}`;
 console.info("MCP inspector → ", mcpURL);
 
 const mcpInspector = spawn(

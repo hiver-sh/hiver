@@ -11,6 +11,7 @@ interface Props {
   serverUrl: string;
   sandboxUrl: string;
   exposedEndpoint?: string;
+  initCommand?: string;
 }
 
 const FONT_FAMILY = '"MesloLGM Nerd Font Mono", Monaco, monospace';
@@ -49,7 +50,7 @@ const LIGHT_THEME = {
   white: "#888888",      brightWhite: "#444444",
 };
 
-export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: Props) {
+export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint, initCommand }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
   const { prefs, terminalScrollPassthrough } = useUserPreferences();
@@ -194,6 +195,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
         url.searchParams.set("sandboxUrl", sandboxUrl);
         url.searchParams.set("sessionId", sessionId);
         if (exposedEndpoint) url.searchParams.set("exposedBackend", exposedEndpoint);
+        if (initCommand) url.searchParams.set("initCommand", initCommand);
 
         let resp: Response;
         try {

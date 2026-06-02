@@ -33,11 +33,12 @@ export interface SandboxDetailProps {
   sandbox: SandboxRef;
   serverUrl: string;
   controllerUrl: string;
+  initCommand?: string;
   onShutdown: () => void;
   onConnectedChange?: (connected: boolean) => void;
 }
 
-export function SandboxDetail({ sandbox, serverUrl, controllerUrl, onShutdown, onConnectedChange }: SandboxDetailProps) {
+export function SandboxDetail({ sandbox, serverUrl, controllerUrl, initCommand, onShutdown, onConnectedChange }: SandboxDetailProps) {
   const { transport, player } = useTransport();
   const { prefs, setPref } = useUserPreferences();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
@@ -476,6 +477,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
                 serverUrl={serverUrl}
                 sandboxUrl={sandbox.endpoint}
                 exposedEndpoint={sandbox.exposed_endpoint}
+                initCommand={initCommand}
               />
             </div>
           </>

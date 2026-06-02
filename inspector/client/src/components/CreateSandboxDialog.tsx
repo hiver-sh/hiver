@@ -1,5 +1,6 @@
 import { Loader2, Plus } from "lucide-react";
 import { useState } from "react";
+import { useSandboxCommand } from "@/lib/useSandboxCommand";
 import { CodeEditor } from "@/components/CodeEditor";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,7 +26,7 @@ const DEFAULT_CONFIG = {
 interface Props {
   serverUrl: string;
   controllerUrl: string;
-  onCreated: (id: string) => void;
+  onCreated: (id: string, command: string) => void;
 }
 
 export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compact }: Props & { compact?: boolean }) {
@@ -35,6 +36,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
 
   const [id, setId] = useState("");
   const [configJson, setConfigJson] = useState(JSON.stringify(DEFAULT_CONFIG, null, 2));
+  const [command, setCommand, persistCommand] = useSandboxCommand(id);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -45,7 +47,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
       return;
     }
 
-    let config: unknown;
+    let config: Record<string, unknown>;
     try {
       config = JSON.parse(configJson);
     } catch {
@@ -67,8 +69,9 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
         setError((body as { error?: string }).error ?? res.statusText);
         return;
       }
+      persistCommand();
       setOpen(false);
-      onCreated(id);
+      onCreated(id, command.trim());
     } catch (err) {
       setError(String(err));
     } finally {
@@ -111,7 +114,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
             <Label htmlFor="sb-id">ID</Label>
             <Input
               id="sb-id"
-              placeholder="my-sandbox"
+              placeholder="agent-1"
               value={id}
               onChange={(e) => setId(e.target.value)}
               disabled={loading}
@@ -131,12 +134,23 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
                   }
                 }}
                 onSuggestId={setId}
+                onSuggestCommand={setCommand}
               />
             </div>
             <CodeEditor
               value={configJson}
               onChange={setConfigJson}
               className="min-h-[320px]"
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="sb-command">Launch Command</Label>
+            <Input
+              id="sb-command"
+              placeholder="/bin/sh"
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              disabled={loading}
             />
           </div>
           {error && (

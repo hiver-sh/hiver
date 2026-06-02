@@ -5,7 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 export type AnyConfig = Record<string, unknown>;
 type FsEntry = Record<string, unknown>;
 
-type Template = { label: string; idPrefix?: string; apply: (cfg: AnyConfig) => AnyConfig };
+type Template = { label: string; idPrefix?: string; command?: string; apply: (cfg: AnyConfig) => AnyConfig };
 
 export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
   {
@@ -14,6 +14,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Claude Code",
         idPrefix: "claude-code",
+        command: "claude",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -30,6 +31,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Codex",
         idPrefix: "codex",
+        command: "codex",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -46,6 +48,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Gemini CLI",
         idPrefix: "gemini",
+        command: "gemini",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -62,6 +65,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "GitHub Copilot",
         idPrefix: "copilot",
+        command: "copilot",
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -78,6 +82,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Node.js",
         idPrefix: "nodejs",
+        command: "node",
         apply: () => ({
           image: "hive-node-sandbox",
           entrypoint: "tail -f /dev/null",
@@ -91,6 +96,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Python 3.13",
         idPrefix: "python",
+        command: "python",
         apply: () => ({
           image: "hive-python-sandbox",
           entrypoint: "tail -f /dev/null",
@@ -231,9 +237,10 @@ interface Props {
   editMode?: boolean;
   onApply: (template: (cfg: AnyConfig) => AnyConfig) => void;
   onSuggestId?: (id: string) => void;
+  onSuggestCommand?: (command: string) => void;
 }
 
-export function SandboxConfigTemplates({ disabled, editMode, onApply, onSuggestId }: Props) {
+export function SandboxConfigTemplates({ disabled, editMode, onApply, onSuggestId, onSuggestCommand }: Props) {
   const [open, setOpen] = useState(false);
   const groups = TEMPLATE_GROUPS;
   return (
@@ -244,7 +251,7 @@ export function SandboxConfigTemplates({ disabled, editMode, onApply, onSuggestI
           disabled={disabled}
           className="flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 disabled:opacity-50"
         >
-          Add template
+          Use template
           <ChevronDown className="h-3 w-3" />
         </button>
       </PopoverTrigger>
@@ -267,6 +274,9 @@ export function SandboxConfigTemplates({ disabled, editMode, onApply, onSuggestI
                     onApply(t.apply);
                     if (t.idPrefix && onSuggestId) {
                       onSuggestId(`${t.idPrefix}-${Math.random().toString(36).slice(2, 4)}`);
+                    }
+                    if (t.command && onSuggestCommand) {
+                      onSuggestCommand(t.command);
                     }
                     setOpen(false);
                   }}

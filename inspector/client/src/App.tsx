@@ -1,6 +1,6 @@
 import { Check, ChevronLeft, ChevronRight, Monitor, Moon, Pencil, RefreshCw, ServerCrash, Settings, Sun } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
-import { Route, Routes, useMatch, useNavigate, useParams } from "react-router-dom";
+import { Route, Routes, useLocation, useMatch, useNavigate, useParams } from "react-router-dom";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
 import { GettingStarted } from "@/components/GettingStarted";
 import { SandboxDetail } from "@/components/SandboxDetail";
@@ -94,6 +94,8 @@ interface LayoutProps {
 function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxes, onConnectedChange }: LayoutProps) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const initCommand = (location.state as { initCommand?: string } | null)?.initCommand;
   const sandbox = sandboxes.find((s) => s.id === id);
 
   if (!sandbox) {
@@ -110,6 +112,7 @@ function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxe
       sandbox={sandbox}
       serverUrl={serverUrl}
       controllerUrl={controllerUrl}
+      initCommand={initCommand}
       onShutdown={() => {
         fetchSandboxes();
         navigate("/");
@@ -226,7 +229,7 @@ function AppContent() {
           >
             <ChevronRight className="h-4 w-4" />
           </button>
-          <CreateSandboxDialog compact serverUrl={serverUrl} controllerUrl={controllerUrl} onCreated={(id) => { fetchSandboxes(); navigate(`/sandboxes/${id}`); }} />
+          <CreateSandboxDialog compact serverUrl={serverUrl} controllerUrl={controllerUrl} onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }} />
           <div className="flex flex-col items-center gap-1 mt-1">
             {sandboxes.map((sb) => (
               <button
@@ -286,7 +289,7 @@ function AppContent() {
             loading={loading}
             onSelect={(id) => navigate(`/sandboxes/${id}`)}
             onRefresh={fetchSandboxes}
-            onCreated={(id) => { fetchSandboxes(); navigate(`/sandboxes/${id}`); }}
+            onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }}
             serverUrl={serverUrl}
             controllerUrl={controllerUrl}
           />
