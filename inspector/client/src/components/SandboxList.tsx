@@ -35,26 +35,35 @@ export function SandboxList({
           onCreated={onCreated}
         />
       </div>
-      <div className="flex items-center justify-between px-5 py-2">
-        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Sandboxes
-        </span>
-        <button
-          title="Refresh"
-          onClick={onRefresh}
-          disabled={loading}
-          className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-        </button>
-      </div>
-
       {sandboxes.length === 0 && !loading ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-5 text-center text-sm text-muted-foreground">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-5 text-center text-sm text-muted-foreground">
           <Box className="h-8 w-8 opacity-30" />
           <p>No sandboxes running</p>
+          <button
+            title="Refresh"
+            onClick={onRefresh}
+            disabled={loading}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            Refresh
+          </button>
         </div>
       ) : (
+        <>
+        <div className="flex items-center justify-between px-5 py-2">
+          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Sandboxes
+          </span>
+          <button
+            title="Refresh"
+            onClick={onRefresh}
+            disabled={loading}
+            className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          </button>
+        </div>
         <div className="flex-1 overflow-y-auto scroll-container">
           {sandboxes.map((sb) => (
             <button
@@ -72,6 +81,7 @@ export function SandboxList({
             </button>
           ))}
         </div>
+        </>
       )}
     </div>
   );

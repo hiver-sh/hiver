@@ -17,7 +17,6 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "claude-code" },
           egress: [
             { host: "*", access: "allow" },
           ],
@@ -34,7 +33,6 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "codex" },
           egress: [
             { host: "*", access: "allow" },
           ],
@@ -51,7 +49,6 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "gemini" },
           egress: [
             { host: "*", access: "allow" },
           ],
@@ -68,7 +65,6 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         apply: () => ({
           image: "hive-example-claude-worker-bundle",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "copilot" },
           egress: [
             { host: "*", access: "allow" },
           ],
@@ -86,7 +82,6 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           image: "hive-node-sandbox",
           entrypoint: "tail -f /dev/null",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "shell" },
           egress: [
             { host: "*", access: "allow" },
           ],
@@ -100,7 +95,6 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           image: "hive-python-sandbox",
           entrypoint: "tail -f /dev/null",
           fs: [{ backend: "local", mount: "/workspace" }],
-          env: { AGENT: "shell" },
           egress: [
             { host: "*", access: "allow" },
           ],

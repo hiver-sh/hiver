@@ -9,8 +9,11 @@ export interface UserPreferences {
   showTerminal: boolean;
   showFiles: boolean;
   showTimeline: boolean;
-  terminalWidth: number;
-  filesWidth: number;
+  /** Terminal panel width in px. null = not set yet; falls back to a
+   *  percentage of the available content width (see SandboxDetail). */
+  terminalWidth: number | null;
+  /** File explorer panel width in px. null = not set yet (see terminalWidth). */
+  filesWidth: number | null;
   followEvents: boolean;
   expandedPaths: string[];
   /** When false, the terminal never writes selections to the system clipboard,
@@ -21,11 +24,11 @@ export interface UserPreferences {
 export const DEFAULT_PREFS: UserPreferences = {
   theme: "system",
   sidebarCollapsed: false,
-  showTerminal: false,
-  showFiles: false,
+  showTerminal: true,
+  showFiles: true,
   showTimeline: true,
-  terminalWidth: 480,
-  filesWidth: 256,
+  terminalWidth: null,
+  filesWidth: null,
   followEvents: false,
   expandedPaths: [],
   terminalClipboardCopy: true,

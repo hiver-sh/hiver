@@ -1,59 +1,70 @@
 import { useState } from "react";
 import { Check, Clipboard } from "lucide-react";
 import { CodeViewer } from "@/components/CodeViewer";
+import { LangIcon } from "@/components/LangIcon";
 
-const TS_EXAMPLE = `import * as hive from "hive";
+type Lang = "ts" | "py" | "go";
 
-const sandbox = await hive.getOrCreateSandbox("node-sandbox", {
-  image: "hive-node-sandbox",
-  entrypoint: "tail -f /dev/null",
-  fs: [{ mount: "/workspace", backend: "local" }],
+const LANG_TABS: { id: Lang; icon: string }[] = [
+  { id: "ts", icon: "typescript" },
+  { id: "py", icon: "python" },
+  { id: "go", icon: "go" },
+];
+
+const TS_EXAMPLE = `import * as hive from "hive-runtime/client";
+
+const sandbox = await hive.getOrCreateSandbox("claude", {
+  image: "hive-example-claude-worker-bundle",
+  fs: [
+    {
+      backend: "local",
+      mount: "/workspace",
+      acls: [{ path: "/workspace/**", access: "rw" }],
+    },
+  ],
 });
 
-const exec = await sandbox.execStream(
-  \`node -e "console.log('Hello, world!')"\`,
-  { cwd: "/workspace" },
-);
+const result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'");
+console.log(result.stdout);`;
 
-for await (const pipe of exec.pipes) {
-  if (pipe.stdout) process.stdout.write(pipe.stdout);
-  if (pipe.stderr) process.stderr.write(pipe.stderr);
-}
+const PY_EXAMPLE = `import hive_runtime as hive
 
-console.log("exit code:", await exec.exitCode);`;
+sandbox = hive.get_or_create_sandbox("claude", {
+    "image": "hive-example-claude-worker-bundle",
+    "fs": [
+        {
+            "backend": "local",
+            "mount": "/workspace",
+            "acls": [{"path": "/workspace/**", "access": "rw"}],
+        },
+    ],
+})
 
-const PY_EXAMPLE = `import asyncio
-import sys
-import hive
+result = sandbox.exec("claude -p 'Write a poem and save it as pdf'")
+print(result.stdout)`;
 
-async def main():
-    sandbox = await hive.get_or_create_sandbox(
-        "python-sandbox",
-        hive.SandboxConfig(
-            image="hive-python-sandbox",
-            entrypoint="tail -f /dev/null",
-            fs=[hive.LocalFileSystem(mount="/workspace", backend="local")],
-        ),
-    )
+const GO_EXAMPLE = `import "github.com/hive-run/hive-runtime/client"
 
-    script = "print('Hello, world!')"
-    exec = await sandbox.exec_stream(f"python3 -c '{script}'", cwd="/workspace")
+sandbox, _ := hive.GetOrCreateSandbox("claude", hive.SandboxConfig{
+    Image: "hive-example-claude-worker-bundle",
+    FS: []hive.Mount{
+        {
+            Backend: "local",
+            Mount:   "/workspace",
+            ACLs:    []hive.ACL{{Path: "/workspace/**", Access: "rw"}},
+        },
+    },
+})
 
-    async for pipe in exec.pipes:
-        if pipe.stdout:
-            print(pipe.stdout, end="")
-        if pipe.stderr:
-            print(pipe.stderr, end="", file=sys.stderr)
-
-    print("exit code:", await exec.exit_code)
-
-asyncio.run(main())`;
+result, _ := sandbox.Exec("claude -p 'Write a poem and save it as pdf'")
+fmt.Println(result.Stdout)`;
 
 
 export function GettingStarted({ controllerUrl }: { controllerUrl: string }) {
-  const [lang, setLang] = useState<"ts" | "py">("ts");
+  const [lang, setLang] = useState<Lang>("ts");
   const [copied, setCopied] = useState(false);
-  const code = lang === "ts" ? TS_EXAMPLE : PY_EXAMPLE;
+  const code =
+    lang === "ts" ? TS_EXAMPLE : lang === "py" ? PY_EXAMPLE : GO_EXAMPLE;
 
   function handleCopy() {
     navigator.clipboard.writeText(controllerUrl);
@@ -75,33 +86,26 @@ export function GettingStarted({ controllerUrl }: { controllerUrl: string }) {
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <div className="flex gap-0.5 rounded-md border border-border p-0.5 text-xs">
-              <button
-                onClick={() => setLang("ts")}
-                className={`rounded px-2.5 py-1 transition-colors ${
-                  lang === "ts"
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                TypeScript
-              </button>
-              <button
-                onClick={() => setLang("py")}
-                className={`rounded px-2.5 py-1 transition-colors ${
-                  lang === "py"
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                Python
-              </button>
+              {LANG_TABS.map(({ id, icon }) => (
+                <button
+                  key={id}
+                  onClick={() => setLang(id)}
+                  className={`flex items-center gap-1.5 rounded px-2.5 py-1 transition-colors ${
+                    lang === id
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <LangIcon lang={icon} className="h-3.5 w-3.5" />
+                </button>
+              ))}
             </div>
           </div>
 
           <div className="rounded-lg overflow-hidden border border-border">
             <CodeViewer
               content={code}
-              lang={lang === "ts" ? "typescript" : "python"}
+              lang={lang === "ts" ? "typescript" : lang === "py" ? "python" : "go"}
               autoSize
             />
           </div>

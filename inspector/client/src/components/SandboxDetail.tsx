@@ -1,6 +1,6 @@
 import { Activity, ExternalLink, Filter, FolderTree, Loader2, LocateFixed, Pause, Play, Power, SlidersHorizontal, SquareTerminal, Trash2, X } from "lucide-react";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
@@ -24,6 +24,10 @@ const MIN_TIMELINE_WIDTH = 300;
 const MIN_TERMINAL_WIDTH = 240;
 const MIN_FILES_WIDTH = 200;
 const DRAG_HANDLE_WIDTH = 5;
+
+// Default panel split used until the user resizes (50% timeline / 30% terminal / 20% files).
+const DEFAULT_TERMINAL_FRACTION = 0.3;
+const DEFAULT_FILES_FRACTION = 0.2;
 
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
@@ -69,12 +73,16 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   const setShowTerminal = (v: boolean) => setPref("showTerminal", v);
   const showFiles = prefs.showFiles;
   const setShowFiles = (v: boolean) => setPref("showFiles", v);
-  const filesWidth = prefs.filesWidth;
-  const setFilesWidth = (v: number) => setPref("filesWidth", v);
   const showTimeline = prefs.showTimeline;
   const setShowTimeline = (v: boolean) => setPref("showTimeline", v);
-  const terminalWidth = prefs.terminalWidth;
+  const setFilesWidth = (v: number) => setPref("filesWidth", v);
   const setTerminalWidth = (v: number) => setPref("terminalWidth", v);
+  // Measured width of the panel row, used to derive the default percentage-based
+  // widths until the user explicitly resizes a panel.
+  const [contentWidth, setContentWidth] = useState(0);
+  // Fall back to the 30%/20% split when the user hasn't set a width yet.
+  const terminalWidth = prefs.terminalWidth ?? Math.round(contentWidth * DEFAULT_TERMINAL_FRACTION);
+  const filesWidth = prefs.filesWidth ?? Math.round(contentWidth * DEFAULT_FILES_FRACTION);
   const [showConfig, setShowConfig] = useState(false);
   const [configProposal, setConfigProposal] = useState<ConfigProposal | undefined>();
   const contentRef = useRef<HTMLDivElement>(null);
@@ -82,6 +90,18 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   const esRef = useRef<import("@/lib/transport").EventSourceLike | null>(null);
   const resumeFromIdRef = useRef<number | undefined>(undefined);
   const [filePreview, setFilePreview] = useState<{ path: string; content: string; lang: string } | null>(null);
+
+  // Track the panel row width so the default panel split can be expressed as a
+  // percentage of the available space.
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const update = () => setContentWidth(el.getBoundingClientRect().width);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const openFile = useCallback(async (path: string) => {
     const lang = langForPath(path);
@@ -254,12 +274,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <Button
             size="sm"
             variant={showTerminal ? "secondary" : "ghost"}
-            onClick={() => {
-              if (!showTerminal && contentRef.current) {
-                setTerminalWidth(Math.floor(contentRef.current.getBoundingClientRect().width / 2));
-              }
-              setShowTerminal(!showTerminal);
-            }}
+            onClick={() => setShowTerminal(!showTerminal)}
             title="Toggle terminal panel"
           >
             <SquareTerminal className="h-4 w-4" />

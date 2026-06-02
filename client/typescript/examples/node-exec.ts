@@ -3,10 +3,8 @@
 // Run with: npx tsx examples/node-exec.ts
 import * as hive from "../src";
 
-const sandbox = await hive.getOrCreateSandbox("hive-node-exec", {
-  // Built with: ./scripts/bundle-images.sh node:alpine hive-node-sandbox
-  image: "hive-node-sandbox",
-  entrypoint: "tail -f /dev/null",
+const sandbox = await hive.getOrCreateSandbox("claude", {
+  image: "hive-example-claude-worker-bundle",
   fs: [
     {
       backend: "local",
@@ -17,10 +15,8 @@ const sandbox = await hive.getOrCreateSandbox("hive-node-exec", {
 });
 
 
-const result = await sandbox.exec(
-  `node -e "console.log('Hello, world!')"`,
-  { cwd: "/workspace" },
-);
+const result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'");
+console.log(result.stdout);
 
 console.info("stdout: " + result.stdout);
 if (result.stderr) console.error("stderr: " + result.stderr);
