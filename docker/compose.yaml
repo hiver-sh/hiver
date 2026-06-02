@@ -20,13 +20,6 @@ services:
       context: ..
       dockerfile: docker/sandbox-runtime.Dockerfile
 
-  hive-mcp-server:
-    image: hive-mcp-server
-    profiles: ["build"]
-    build:
-      context: ..
-      dockerfile: docker/mcpserver.Dockerfile
-
   hive-sandbox-bundle:
     image: hive-sandbox-bundle
     profiles: ["build"]

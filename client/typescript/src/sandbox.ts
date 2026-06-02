@@ -70,12 +70,19 @@ export class Sandbox {
    */
   readonly exposedEndpoint: string | undefined;
 
+  /**
+   * URL of the MCP Streamable HTTP endpoint (`/v1/mcp`) for this sandbox.
+   * Pass this to an MCP client as the transport endpoint.
+   */
+  readonly mcpEndpoint: string;
+
   readonly fetchImpl: typeof fetch;
 
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
     this.exposedEndpoint = ref.exposed_endpoint;
+    this.mcpEndpoint = `${this.apiServerUrl}/v1/mcp`;
     this.fetchImpl = opts.fetch ?? fetch;
   }
 

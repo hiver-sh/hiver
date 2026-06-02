@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 
 	"github.com/blasten/hive/internal/mcp/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,43 +27,59 @@ var toolLogger = func() *zap.Logger {
 	return l.Named(name)
 }()
 
-func newMCPServer() *mcp.Server {
+// NewContainerHandler returns an http.Handler for the MCP Streamable HTTP
+// transport. Bash commands run inside the container via execFn (the Exec
+// handler's core logic). File operations (read/write/edit/glob/grep) access
+// the container's mounted volumes directly via resolvePath.
+func NewContainerHandler(execFn tools.ExecFunc, resolvePath func(string) (string, error)) http.Handler {
+	s := newContainerMCPServer(execFn, resolvePath)
+	return mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return s },
+		nil,
+	)
+}
+
+func newContainerMCPServer(execFn tools.ExecFunc, resolvePath func(string) (string, error)) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    name,
 		Version: "1.0.0",
 	}, nil)
-
 	s.AddReceivingMiddleware(logToolCalls)
+
+	ct := &tools.ContainerTools{ExecCommand: execFn}
+	ft := &tools.FileTools{ResolvePath: resolvePath}
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "bash",
 		Description: `Execute a shell command and return stdout, stderr, and exit code.
-Use 'read'/'write'/'edit'/'glob'/'grep' before falling back to 'bash' equivalents — they are typed, faster, and produce cleaner diffs.`}, tools.Bash)
+Use 'read'/'write'/'edit'/'glob'/'grep' before falling back to 'bash' equivalents — they are typed, faster, and produce cleaner diffs.`,
+	}, ct.Bash)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read",
 		Description: "Read the contents of a file. Use this instead of 'cat' when you only need to inspect a file.",
-	}, tools.Read)
+	}, ft.Read)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "write",
 		Description: `Write contents to a file, creating parent directories as needed.
 Use this instead of shell redirection so the file is captured atomically.`,
-	}, tools.Write)
+	}, ft.Write)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "edit",
 		Description: `Replace a substring in a file.
 Cheaper than rewriting the whole file when you're tweaking a script or report.`,
-	}, tools.Edit)
+	}, ft.Edit)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "glob",
 		Description: "Find files matching a glob pattern. (e.g. '**/*.csv').",
-	}, tools.Glob)
+	}, ft.Glob)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "grep",
 		Description: "Search files for lines matching a regular expression.",
-	}, tools.Grep)
+	}, ft.Grep)
 
 	return s
 }
+
 
 func logToolCalls(h mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {

@@ -1,4 +1,4 @@
-CMDS := sandboxd sbxfuse sbxproxy mcpserver controller
+CMDS := sandboxd sbxfuse sbxproxy controller
 
 .PHONY: help build up down test test-e2e test-unit gen fmt $(CMDS)
 
@@ -8,8 +8,7 @@ help:
 build: $(CMDS) ## Build all cmd binaries into bin/
 
 build-images: ## Build docker images
-	docker compose -f docker/compose.yaml --profile build build hive-controller hive-sandbox-runtime hive-mcp-server
-	bash ./scripts/bundle-images.sh
+	docker compose -f docker/compose.yaml --profile build build hive-controller hive-sandbox-runtime
 
 up: ## Start services
 	docker compose -f docker/compose.yaml up -d

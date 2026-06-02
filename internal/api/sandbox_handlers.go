@@ -20,6 +20,7 @@ import (
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/events"
+	mcpapi "github.com/blasten/hive/internal/mcp"
 	"github.com/blasten/hive/internal/spec"
 	"github.com/creack/pty"
 	"github.com/gin-gonic/gin"
@@ -31,15 +32,99 @@ import (
 const agentContainerID = "agent-1"
 
 type SandboxHandlers struct {
-	broker    *events.Broker
-	store     *ConfigStore
-	lifetime  *Lifetime
-	upperDir  string   // host-side path of the overlayfs upper layer
-	processes sync.Map // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
+	broker     *events.Broker
+	store      *ConfigStore
+	lifetime   *Lifetime
+	upperDir   string       // host-side path of the overlayfs upper layer
+	processes  sync.Map     // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
+	mcpHandler http.Handler // MCP Streamable HTTP handler backed by the runc container
 }
 
 func NewSandboxHandlers(broker *events.Broker, store *ConfigStore, lifetime *Lifetime, upperDir string) *SandboxHandlers {
-	return &SandboxHandlers{broker: broker, store: store, lifetime: lifetime, upperDir: upperDir}
+	h := &SandboxHandlers{
+		broker:   broker,
+		store:    store,
+		lifetime: lifetime,
+		upperDir: upperDir,
+	}
+	h.mcpHandler = mcpapi.NewContainerHandler(h.execCommand, h.resolveAgentPath)
+	return h
+}
+
+// execCommand is the core of the Exec handler: runs command inside the agent
+// container via runc exec and returns buffered stdout, stderr, and exit code.
+// A non-zero exit code is not treated as a Go error.
+func (h *SandboxHandlers) execCommand(ctx context.Context, command string, cwd *string, env *map[string]string) (stdout, stderr string, exitCode int, err error) {
+	if err = waitForContainer(ctx, agentContainerID); err != nil {
+		return
+	}
+
+	pidPath, err := newExecPIDFile()
+	if err != nil {
+		return
+	}
+	defer func() {
+		if ctx.Err() != nil {
+			killExecTree(pidPath)
+		}
+		os.Remove(pidPath)
+	}()
+
+	cmd := exec.CommandContext(ctx, "runc", buildRuncExecArgs(command, cwd, false, env, pidPath)...)
+	stdoutPipe, pipeErr := cmd.StdoutPipe()
+	if pipeErr != nil {
+		err = pipeErr
+		return
+	}
+	stderrPipe, pipeErr := cmd.StderrPipe()
+	if pipeErr != nil {
+		err = pipeErr
+		return
+	}
+	if err = cmd.Start(); err != nil {
+		return
+	}
+
+	var wg sync.WaitGroup
+	var stdoutBuf, stderrBuf strings.Builder
+	var stdoutMu, stderrMu sync.Mutex
+	collect := func(r io.Reader, stream string, buf *strings.Builder, mu *sync.Mutex) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			line := sc.Text() + "\n"
+			h.publishStdioLine(stream, line)
+			mu.Lock()
+			buf.WriteString(line)
+			mu.Unlock()
+		}
+	}
+	wg.Add(2)
+	go collect(stdoutPipe, "stdout", &stdoutBuf, &stdoutMu)
+	go collect(stderrPipe, "stderr", &stderrBuf, &stderrMu)
+	wg.Wait()
+
+	if waitErr := cmd.Wait(); waitErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) {
+			err = waitErr
+			return
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	stdout = stdoutBuf.String()
+	stderr = stderrBuf.String()
+	return
+}
+
+// resolveAgentPath maps an agent-visible absolute path to its host-side path
+// by loading the current config and delegating to resolveHostPath.
+func (h *SandboxHandlers) resolveAgentPath(agentPath string) (string, error) {
+	cfg, err := h.store.Get()
+	if err != nil {
+		return "", err
+	}
+	return h.resolveHostPath(cfg, filepath.Clean(agentPath)), nil
 }
 
 // resolveHostPath maps an agent-visible absolute path to its host-side path.
@@ -374,6 +459,18 @@ func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) 
 	}
 }
 
+func (h *SandboxHandlers) McpRequest(c *gin.Context, _ gen.McpRequestParams) {
+	h.mcpHandler.ServeHTTP(c.Writer, c.Request)
+}
+
+func (h *SandboxHandlers) McpStream(c *gin.Context, _ gen.McpStreamParams) {
+	h.mcpHandler.ServeHTTP(c.Writer, c.Request)
+}
+
+func (h *SandboxHandlers) McpDelete(c *gin.Context, _ gen.McpDeleteParams) {
+	h.mcpHandler.ServeHTTP(c.Writer, c.Request)
+}
+
 // Ping resets the sandbox shutdown timer. Once `ttl` seconds elapse
 // without a ping, sandboxd cancels its lifecycle context, which kicks
 // off the same graceful-shutdown chain a SIGTERM would (per the
@@ -393,81 +490,23 @@ func (h *SandboxHandlers) Exec(c *gin.Context) {
 		return
 	}
 
-	if err := waitForContainer(c.Request.Context(), agentContainerID); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gen.Error{Error: "container not ready: " + err.Error()})
-		return
-	}
-
 	reqEventID := h.publishExecRequest(req)
 
-	pidPath, err := newExecPIDFile()
+	stdout, stderr, exitCode, err := h.execCommand(c.Request.Context(), req.Command, req.Cwd, req.Env)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: "pid file: " + err.Error()})
-		return
-	}
-	// Guarantee the in-container process tree is reaped if the client aborts
-	// (e.g. cancels the request) before the command finishes on its own.
-	defer func() {
-		if c.Request.Context().Err() != nil {
-			killExecTree(pidPath)
+		status := http.StatusInternalServerError
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			status = http.StatusServiceUnavailable
 		}
-		os.Remove(pidPath)
-	}()
-
-	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req.Command, req.Cwd, false, req.Env, pidPath)...)
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		c.JSON(status, gen.Error{Error: err.Error()})
 		return
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
-		return
-	}
-
-	var (
-		wg                 sync.WaitGroup
-		stdoutBuf          strings.Builder
-		stderrBuf          strings.Builder
-		stdoutMu, stderrMu sync.Mutex
-	)
-	collect := func(r io.Reader, stream string, buf *strings.Builder, mu *sync.Mutex) {
-		defer wg.Done()
-		sc := bufio.NewScanner(r)
-		for sc.Scan() {
-			line := sc.Text() + "\n"
-			h.publishStdioLine(stream, line)
-			mu.Lock()
-			buf.WriteString(line)
-			mu.Unlock()
-		}
-	}
-
-	wg.Add(2)
-	go collect(stdoutPipe, "stdout", &stdoutBuf, &stdoutMu)
-	go collect(stderrPipe, "stderr", &stderrBuf, &stderrMu)
-	wg.Wait()
-
-	exitCode := 0
-	if err := cmd.Wait(); err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
-			return
-		}
-		exitCode = exitErr.ExitCode()
 	}
 
 	h.publishExecResponse(reqEventID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"stdout":    stdoutBuf.String(),
-		"stderr":    stderrBuf.String(),
+		"stdout":    stdout,
+		"stderr":    stderr,
 		"exit_code": exitCode,
 	})
 }

@@ -84,6 +84,8 @@ class Sandbox:
         self.id = ref.id
         self.api_server_url = ref.endpoint.rstrip("/")
         self.exposed_endpoint: Optional[str] = ref.exposed_endpoint
+        # URL of the MCP Streamable HTTP endpoint for this sandbox.
+        self.mcp_endpoint: str = f"{self.api_server_url}/v1/mcp"
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
 
