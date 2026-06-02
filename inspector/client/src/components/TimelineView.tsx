@@ -158,6 +158,7 @@ const MIN_CLICK_TARGET_BAR_PX = 16;
 const LANES_ENABLED = false;
 const MERGE_OVERLAPS = true;
 const VIRTUAL_SCROLL = false;
+const GAP_THRESHOLD_MS = 60_000;
 
 function computeLanes(
   bars: TimelineBar[],
@@ -376,6 +377,10 @@ function buildDisplayItems(
       for (const key of subgroupOrder) {
         for (const row of bySubgroup.get(key)!) items.push({ kind: "row", row });
       }
+    } else if (cat === "stdio") {
+      const stdioOrder = (r: TimelineRow) => r.type === "exec" ? 0 : r.method === "out" ? 1 : 2;
+      for (const row of [...rows].sort((a, b) => stdioOrder(a) - stdioOrder(b)))
+        items.push({ kind: "row", row });
     } else {
       for (const row of rows) items.push({ kind: "row", row });
     }
@@ -497,11 +502,8 @@ function ResourceLineChart({
   );
 }
 
-export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow, follow, onDisableFollow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void; follow?: boolean; onDisableFollow?: () => void }) {
+export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWindow, setZoomWindow, follow, onDisableFollow }: { events: SandboxEvent[]; filter: FilterState; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; zoomWindow: { realStart: number; realEnd: number } | null; setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void; follow?: boolean; onDisableFollow?: () => void; paused?: boolean }) {
   const rows = useMemo(() => buildRows(events), [events]);
-
-  const hasLive = rows.some((r) => r.bars.some(b => isLiveBar(b)));
-  const [, forceUpdate] = useState(0);
   const [trackWidth, setTrackWidth] = useState(600);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -646,7 +648,6 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
     scrollSelectedIntoView();
   }, [selectedId, scrollSelectedIntoView]);
 
-  const lastEventReceivedRef = useRef(Date.now());
 
   // Observe the ruler track for responsive tick count
   useEffect(() => {
@@ -676,22 +677,12 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   }, [rows.length > 0]);
 
   useEffect(() => {
-    lastEventReceivedRef.current = Date.now();
-  }, [events.length]);
-
-  useEffect(() => {
     if (!follow) return;
     requestAnimationFrame(() => {
       const el = rowsScrollRef.current;
       if (el) el.scrollLeft = el.scrollWidth - el.clientWidth;
     });
   }, [follow, events.length]);
-
-  useEffect(() => {
-    if (!hasLive) return;
-    const id = setInterval(() => forceUpdate((n) => n + 1), 100);
-    return () => clearInterval(id);
-  }, [hasLive]);
 
   const selectedBar = selectedId !== null
     ? rows.flatMap(r => r.bars).find(b => b.id === selectedId) ?? null
@@ -737,12 +728,9 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   const nextBarId = selectedBarIdx >= 0 && selectedBarIdx < filteredBars.length - 1
     ? filteredBars[selectedBarIdx + 1].id : null;
 
-  const now = Date.now();
-  const elapsed = hasLive ? Math.max(0, now - lastEventReceivedRef.current) : 0;
-
   const minTime = Math.min(...filteredBars.map(b => b.startTime));
   const maxEventEnd = Math.max(...filteredBars.map(b => b.startTime + b.durationMs), minTime + 1);
-  const rightEdge = maxEventEnd + elapsed;
+  const rightEdge = maxEventEnd;
   const rawSpan = Math.max(rightEdge - minTime, 1);
   const rightPad = trackWidth > 0 ? (30 / trackWidth) * rawSpan : rawSpan * 0.03;
   const totalSpan = rawSpan + rightPad;
@@ -755,9 +743,6 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   }
 
   const pxPerMs = totalSpan > 0 && trackWidth > 0 ? trackWidth / totalSpan : 1;
-
-  const GAP_DISPLAY_PX = 20;
-  const gapThresholdPx = Math.max(60, 0.15 * trackWidth);
 
   const rawIntervals: [number, number][] = [];
   for (const row of filteredRows) {
@@ -782,10 +767,11 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   let prevEnd = minTime;
   for (const [iStart, iEnd] of mergedIntervals) {
     if (iStart > prevEnd) {
-      const gapNatural = (iStart - prevEnd) * pxPerMs;
-      const dw = gapNatural > gapThresholdPx ? GAP_DISPLAY_PX : gapNatural;
-      segments.push({ realStart: prevEnd, realEnd: iStart, dispStart: dispPos, dispEnd: dispPos + dw, isGap: gapNatural > gapThresholdPx });
-      dispPos += dw;
+      const gapMs = iStart - prevEnd;
+      const gapNatural = gapMs * pxPerMs;
+      const isGap = gapMs >= GAP_THRESHOLD_MS;
+      segments.push({ realStart: prevEnd, realEnd: iStart, dispStart: dispPos, dispEnd: dispPos + gapNatural, isGap });
+      dispPos += gapNatural;
     }
     const evW = Math.max(1, (iEnd - iStart) * pxPerMs);
     segments.push({ realStart: iStart, realEnd: iEnd, dispStart: dispPos, dispEnd: dispPos + evW, isGap: false });
@@ -1284,17 +1270,17 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                       <div
                                         key={bar.id}
                                         className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                        style={{ left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
+                                        style={isLive ? { left: leftPx, right: 10 } : { left: leftPx, width: rightPx - leftPx, maxWidth: `calc(100% - ${leftPx}px)` }}
                                       >
                                         <div
                                           className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? liveBarClass(vl.row) : barClass(bar, vl.row.type)}`}
-                                          title={isLive ? `in-flight · ${effectiveDur(bar)}ms` : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
+                                          title={isLive ? "in-flight" : bar.pending ? "no response received" : `${bar.durationMs}ms${bar.status ? ` · ${bar.status}` : ""}${bar.error ? ` · ${bar.error}` : ""}`}
                                         >
                                           {isLive && <div className="absolute inset-0 bar-in-flight" />}
                                         </div>
                                         <div
                                           className="absolute inset-y-0 z-10 cursor-pointer"
-                                          style={{ left: "50%", transform: "translateX(-50%)", width: Math.max(rightPx - leftPx, MIN_CLICK_TARGET_BAR_PX) }}
+                                          style={isLive ? { inset: 0 } : { left: "50%", transform: "translateX(-50%)", width: Math.max(rightPx - leftPx, MIN_CLICK_TARGET_BAR_PX) }}
                                           onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(bar.id === selectedId ? null : bar.id); }}
                                         />
                                       </div>
@@ -1325,17 +1311,17 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                                     <div
                                       key={first.id}
                                       className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                      style={{ left: group.leftPx, width: w, maxWidth: `calc(100% - ${group.leftPx}px)` }}
+                                      style={isLive ? { left: group.leftPx, right: 10 } : { left: group.leftPx, width: w, maxWidth: `calc(100% - ${group.leftPx}px)` }}
                                     >
                                       <div
                                         className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? liveBarClass(vl.row) : barClass(first, vl.row.type)}`}
-                                        title={group.bars.length > 1 ? `${group.bars.length} events` : isLive ? `in-flight · ${effectiveDur(first)}ms` : first.pending ? "no response received" : `${first.durationMs}ms${first.status ? ` · ${first.status}` : ""}${first.error ? ` · ${first.error}` : ""}`}
+                                        title={group.bars.length > 1 ? `${group.bars.length} events` : isLive ? "in-flight" : first.pending ? "no response received" : `${first.durationMs}ms${first.status ? ` · ${first.status}` : ""}${first.error ? ` · ${first.error}` : ""}`}
                                       >
                                         {isLive && <div className="absolute inset-0 bar-in-flight" />}
                                       </div>
                                       <div
                                         className="absolute inset-y-0 z-10 cursor-pointer"
-                                        style={{ left: "50%", transform: "translateX(-50%)", width: Math.max(w, MIN_CLICK_TARGET_BAR_PX) }}
+                                        style={isLive ? { inset: 0 } : { left: "50%", transform: "translateX(-50%)", width: Math.max(w, MIN_CLICK_TARGET_BAR_PX) }}
                                         onClick={(e) => { e.stopPropagation(); if (dragHappenedRef.current) return; setSelectedId(first.id === selectedId ? null : first.id); }}
                                       />
                                     </div>
