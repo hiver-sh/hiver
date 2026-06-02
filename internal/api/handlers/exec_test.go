@@ -1,4 +1,4 @@
-package api
+package handlers
 
 import (
 	"slices"
@@ -68,10 +68,10 @@ func TestBuildRuncExecArgs(t *testing.T) {
 
 func TestParsePPIDStat(t *testing.T) {
 	tests := []struct {
-		name    string
-		stat    string
-		want    int
-		wantOK  bool
+		name   string
+		stat   string
+		want   int
+		wantOK bool
 	}{
 		{
 			name:   "simple comm",

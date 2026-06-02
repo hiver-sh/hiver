@@ -2,18 +2,14 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	"github.com/blasten/hive/internal/api/handlers"
 )
-
-// ErrApplyInProgress reports that a previous ApplyConfig call is still
-// running; the handler translates this to HTTP 409.
-var ErrApplyInProgress = errors.New("a previous apply is still in progress")
 
 // ConfigStore persists the active SandboxConfig as a JSON document on
 // disk.
@@ -40,7 +36,7 @@ func (s *ConfigStore) Get() (gen.SandboxConfig, error) {
 // write failure the on-disk state is left untouched.
 func (s *ConfigStore) Apply(desired gen.SandboxConfig) (gen.Changes, error) {
 	if !s.mu.TryLock() {
-		return gen.Changes{}, ErrApplyInProgress
+		return gen.Changes{}, handlers.ErrApplyInProgress
 	}
 	defer s.mu.Unlock()
 

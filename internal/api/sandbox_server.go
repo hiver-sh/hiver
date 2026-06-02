@@ -7,6 +7,7 @@ import (
 	"os"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	"github.com/blasten/hive/internal/api/handlers"
 	"github.com/blasten/hive/internal/events"
 	"github.com/gin-gonic/gin"
 	middleware "github.com/oapi-codegen/gin-middleware"
@@ -24,7 +25,7 @@ func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, li
 
 	oapiGroup := r.Group("/")
 	oapiGroup.Use(middleware.OapiRequestValidator(swagger))
-	hs := NewSandboxHandlers(broker, store, lifetime, upperDir)
+	hs := handlers.NewSandboxHandlers(broker, store, lifetime, upperDir)
 	gen.RegisterHandlers(oapiGroup, hs)
 
 	s := &http.Server{
