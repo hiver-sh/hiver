@@ -237,6 +237,12 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint }: 
             if (eventName === "connected") {
               everConnected = true;
               connected = true;
+              // Push the current size immediately: the PTY starts at a default
+              // geometry and the ResizeObserver's initial fire was dropped while
+              // still unconnected, so without this the remote process never
+              // learns the real dimensions and its repaints land at the wrong
+              // size (stale content survives screen transitions).
+              sendInput({ type: "resize", cols: term.cols, rows: term.rows });
               term.focus();
             } else if (eventName === "close") {
               connected = false;

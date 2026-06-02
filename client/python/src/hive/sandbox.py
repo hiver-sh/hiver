@@ -129,14 +129,21 @@ class Sandbox:
         self,
         command: str,
         cwd: Optional[str] = None,
+        env: Optional[dict[str, str]] = None,
     ) -> dict[str, object]:
         """
         Run `command` inside the sandbox and return buffered stdout, stderr,
         and exit_code once the process finishes.
+
+        `env` is merged on top of the sandbox config's environment, overriding
+        entries with the same name. When omitted, the sandbox config
+        environment is used as-is.
         """
-        body: dict[str, str] = {"command": command}
+        body: dict[str, object] = {"command": command}
         if cwd is not None:
             body["cwd"] = cwd
+        if env is not None:
+            body["env"] = env
         res = await self._client.post(
             f"{self.api_server_url}/v1/exec",
             json=body,
@@ -150,11 +157,16 @@ class Sandbox:
         command: str,
         cwd: Optional[str] = None,
         tty: bool = False,
+        env: Optional[dict[str, str]] = None,
     ) -> ExecProcess:
         """
         Run `command` inside the sandbox and return an ExecProcess handle.
         Stream output via `exec.pipes`, write to stdin via `exec.write_stdin()`,
         and await the exit code via `exec.exit_code`.
+
+        `env` is merged on top of the sandbox config's environment, overriding
+        entries with the same name. When omitted, the sandbox config
+        environment is used as-is.
 
         The returned coroutine resolves once the server has accepted the
         connection and registered the process — at that point `write_stdin`
@@ -167,6 +179,8 @@ class Sandbox:
         body: dict[str, object] = {"command": command}
         if cwd is not None:
             body["cwd"] = cwd
+        if env is not None:
+            body["env"] = env
         if tty:
             body["tty"] = tty
 

@@ -21,12 +21,22 @@ export interface RequestOptions {
 
 export interface ExecOptions {
   cwd?: string;
+  /**
+   * Environment variables for the command, merged on top of the sandbox
+   * config's `env`. When omitted, the sandbox config environment is used.
+   */
+  env?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
 
 export interface ExecStreamOptions {
   cwd?: string;
+  /**
+   * Environment variables for the command, merged on top of the sandbox
+   * config's `env`. When omitted, the sandbox config environment is used.
+   */
+  env?: Record<string, string>;
   tty?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -187,8 +197,9 @@ export class Sandbox {
    * and exit code once the process finishes.
    */
   async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
-    const body: Record<string, string> = { command };
+    const body: Record<string, unknown> = { command };
     if (opts?.cwd !== undefined) body.cwd = opts.cwd;
+    if (opts?.env !== undefined) body.env = opts.env;
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/exec`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -214,6 +225,7 @@ export class Sandbox {
 
     const body: Record<string, unknown> = { command };
     if (opts?.cwd !== undefined) body.cwd = opts.cwd;
+    if (opts?.env !== undefined) body.env = opts.env;
     if (opts?.tty !== undefined) body.tty = opts.tty;
     const signal = resolveSignal(opts);
 

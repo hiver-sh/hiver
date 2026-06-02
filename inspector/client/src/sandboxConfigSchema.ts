@@ -12,8 +12,13 @@ export const SANDBOX_CONFIG_SCHEMA = {
       properties: {
         image: {
           type: "string",
-          description: "Reference to the agent image to launch. Cannot be changed after the sandbox is initialized.",
+          description: "The Docker image to run. Cannot be changed after the sandbox is initialized.",
           examples: ["my-agent:latest"],
+        },
+        entrypoint: {
+          type: "string",
+          description: "Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. e.g. \"tail -f /dev/null\" blocks indefinitely with near-zero CPU.",
+          examples: ["tail -f /dev/null"],
         },
         env: {
           type: "object",
@@ -144,7 +149,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
         { $ref: "#/definitions/FileSystemBase" },
         {
           type: "object",
-          required: ["gcs_bucket"],
+          required: ["gcs_bucket", "gcs_service_account_json"],
           properties: {
             backend: { type: "string", enum: ["gcs"] },
             gcs_bucket: { type: "string", description: "GCS bucket name." },

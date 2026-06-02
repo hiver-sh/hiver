@@ -489,6 +489,17 @@ components:
           type: string
           description: Working directory for the command. Defaults to `/`.
           example: /workspace
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Environment variables for the command as a key/value map. These
+            are merged on top of the sandbox config's `env`, overriding any
+            entries with the same name. When omitted, the sandbox config's
+            environment variables are used as-is.
+          example:
+            LOG_LEVEL: debug
 
     ExecStreamRequest:
       type: object
@@ -503,6 +514,17 @@ components:
           type: string
           description: Working directory for the command. Defaults to `/`.
           example: /workspace
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Environment variables for the command as a key/value map. These
+            are merged on top of the sandbox config's `env`, overriding any
+            entries with the same name. When omitted, the sandbox config's
+            environment variables are used as-is.
+          example:
+            LOG_LEVEL: debug
         tty:
           type: boolean
           description: Allocate a pseudo-TTY for the process. Defaults to false.

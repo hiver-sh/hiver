@@ -54,7 +54,11 @@ async function openExecStreamSession(
   const sandbox = new Sandbox({ id: sandboxId, endpoint: sandboxUrl }, {});
   const config = await sandbox.getConfig().catch(() => null);
   const cwd = config?.fs?.[0]?.mount ?? undefined;
-  const exec = await sandbox.execStream("/bin/sh", { tty: true, cwd, signal: ac.signal });
+  const env = {
+    "TERM": "xterm-256color",
+    "COLORTERM": "truecolor",
+  };
+  const exec = await sandbox.execStream("/bin/sh", { tty: true, cwd, signal: ac.signal, env });
   exec.exitCode.catch(() => {});
 
   (async () => {
@@ -65,7 +69,7 @@ async function openExecStreamSession(
 
   return {
     write: (d) => { exec.writeStdin(d).catch(() => {}); },
-    resize: (_c, _r) => {},
+    resize: (c, r) => { exec.writeStdin(`\x1b[8;${r};${c}t`).catch(() => {}); },
     close: () => ac.abort(),
   };
 }

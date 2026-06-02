@@ -80,26 +80,25 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
-        label: "Sandbox MCP server",
-        idPrefix: "mcp-server",
+        label: "Node.js",
+        idPrefix: "nodejs",
         apply: () => ({
-          image: "hive-mcp-server-bundle",
-          fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] }],
-          env: {},
+          image: "hive-node-sandbox",
+          entrypoint: "tail -f /dev/null",
+          fs: [{ backend: "local", mount: "/workspace" }],
+          env: { AGENT: "shell" },
           egress: [
             { host: "*", access: "allow" },
           ],
-          snapshot: {
-            restore_key: "mcp-server-agent",
-            include: [ "/home/agent/*"],
-          },
+          ttl: 0,
         }),
       },
       {
-        label: "Shell",
-        idPrefix: "shell",
+        label: "Python 3.13",
+        idPrefix: "python",
         apply: () => ({
-          image: "hive-example-claude-worker-bundle",
+          image: "hive-python-sandbox",
+          entrypoint: "tail -f /dev/null",
           fs: [{ backend: "local", mount: "/workspace" }],
           env: { AGENT: "shell" },
           egress: [
