@@ -1,7 +1,8 @@
 name: hive
 
 services:
-  hive-controller:
+  controller:
+    image: docker.io/hiveruntime/controller:${TAG:-latest}
     build:
       context: ..
       dockerfile: docker/controller.Dockerfile
@@ -13,19 +14,19 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
-  hive-sandbox-runtime:
-    image: hive-sandbox-runtime
+  core:
+    image: docker.io/hiveruntime/core:${TAG:-latest}
     profiles: ["build"]
     build:
       context: ..
-      dockerfile: docker/sandbox-runtime.Dockerfile
+      dockerfile: docker/core.Dockerfile
 
-  hive-sandbox-bundle:
-    image: hive-sandbox-bundle
+  bundler:
+    image: docker.io/hiveruntime/bundler:${TAG:-latest}
     profiles: ["build"]
     build:
       context: ..
-      dockerfile: docker/sandbox-bundle.Dockerfile
+      dockerfile: docker/bundler.Dockerfile
 
 volumes:
   snapshots:

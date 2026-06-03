@@ -12,6 +12,14 @@ components:
             The Docker image to run.
             This cannot be changed after the sandbox is initialized.
           example: my-agent:latest
+        isolation:
+          type: string
+          enum: [container, microvm]
+          default: container
+          description: >
+            The isolation mechanism used to run the sandbox.
+            This cannot be changed after the sandbox is initialized.
+          example: container
         entrypoint:
           type: string
           description: >

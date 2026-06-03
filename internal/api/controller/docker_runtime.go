@@ -18,7 +18,7 @@ import (
 
 const (
 	composeProject      = "hive"
-	defaultSandboxImage = "hive-sandbox-bundle"
+	defaultSandboxImage = "hive-sandbox-bundler"
 	sandboxAPIPort      = 8080
 	sandboxTCPProxyPort = 8081
 	labelSandboxID      = "hive.sandbox.id"

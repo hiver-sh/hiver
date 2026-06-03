@@ -1,6 +1,6 @@
 CMDS := sandboxd sbxfuse sbxproxy controller
 
-.PHONY: help build up down test test-e2e test-unit gen fmt $(CMDS)
+.PHONY: help build build-images publish-images up down test test-e2e test-unit gen fmt $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -8,7 +8,10 @@ help:
 build: $(CMDS) ## Build all cmd binaries into bin/
 
 build-images: ## Build docker images
-	docker compose -f docker/compose.yaml --profile build build hive-controller hive-sandbox-runtime
+	docker compose -f docker/compose.yaml --profile build build controller core
+
+publish-images: build-images ## Build and push images to the registry (override tag with TAG=...)
+	docker compose -f docker/compose.yaml push controller core
 
 up: ## Start services
 	docker compose -f docker/compose.yaml up -d

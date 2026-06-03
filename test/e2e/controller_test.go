@@ -18,7 +18,7 @@ import (
 const (
 	composeFile      = "../../docker/compose.yaml"
 	controllerURL    = "http://127.0.0.1:9000"
-	sandboxImage     = "hive-sandbox-bundle"
+	sandboxImage     = "hive-sandbox-bundler"
 	composeProjectID = "hive"
 )
 
