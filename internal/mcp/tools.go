@@ -28,18 +28,19 @@ var toolLogger = func() *zap.Logger {
 }()
 
 // NewContainerHandler returns an http.Handler for the MCP Streamable HTTP
-// transport. Bash commands run inside the container via execFn (the Exec
-// handler's core logic). File operations (read/write/edit/glob/grep) access
-// the container's mounted volumes directly via resolvePath.
-func NewContainerHandler(execFn tools.ExecFunc, resolvePath func(string) (string, error)) http.Handler {
-	s := newContainerMCPServer(execFn, resolvePath)
+// transport. Bash commands run inside the workload via execFn (the Exec
+// handler's core logic). File operations (read/write/edit/glob/grep) go
+// through fsys — the isolation backend's filesystem — so they work for both
+// the container and microvm backends.
+func NewContainerHandler(execFn tools.ExecFunc, fsys tools.FS) http.Handler {
+	s := newContainerMCPServer(execFn, fsys)
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return s },
 		nil,
 	)
 }
 
-func newContainerMCPServer(execFn tools.ExecFunc, resolvePath func(string) (string, error)) *mcp.Server {
+func newContainerMCPServer(execFn tools.ExecFunc, fsys tools.FS) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    name,
 		Version: "1.0.0",
@@ -47,7 +48,7 @@ func newContainerMCPServer(execFn tools.ExecFunc, resolvePath func(string) (stri
 	s.AddReceivingMiddleware(logToolCalls)
 
 	ct := &tools.ContainerTools{ExecCommand: execFn}
-	ft := &tools.FileTools{ResolvePath: resolvePath}
+	ft := &tools.FileTools{FS: fsys}
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "bash",
@@ -79,7 +80,6 @@ Cheaper than rewriting the whole file when you're tweaking a script or report.`,
 
 	return s
 }
-
 
 func logToolCalls(h mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {

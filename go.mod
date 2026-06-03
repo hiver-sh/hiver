@@ -8,6 +8,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/getkin/kin-openapi v0.135.0
 	github.com/gin-gonic/gin v1.12.0
+	github.com/hugelgupf/p9 v0.4.1
 	github.com/klauspost/compress v1.18.6
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/oapi-codegen/gin-middleware v1.0.2
@@ -83,6 +84,7 @@ require (
 	github.com/speakeasy-api/openapi v1.19.2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/u-root/uio v0.0.0-20230305220412-3e8cd9d6bf63 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect

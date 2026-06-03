@@ -1,0 +1,211 @@
+// Package firecracker is a dependency-free host-side driver for the
+// Firecracker VMM. It speaks Firecracker's REST API over its API unix
+// socket and models the boot configuration (machine, kernel, drives,
+// network, vsock) so the microvm isolation backend can boot and control a
+// guest without pulling in the upstream Go SDK.
+//
+// Scope: everything here runs on the host. Assembling the overlay/FUSE
+// stack, the in-guest firewall, and running exec'd commands happen inside
+// the guest and are handled by the in-guest agent (cmd/sbxguest) reached
+// over vsock; see internal/vsockexec for the wire protocol.
+package firecracker
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+)
+
+// Host/guest vsock parameters. The host CID is always 2 (VMADDR_CID_HOST);
+// the guest CID is assigned by us and must be >= 3. The guest agent listens
+// on GuestExecPort for exec sessions.
+const (
+	HostCID       uint32 = 2
+	GuestCID      uint32 = 3
+	GuestExecPort uint32 = 1024
+)
+
+// Client talks to a running Firecracker process over its API unix socket
+// (the --api-sock path). Firecracker serves a small REST API there.
+type Client struct {
+	sock string
+	http *http.Client
+}
+
+// NewClient returns a Client bound to the Firecracker API socket at sock.
+// The socket need not exist yet; requests block (up to their context
+// deadline) until Firecracker creates and listens on it.
+func NewClient(sock string) *Client {
+	return &Client{
+		sock: sock,
+		http: &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+				},
+			},
+		},
+	}
+}
+
+// MachineConfig is the body of PUT /machine-config.
+type MachineConfig struct {
+	VcpuCount  int  `json:"vcpu_count"`
+	MemSizeMib int  `json:"mem_size_mib"`
+	Smt        bool `json:"smt"`
+}
+
+// BootSource is the body of PUT /boot-source.
+type BootSource struct {
+	KernelImagePath string `json:"kernel_image_path"`
+	BootArgs        string `json:"boot_args,omitempty"`
+	InitrdPath      string `json:"initrd_path,omitempty"`
+}
+
+// Drive is the body of PUT /drives/{drive_id}.
+type Drive struct {
+	DriveID      string `json:"drive_id"`
+	PathOnHost   string `json:"path_on_host"`
+	IsRootDevice bool   `json:"is_root_device"`
+	IsReadOnly   bool   `json:"is_read_only"`
+}
+
+// NetworkInterface is the body of PUT /network-interfaces/{iface_id}.
+type NetworkInterface struct {
+	IfaceID     string `json:"iface_id"`
+	HostDevName string `json:"host_dev_name"`
+	GuestMAC    string `json:"guest_mac,omitempty"`
+}
+
+// Vsock is the body of PUT /vsock. UDSPath is the host-side unix socket
+// Firecracker creates to multiplex guest vsock connections.
+type Vsock struct {
+	GuestCID int    `json:"guest_cid"`
+	UDSPath  string `json:"uds_path"`
+}
+
+// Logger is the body of PUT /logger.
+type Logger struct {
+	LogPath string `json:"log_path,omitempty"`
+	Level   string `json:"level,omitempty"`
+}
+
+// InstanceInfo is the body of GET /.
+type InstanceInfo struct {
+	ID         string `json:"id"`
+	State      string `json:"state"` // "Not started", "Running", "Paused"
+	VmmVersion string `json:"vmm_version"`
+}
+
+// apiError mirrors Firecracker's error response shape.
+type apiError struct {
+	FaultMessage string `json:"fault_message"`
+}
+
+func (c *Client) put(ctx context.Context, path string, body any) error {
+	return c.do(ctx, http.MethodPut, path, body, nil)
+}
+
+// do issues a request to the API socket. The host portion of the URL is a
+// throwaway — the transport always dials the unix socket — so any value
+// works as long as it's a valid URL.
+func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	var rdr *bytes.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshal %s %s: %w", method, path, err)
+		}
+		rdr = bytes.NewReader(b)
+	} else {
+		rdr = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, rdr)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var ae apiError
+		_ = json.NewDecoder(resp.Body).Decode(&ae)
+		if ae.FaultMessage != "" {
+			return fmt.Errorf("%s %s: firecracker %s: %s", method, path, resp.Status, ae.FaultMessage)
+		}
+		return fmt.Errorf("%s %s: firecracker %s", method, path, resp.Status)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func (c *Client) PutMachineConfig(ctx context.Context, m MachineConfig) error {
+	return c.put(ctx, "/machine-config", m)
+}
+
+func (c *Client) PutBootSource(ctx context.Context, b BootSource) error {
+	return c.put(ctx, "/boot-source", b)
+}
+
+func (c *Client) PutDrive(ctx context.Context, d Drive) error {
+	return c.put(ctx, "/drives/"+d.DriveID, d)
+}
+
+func (c *Client) PutNetworkInterface(ctx context.Context, n NetworkInterface) error {
+	return c.put(ctx, "/network-interfaces/"+n.IfaceID, n)
+}
+
+func (c *Client) PutVsock(ctx context.Context, v Vsock) error {
+	return c.put(ctx, "/vsock", v)
+}
+
+func (c *Client) PutLogger(ctx context.Context, l Logger) error {
+	return c.put(ctx, "/logger", l)
+}
+
+// Start issues the InstanceStart action, booting the guest.
+func (c *Client) Start(ctx context.Context) error {
+	return c.put(ctx, "/actions", map[string]string{"action_type": "InstanceStart"})
+}
+
+// Pause/Resume transition the VM via PATCH /vm; Pause is used before a
+// snapshot so guest memory is quiesced.
+func (c *Client) Pause(ctx context.Context) error {
+	return c.do(ctx, http.MethodPatch, "/vm", map[string]string{"state": "Paused"}, nil)
+}
+
+func (c *Client) Resume(ctx context.Context) error {
+	return c.do(ctx, http.MethodPatch, "/vm", map[string]string{"state": "Resumed"}, nil)
+}
+
+// InstanceInfo reads GET / for the current VM state.
+func (c *Client) InstanceInfo(ctx context.Context) (InstanceInfo, error) {
+	var info InstanceInfo
+	err := c.do(ctx, http.MethodGet, "/", nil, &info)
+	return info, err
+}
+
+// WaitAPIReady blocks until the API socket accepts a request (Firecracker
+// has created it and is serving) or ctx is cancelled.
+func (c *Client) WaitAPIReady(ctx context.Context) error {
+	for {
+		if _, err := c.InstanceInfo(ctx); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}

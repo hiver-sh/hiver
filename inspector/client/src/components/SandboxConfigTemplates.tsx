@@ -16,7 +16,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "claude-code",
         command: "claude",
         apply: () => ({
-          image: "hive-example-claude-worker-bundle",
+          image: "hiveruntime/agent-cli:latest",
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [
             { host: "*", access: "allow" },
@@ -33,7 +33,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "codex",
         command: "codex",
         apply: () => ({
-          image: "hive-example-claude-worker-bundle",
+          image: "hiveruntime/agent-cli:latest",
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [
             { host: "*", access: "allow" },
@@ -50,7 +50,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "gemini",
         command: "gemini",
         apply: () => ({
-          image: "hive-example-claude-worker-bundle",
+          image: "hiveruntime/agent-cli:latest",
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [
             { host: "*", access: "allow" },
@@ -67,7 +67,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "copilot",
         command: "copilot",
         apply: () => ({
-          image: "hive-example-claude-worker-bundle",
+          image: "hiveruntime/agent-cli:latest",
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [
             { host: "*", access: "allow" },

@@ -147,6 +147,24 @@ func (e LocalFileSystemBackend) Valid() bool {
 	}
 }
 
+// Defines values for SandboxConfigIsolation.
+const (
+	Container SandboxConfigIsolation = "container"
+	Microvm   SandboxConfigIsolation = "microvm"
+)
+
+// Valid indicates whether the value is a known member of the SandboxConfigIsolation enum.
+func (e SandboxConfigIsolation) Valid() bool {
+	switch e {
+	case Container:
+		return true
+	case Microvm:
+		return true
+	default:
+		return false
+	}
+}
+
 // ACLRule One access control rule.
 type ACLRule struct {
 	// Access Read-write, read-only, or fully denied.
@@ -389,6 +407,9 @@ type SandboxConfig struct {
 	// Image The Docker image to run. This cannot be changed after the sandbox is initialized.
 	Image *string `json:"image,omitempty"`
 
+	// Isolation The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized.
+	Isolation *SandboxConfigIsolation `json:"isolation,omitempty"`
+
 	// Snapshot Snapshot configuration. A snapshot is captured automatically before
 	// the sandbox shuts down and restored before the sandbox starts.
 	Snapshot *Snapshot `json:"snapshot,omitempty"`
@@ -398,6 +419,9 @@ type SandboxConfig struct {
 	// Use `0` to disable shutdown.
 	Ttl *int `json:"ttl,omitempty"`
 }
+
+// SandboxConfigIsolation The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized.
+type SandboxConfigIsolation string
 
 // Snapshot Snapshot configuration. A snapshot is captured automatically before
 // the sandbox shuts down and restored before the sandbox starts.

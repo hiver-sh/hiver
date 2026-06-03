@@ -4,7 +4,7 @@
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("claude", {
-  image: "hive-example-claude-worker-bundle",
+  image: "hiveruntime/agent-cli:latest",
   fs: [
     {
       backend: "local",

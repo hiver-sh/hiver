@@ -15,6 +15,13 @@ export const SANDBOX_CONFIG_SCHEMA = {
           description: "The Docker image to run. Cannot be changed after the sandbox is initialized.",
           examples: ["my-agent:latest"],
         },
+        isolation: {
+          type: "string",
+          enum: ["container", "microvm"],
+          default: "container",
+          description: "The isolation mechanism used to run the sandbox. Cannot be changed after the sandbox is initialized.",
+          examples: ["container"],
+        },
         entrypoint: {
           type: "string",
           description: "Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. e.g. \"tail -f /dev/null\" blocks indefinitely with near-zero CPU.",

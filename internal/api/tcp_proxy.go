@@ -13,9 +13,9 @@ import (
 // TCPProxy accepts inbound TCP connections on listenAddr and pipes each one
 // bidirectionally to targetAddr.
 type TCPProxy struct {
-	listenAddr    string
-	targetAddr    string
-	outboundMark  int
+	listenAddr   string
+	targetAddr   string
+	outboundMark int
 }
 
 // NewTCPProxy creates a proxy that listens on listenAddr and dials targetAddr

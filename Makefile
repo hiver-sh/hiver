@@ -1,4 +1,4 @@
-CMDS := sandboxd sbxfuse sbxproxy controller
+CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 
 .PHONY: help build build-images publish-images up down test test-e2e test-unit gen fmt $(CMDS)
 
@@ -8,10 +8,12 @@ help:
 build: $(CMDS) ## Build all cmd binaries into bin/
 
 build-images: ## Build docker images
-	docker compose -f docker/compose.yaml --profile build build controller core
+	docker compose -f docker/compose.yaml --profile build build controller core agent-cli-standalone
+	./scripts/bundle-images.sh hiveruntime/agent-cli-standalone hiveruntime/agent-cli
 
 publish-images: build-images ## Build and push images to the registry (override tag with TAG=...)
 	docker compose -f docker/compose.yaml push controller core
+	docker push hiveruntime/agent-cli-standalone:latest
 
 up: ## Start services
 	docker compose -f docker/compose.yaml up -d

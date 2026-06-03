@@ -5,6 +5,7 @@ import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-node-exec-stream", {
   // Built with: ./scripts/bundle-images.sh node:alpine hive-node-sandbox
+  isolation: 'microvm',
   image: "hive-node-sandbox",
   entrypoint: "tail -f /dev/null",
   fs: [

@@ -14,7 +14,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,6 +34,7 @@ import (
 
 	"github.com/blasten/hive/internal/api"
 	"github.com/blasten/hive/internal/events"
+	"github.com/blasten/hive/internal/isolation"
 	"github.com/blasten/hive/internal/runc"
 	"github.com/blasten/hive/internal/sandboxd"
 	"github.com/blasten/hive/internal/snapshot"
@@ -95,6 +95,30 @@ func main() {
 	}
 	log.Printf("sandboxd: work dir = %s", *workDir)
 
+	// Docker sets the container hostname to the container's short ID, which
+	// is unique per sandbox. os.Getpid() is always 1 in the pod's PID
+	// namespace and cannot distinguish sandboxes sharing a host, so the
+	// hostname (not the pid) seeds the isolation backend's cgroup path.
+	podHostname, err := os.Hostname()
+	if err != nil {
+		log.Fatalf("get hostname: %v", err)
+	}
+	// The isolation backend abstracts the runtime boundary (container/runc
+	// vs. microvm/firecracker): overlayfs + FUSE assembly, egress firewall
+	// rules, the cgroup, and exec/launch all route through it.
+	isoKind, err := isolation.Parse(string(sp.Isolation))
+	if err != nil {
+		log.Fatalf("isolation: %v", err)
+	}
+	iso, err := isolation.New(isoKind, isolation.Config{
+		Hostname:    podHostname,
+		LocalMounts: isolationLocalMounts(sp.FS),
+	})
+	if err != nil {
+		log.Fatalf("isolation: %v", err)
+	}
+	log.Printf("sandboxd: isolation = %s", iso.Kind())
+
 	// Persist the parsed spec as the API's source-of-truth config so
 	// GET/PUT /v1/config have something to read/diff against from the
 	// first request. The on-disk format is gen.SandboxConfig JSON; the
@@ -136,6 +160,8 @@ func main() {
 	)
 	for i := range sp.FS {
 		f := &sp.FS[i]
+		// sbxfuse mounts onto f.Mount on the host (both backends); both dirs
+		// just need to exist.
 		if err := os.MkdirAll(f.Mount, 0o755); err != nil {
 			log.Fatalf("create mount point %s: %v", f.Mount, err)
 		}
@@ -170,7 +196,10 @@ func main() {
 	caCertPath := filepath.Join(*workDir, "sandbox-ca.crt")
 	caKeyPath := filepath.Join(*workDir, "sandbox-ca.key")
 
-	caCert := sandboxd.GenerateCaCert(caCertPath, caKeyPath)
+	// Generate the per-pod CA (written to caCertPath/caKeyPath). sbxproxy
+	// uses it to mint leaf certs; the backend later installs the cert PEM
+	// into the workload trust store via InstallCA.
+	sandboxd.GenerateCaCert(caCertPath, caKeyPath)
 	proxyArgs := []string{
 		"-transparent",
 		"-addr", proxyAddr,
@@ -194,15 +223,20 @@ func main() {
 	// rule MUST come first so the proxy's own upstream traffic isn't
 	// looped back; the loopback rule keeps in-pod localhost traffic
 	// (e.g. unit tests, future control sockets) untouched.
-	if err := installIptables(ctx, proxyPort, soMark); err != nil {
-		log.Fatalf("install iptables: %v", err)
+	if err := iso.RedirectEgress(ctx, proxyPort, soMark); err != nil {
+		log.Fatalf("install egress redirect: %v", err)
 	}
 	log.Printf("sandboxd: iptables OUTPUT nat redirect → %s installed (mark=0x%x)", proxyAddr, soMark)
 
-	// 2. sbxfuse — one daemon per fs entry. Each gets its own ACL file,
-	// audit log, mount point, and backend dir; remote backends also get
-	// their own oplog + uploader inside their own sbxfuse process so a
-	// stuck remote on one mount can't block writes to another.
+	// 2. sbxfuse — one daemon per fs entry, always on the host. Each gets its
+	// own ACL file, audit log, mount point, and backend dir; remote backends
+	// also get their own oplog + uploader inside their own sbxfuse process so
+	// a stuck remote on one mount can't block writes to another.
+	//
+	// The backend then exposes the host mount to the workload: a no-op bind
+	// for the container (shared mount namespace), or a 9p-over-vsock export
+	// for the microvm (the guest mounts it). Either way sbxfuse — with its
+	// ACLs, audit events, and remote backends — stays host-side.
 	fsSidecars := map[string]fsSidecar{}
 	for i := range sp.FS {
 		f := &sp.FS[i]
@@ -249,13 +283,18 @@ func main() {
 			log.Fatalf("fuse did not mount %s: %v", f.Mount, err)
 		}
 		fsSidecars[f.Mount] = fsSidecar{pid: fuseCmd.Process.Pid, aclPath: aclTmp}
+		// Expose the now-ready host mount to the workload (bind for container,
+		// 9p-over-vsock export for microvm).
+		if err := iso.ExportWorkspace(ctx, f.Mount); err != nil {
+			log.Fatalf("export workspace %s: %v", f.Mount, err)
+		}
 	}
 
 	// Reconcile sidecar policy whenever the API publishes a
 	// config.apply event: re-derive egress rules + per-mount ACLs from
-	// the persisted config, rewrite the files each sidecar reads on
-	// SIGHUP, and signal. Sidecars keep the current policy on read
-	// errors so a half-written file can't relax access by accident.
+	// the persisted config, rewrite the files each sidecar reads, and
+	// reload. Sidecars keep the current policy on read errors so a
+	// half-written file can't relax access by accident.
 	go reconcileSidecars(ctx, broker, proxyCmd.Process.Pid, configPath, rulesTmp, fsSidecars)
 
 	// 3. Agent. Egress + workspace are now mediated.
@@ -269,61 +308,34 @@ func main() {
 		imgCfg.Cmd = nil
 	}
 
-	// Seed each FUSE backend from the agent image's own rootfs: any
-	// content the image carries at the mount path (e.g. `COPY inputs/
-	// /workspace/inputs/` in the Dockerfile) gets moved into the
-	// backend so the agent sees it through the FUSE mount, with
-	// whatever access the ACLs grant. Move (not copy) so we don't
-	// keep two copies — runc's bind mount over the mount will hide
-	// whatever's left at <rootfs><mount> at runtime anyway.
+	// Seed each FUSE backend from the agent image's own rootfs: any content
+	// the image carries at the mount path (e.g. `COPY inputs/
+	// /workspace/inputs/` in the Dockerfile) gets moved into the host backend
+	// dir so the agent sees it through the FUSE mount. sbxfuse is host-side
+	// for both backends, so this is a plain host-side move.
 	log.Printf("sandboxd: agent image unpacked to %s", runc.RootfsDir)
 
 	for i := range sp.FS {
 		f := &sp.FS[i]
-		entries, err := os.ReadDir(filepath.Join(runc.RootfsDir, f.Mount))
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			src := filepath.Join(runc.RootfsDir, f.Mount, e.Name())
-			dst := filepath.Join(f.BackendPath(), e.Name())
-			if err := os.Rename(src, dst); err != nil {
-				if !errors.Is(err, syscall.EXDEV) {
-					log.Fatalf("seed from agent rootfs %s → %s: %v", src, dst, err)
-				}
-				if out, err := exec.Command("cp", "-a", src, dst).CombinedOutput(); err != nil {
-					log.Fatalf("seed from agent rootfs cp %s → %s: %v: %s", src, dst, err, out)
-				}
-				if err := os.RemoveAll(src); err != nil {
-					log.Fatalf("seed from agent rootfs rm %s: %v", src, err)
-				}
-			}
-		}
-		if len(entries) > 0 {
-			log.Printf("sandboxd: seeded %s from agent rootfs %s (%d entries)",
-				f.BackendPath(), filepath.Join(runc.RootfsDir, f.Mount), len(entries))
+		if err := isolation.SeedWorkspace(f.BackendPath(), filepath.Join(runc.RootfsDir, f.Mount)); err != nil {
+			log.Fatalf("seed fuse %s: %v", f.Mount, err)
 		}
 	}
 
-	// Mount overlayfs: lower=rootfs (base image, read-only), upper=upper
-	// (all sandbox writes), merged=container root. Must come after seeding
-	// so the seed reads clean image content from the lower layer directly.
-	if err := runc.MountOverlay(); err != nil {
-		log.Fatalf("mount overlayfs: %v", err)
+	// Assemble the agent root filesystem (overlay/drives). Must come after
+	// seeding so the seed reads clean image content.
+	if err := iso.MountRoot(); err != nil {
+		log.Fatalf("mount agent root filesystem: %v", err)
 	}
-	log.Printf("sandboxd: overlayfs mounted (lower=%s upper=%s merged=%s)", runc.RootfsDir, runc.ScratchDir, runc.MergedDir)
+	log.Printf("sandboxd: root filesystem assembled")
 
-	// snapshotMounts is derived from the initial FS list which never changes
-	// at runtime (mount add/remove is not supported).
-	snapshotMounts := localFSMounts(sp.FS)
-
-	// Restore snapshot before the container starts so the agent sees the
+	// Restore snapshot before the workload starts so the agent sees the
 	// previously snapshotted state on its first access.
 	if sp.Snapshot != nil && sp.Snapshot.RestoreKey != "" && *snapshotDir != "" {
 		src := snapshot.SnapshotPath(*snapshotDir, sp.Snapshot.RestoreKey)
 		if _, err := os.Stat(src); err == nil {
 			log.Printf("sandboxd: snapshot: restoring %s", src)
-			if err := snapshot.Restore(src, runc.UpperDir, snapshotMounts); err != nil {
+			if err := iso.RestoreSnapshot(src); err != nil {
 				log.Fatalf("snapshot restore: %v", err)
 			}
 		} else {
@@ -331,25 +343,18 @@ func main() {
 		}
 	}
 
-	sandboxd.AddCA(runc.MergedDir, caCert)
-
-	// Write the sandbox CA to a dedicated file in the agent rootfs so
-	// NODE_EXTRA_CA_CERTS can point at it. Node.js uses a bundled Mozilla
-	// root store and does not read the system CA bundle by default, so
-	// AddCA alone is not enough for TLS interception to succeed.
-	const agentCACertPath = "/etc/ssl/certs/sandbox-ca.crt"
+	// Install the sandbox CA into the workload trust store so sbxproxy can
+	// terminate TLS. The backend places it where the workload will see it
+	// (merged rootfs for container; the guest's trust store for microvm).
 	if caData, err := os.ReadFile(caCertPath); err == nil {
-		dest := filepath.Join(runc.MergedDir, agentCACertPath)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err == nil {
-			if err := os.WriteFile(dest, caData, 0o644); err != nil {
-				log.Printf("sandboxd: install sandbox CA for Node.js (%s): %v", dest, err)
-			}
+		if err := iso.InstallCA(caData); err != nil {
+			log.Printf("sandboxd: install sandbox CA: %v", err)
 		}
 	}
 
 	agentEnv := make(map[string]string, len(sp.Env)+1)
 	maps.Copy(agentEnv, sp.Env)
-	agentEnv["NODE_EXTRA_CA_CERTS"] = agentCACertPath
+	agentEnv["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
 
 	mounts := make([]runc.BindMount, 0, len(sp.FS)+2)
 	for i := range sp.FS {
@@ -368,52 +373,50 @@ func main() {
 		runc.BindMount{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
 	)
 
-	// Docker sets the container hostname to the container's short ID, which
-	// is unique per sandbox. os.Getpid() is always 1 in the container's PID
-	// namespace and cannot distinguish sandboxes running on the same host.
-	podHostname, err := os.Hostname()
-	if err != nil {
-		log.Fatalf("get hostname: %v", err)
-	}
-	containerID := fmt.Sprintf("agent-%d", os.Getpid())
-	if err := runc.WriteConfig(runc.BundleParams{
-		BundleDir:   runc.MntDir,
-		RootPath:    "merged",
+	// Hand the agent workload off to the isolation backend: it writes any
+	// runtime config it needs (the OCI bundle for runc) and returns the
+	// command that launches the workload, which we run through our own
+	// child supervisor for stdio streaming + lifecycle tracking.
+	agentBin, agentArgs, err := iso.LaunchAgent(isolation.AgentConfig{
 		ImageConfig: imgCfg,
-		ExtraEnv:    agentEnv,
-		Hostname:    "agent",
+		Env:         agentEnv,
 		Mounts:      mounts,
-		CgroupsPath: "/sandbox-" + podHostname,
-	}); err != nil {
-		log.Fatalf("write bundle config: %v", err)
+		Hostname:    podHostname,
+	})
+	if err != nil {
+		log.Fatalf("prepare agent: %v", err)
 	}
-	agentCmd, agentStdioDone, err := startChild(ctx, &children, "sandbox", "runc",
-		[]string{"run", "-b", runc.MntDir, containerID}, nil, nil,
+	agentCmd, agentStdioDone, err := startChild(ctx, &children, "sandbox", agentBin,
+		agentArgs, nil, nil,
 		publishAgentStdio(broker))
 	if err != nil {
-		log.Fatalf("start agent (runc): %v", err)
+		log.Fatalf("start agent: %v", err)
 	}
 
-	go api.PollResourceUsage(ctx, broker, "/sandbox-"+podHostname)
+	go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
 
 	s := api.NewSandboxServer(
 		*apiServerPort,
 		broker,
 		store,
 		lifetime,
-		runc.UpperDir)
+		iso)
 
 	// If the agent image exposes a service port (other than our own proxy
 	// port), start a TCP proxy at sandboxTCPProxyPort so the controller can
 	// publish one stable port (8081) without inspecting each image.
 	if imgCfg.ExposedPort != nil && *imgCfg.ExposedPort != sandboxTCPProxyPort {
+		// The backend knows where the workload's listener actually is:
+		// loopback in the shared pod netns (container) or the guest IP over
+		// the tap (microvm).
+		target := iso.ServiceProxyTarget(*imgCfg.ExposedPort)
 		tcpProxy := api.NewTCPProxy(
 			net.JoinHostPort("0.0.0.0", sandboxTCPProxyPort),
-			net.JoinHostPort("127.0.0.1", *imgCfg.ExposedPort),
+			target,
 			soMark,
 		)
 		go func() {
-			log.Printf("sandboxd: tcp proxy :%s → 127.0.0.1:%s", sandboxTCPProxyPort, *imgCfg.ExposedPort)
+			log.Printf("sandboxd: tcp proxy :%s → %s", sandboxTCPProxyPort, target)
 			if err := tcpProxy.Run(ctx); err != nil {
 				log.Printf("sandboxd: tcp proxy: %v", err)
 			}
@@ -458,17 +461,17 @@ func main() {
 					if sn.Include != nil {
 						userInclude = *sn.Include
 					}
-					include := effectiveInclude(userInclude, snapshotMounts)
+					include := effectiveInclude(userInclude, localFSMounts(sp.FS))
 					dst := snapshot.SnapshotPath(*snapshotDir, writeKey)
 					log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
-					if err := snapshot.Capture(dst, runc.UpperDir, snapshotMounts, include); err != nil {
+					if err := iso.CaptureSnapshot(dst, include); err != nil {
 						log.Printf("sandboxd: snapshot capture: %v", err)
 					}
 				}
 			}
 		}
 
-		if err := runc.UnmountOverlay(); err != nil {
+		if err := iso.UnmountRoot(); err != nil {
 			log.Printf("sandboxd: unmount overlayfs: %v", err)
 		}
 		if n := broker.SubscriberCount(); n > 0 {
@@ -707,6 +710,8 @@ func reconcileSidecars(ctx context.Context, broker *events.Broker, proxyPID int,
 					log.Printf("sandboxd: reconcile acls (%s): %v", base.Mount, err)
 					continue
 				}
+				// sbxfuse re-reads its ACL file on SIGHUP (host-side for both
+				// backends).
 				if err := syscall.Kill(sc.pid, syscall.SIGHUP); err != nil {
 					log.Printf("sandboxd: SIGHUP sbxfuse (mount=%s pid=%d): %v", base.Mount, sc.pid, err)
 					continue
@@ -798,6 +803,16 @@ func localFSMounts(fsList []spec.FS) []snapshot.MountSource {
 	return mounts
 }
 
+// isolationLocalMounts converts the local-backend FS list into the
+// backend-agnostic form the isolation backend snapshots against.
+func isolationLocalMounts(fsList []spec.FS) []isolation.SnapshotMount {
+	var out []isolation.SnapshotMount
+	for _, m := range localFSMounts(fsList) {
+		out = append(out, isolation.SnapshotMount{ContainerPath: m.ContainerPath, HostDir: m.HostDir})
+	}
+	return out
+}
+
 // effectiveInclude returns the snapshot include list with local FS mounts
 // appended automatically. This ensures local filesystems are always captured
 // even when the caller omits them from the explicit include list.
@@ -816,39 +831,4 @@ func effectiveInclude(userInclude []string, mounts []snapshot.MountSource) []str
 		}
 	}
 	return include
-}
-
-// installIptables sets up the OUTPUT-chain nat REDIRECT rules that make
-// the proxy transparent to the agent. Runs in the sandbox-pod's network
-// namespace, so the agent (which shares the netns) inherits these rules.
-//
-// Loopback is NOT exempted: an in-pod listener like sandboxd's own API
-// server at 127.0.0.1:8080 is just another egress target, and the agent
-// must be subject to the same allowlist for it as for the public
-// internet. Sandboxd's own readiness-probe dial to the proxy address
-// works because the proxy's transparent handler detects "SO_ORIGINAL_DST
-// equals LocalAddr" (no real NAT happened) and bails out early.
-//
-// Rule order:
-//  1. -m mark --mark <soMark> -j RETURN — proxy- and sbxfuse-originated
-//     upstream traffic is stamped with SO_MARK so it escapes the
-//     redirect, otherwise the proxy talks to itself.
-//  2. -p tcp -j REDIRECT --to-ports <proxyPort> — everything else,
-//     loopback included.
-//
-// Requires CAP_NET_ADMIN; the sandbox-pod runs --privileged for now.
-// resolveContainerHome returns the HOME directory of the process running
-
-func installIptables(ctx context.Context, proxyPort, soMark int) error {
-	rules := [][]string{
-		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", fmt.Sprintf("0x%x", soMark), "-j", "RETURN"},
-		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-j", "REDIRECT", "--to-ports", fmt.Sprintf("%d", proxyPort)},
-	}
-	for _, args := range rules {
-		out, err := exec.CommandContext(ctx, "iptables", args...).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("iptables %v: %w (%s)", args, err, bytes.TrimSpace(out))
-		}
-	}
-	return nil
 }

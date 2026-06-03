@@ -22,12 +22,34 @@ const BackendSuffix = "-backend"
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
 	Image      string             `json:"image,omitempty"`
+	Isolation  Isolation          `json:"isolation,omitempty"`
 	Entrypoint string             `json:"entrypoint,omitempty"`
 	Ttl        *int               `json:"ttl,omitempty"`
 	Env        map[string]string  `json:"env,omitempty"`
 	FS         []FS               `json:"fs"`
 	Egress     []proxy.EgressRule `json:"egress,omitempty"`
 	Snapshot   *Snapshot          `json:"snapshot,omitempty"`
+}
+
+// Isolation selects how the agent workload is confined. It mirrors
+// SandboxConfig.isolation in the API schema; the matching backends live in
+// [internal/isolation]. The empty value means "container" (runc) so configs
+// that predate the field keep their behaviour.
+type Isolation string
+
+const (
+	IsolationContainer Isolation = "container"
+	IsolationMicroVM   Isolation = "microvm"
+)
+
+// Valid reports whether the isolation is one sandboxd knows how to wire up.
+// The empty string is valid and resolves to [IsolationContainer].
+func (i Isolation) Valid() bool {
+	switch i {
+	case "", IsolationContainer, IsolationMicroVM:
+		return true
+	}
+	return false
 }
 
 // Snapshot controls how the sandbox upper layer is persisted and restored.
@@ -270,6 +292,9 @@ func Parse(path string) (*Spec, error) {
 
 // Validate enforces required-field invariants.
 func (s *Spec) Validate() error {
+	if !s.Isolation.Valid() {
+		return fmt.Errorf("isolation: unknown value %q (supported: %q, %q)", s.Isolation, IsolationContainer, IsolationMicroVM)
+	}
 	if len(s.FS) == 0 {
 		return errors.New("fs is required (at least one mount)")
 	}

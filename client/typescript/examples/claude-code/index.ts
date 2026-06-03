@@ -57,7 +57,7 @@ if (agent === "repro-cf") {
   await buildImage(sourceImage, join(here, "image-2"));
 } else {
   sourceImage = "hive-example-claude-worker";
-  imageTag = "hive-example-claude-worker-bundle";
+  imageTag = "hiveruntime/agent-cli:latest";
   sandboxName = "hive-claude-code-worker-1";
   sandboxEnv = {
     AGENT: agent,

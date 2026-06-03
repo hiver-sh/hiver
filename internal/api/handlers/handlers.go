@@ -2,12 +2,12 @@ package handlers
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -15,13 +15,10 @@ import (
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/events"
+	"github.com/blasten/hive/internal/isolation"
 	mcpapi "github.com/blasten/hive/internal/mcp"
-	"github.com/blasten/hive/internal/spec"
+	"github.com/blasten/hive/internal/mcp/tools"
 )
-
-// agentContainerID is the runc container ID sandboxd always assigns the
-// agent. sandboxd runs as PID 1 in the sandbox pod, so os.Getpid() == 1.
-const agentContainerID = "agent-1"
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still
 // running; the handler translates this to HTTP 409.
@@ -40,42 +37,92 @@ type SandboxHandlers struct {
 	broker     *events.Broker
 	store      configStore
 	lifetime   lifetime
-	upperDir   string       // host-side path of the overlayfs upper layer
-	processes  sync.Map     // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
-	mcpHandler http.Handler // MCP Streamable HTTP handler backed by the runc container
+	iso        isolation.Isolation // runtime boundary: exec + filesystem access
+	processes  sync.Map            // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
+	mcpHandler http.Handler        // MCP Streamable HTTP handler backed by the workload
 }
 
-func NewSandboxHandlers(broker *events.Broker, store configStore, lifetime lifetime, upperDir string) *SandboxHandlers {
+func NewSandboxHandlers(broker *events.Broker, store configStore, lifetime lifetime, iso isolation.Isolation) *SandboxHandlers {
 	h := &SandboxHandlers{
 		broker:   broker,
 		store:    store,
 		lifetime: lifetime,
-		upperDir: upperDir,
+		iso:      iso,
 	}
-	h.mcpHandler = mcpapi.NewContainerHandler(h.execCommand, h.resolveAgentPath)
+	h.mcpHandler = mcpapi.NewContainerHandler(h.execCommand, h.fsBridge())
 	return h
 }
 
+// fsBridge adapts the isolation backend's FileBridge to the MCP file tools'
+// FS, fetching the current FUSE mount list per call so path routing tracks
+// config updates.
+func (h *SandboxHandlers) fsBridge() tools.FS {
+	mounts := func() []string {
+		cfg, err := h.store.Get()
+		if err != nil {
+			return nil
+		}
+		return h.mountPaths(cfg)
+	}
+	return bridgeFS{files: h.iso.Files, mounts: mounts}
+}
+
+// bridgeFS implements tools.FS over the backend FileBridge. files is fetched
+// lazily so a backend swap (tests) or late init is respected.
+type bridgeFS struct {
+	files  func() isolation.FileBridge
+	mounts func() []string
+}
+
+func (b bridgeFS) ReadFile(path string) ([]byte, error) {
+	rc, _, err := b.files().Open(path, b.mounts())
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+func (b bridgeFS) WriteFile(path string, data []byte) error {
+	dir, name := filepath.Split(path)
+	_, err := b.files().Save(filepath.Clean(dir), name, b.mounts(), bytes.NewReader(data))
+	return err
+}
+
+func (b bridgeFS) ReadDir(path string) ([]tools.DirEntry, error) {
+	es, err := b.files().List(path, b.mounts())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tools.DirEntry, 0, len(es))
+	for _, e := range es {
+		out = append(out, tools.DirEntry{Name: e.Name, IsDir: e.IsDir, Size: e.Size})
+	}
+	return out, nil
+}
+
+func (b bridgeFS) Stat(path string) (tools.DirEntry, error) {
+	e, err := b.files().Stat(path, b.mounts())
+	if err != nil {
+		return tools.DirEntry{}, err
+	}
+	return tools.DirEntry{Name: e.Name, IsDir: e.IsDir, Size: e.Size}, nil
+}
+
 // execCommand is the core of the Exec handler: runs command inside the agent
-// container via runc exec and returns buffered stdout, stderr, and exit code.
-// A non-zero exit code is not treated as a Go error.
+// workload via the isolation backend and returns buffered stdout, stderr, and
+// exit code. A non-zero exit code is not treated as a Go error.
 func (h *SandboxHandlers) execCommand(ctx context.Context, command string, cwd *string, env *map[string]string) (stdout, stderr string, exitCode int, err error) {
-	if err = waitForContainer(ctx, agentContainerID); err != nil {
+	if err = h.iso.WaitReady(ctx); err != nil {
 		return
 	}
 
-	pidPath, err := newExecPIDFile()
+	cmd, cleanup, err := h.iso.ExecCmd(ctx, isolation.ExecConfig{Command: command, Cwd: cwd, Env: env})
 	if err != nil {
 		return
 	}
-	defer func() {
-		if ctx.Err() != nil {
-			killExecTree(pidPath)
-		}
-		os.Remove(pidPath)
-	}()
+	defer cleanup()
 
-	cmd := exec.CommandContext(ctx, "runc", buildRuncExecArgs(command, cwd, false, env, pidPath)...)
 	stdoutPipe, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
 		err = pipeErr
@@ -120,37 +167,6 @@ func (h *SandboxHandlers) execCommand(ctx context.Context, command string, cwd *
 	stdout = stdoutBuf.String()
 	stderr = stderrBuf.String()
 	return
-}
-
-// resolveAgentPath maps an agent-visible absolute path to its host-side path
-// by loading the current config and delegating to resolveHostPath.
-func (h *SandboxHandlers) resolveAgentPath(agentPath string) (string, error) {
-	cfg, err := h.store.Get()
-	if err != nil {
-		return "", err
-	}
-	return h.resolveHostPath(cfg, filepath.Clean(agentPath)), nil
-}
-
-// resolveHostPath maps an agent-visible absolute path to its host-side path.
-// FUSE mount backends take priority (longest-prefix match on cfg.Fs); all
-// other paths fall back to the overlayfs upper layer so the caller can read
-// or write any file the container has touched.
-func (h *SandboxHandlers) resolveHostPath(cfg gen.SandboxConfig, cleaned string) string {
-	var matchedMount string
-	for _, fs := range cfg.Fs {
-		m := fsBase(fs).Mount
-		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
-			if len(m) > len(matchedMount) {
-				matchedMount = m
-			}
-		}
-	}
-	if matchedMount != "" {
-		rel := strings.TrimPrefix(cleaned, matchedMount)
-		return filepath.Join(matchedMount+spec.BackendSuffix, rel)
-	}
-	return filepath.Join(h.upperDir, cleaned)
 }
 
 // fsBase decodes the variant-agnostic fields (mount, backend, acls)

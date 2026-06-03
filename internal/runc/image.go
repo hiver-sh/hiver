@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	MntDir     = "/mnt"
-	RootfsDir  = MntDir + "/rootfs"
+	MntDir    = "/mnt"
+	RootfsDir = MntDir + "/rootfs"
 	// ScratchDir is a tmpfs mounted by MountOverlay so that UpperDir and
 	// WorkDir are never on an overlay filesystem. Docker's overlay2 storage
 	// driver backs the container's root (including /mnt), and the kernel

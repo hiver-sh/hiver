@@ -1,66 +1,58 @@
-package handlers
+package isolation
 
 import (
 	"slices"
 	"testing"
 )
 
-func TestBuildRuncExecArgs(t *testing.T) {
+func TestContainerExecArgs(t *testing.T) {
+	const containerID = "agent-1"
+	c := &container{containerID: containerID}
 	cwd := "/workspace"
 	tests := []struct {
 		name    string
-		command string
-		cwd     *string
-		tty     bool
-		env     *map[string]string
+		cfg     ExecConfig
 		pidFile string
 		want    []string
 	}{
 		{
-			name:    "minimal",
-			command: "echo hi",
-			want:    []string{"exec", agentContainerID, "sh", "-c", "echo hi"},
+			name: "minimal",
+			cfg:  ExecConfig{Command: "echo hi"},
+			want: []string{"exec", containerID, "sh", "-c", "echo hi"},
 		},
 		{
-			name:    "cwd and tty",
-			command: "echo hi",
-			cwd:     &cwd,
-			tty:     true,
-			want:    []string{"exec", "--tty", "--cwd", "/workspace", agentContainerID, "sh", "-c", "echo hi"},
+			name: "cwd and tty",
+			cfg:  ExecConfig{Command: "echo hi", Cwd: &cwd, TTY: true},
+			want: []string{"exec", "--tty", "--cwd", "/workspace", containerID, "sh", "-c", "echo hi"},
 		},
 		{
-			name:    "env sorted deterministically",
-			command: "env",
-			env:     &map[string]string{"FOO": "1", "BAR": "2"},
-			want:    []string{"exec", "--env", "BAR=2", "--env", "FOO=1", agentContainerID, "sh", "-c", "env"},
+			name: "env sorted deterministically",
+			cfg:  ExecConfig{Command: "env", Env: &map[string]string{"FOO": "1", "BAR": "2"}},
+			want: []string{"exec", "--env", "BAR=2", "--env", "FOO=1", containerID, "sh", "-c", "env"},
 		},
 		{
-			name:    "nil env adds no flags",
-			command: "env",
-			env:     nil,
-			want:    []string{"exec", agentContainerID, "sh", "-c", "env"},
+			name: "nil env adds no flags",
+			cfg:  ExecConfig{Command: "env"},
+			want: []string{"exec", containerID, "sh", "-c", "env"},
 		},
 		{
 			name:    "pid file",
-			command: "echo hi",
+			cfg:     ExecConfig{Command: "echo hi"},
 			pidFile: "/tmp/x.pid",
-			want:    []string{"exec", "--pid-file", "/tmp/x.pid", agentContainerID, "sh", "-c", "echo hi"},
+			want:    []string{"exec", "--pid-file", "/tmp/x.pid", containerID, "sh", "-c", "echo hi"},
 		},
 		{
 			name:    "all flags ordered",
-			command: "run",
-			cwd:     &cwd,
-			tty:     true,
-			env:     &map[string]string{"A": "1"},
+			cfg:     ExecConfig{Command: "run", Cwd: &cwd, TTY: true, Env: &map[string]string{"A": "1"}},
 			pidFile: "/tmp/x.pid",
-			want:    []string{"exec", "--tty", "--cwd", "/workspace", "--pid-file", "/tmp/x.pid", "--env", "A=1", agentContainerID, "sh", "-c", "run"},
+			want:    []string{"exec", "--tty", "--cwd", "/workspace", "--pid-file", "/tmp/x.pid", "--env", "A=1", containerID, "sh", "-c", "run"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRuncExecArgs(tt.command, tt.cwd, tt.tty, tt.env, tt.pidFile)
+			got := c.execArgs(tt.cfg, tt.pidFile)
 			if !slices.Equal(got, tt.want) {
-				t.Errorf("buildRuncExecArgs() = %v, want %v", got, tt.want)
+				t.Errorf("execArgs() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -73,6 +73,7 @@ class Snapshot(BaseModel):
 
 class SandboxConfig(BaseModel):
     image: Optional[str] = None
+    isolation: Optional[Literal["container", "microvm"]] = None
     entrypoint: Optional[str] = None
     env: Optional[dict[str, str]] = None
     ttl: Optional[int] = Field(None, ge=0)

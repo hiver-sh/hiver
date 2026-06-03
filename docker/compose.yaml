@@ -2,7 +2,7 @@ name: hive
 
 services:
   controller:
-    image: docker.io/hiveruntime/controller:${TAG:-latest}
+    image: hiveruntime/controller:${TAG:-latest}
     build:
       context: ..
       dockerfile: docker/controller.Dockerfile
@@ -15,18 +15,25 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
   core:
-    image: docker.io/hiveruntime/core:${TAG:-latest}
+    image: hiveruntime/core:${TAG:-latest}
     profiles: ["build"]
     build:
       context: ..
       dockerfile: docker/core.Dockerfile
 
   bundler:
-    image: docker.io/hiveruntime/bundler:${TAG:-latest}
+    image: hiveruntime/bundler:${TAG:-latest}
     profiles: ["build"]
     build:
       context: ..
       dockerfile: docker/bundler.Dockerfile
+
+  agent-cli-standalone:
+    image: hiveruntime/agent-cli-standalone:${TAG:-latest}
+    profiles: ["build"]
+    build:
+      context: agent-cli
+      dockerfile: Dockerfile
 
 volumes:
   snapshots:

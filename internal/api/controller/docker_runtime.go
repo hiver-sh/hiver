@@ -18,7 +18,7 @@ import (
 
 const (
 	composeProject      = "hive"
-	defaultSandboxImage = "hive-sandbox-bundler"
+	defaultSandboxImage = "hiveruntime/agent-cli:latest"
 	sandboxAPIPort      = 8080
 	sandboxTCPProxyPort = 8081
 	labelSandboxID      = "hive.sandbox.id"
@@ -121,6 +121,16 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--security-opt", "seccomp=unconfined",
 		"-p", fmt.Sprintf("%d", sandboxAPIPort),
 		"-p", fmt.Sprintf("%d", sandboxTCPProxyPort),
+	}
+	// The microvm backend boots a firecracker guest: it needs /dev/kvm (the
+	// VMM) and /dev/net/tun (the tap device that carries guest egress). These
+	// are only passed for microvm so container sandboxes still run on hosts
+	// without KVM.
+	if cfg.Isolation != nil && *cfg.Isolation == sandboxgen.Microvm {
+		createArgs = append(createArgs,
+			"--device", "/dev/kvm",
+			"--device", "/dev/net/tun",
+		)
 	}
 	if cfg.Env != nil {
 		for k, v := range *cfg.Env {

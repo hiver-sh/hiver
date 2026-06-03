@@ -3,7 +3,7 @@ package handlers
 import (
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,16 +14,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// UploadFile writes a multipart-uploaded file under one of the
-// configured FUSE mounts. The `destination` form field must match a
-// configured `fs[].mount` exactly; the file lands at
-// `<destination>/<basename(filename)>` (the agent-visible path).
+// mountPaths returns the configured FUSE mount paths, which the backend's
+// FileBridge uses to route an agent path to its backing store.
+func (h *SandboxHandlers) mountPaths(cfg gen.SandboxConfig) []string {
+	out := make([]string, 0, len(cfg.Fs))
+	for _, f := range cfg.Fs {
+		out = append(out, fsBase(f).Mount)
+	}
+	return out
+}
+
+// UploadFile writes a multipart-uploaded file under one of the configured
+// FUSE mounts. The `destination` form field must match a configured
+// `fs[].mount` exactly; the file lands at `<destination>/<basename>`.
 //
-// The write bypasses the FUSE layer: we open the underlying backend
-// directory directly so the per-mount ACLs that gate the agent do
-// NOT apply. The API is a higher-privilege control surface than the
-// workload — operators seeding inputs over /v1/file should not have
-// to grant the agent rw on the same path.
+// The write goes through the backend's FileBridge, which bypasses the FUSE
+// layer's per-mount ACLs — the API is a higher-privilege control surface than
+// the workload, so operators seeding inputs shouldn't have to grant the agent
+// rw on the same path.
 func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	destination := c.PostForm("destination")
 	if destination == "" {
@@ -53,14 +61,6 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 		return
 	}
 
-	hostDir := h.resolveHostPath(cfg, cleaned)
-	if err := os.MkdirAll(hostDir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
-		return
-	}
-	hostTarget := filepath.Join(hostDir, name)
-	agentTarget := filepath.Join(cleaned, name)
-
 	src, err := header.Open()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
@@ -68,33 +68,17 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	}
 	defer src.Close()
 
-	dst, err := os.OpenFile(hostTarget, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	n, err := h.iso.Files().Save(cleaned, name, h.mountPaths(cfg), src)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
-	n, copyErr := io.Copy(dst, src)
-	closeErr := dst.Close()
-	if copyErr != nil {
-		_ = os.Remove(hostTarget)
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: copyErr.Error()})
-		return
-	}
-	if closeErr != nil {
-		_ = os.Remove(hostTarget)
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: closeErr.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"path": agentTarget, "bytes": n})
+	c.JSON(http.StatusOK, gin.H{"path": filepath.Join(cleaned, name), "bytes": n})
 }
 
-// ListDirectory returns the immediate children of a directory. For the
-// root path ("/") it lists the overlayfs upper layer so callers see every
-// path the container has written to. For any other path the read is served
-// from the FUSE mount backend when the path is under a configured mount,
-// falling back to the upper layer otherwise. Either way the read bypasses
-// sbxfuse ACLs.
+// ListDirectory returns the immediate children of a directory, served by the
+// backend's FileBridge (FUSE backend for paths under a mount, the writable
+// layer otherwise). The read bypasses sbxfuse ACLs.
 func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) {
 	path := params.Path
 	if path == "" {
@@ -112,15 +96,9 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectory
 		return
 	}
 
-	target := h.resolveHostPath(cfg, cleaned)
-
-	entries, err := os.ReadDir(target)
+	entries, err := h.iso.Files().List(cleaned, h.mountPaths(cfg))
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, os.ErrNotExist) {
-			status = http.StatusNotFound
-		}
-		c.JSON(status, gen.Error{Error: err.Error()})
+		c.JSON(fileErrStatus(err), gen.Error{Error: err.Error()})
 		return
 	}
 
@@ -132,27 +110,18 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectory
 	}
 	result := make([]dirEntry, 0, len(entries))
 	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		size := int64(0)
-		if !e.IsDir() {
-			size = info.Size()
-		}
 		result = append(result, dirEntry{
-			Name:  e.Name(),
-			Path:  filepath.Join(cleaned, e.Name()),
-			IsDir: e.IsDir(),
-			Size:  size,
+			Name:  e.Name,
+			Path:  filepath.Join(cleaned, e.Name),
+			IsDir: e.IsDir,
+			Size:  e.Size,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"entries": result})
 }
 
-// GetFile streams a file from the sandbox filesystem. The path resolves
-// via the same FUSE-backend-first / upper-layer-fallback logic as
-// ListDirectory, and bypasses sbxfuse ACLs.
+// GetFile streams a file from the sandbox filesystem via the backend's
+// FileBridge, bypassing sbxfuse ACLs.
 func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 	if params.Path == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
@@ -170,30 +139,23 @@ func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 		return
 	}
 
-	target := h.resolveHostPath(cfg, cleaned)
-
-	info, err := os.Stat(target)
+	rc, size, err := h.iso.Files().Open(cleaned, h.mountPaths(cfg))
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, os.ErrNotExist) {
-			status = http.StatusNotFound
-		}
-		c.JSON(status, gen.Error{Error: err.Error()})
+		c.JSON(fileErrStatus(err), gen.Error{Error: err.Error()})
 		return
 	}
-	if !info.Mode().IsRegular() {
-		c.JSON(http.StatusNotFound, gen.Error{Error: "not a regular file"})
-		return
-	}
-
-	f, err := os.Open(target)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
-		return
-	}
-	defer f.Close()
+	defer rc.Close()
 
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filepath.Base(cleaned)))
-	c.Header("Content-Length", strconv.FormatInt(info.Size(), 10))
-	c.DataFromReader(http.StatusOK, info.Size(), "application/octet-stream", f, nil)
+	c.Header("Content-Length", strconv.FormatInt(size, 10))
+	c.DataFromReader(http.StatusOK, size, "application/octet-stream", rc, nil)
+}
+
+// fileErrStatus maps a FileBridge error to an HTTP status, surfacing
+// not-found as 404.
+func fileErrStatus(err error) int {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
 }

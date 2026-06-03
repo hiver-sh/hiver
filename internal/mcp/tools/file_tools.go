@@ -1,11 +1,9 @@
 package tools
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -73,48 +71,87 @@ type GrepResponse struct {
 	Matches []GrepMatch `json:"matches"`
 }
 
-// FileTools implements file-system tool operations against a mounted volume.
-// ResolvePath maps an agent-visible absolute path to its host-side path.
-// When nil, paths are used as-is (suitable for the standalone MCP server).
-type FileTools struct {
-	ResolvePath func(agentPath string) (string, error)
+// DirEntry is one filesystem entry returned by an FS.
+type DirEntry struct {
+	Name  string
+	IsDir bool
+	Size  int64
 }
 
-func (f *FileTools) resolve(agentPath string) (string, error) {
-	if f.ResolvePath == nil {
-		return agentPath, nil
+// FS is the filesystem the file tools operate on, keyed by agent-visible
+// absolute paths. It is satisfied by the isolation backend's FileBridge (so
+// container and microvm both work) and by [OSFS] for the standalone server.
+type FS interface {
+	ReadFile(path string) ([]byte, error)
+	WriteFile(path string, data []byte) error
+	ReadDir(path string) ([]DirEntry, error)
+	Stat(path string) (DirEntry, error)
+}
+
+// FileTools implements file-system tool operations against an FS.
+type FileTools struct {
+	FS FS
+}
+
+// OSFS is a passthrough FS rooted at the host filesystem (paths used as-is),
+// for the standalone MCP server with no isolation backend.
+type OSFS struct{}
+
+func (OSFS) ReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
+func (OSFS) WriteFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	return f.ResolvePath(agentPath)
+	return os.WriteFile(path, data, 0o644)
+}
+func (OSFS) ReadDir(path string) ([]DirEntry, error) {
+	es, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DirEntry, 0, len(es))
+	for _, e := range es {
+		var size int64
+		if info, err := e.Info(); err == nil && !e.IsDir() {
+			size = info.Size()
+		}
+		out = append(out, DirEntry{Name: e.Name(), IsDir: e.IsDir(), Size: size})
+	}
+	return out, nil
+}
+func (OSFS) Stat(path string) (DirEntry, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return DirEntry{}, err
+	}
+	var size int64
+	if !info.IsDir() {
+		size = info.Size()
+	}
+	return DirEntry{Name: filepath.Base(path), IsDir: info.IsDir(), Size: size}, nil
+}
+
+func (f *FileTools) fs() FS {
+	if f.FS == nil {
+		return OSFS{}
+	}
+	return f.FS
 }
 
 func (f *FileTools) Read(_ context.Context, _ *mcpsdk.CallToolRequest, params *ReadParams) (*mcpsdk.CallToolResult, *ReadResponse, error) {
-	hostPath, err := f.resolve(params.Path)
+	data, err := f.fs().ReadFile(params.Path)
 	if err != nil {
 		return nil, nil, err
 	}
-
 	limit := params.Limit
 	if limit <= 0 {
 		limit = defaultReadLimit
 	}
 
-	file, err := os.Open(hostPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer file.Close()
-
-	sc := bufio.NewScanner(file)
-	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
-
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	var b strings.Builder
-	var taken, seen int
-	truncated := false
-	for sc.Scan() {
-		if seen < params.Offset {
-			seen++
-			continue
-		}
+	taken, truncated := 0, false
+	for i := params.Offset; i < len(lines); i++ {
 		if taken >= limit {
 			truncated = true
 			break
@@ -122,12 +159,8 @@ func (f *FileTools) Read(_ context.Context, _ *mcpsdk.CallToolRequest, params *R
 		if taken > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(sc.Text())
+		b.WriteString(lines[i])
 		taken++
-		seen++
-	}
-	if err := sc.Err(); err != nil {
-		return nil, nil, err
 	}
 	return nil, &ReadResponse{
 		Content:   b.String(),
@@ -138,25 +171,14 @@ func (f *FileTools) Read(_ context.Context, _ *mcpsdk.CallToolRequest, params *R
 }
 
 func (f *FileTools) Write(_ context.Context, _ *mcpsdk.CallToolRequest, params *WriteParams) (*mcpsdk.CallToolResult, *WriteResponse, error) {
-	hostPath, err := f.resolve(params.Path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(hostPath), 0o755); err != nil {
-		return nil, nil, err
-	}
-	if err := os.WriteFile(hostPath, []byte(params.Content), 0o644); err != nil {
+	if err := f.fs().WriteFile(params.Path, []byte(params.Content)); err != nil {
 		return nil, nil, err
 	}
 	return nil, &WriteResponse{Bytes: len(params.Content)}, nil
 }
 
 func (f *FileTools) Edit(_ context.Context, _ *mcpsdk.CallToolRequest, params *EditParams) (*mcpsdk.CallToolResult, *EditResponse, error) {
-	hostPath, err := f.resolve(params.Path)
-	if err != nil {
-		return nil, nil, err
-	}
-	data, err := os.ReadFile(hostPath)
+	data, err := f.fs().ReadFile(params.Path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -178,7 +200,7 @@ func (f *FileTools) Edit(_ context.Context, _ *mcpsdk.CallToolRequest, params *E
 		count = 1
 	}
 
-	if err := os.WriteFile(hostPath, []byte(out), 0o644); err != nil {
+	if err := f.fs().WriteFile(params.Path, []byte(out)); err != nil {
 		return nil, nil, err
 	}
 	return nil, &EditResponse{Replacements: count}, nil
@@ -187,34 +209,20 @@ func (f *FileTools) Edit(_ context.Context, _ *mcpsdk.CallToolRequest, params *E
 func (f *FileTools) Glob(_ context.Context, _ *mcpsdk.CallToolRequest, params *GlobParams) (*mcpsdk.CallToolResult, *GlobResponse, error) {
 	root := params.Root
 	if root == "" {
-		root = "."
+		root = "/"
 	}
-	hostRoot, err := f.resolve(root)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	var matches []string
-	err = filepath.WalkDir(hostRoot, func(hostPath string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(hostRoot, hostPath)
+	err := walkFS(f.fs(), root, func(path string, _ DirEntry) error {
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return nil
 		}
 		ok, _ := matchGlob(params.Pattern, rel)
 		if !ok {
-			ok, _ = matchGlob(params.Pattern, filepath.Base(hostPath))
+			ok, _ = matchGlob(params.Pattern, filepath.Base(path))
 		}
 		if ok {
-			matches = append(matches, filepath.Join(root, rel))
+			matches = append(matches, path)
 		}
 		return nil
 	})
@@ -230,52 +238,62 @@ func (f *FileTools) Grep(ctx context.Context, _ *mcpsdk.CallToolRequest, params 
 		return nil, nil, err
 	}
 
-	hostPath, err := f.resolve(params.Path)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	info, err := os.Stat(hostPath)
+	info, err := f.fs().Stat(params.Path)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	res := &GrepResponse{}
-	if !info.IsDir() {
-		matches, err := grepFile(re, hostPath)
+	if !info.IsDir {
+		data, err := f.fs().ReadFile(params.Path)
 		if err != nil {
 			return nil, nil, err
 		}
-		for _, m := range matches {
+		for _, m := range grepBytes(re, data) {
 			m.Path = params.Path
 			res.Matches = append(res.Matches, m)
 		}
 		return nil, res, nil
 	}
 
-	err = filepath.WalkDir(hostPath, func(hp string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
+	err = walkFS(f.fs(), params.Path, func(path string, _ DirEntry) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		matches, _ := grepFile(re, hp)
-		rel, _ := filepath.Rel(hostPath, hp)
-		agentPath := filepath.Join(params.Path, rel)
-		for _, m := range matches {
-			m.Path = agentPath
+		data, err := f.fs().ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		for _, m := range grepBytes(re, data) {
+			m.Path = path
 			res.Matches = append(res.Matches, m)
 		}
 		return nil
 	})
 	return nil, res, err
+}
+
+// walkFS recursively visits every regular file under root, calling fn with
+// the absolute agent path. Implemented on top of FS.ReadDir so it works for
+// both the host-backed and vsock-backed filesystems.
+func walkFS(fsys FS, root string, fn func(path string, e DirEntry) error) error {
+	entries, err := fsys.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		p := filepath.Join(root, e.Name)
+		if e.IsDir {
+			if err := walkFS(fsys, p, fn); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := fn(p, e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // matchGlob is like filepath.Match but supports "**" as "any number of path
@@ -327,30 +345,21 @@ func matchGlob(pattern, name string) (bool, error) {
 	return true, nil
 }
 
-func grepFile(re *regexp.Regexp, path string) ([]GrepMatch, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+// grepBytes returns the matching lines in data. Binary content (a NUL in the
+// first 512 bytes) is skipped.
+func grepBytes(re *regexp.Regexp, data []byte) []GrepMatch {
+	head := data
+	if len(head) > 512 {
+		head = head[:512]
 	}
-	defer f.Close()
-
-	head := make([]byte, 512)
-	n, _ := f.Read(head)
-	if bytes.IndexByte(head[:n], 0) >= 0 {
-		return nil, nil
+	if bytes.IndexByte(head, 0) >= 0 {
+		return nil
 	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return nil, err
-	}
-
 	var matches []GrepMatch
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for line := 1; scanner.Scan(); line++ {
-		text := scanner.Text()
-		if re.MatchString(text) {
-			matches = append(matches, GrepMatch{Path: path, Line: line, Text: text})
+	for i, line := range strings.Split(string(data), "\n") {
+		if re.MatchString(line) {
+			matches = append(matches, GrepMatch{Line: i + 1, Text: line})
 		}
 	}
-	return matches, scanner.Err()
+	return matches
 }

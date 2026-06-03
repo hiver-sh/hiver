@@ -15,6 +15,7 @@ import (
 	"time"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	"github.com/blasten/hive/internal/isolation"
 	"github.com/creack/pty"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/term"
@@ -105,7 +106,7 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context, id string) {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
 		return
 	}
-	if err := waitForContainer(c.Request.Context(), agentContainerID); err != nil {
+	if err := h.iso.WaitReady(c.Request.Context()); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gen.Error{Error: "container not ready: " + err.Error()})
 		return
 	}
@@ -154,32 +155,32 @@ func (h *SandboxHandlers) execStreamTTY(c *gin.Context, id string, req gen.ExecS
 		return
 	}
 
-	pidPath, err := newExecPIDFile()
+	cmd, cleanup, err := h.iso.ExecCmd(c.Request.Context(), isolation.ExecConfig{
+		Command: req.Command, Cwd: req.Cwd, Env: req.Env, TTY: true,
+	})
 	if err != nil {
 		master.Close()
 		slave.Close()
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: "pid file: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
-
-	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req.Command, req.Cwd, true, req.Env, pidPath)...)
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
-	// Make the outer pty runc's controlling terminal (Setsid makes runc a
-	// session leader; Setctty adopts fd 0 — the slave — as its controlling tty).
-	// Without this the kernel never delivers SIGWINCH to runc when we resize the
+	// Make the outer pty the runtime's controlling terminal (Setsid makes it
+	// a session leader; Setctty adopts fd 0 — the slave — as its controlling
+	// tty). Without this the kernel never delivers SIGWINCH when we resize the
 	// master, so window-size changes never reach the in-container pty and the
 	// program is stuck at the startup default size (stale content survives clears).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	if err := cmd.Start(); err != nil {
 		master.Close()
 		slave.Close()
-		os.Remove(pidPath)
+		cleanup()
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
-	slave.Close() // runc dup'd it at exec; the parent no longer needs it.
+	slave.Close() // the runtime dup'd it at exec; the parent no longer needs it.
 
 	// Gate stdin until the program is up: client writes that arrive while the
 	// program is still starting are buffered and flushed once it produces its
@@ -191,12 +192,8 @@ func (h *SandboxHandlers) execStreamTTY(c *gin.Context, id string, req gen.ExecS
 	defer func() {
 		h.processes.Delete(id)
 		master.Close()
-		// On client abort the in-container process may still be running and
-		// orphaned; kill the whole tree. On normal exit it has already gone.
-		if c.Request.Context().Err() != nil {
-			killExecTree(pidPath)
-		}
-		os.Remove(pidPath)
+		// cleanup reaps the in-workload process tree on client abort.
+		cleanup()
 	}()
 	relTimer := time.AfterFunc(2*time.Second, func() { _ = stdin.release() })
 	defer relTimer.Stop()
@@ -242,33 +239,33 @@ func (h *SandboxHandlers) execStreamPipes(c *gin.Context, id string, req gen.Exe
 	reqEventID := h.publishExecRequest(gen.ExecRequest{Command: req.Command, Cwd: req.Cwd})
 	w := c.Writer
 
-	pidPath, err := newExecPIDFile()
+	cmd, cleanup, err := h.iso.ExecCmd(c.Request.Context(), isolation.ExecConfig{
+		Command: req.Command, Cwd: req.Cwd, Env: req.Env,
+	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: "pid file: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
-
-	cmd := exec.CommandContext(c.Request.Context(), "runc", buildRuncExecArgs(req.Command, req.Cwd, false, req.Env, pidPath)...)
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		os.Remove(pidPath)
+		cleanup()
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		os.Remove(pidPath)
+		cleanup()
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		os.Remove(pidPath)
+		cleanup()
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
 	if err := cmd.Start(); err != nil {
-		os.Remove(pidPath)
+		cleanup()
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
@@ -277,12 +274,8 @@ func (h *SandboxHandlers) execStreamPipes(c *gin.Context, id string, req gen.Exe
 	defer func() {
 		h.processes.Delete(id)
 		stdinPipe.Close()
-		// On client abort the in-container process may still be running and
-		// orphaned; kill the whole tree. On normal exit it has already gone.
-		if c.Request.Context().Err() != nil {
-			killExecTree(pidPath)
-		}
-		os.Remove(pidPath)
+		// cleanup reaps the in-workload process tree on client abort.
+		cleanup()
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
