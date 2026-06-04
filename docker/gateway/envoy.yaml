@@ -20,7 +20,7 @@ static_resources:
                           local path = request_handle:headers():get(":path")
                           local id = path:match("^/sandbox/([^/?#]+)")
                           if id then
-                            request_handle:headers():replace(":authority", "hive-sandbox-" .. id .. ":8080")
+                            request_handle:headers():replace(":authority", "hive-sandbox-" .. id .. ":8099")
                           end
                         end
                   - name: envoy.filters.http.dynamic_forward_proxy

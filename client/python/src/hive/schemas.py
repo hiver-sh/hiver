@@ -112,7 +112,6 @@ class ApiError(BaseModel):
 
 class SandboxRef(BaseModel):
     id: str
-    exposed_endpoint: Optional[str] = None
 
 
 

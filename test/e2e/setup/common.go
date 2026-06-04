@@ -32,7 +32,7 @@ const (
 	upstreamDeniedPort  = 17081
 	// sandboxd's API + SSE port inside the pod, published to the host
 	// so the e2e harness can subscribe to /v1/events.
-	apiServerPort = 8080
+	apiServerPort = 8099
 )
 
 // RunFixtureE2E orchestrates a single end-to-end run for the named

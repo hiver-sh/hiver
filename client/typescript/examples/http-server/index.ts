@@ -1,10 +1,8 @@
-// Uses a custom Docker image and consume the sandbox event stream.
-// `getEventsStream` handles resume on its own: if the underlying
-// SSE connection drops, it reconnects with the last id observed,
-// so no events are missed across a transient blip. The caller
-// doesn't track a cursor.
+// Demonstrates proxying HTTP requests to a service running inside the sandbox.
+// The sandbox image runs two echo servers (EXPOSE 8080, 9000) that return the
+// incoming request (method, URL, headers, body) as JSON.
 //
-// Run with: npx tsx examples/custom-image
+// Run with: npx tsx examples/http-server
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,8 +11,8 @@ import { createShutdown } from "../shutdown.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../../../..");
-const sourceImage = "hive-node-example-image";
-const imageTag = "node-example-image-bundle";
+const sourceImage = "hive-http-server-image";
+const imageTag = "http-server-image-bundle";
 const scriptPath = join(repoRoot, "scripts/bundle-images.sh");
 
 console.log(`> Building image ${sourceImage}`);
@@ -24,36 +22,38 @@ console.log(`> Building sandbox bundle ${imageTag}`);
 await buildBundle(scriptPath, sourceImage, imageTag);
 
 console.log("> Starting sandbox");
-const sandbox = await hive.getOrCreateSandbox("hive-example", {
+const sandbox = await hive.getOrCreateSandbox("hive-http-server-example", {
   image: imageTag,
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
-  egress: [
-    {
-      access: "allow",
-      host: "github.com",
-      paths: ["/blasten/hive"],
-    },
-    {
-      access: "allow",
-      host: "www.google.com",
-    },
-  ],
 });
 
-const { ac, shutdown } = createShutdown(sandbox);
+const { shutdown } = createShutdown(sandbox);
 
-console.log("> Streaming events");
-for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
-  console.info("sandbox event", event);
-}
+// Give the server time to start inside the container.
+await new Promise((r) => setTimeout(r, 2000));
+
+// port 8080 — full echo server
+await request(8080, "GET", "/hello?foo=bar");
+await request(8080, "POST", "/echo", "hello from the sandbox client");
+
+// port 9000 — second service
+await request(9000, "GET", "/ping");
 
 await shutdown();
+
+async function request(port: number, method: string, path: string, body?: string): Promise<void> {
+  const url = `${sandbox.proxyUrl(port)}${path}`;
+  console.log(`\n> ${method} ${url}`);
+
+  const res = await fetch(url, {
+    method,
+    body,
+    headers: body ? { "content-type": "text/plain" } : undefined,
+  });
+
+  const text = await res.text();
+  console.log(`< ${res.status} ${res.statusText}`);
+  console.log(text);
+}
 
 function buildImage(tag: string, contextDir: string): Promise<void> {
   return spawnOk("docker", ["build", "-t", tag, contextDir]);

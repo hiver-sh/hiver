@@ -31,7 +31,7 @@ router.get("/events", async (req: Request, res: Response) => {
 router.get("/", async (req: Request, res: Response) => {
   try {
     const sandboxes = await listSandboxes({ gatewayUrl: gatewayUrl(req) });
-    res.json(sandboxes.map((s) => ({ id: s.id, exposed_endpoint: s.exposedEndpoint })));
+    res.json(sandboxes.map((s) => ({ id: s.id })));
   } catch (err) {
     res.status(502).json({ error: String(err) });
   }
@@ -44,7 +44,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       req.body as SandboxConfig,
       { gatewayUrl: gatewayUrl(req) },
     );
-    res.json({ id: sandbox.id, exposed_endpoint: sandbox.exposedEndpoint });
+    res.json({ id: sandbox.id });
   } catch (err) {
     res.status(502).json({ error: String(err) });
   }

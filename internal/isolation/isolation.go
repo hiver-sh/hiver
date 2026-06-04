@@ -160,10 +160,6 @@ type Isolation interface {
 	// traffic) so they aren't redirected back into the proxy.
 	RedirectEgress(ctx context.Context, proxyPort, mark int) error
 
-	// ServiceProxyTarget returns the host-reachable address of the agent
-	// image's exposed service port, so sandboxd's TCP proxy can forward to
-	// it (loopback for container, the guest IP for microvm).
-	ServiceProxyTarget(port string) string
 
 	// CgroupPath is the absolute cgroup the workload runs under, used both
 	// to confine it (written into the runtime config) and to read resource

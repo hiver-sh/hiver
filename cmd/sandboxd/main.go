@@ -46,12 +46,6 @@ import (
 const (
 	defaultTtl = 1800 * time.Second
 
-	// sandboxTCPProxyPort is the well-known port sandboxd listens on as a TCP
-	// proxy, forwarding to the agent image's declared service port. The
-	// controller always publishes this port so it never has to inspect the
-	// image itself.
-	sandboxTCPProxyPort = "8081"
-
 	mountReadTimout = 35 * time.Second
 
 	// drainTimeout caps how long we'll wait for /v1/events subscribers
@@ -75,7 +69,7 @@ func main() {
 		specPath      = flag.String("spec", "", "path to the sandbox spec JSON (required)")
 		proxyBin      = flag.String("proxy-bin", "sbxproxy", "path to sbxproxy binary")
 		fuseBin       = flag.String("fuse-bin", "sbxfuse", "path to sbxfuse binary")
-		apiServerPort = flag.String("api-server-port", "8080", "port of the API server")
+		apiServerPort = flag.String("api-server-port", "8099", "port of the API server")
 		workDir       = flag.String("work-dir", "/run/sandboxd", "directory for sandboxd's internal scratch (CA cert, rules JSON, ACL files, persisted config)")
 		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored; required for snapshot support")
 	)
@@ -400,28 +394,9 @@ func main() {
 		broker,
 		store,
 		lifetime,
-		iso)
+		iso,
+		soMark)
 
-	// If the agent image exposes a service port (other than our own proxy
-	// port), start a TCP proxy at sandboxTCPProxyPort so the controller can
-	// publish one stable port (8081) without inspecting each image.
-	if imgCfg.ExposedPort != nil && *imgCfg.ExposedPort != sandboxTCPProxyPort {
-		// The backend knows where the workload's listener actually is:
-		// loopback in the shared pod netns (container) or the guest IP over
-		// the tap (microvm).
-		target := iso.ServiceProxyTarget(*imgCfg.ExposedPort)
-		tcpProxy := api.NewTCPProxy(
-			net.JoinHostPort("0.0.0.0", sandboxTCPProxyPort),
-			target,
-			soMark,
-		)
-		go func() {
-			log.Printf("sandboxd: tcp proxy :%s → %s", sandboxTCPProxyPort, target)
-			if err := tcpProxy.Run(ctx); err != nil {
-				log.Printf("sandboxd: tcp proxy: %v", err)
-			}
-		}()
-	}
 
 	// Start the TTL countdown from when the API is reachable, not from
 	// sandboxd startup. Image unpacking can take several seconds, which

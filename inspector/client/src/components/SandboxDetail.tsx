@@ -470,7 +470,6 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               <Terminal
                 sandboxId={sandbox.id}
                 serverUrl={serverUrl}
-                exposedEndpoint={sandbox.exposed_endpoint}
                 initCommand={initCommand}
               />
             </div>

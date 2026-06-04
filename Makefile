@@ -9,7 +9,7 @@ build: $(CMDS) ## Build all cmd binaries into bin/
 
 build-images: ## Build docker images
 	docker compose -f docker/compose.yaml --profile build build controller core gateway
-# 	./scripts/bundle-images.sh hiveruntime/agent-cli-standalone hyve/agent-cli
+# 	./scripts/bundle-images.sh hiveruntime/agent-cli-standalone hive/agent-cli
 
 publish-images: build-images ## Build and push images to the registry (override tag with TAG=...)
 	docker compose -f docker/compose.yaml push controller core gateway

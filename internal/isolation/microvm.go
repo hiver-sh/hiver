@@ -187,11 +187,6 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, mark int) error
 	return nil
 }
 
-// ServiceProxyTarget returns the guest IP plus the exposed port: the guest
-// runs the service on its own stack, reachable from the host over the tap.
-func (m *microvm) ServiceProxyTarget(port string) string {
-	return guestIP + ":" + port
-}
 
 func (m *microvm) CgroupPath() string { return m.cgroupPath }
 

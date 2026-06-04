@@ -58,8 +58,7 @@ func (r *K8sRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	if pod.Status.Phase != corev1.PodRunning {
 		return false, gen.Sandbox{}, nil
 	}
-	ep := r.tcpProxyEndpoint(name)
-	return true, gen.Sandbox{Id: id, ExposedEndpoint: &ep}, nil
+	return true, gen.Sandbox{Id: id}, nil
 }
 
 func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
@@ -75,8 +74,7 @@ func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 			continue
 		}
 		id := pod.Labels[labelSandboxID]
-		ep := r.tcpProxyEndpoint(pod.Name)
-		sandboxes = append(sandboxes, gen.Sandbox{Id: id, ExposedEndpoint: &ep})
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id})
 	}
 	return sandboxes, nil
 }
@@ -111,8 +109,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 					Image: r.imageFor(cfg),
 					Args:  []string{"--spec", "/mnt/spec.json"},
 					Ports: []corev1.ContainerPort{
-						{ContainerPort: 8080},
-						{ContainerPort: sandboxTCPProxyPort},
+						{ContainerPort: 8099},
 					},
 					Env: r.envVars(cfg),
 					SecurityContext: &corev1.SecurityContext{
@@ -145,8 +142,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 		Spec: corev1.ServiceSpec{
 			Selector: labels,
 			Ports: []corev1.ServicePort{
-				{Port: 8080, Protocol: corev1.ProtocolTCP},
-				{Port: sandboxTCPProxyPort, Protocol: corev1.ProtocolTCP},
+				{Port: 8099, Protocol: corev1.ProtocolTCP},
 			},
 		},
 	}
@@ -156,8 +152,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 		return gen.Sandbox{}, fmt.Errorf("create service: %w", err)
 	}
 
-	ep := r.tcpProxyEndpoint(name)
-	return gen.Sandbox{Id: id, ExposedEndpoint: &ep}, nil
+	return gen.Sandbox{Id: id}, nil
 }
 
 func (r *K8sRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
@@ -185,9 +180,6 @@ func (r *K8sRuntime) Shutdown(id string) error {
 	return nil
 }
 
-func (r *K8sRuntime) tcpProxyEndpoint(svcName string) string {
-	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", svcName, r.namespace, sandboxTCPProxyPort)
-}
 
 func (r *K8sRuntime) imageFor(cfg sandboxgen.SandboxConfig) string {
 	if cfg.Image != nil && *cfg.Image != "" {

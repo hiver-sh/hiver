@@ -135,11 +135,6 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, mark int) err
 	return nil
 }
 
-// ServiceProxyTarget returns the loopback address of the exposed port; the
-// agent shares the pod netns so its listener is reachable on 127.0.0.1.
-func (c *container) ServiceProxyTarget(port string) string {
-	return "127.0.0.1:" + port
-}
 
 // --- capability 3: cgroup ---
 

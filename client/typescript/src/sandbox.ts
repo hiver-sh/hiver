@@ -65,12 +65,6 @@ export class Sandbox {
   readonly id: string;
   /** Base URL of the per-sandbox API server. */
   readonly apiServerUrl: string;
-  /**
-   * Host and port of the HTTP service the sandbox image exposes (the first
-   * TCP port from its EXPOSE directive), e.g. `"localhost:32768"`.
-   * `undefined` when the image declares no EXPOSE port.
-   */
-  readonly exposedEndpoint: string | undefined;
 
   /**
    * URL of the MCP Streamable HTTP endpoint (`/v1/mcp`) for this sandbox.
@@ -78,13 +72,19 @@ export class Sandbox {
    */
   readonly mcpEndpoint: string;
 
+  /**
+   * Returns the base proxy URL for a specific port inside the sandbox.
+   * Append the path to get a full URL, e.g. `sandbox.proxyUrl(8080) + "/health"`.
+   */
+  readonly proxyUrl: (port: number | string) => string;
+
   readonly fetchImpl: typeof fetch;
 
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.id)}`;
-    this.exposedEndpoint = ref.exposed_endpoint;
     this.mcpEndpoint = `${this.apiServerUrl}/v1/mcp`;
+    this.proxyUrl = (port) => `${this.apiServerUrl}/v1/proxy/${port}`;
     this.fetchImpl = opts.fetch ?? fetch;
   }
 

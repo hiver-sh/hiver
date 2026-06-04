@@ -34,20 +34,22 @@ type lifetime interface {
 }
 
 type SandboxHandlers struct {
-	broker     *events.Broker
-	store      configStore
-	lifetime   lifetime
-	iso        isolation.Isolation // runtime boundary: exec + filesystem access
-	processes  sync.Map            // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
-	mcpHandler http.Handler        // MCP Streamable HTTP handler backed by the workload
+	broker      *events.Broker
+	store       configStore
+	lifetime    lifetime
+	iso         isolation.Isolation // runtime boundary: exec + filesystem access
+	processes  sync.Map     // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
+	mcpHandler http.Handler // MCP Streamable HTTP handler backed by the workload
+	netMark    int          // SO_MARK for the reverse proxy dialer, bypasses iptables REDIRECT
 }
 
-func NewSandboxHandlers(broker *events.Broker, store configStore, lifetime lifetime, iso isolation.Isolation) *SandboxHandlers {
+func NewSandboxHandlers(broker *events.Broker, store configStore, lifetime lifetime, iso isolation.Isolation, netMark int) *SandboxHandlers {
 	h := &SandboxHandlers{
 		broker:   broker,
 		store:    store,
 		lifetime: lifetime,
 		iso:      iso,
+		netMark:  netMark,
 	}
 	h.mcpHandler = mcpapi.NewContainerHandler(h.execCommand, h.fsBridge())
 	return h

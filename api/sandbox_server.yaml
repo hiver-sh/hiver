@@ -10,7 +10,7 @@ info:
     required to converge the running sandbox to that state.
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:8099
     description: Sandbox config endpoint.
 
 tags:
@@ -465,6 +465,61 @@ paths:
           content:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
+
+  /v1/proxy/{port}/{path}:
+    parameters:
+      - name: port
+        in: path
+        required: true
+        schema:
+          type: string
+        description: |
+          Port of the service running inside the sandbox to forward to
+          (e.g. `8080`). Maps directly to the port the sandbox process is
+          listening on.
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+        description: |
+          Path to forward to the inner sandbox's exposed port.
+          The proxy strips `/v1/proxy/{port}/` and forwards the remainder.
+    get:
+      tags: [Proxy]
+      summary: Proxy a GET request to the sandbox's exposed port.
+      operationId: proxyGet
+      responses: &proxy_responses
+        '200':
+          description: Response from the inner sandbox.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+    head:
+      tags: [Proxy]
+      summary: Proxy a HEAD request to the sandbox's exposed port.
+      operationId: proxyHead
+      responses: *proxy_responses
+    post:
+      tags: [Proxy]
+      summary: Proxy a POST request to the sandbox's exposed port.
+      operationId: proxyPost
+      responses: *proxy_responses
+    put:
+      tags: [Proxy]
+      summary: Proxy a PUT request to the sandbox's exposed port.
+      operationId: proxyPut
+      responses: *proxy_responses
+    patch:
+      tags: [Proxy]
+      summary: Proxy a PATCH request to the sandbox's exposed port.
+      operationId: proxyPatch
+      responses: *proxy_responses
+    delete:
+      tags: [Proxy]
+      summary: Proxy a DELETE request to the sandbox's exposed port.
+      operationId: proxyDelete
+      responses: *proxy_responses
 
   /v1/ping:
     get:

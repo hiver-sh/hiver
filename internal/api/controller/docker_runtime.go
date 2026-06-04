@@ -19,7 +19,6 @@ import (
 const (
 	composeProject      = "hive"
 	defaultSandboxImage = "hiveruntime/agent-cli:latest"
-	sandboxTCPProxyPort = 8081
 	labelSandboxID      = "hive.sandbox.id"
 )
 
@@ -39,7 +38,7 @@ func (r *DockerRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	if !running {
 		return false, gen.Sandbox{}, nil
 	}
-	sb := gen.Sandbox{Id: id, ExposedEndpoint: lookupTCPProxyEndpoint(name)}
+	sb := gen.Sandbox{Id: id}
 	return true, sb, nil
 }
 
@@ -53,7 +52,7 @@ func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
 	sandboxes := make([]gen.Sandbox, 0, len(names))
 	for _, name := range names {
 		id := strings.TrimPrefix(name, prefix)
-		sandboxes = append(sandboxes, gen.Sandbox{Id: id, ExposedEndpoint: lookupTCPProxyEndpoint(name)})
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id})
 	}
 	return sandboxes, nil
 }
@@ -102,7 +101,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--cap-add", "CHOWN",
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
-		"-p", fmt.Sprintf("%d", sandboxTCPProxyPort),
+
 	}
 	// The microvm backend boots a firecracker guest: it needs /dev/kvm (the
 	// VMM) and /dev/net/tun (the tap device that carries guest egress). These
@@ -151,7 +150,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		return gen.Sandbox{}, fmt.Errorf("docker start %s: %v: %s", image, err, out)
 	}
 
-	return gen.Sandbox{Id: id, ExposedEndpoint: lookupTCPProxyEndpoint(containerName)}, nil
+	return gen.Sandbox{Id: id}, nil
 }
 
 func (r *DockerRuntime) Shutdown(id string) error {
@@ -272,19 +271,4 @@ func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycle
 	return ch, nil
 }
 
-// lookupTCPProxyEndpoint returns "localhost:<hostPort>" for the container's
-// published TCP proxy port, or nil if the port isn't mapped.
-func lookupTCPProxyEndpoint(container string) *string {
-	out, err := exec.Command("docker", "port", container, fmt.Sprintf("%d/tcp", sandboxTCPProxyPort)).CombinedOutput()
-	if err != nil {
-		return nil
-	}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
-		if _, port, ok := strings.Cut(line, ":"); ok && strings.HasPrefix(line, "0.0.0.0:") {
-			s := "localhost:" + port
-			return &s
-		}
-	}
-	return nil
-}
 

@@ -77,12 +77,6 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 	if created.Id != id {
 		t.Errorf("sandbox.id = %q, want %q", created.Id, id)
 	}
-	// Endpoint is host-published on a kernel-picked port:
-	// http://127.0.0.1:<NNNNN>. We assert the prefix and that the
-	// port parses as an int — the actual port is dynamic.
-	if !strings.HasPrefix(created.Endpoint, "http://127.0.0.1:") {
-		t.Errorf("sandbox.endpoint = %q, want prefix http://127.0.0.1:", created.Endpoint)
-	}
 
 	// The container exists on the host daemon and is grouped into
 	// the hive compose project.
@@ -94,11 +88,11 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 	}
 
 	// The sandbox's per-pod API server (sandboxd) is reachable via the
-	// returned endpoint from any peer on hive_default. Round-trip
-	// GET /v1/config and assert the response carries the workspace
-	// mount we passed in — that proves both that sandboxd booted and
-	// that it loaded the spec we copied in.
-	cfg := sandboxGetConfig(t, created.Endpoint, 60*time.Second)
+	// gateway at /sandbox/{id}/. Round-trip GET /v1/config and assert
+	// the response carries the workspace mount we passed in — that
+	// proves both that sandboxd booted and that it loaded the spec.
+	sandboxBase := controllerURL + "/sandbox/" + id
+	cfg := sandboxGetConfig(t, sandboxBase, 60*time.Second)
 	if !strings.Contains(cfg, `"mount":"/workspace"`) {
 		t.Errorf("sandbox /v1/config: missing /workspace mount; got %s", cfg)
 	}
