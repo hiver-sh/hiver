@@ -2,18 +2,18 @@ import pytest
 import httpx
 import respx
 
-from hive.controller import DEFAULT_CONTROLLER_URL, get_or_create_sandbox, shutdown
+from hive.controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox, shutdown
 from hive.sandbox import Sandbox, SandboxError
 from hive.schemas import SandboxConfig, SandboxRef
 
-SANDBOX_REF = {"id": "test-sandbox", "endpoint": "http://sandbox:8080"}
+SANDBOX_REF = {"id": "test-sandbox"}
 BASE_CONFIG = SandboxConfig.model_validate(
     {"fs": [{"backend": "local", "mount": "/workspace"}]}
 )
 
 
 def make_sandbox() -> Sandbox:
-    return Sandbox(SandboxRef(id="test-sandbox", endpoint="http://sandbox:8080"))
+    return Sandbox(SandboxRef(id="test-sandbox"), DEFAULT_GATEWAY_URL)
 
 
 # get_or_create_sandbox
@@ -23,7 +23,7 @@ def make_sandbox() -> Sandbox:
 @respx.mock
 async def test_get_or_create_sandbox_sends_put_with_json_body() -> None:
     route = respx.put(
-        f"{DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox"
+        f"{DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox"
     ).mock(return_value=httpx.Response(200, json=SANDBOX_REF))
 
     await get_or_create_sandbox("test-sandbox", BASE_CONFIG, timeout_s=0)
@@ -40,19 +40,19 @@ async def test_get_or_create_sandbox_sends_put_with_json_body() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_or_create_sandbox_returns_sandbox_with_correct_id_and_endpoint_on_200() -> None:
-    respx.put(f"{DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox").mock(
+    respx.put(f"{DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox").mock(
         return_value=httpx.Response(200, json=SANDBOX_REF)
     )
     sandbox = await get_or_create_sandbox("test-sandbox", BASE_CONFIG, timeout_s=0)
     assert isinstance(sandbox, Sandbox)
     assert sandbox.id == "test-sandbox"
-    assert sandbox.api_server_url == "http://sandbox:8080"
+    assert sandbox.api_server_url == f"{DEFAULT_GATEWAY_URL}/sandbox/test-sandbox"
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_or_create_sandbox_returns_sandbox_on_201() -> None:
-    respx.put(f"{DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox").mock(
+    respx.put(f"{DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox").mock(
         return_value=httpx.Response(201, json=SANDBOX_REF)
     )
     sandbox = await get_or_create_sandbox("test-sandbox", BASE_CONFIG, timeout_s=0)
@@ -61,14 +61,14 @@ async def test_get_or_create_sandbox_returns_sandbox_on_201() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_get_or_create_sandbox_uses_custom_controller_url() -> None:
-    route = respx.put("http://custom-controller:1234/v1/sandboxes/test-sandbox").mock(
+async def test_get_or_create_sandbox_uses_custom_gateway_url() -> None:
+    route = respx.put("http://custom-gateway:1234/controller/v1/sandboxes/test-sandbox").mock(
         return_value=httpx.Response(200, json=SANDBOX_REF)
     )
     await get_or_create_sandbox(
         "test-sandbox",
         BASE_CONFIG,
-        controller_url="http://custom-controller:1234",
+        gateway_url="http://custom-gateway:1234",
         timeout_s=0,
     )
     assert route.called
@@ -83,7 +83,7 @@ async def test_get_or_create_sandbox_raises_for_invalid_id() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_or_create_sandbox_raises_sandbox_error_on_4xx() -> None:
-    respx.put(f"{DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox").mock(
+    respx.put(f"{DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox").mock(
         return_value=httpx.Response(409, json={"error": "conflict"})
     )
     with pytest.raises(SandboxError) as exc:
@@ -95,7 +95,7 @@ async def test_get_or_create_sandbox_raises_sandbox_error_on_4xx() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_or_create_sandbox_raises_sandbox_error_on_connection_refused() -> None:
-    respx.put(f"{DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox").mock(
+    respx.put(f"{DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox").mock(
         side_effect=httpx.ConnectError("Connection refused")
     )
     with pytest.raises(SandboxError) as exc:
@@ -107,10 +107,10 @@ async def test_get_or_create_sandbox_raises_sandbox_error_on_connection_refused(
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_or_create_sandbox_polls_ping_before_resolving() -> None:
-    respx.put(f"{DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox").mock(
+    respx.put(f"{DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox").mock(
         return_value=httpx.Response(200, json=SANDBOX_REF)
     )
-    ping_route = respx.get("http://sandbox:8080/v1/ping").mock(
+    ping_route = respx.get(f"{DEFAULT_GATEWAY_URL}/sandbox/test-sandbox/v1/ping").mock(
         return_value=httpx.Response(200)
     )
     sandbox = await get_or_create_sandbox(
@@ -126,7 +126,7 @@ async def test_get_or_create_sandbox_polls_ping_before_resolving() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_shutdown_sends_post_v1_shutdown() -> None:
-    route = respx.post(f"{DEFAULT_CONTROLLER_URL}/v1/shutdown/test-sandbox").mock(
+    route = respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
         return_value=httpx.Response(204)
     )
     await shutdown(make_sandbox())
@@ -137,7 +137,7 @@ async def test_shutdown_sends_post_v1_shutdown() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_shutdown_resolves_on_204() -> None:
-    respx.post(f"{DEFAULT_CONTROLLER_URL}/v1/shutdown/test-sandbox").mock(
+    respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
         return_value=httpx.Response(204)
     )
     result = await shutdown(make_sandbox())
@@ -147,7 +147,7 @@ async def test_shutdown_resolves_on_204() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_shutdown_raises_sandbox_error_on_non_204() -> None:
-    respx.post(f"{DEFAULT_CONTROLLER_URL}/v1/shutdown/test-sandbox").mock(
+    respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
         return_value=httpx.Response(404, json={"error": "not found"})
     )
     with pytest.raises(SandboxError) as exc:
@@ -159,7 +159,7 @@ async def test_shutdown_raises_sandbox_error_on_non_204() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_shutdown_raises_sandbox_error_on_connection_refused() -> None:
-    respx.post(f"{DEFAULT_CONTROLLER_URL}/v1/shutdown/test-sandbox").mock(
+    respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
         side_effect=httpx.ConnectError("Connection refused")
     )
     with pytest.raises(SandboxError) as exc:

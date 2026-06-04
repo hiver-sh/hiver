@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { Sandbox } from "hive";
+import { gatewayUrl } from "../lib/controllerUrl.js";
 
 
 const router = Router();
@@ -15,14 +16,14 @@ const termSessions = new Map<string, TermSession>();
 const termPending = new Map<string, TermInput[]>();
 
 async function openExecStreamSession(
-  sandboxUrl: string,
+  gw: string,
   sandboxId: string,
   onData: (buf: Buffer) => void,
   onExit: () => void,
   initCommand?: string,
 ): Promise<TermSession> {
   const ac = new AbortController();
-  const sandbox = new Sandbox({ id: sandboxId, endpoint: sandboxUrl }, {});
+  const sandbox = new Sandbox({ id: sandboxId }, { gatewayUrl: gw });
   const config = await sandbox.getConfig().catch(() => null);
   const cwd = config?.fs?.[0]?.mount ?? undefined;
   const env = {
@@ -46,8 +47,6 @@ async function openExecStreamSession(
 }
 
 router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
-  const sandboxUrl = req.query.sandboxUrl as string | undefined;
-  if (!sandboxUrl) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   const sessionId = req.query.sessionId as string | undefined;
   if (!sessionId) { res.status(400).json({ error: "missing sessionId" }); return; }
 
@@ -84,7 +83,7 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
 
   let session: TermSession;
   try {
-    session = await openExecStreamSession(sandboxUrl, req.params.id, sendBytes, onExit, initCommand);
+    session = await openExecStreamSession(gatewayUrl(req), req.params.id, sendBytes, onExit, initCommand);
   } catch {
     sendCtrl("error", { message: "no terminal available" });
     res.end();

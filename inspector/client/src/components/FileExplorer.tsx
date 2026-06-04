@@ -30,7 +30,6 @@ interface Preview {
 interface Props {
   sandboxId: string;
   serverUrl: string;
-  sandboxUrl: string;
   events: Extract<SandboxEvent, { type: "fs.request" }>[];
 }
 
@@ -89,7 +88,7 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
   });
 }
 
-export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props) {
+export function FileExplorer({ sandboxId, serverUrl, events }: Props) {
   const { transport } = useTransport();
   const { prefs, toggleExpandedPath } = useUserPreferences();
   const [roots, setRoots] = useState<TreeNode[]>([]);
@@ -111,10 +110,10 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
         `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/file`,
       );
       url.searchParams.set("path", path);
-      url.searchParams.set("sandboxUrl", sandboxUrl);
+
       return url;
     },
-    [sandboxId, serverUrl, sandboxUrl],
+    [sandboxId, serverUrl],
   );
 
   const fetchChildren = useCallback(
@@ -123,12 +122,12 @@ export function FileExplorer({ sandboxId, serverUrl, sandboxUrl, events }: Props
         `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/directories`,
       );
       url.searchParams.set("path", path);
-      url.searchParams.set("sandboxUrl", sandboxUrl);
+
       console.log("[FileExplorer] fetchChildren", path, "transport:", transport.constructor?.name ?? transport);
       const data = await transport.fetch(url).then((r) => r.json() as Promise<{ entries: DirEntry[] }>);
       return toNodes(data.entries);
     },
-    [sandboxId, serverUrl, sandboxUrl, transport],
+    [sandboxId, serverUrl, transport],
   );
 
   const loadMounts = useCallback(async () => {

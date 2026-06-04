@@ -14,7 +14,7 @@ function getArg(name: string): string | undefined {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
-const controllerUrl = getArg("controller-url");
+const controllerUrl = getArg("gateway-url");
 const serverUrl = getArg("server-url") ?? "http://localhost:3001";
 const tracesDir = join(homedir(), ".hive", "traces");
 mkdirSync(tracesDir, { recursive: true });
@@ -23,7 +23,7 @@ const outputPath = join(tracesDir, `recording-${Date.now()}.json`);
 const recorder = new EventRecorder(controllerUrl, serverUrl, outputPath);
 
 console.log(`\n${BOLD}Sandbox Inspector${R} ${YELLOW}[recorder]${R}\n`);
-if (controllerUrl) console.log(`${DIM}  controller${R}  → ${controllerUrl}`);
+if (controllerUrl) console.log(`${DIM}  gateway${R}    → ${controllerUrl}`);
 console.log(`${DIM}  server${R}     → ${serverUrl}`);
 console.log(`${DIM}  output${R}     → ${outputPath}`);
 console.log();

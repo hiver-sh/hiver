@@ -1,13 +1,13 @@
 import { ApiError, SandboxConfig, SandboxRef } from "./schemas";
 import { Sandbox, SandboxError, toError } from "./sandbox";
 
-export const DEFAULT_CONTROLLER_URL = "http://localhost:9000";
+export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
 
 const SANDBOX_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export interface ControllerOptions {
-  /** Base URL of the control plane. Defaults to `http://localhost:9000`. */
-  controllerUrl?: string;
+  /** Base URL of the gateway. Defaults to `http://localhost:10000`. */
+  gatewayUrl?: string;
   /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
   /**
@@ -42,10 +42,7 @@ export async function getOrCreateSandbox(
     );
   }
   const validated = SandboxConfig.parse(config);
-  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(
-    /\/+$/,
-    "",
-  );
+  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -68,7 +65,7 @@ async function provisionSandbox(
 ): Promise<Sandbox> {
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/v1/sandboxes/${encodeURIComponent(id)}`, {
+    res = await fetchImpl(`${base}/controller/v1/sandboxes/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(config),
@@ -79,7 +76,7 @@ async function provisionSandbox(
       throw new SandboxError(
         "getOrCreateSandbox",
         0,
-        `controller is not reachable at ${base} (connection refused). Is it running?`,
+        `gateway is not reachable at ${base} (connection refused). Is it running?`,
       );
     }
     throw err;
@@ -100,7 +97,7 @@ async function provisionSandbox(
     );
   }
   const ref = SandboxRef.parse(await res.json());
-  const sandbox = new Sandbox(ref, { fetch: fetchImpl });
+  const sandbox = new Sandbox(ref, { gatewayUrl: base, fetch: fetchImpl });
   if (timeout > 0) await waitUntilReachable(sandbox, timeout);
   return sandbox;
 }
@@ -136,16 +133,13 @@ async function waitUntilReachable(
 export async function listSandboxes(
   opts: ControllerOptions = {},
 ): Promise<Sandbox[]> {
-  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(
-    /\/+$/,
-    "",
-  );
+  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/v1/sandboxes`, {
+    res = await fetchImpl(`${base}/controller/v1/sandboxes`, {
       signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
     });
   } catch (err) {
@@ -153,7 +147,7 @@ export async function listSandboxes(
       throw new SandboxError(
         "listSandboxes",
         0,
-        `controller is not reachable at ${base} (connection refused). Is it running?`,
+        `gateway is not reachable at ${base} (connection refused). Is it running?`,
       );
     }
     throw err;
@@ -164,7 +158,7 @@ export async function listSandboxes(
   const refs = ((await res.json()) as unknown[]).map((r) =>
     SandboxRef.parse(r),
   );
-  return refs.map((ref) => new Sandbox(ref, { fetch: fetchImpl }));
+  return refs.map((ref) => new Sandbox(ref, { gatewayUrl: base, fetch: fetchImpl }));
 }
 
 /**
@@ -174,10 +168,10 @@ export async function shutdown(
   sandbox: Sandbox,
   opts: ControllerOptions = {},
 ): Promise<void> {
-  const base = (opts.controllerUrl ?? DEFAULT_CONTROLLER_URL).replace(/\/+$/, "");
+  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url = `${base}/v1/shutdown/${encodeURIComponent(sandbox.id)}`;
+  const url = `${base}/controller/v1/shutdown/${encodeURIComponent(sandbox.id)}`;
   let res: Response;
   try {
     res = await fetchImpl(url, {
@@ -189,7 +183,7 @@ export async function shutdown(
       throw new SandboxError(
         "shutdown",
         0,
-        `controller is not reachable at ${base} (connection refused). Is it running?`,
+        `gateway is not reachable at ${base} (connection refused). Is it running?`,
       );
     }
     throw err;

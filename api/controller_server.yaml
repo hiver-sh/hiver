@@ -124,21 +124,13 @@ components:
     Sandbox:
       type: object
       description: A provisioned sandbox.
-      required: [id, config, endpoint]
+      required: [id, config]
       additionalProperties: false
       properties:
         id:
           type: string
           description: The id supplied at creation.
           example: tenant-acme-build-42
-        endpoint:
-          type: string
-          format: uri
-          description: |
-            Base URL of this sandbox's own API server. Append the paths
-            documented in `sandbox_server.yaml` (e.g. `/v1/config`,
-            `/v1/ping`, `/v1/file`) to issue per-sandbox calls.
-          example: http://10.0.0.42:8080
         exposed_endpoint:
           type: string
           description: |

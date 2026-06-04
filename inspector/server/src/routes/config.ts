@@ -6,7 +6,6 @@ const router = Router();
 
 router.get("/:id/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
-  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   try {
     const config = await sandbox.getConfig();
     res.json(config);
@@ -17,7 +16,6 @@ router.get("/:id/config", async (req: Request, res: Response) => {
 
 router.put("/:id/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
-  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   try {
     await sandbox.applyConfig(req.body as SandboxConfig);
     res.json({ ok: true });

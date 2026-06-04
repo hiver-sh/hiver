@@ -3,7 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +18,6 @@ import (
 const (
 	composeProject      = "hive"
 	defaultSandboxImage = "hiveruntime/agent-cli:latest"
-	sandboxAPIPort      = 8080
 	sandboxTCPProxyPort = 8081
 	labelSandboxID      = "hive.sandbox.id"
 )
@@ -40,15 +38,7 @@ func (r *DockerRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	if !running {
 		return false, gen.Sandbox{}, nil
 	}
-	hostPort, err := lookupHostPort(name, sandboxAPIPort)
-	if err != nil {
-		return false, gen.Sandbox{}, withContainerLogs(err, name)
-	}
-	sb := gen.Sandbox{
-		Id:              id,
-		Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
-		ExposedEndpoint: lookupTCPProxyEndpoint(name),
-	}
+	sb := gen.Sandbox{Id: id, ExposedEndpoint: lookupTCPProxyEndpoint(name)}
 	return true, sb, nil
 }
 
@@ -62,15 +52,7 @@ func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
 	sandboxes := make([]gen.Sandbox, 0, len(names))
 	for _, name := range names {
 		id := strings.TrimPrefix(name, prefix)
-		hostPort, err := lookupHostPort(name, sandboxAPIPort)
-		if err != nil {
-			return nil, withContainerLogs(err, name)
-		}
-		sandboxes = append(sandboxes, gen.Sandbox{
-			Id:              id,
-			Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
-			ExposedEndpoint: lookupTCPProxyEndpoint(name),
-		})
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id, ExposedEndpoint: lookupTCPProxyEndpoint(name)})
 	}
 	return sandboxes, nil
 }
@@ -119,7 +101,6 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--cap-add", "CHOWN",
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
-		"-p", fmt.Sprintf("%d", sandboxAPIPort),
 		"-p", fmt.Sprintf("%d", sandboxTCPProxyPort),
 	}
 	// The microvm backend boots a firecracker guest: it needs /dev/kvm (the
@@ -169,16 +150,7 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		return gen.Sandbox{}, fmt.Errorf("docker start %s: %v: %s", image, err, out)
 	}
 
-	hostPort, err := lookupHostPort(containerName, sandboxAPIPort)
-	if err != nil {
-		defer exec.Command("docker", "rm", "-f", containerName).Run()
-		return gen.Sandbox{}, withContainerLogs(err, containerName)
-	}
-	return gen.Sandbox{
-		Id:              id,
-		Endpoint:        fmt.Sprintf("http://127.0.0.1:%s", hostPort),
-		ExposedEndpoint: lookupTCPProxyEndpoint(containerName),
-	}, nil
+	return gen.Sandbox{Id: id, ExposedEndpoint: lookupTCPProxyEndpoint(containerName)}, nil
 }
 
 func (r *DockerRuntime) Shutdown(id string) error {
@@ -240,35 +212,21 @@ func containerLogs(name string) string {
 func withContainerLogs(err error, container string) error {
 	logs := containerLogs(container)
 	return fmt.Errorf("%w\n\ncontainer logs:\n%s\n", err, logs)
-
-}
-
-// lookupHostPort returns the host-side port docker bound to container:port.
-func lookupHostPort(container string, containerPort int) (string, error) {
-	out, err := exec.Command("docker", "port", container, fmt.Sprintf("%d/tcp", containerPort)).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("container %s: port %d/tcp is not published — ensure the image `%s` was built with `hive image`", container, containerPort, containerImage(container))
-	}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
-		if !strings.HasPrefix(line, "0.0.0.0:") {
-			continue
-		}
-		_, port, err := net.SplitHostPort(line)
-		if err != nil {
-			return "", fmt.Errorf("parse %q: %w", line, err)
-		}
-		return port, nil
-	}
-	return "", fmt.Errorf("container %s: port %d is not published — ensure the image `%s` was built with `hive image`", container, containerPort, containerImage(container))
 }
 
 // lookupTCPProxyEndpoint returns "localhost:<hostPort>" for the container's
-// published sandboxTCPProxyPort, or nil if the port isn't mapped yet.
+// published TCP proxy port, or nil if the port isn't mapped.
 func lookupTCPProxyEndpoint(container string) *string {
-	port, err := lookupHostPort(container, sandboxTCPProxyPort)
+	out, err := exec.Command("docker", "port", container, fmt.Sprintf("%d/tcp", sandboxTCPProxyPort)).CombinedOutput()
 	if err != nil {
 		return nil
 	}
-	s := "localhost:" + port
-	return &s
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		if _, port, ok := strings.Cut(line, ":"); ok && strings.HasPrefix(line, "0.0.0.0:") {
+			s := "localhost:" + port
+			return &s
+		}
+	}
+	return nil
 }
+

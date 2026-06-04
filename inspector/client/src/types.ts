@@ -2,7 +2,6 @@ import { z } from "zod";
 
 export const SandboxRef = z.object({
   id: z.string(),
-  endpoint: z.string(),
   exposed_endpoint: z.string().optional(),
 });
 export type SandboxRef = z.infer<typeof SandboxRef>;
@@ -21,4 +20,4 @@ export type SandboxEvent =
   | { id: number; timestamp: string; type: "exec.response"; request_id: number };
 
 export const DEFAULT_INSPECTOR_SERVER = "http://localhost:3001";
-export const DEFAULT_CONTROLLER_URL = "http://localhost:9000";
+export const DEFAULT_GATEWAY_URL = "http://localhost:10000";

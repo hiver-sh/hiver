@@ -5,7 +5,6 @@ const router = Router();
 
 router.get("/:id/directories", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
-  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   const path = req.query.path as string | undefined;
   if (!path) { res.status(400).json({ error: "missing query param: path" }); return; }
   try {
@@ -18,7 +17,6 @@ router.get("/:id/directories", async (req: Request, res: Response) => {
 
 router.get("/:id/file", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
-  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
   const path = req.query.path as string | undefined;
   if (!path) { res.status(400).json({ error: "missing query param: path" }); return; }
   try {

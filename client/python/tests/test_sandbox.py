@@ -9,7 +9,9 @@ import respx
 from hive.sandbox import Sandbox, SandboxError
 from hive.schemas import SandboxRef
 
-REF = SandboxRef(id="sb-1", endpoint="http://sandbox:8080")
+GATEWAY = "http://gateway:10000"
+SANDBOX_BASE = f"{GATEWAY}/sandbox/sb-1"
+REF = SandboxRef(id="sb-1")
 
 MIN_CONFIG = {"fs": [{"backend": "local", "mount": "/workspace"}]}
 MIN_APPLY_RESULT = {
@@ -26,7 +28,7 @@ STDIO_EVENT = {
 
 
 def make_sandbox(client: httpx.AsyncClient) -> Sandbox:
-    return Sandbox(REF, client=client)
+    return Sandbox(REF, GATEWAY, client=client)
 
 
 def sse_body(*events: object) -> bytes:
@@ -61,17 +63,17 @@ def sse_response(*events: object, status: int = 200) -> httpx.Response:
 @pytest.mark.asyncio
 @respx.mock
 async def test_ping_sends_get_v1_ping() -> None:
-    route = respx.get("http://sandbox:8080/v1/ping").mock(return_value=httpx.Response(200))
+    route = respx.get(f"{SANDBOX_BASE}/v1/ping").mock(return_value=httpx.Response(200))
     async with httpx.AsyncClient() as client:
         await make_sandbox(client).ping()
     assert route.called
-    assert route.calls[0].request.url == "http://sandbox:8080/v1/ping"
+    assert route.calls[0].request.url == f"{SANDBOX_BASE}/v1/ping"
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_ping_raises_sandbox_error_on_non_200() -> None:
-    respx.get("http://sandbox:8080/v1/ping").mock(
+    respx.get(f"{SANDBOX_BASE}/v1/ping").mock(
         return_value=httpx.Response(503, json={"error": "service unavailable"})
     )
     async with httpx.AsyncClient() as client:
@@ -87,7 +89,7 @@ async def test_ping_raises_sandbox_error_on_non_200() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_config_sends_get_v1_config_and_returns_config() -> None:
-    route = respx.get("http://sandbox:8080/v1/config").mock(
+    route = respx.get(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(200, json=MIN_CONFIG)
     )
     async with httpx.AsyncClient() as client:
@@ -99,7 +101,7 @@ async def test_get_config_sends_get_v1_config_and_returns_config() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_config_raises_sandbox_error_on_non_200() -> None:
-    respx.get("http://sandbox:8080/v1/config").mock(
+    respx.get(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(404, json={"error": "not found"})
     )
     async with httpx.AsyncClient() as client:
@@ -115,7 +117,7 @@ async def test_get_config_raises_sandbox_error_on_non_200() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_apply_config_sends_put_v1_config_with_json_body() -> None:
-    route = respx.put("http://sandbox:8080/v1/config").mock(
+    route = respx.put(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(200, json=MIN_APPLY_RESULT)
     )
     from hive.schemas import SandboxConfig
@@ -134,7 +136,7 @@ async def test_apply_config_sends_put_v1_config_with_json_body() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_apply_config_returns_apply_result() -> None:
-    respx.put("http://sandbox:8080/v1/config").mock(
+    respx.put(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(200, json=MIN_APPLY_RESULT)
     )
     from hive.schemas import SandboxConfig
@@ -149,7 +151,7 @@ async def test_apply_config_returns_apply_result() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_apply_config_raises_sandbox_error_on_non_200() -> None:
-    respx.put("http://sandbox:8080/v1/config").mock(
+    respx.put(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(400, json={"error": "bad config"})
     )
     from hive.schemas import SandboxConfig
@@ -169,7 +171,7 @@ async def test_apply_config_raises_sandbox_error_on_non_200() -> None:
 @respx.mock
 async def test_download_file_sends_get_with_path_param_and_returns_bytes() -> None:
     content = b"hello"
-    route = respx.get("http://sandbox:8080/v1/file").mock(
+    route = respx.get(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(200, content=content)
     )
     async with httpx.AsyncClient() as client:
@@ -183,7 +185,7 @@ async def test_download_file_sends_get_with_path_param_and_returns_bytes() -> No
 @pytest.mark.asyncio
 @respx.mock
 async def test_download_file_raises_sandbox_error_on_non_200() -> None:
-    respx.get("http://sandbox:8080/v1/file").mock(
+    respx.get(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(404, json={"error": "not found"})
     )
     async with httpx.AsyncClient() as client:
@@ -199,7 +201,7 @@ async def test_download_file_raises_sandbox_error_on_non_200() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_upload_file_sends_post_with_multipart_form() -> None:
-    route = respx.post("http://sandbox:8080/v1/file").mock(
+    route = respx.post(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/hello.txt", "bytes": 5})
     )
     async with httpx.AsyncClient() as client:
@@ -217,7 +219,7 @@ async def test_upload_file_sends_post_with_multipart_form() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_upload_file_accepts_str_content() -> None:
-    respx.post("http://sandbox:8080/v1/file").mock(
+    respx.post(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/f.txt", "bytes": 4})
     )
     async with httpx.AsyncClient() as client:
@@ -228,7 +230,7 @@ async def test_upload_file_accepts_str_content() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_upload_file_raises_sandbox_error_on_non_200() -> None:
-    respx.post("http://sandbox:8080/v1/file").mock(
+    respx.post(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(400, json={"error": "destination not mounted"})
     )
     async with httpx.AsyncClient() as client:
@@ -252,7 +254,7 @@ async def test_events_stream_sends_get_with_accept_header() -> None:
             abort.set()
 
     req = transport.requests[0]
-    assert str(req.url).startswith("http://sandbox:8080/v1/events")
+    assert str(req.url).startswith(f"{SANDBOX_BASE}/v1/events")
     assert req.headers["accept"] == "text/event-stream"
 
 

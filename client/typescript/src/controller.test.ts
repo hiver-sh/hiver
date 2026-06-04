@@ -2,12 +2,12 @@ import { expect, it, vi } from "vitest";
 import {
   getOrCreateSandbox,
   shutdown,
-  DEFAULT_CONTROLLER_URL,
+  DEFAULT_GATEWAY_URL,
 } from "./controller";
 import { Sandbox, SandboxError } from "./sandbox";
 import type { SandboxConfig } from "./schemas";
 
-const SANDBOX_REF = { id: "test-sandbox", endpoint: "http://sandbox:8080" };
+const SANDBOX_REF = { id: "test-sandbox" };
 const BASE_CONFIG: SandboxConfig = {
   fs: [{ backend: "local", mount: "/workspace" }],
 };
@@ -20,12 +20,12 @@ function jsonResp(body: unknown, status = 200): Response {
 }
 
 function mockSandbox(): Sandbox {
-  return new Sandbox(SANDBOX_REF, {});
+  return new Sandbox(SANDBOX_REF, { gatewayUrl: DEFAULT_GATEWAY_URL });
 }
 
 // getOrCreateSandbox
 
-it("getOrCreateSandbox sends PUT /v1/sandboxes/{id} with JSON body", async () => {
+it("getOrCreateSandbox sends PUT /controller/v1/sandboxes/{id} with JSON body", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
   await getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
     fetch: mockFetch as unknown as typeof fetch,
@@ -34,7 +34,7 @@ it("getOrCreateSandbox sends PUT /v1/sandboxes/{id} with JSON body", async () =>
 
   expect(mockFetch).toHaveBeenCalledOnce();
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(`${DEFAULT_CONTROLLER_URL}/v1/sandboxes/test-sandbox`);
+  expect(url).toBe(`${DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox`);
   expect(init.method).toBe("PUT");
   expect((init.headers as Record<string, string>)["content-type"]).toBe(
     "application/json",
@@ -42,7 +42,7 @@ it("getOrCreateSandbox sends PUT /v1/sandboxes/{id} with JSON body", async () =>
   expect(JSON.parse(init.body as string)).toMatchObject(BASE_CONFIG);
 });
 
-it("getOrCreateSandbox returns Sandbox with correct id and endpoint on 200", async () => {
+it("getOrCreateSandbox returns Sandbox with correct id and apiServerUrl on 200", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
   const sandbox = await getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
     fetch: mockFetch as unknown as typeof fetch,
@@ -50,7 +50,7 @@ it("getOrCreateSandbox returns Sandbox with correct id and endpoint on 200", asy
   });
   expect(sandbox).toBeInstanceOf(Sandbox);
   expect(sandbox.id).toBe("test-sandbox");
-  expect(sandbox.apiServerUrl).toBe("http://sandbox:8080");
+  expect(sandbox.apiServerUrl).toBe(`${DEFAULT_GATEWAY_URL}/sandbox/test-sandbox`);
 });
 
 it("getOrCreateSandbox returns Sandbox on 201 (created)", async () => {
@@ -62,15 +62,15 @@ it("getOrCreateSandbox returns Sandbox on 201 (created)", async () => {
   expect(sandbox).toBeInstanceOf(Sandbox);
 });
 
-it("getOrCreateSandbox uses custom controllerUrl", async () => {
+it("getOrCreateSandbox uses custom gatewayUrl", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
   await getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
     fetch: mockFetch as unknown as typeof fetch,
-    controllerUrl: "http://custom-controller:1234",
+    gatewayUrl: "http://custom-gateway:1234",
     timeoutMs: 0,
   });
   const [url] = mockFetch.mock.calls[0] as [string];
-  expect(url).toBe("http://custom-controller:1234/v1/sandboxes/test-sandbox");
+  expect(url).toBe("http://custom-gateway:1234/controller/v1/sandboxes/test-sandbox");
 });
 
 it("getOrCreateSandbox throws Error for id that does not match pattern", async () => {
@@ -133,13 +133,13 @@ it("getOrCreateSandbox polls /v1/ping before resolving when timeoutMs > 0", asyn
 
 // shutdown
 
-it("shutdown sends POST /v1/shutdown/{id}", async () => {
+it("shutdown sends POST /controller/v1/shutdown/{id}", async () => {
   const mockFetch = vi
     .fn()
     .mockResolvedValue(new Response(null, { status: 204 }));
   await shutdown(mockSandbox(), { fetch: mockFetch as unknown as typeof fetch });
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(`${DEFAULT_CONTROLLER_URL}/v1/shutdown/test-sandbox`);
+  expect(url).toBe(`${DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox`);
   expect(init.method).toBe("POST");
 });
 

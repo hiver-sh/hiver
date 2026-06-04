@@ -1,4 +1,4 @@
-from .controller import DEFAULT_CONTROLLER_URL, get_or_create_sandbox, list_sandboxes, shutdown
+from .controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox, list_sandboxes, shutdown
 from .sandbox import ExecProcess, Sandbox, SandboxError
 from .schemas import (
     ACLRule,
@@ -29,7 +29,7 @@ from .utils import allowed_npm_packages, allowed_python_packages
 
 __all__ = [
     # controller
-    "DEFAULT_CONTROLLER_URL",
+    "DEFAULT_GATEWAY_URL",
     "get_or_create_sandbox",
     "list_sandboxes",
     "shutdown",

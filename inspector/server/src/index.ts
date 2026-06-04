@@ -23,5 +23,5 @@ app.use("/api/trace", traceRoutes);
 
 app.listen(PORT, () => {
   console.log(`Inspector server on http://localhost:${PORT}`);
-  console.log(`Default controller: ${DEFAULT_URL}`);
+  console.log(`Default gateway: ${DEFAULT_URL}`);
 });

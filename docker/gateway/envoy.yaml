@@ -1,0 +1,80 @@
+static_resources:
+  listeners:
+    - name: main
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: gateway
+                http_filters:
+                  - name: envoy.filters.http.lua
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                      inline_code: |
+                        function envoy_on_request(request_handle)
+                          local path = request_handle:headers():get(":path")
+                          local id = path:match("^/sandbox/([^/?#]+)")
+                          if id then
+                            request_handle:headers():replace(":authority", "hive-sandbox-" .. id .. ":8080")
+                          end
+                        end
+                  - name: envoy.filters.http.dynamic_forward_proxy
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                      dns_cache_config:
+                        name: dynamic_forward_proxy_cache_config
+                        dns_lookup_family: V4_ONLY
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: main
+                  virtual_hosts:
+                    - name: gateway
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/controller/"
+                          route:
+                            cluster: controller
+                            prefix_rewrite: "/"
+                            timeout: 0s
+                        - match:
+                            prefix: "/sandbox/"
+                          route:
+                            cluster: dynamic_forward_proxy
+                            regex_rewrite:
+                              pattern:
+                                regex: "^/sandbox/[^/]+"
+                              substitution: ""
+                            timeout: 0s
+
+  clusters:
+    - name: controller
+      connect_timeout: 30s
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: controller
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: controller
+                      port_value: 9000
+
+    - name: dynamic_forward_proxy
+      connect_timeout: 30s
+      lb_policy: CLUSTER_PROVIDED
+      cluster_type:
+        name: envoy.clusters.dynamic_forward_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+          dns_cache_config:
+            name: dynamic_forward_proxy_cache_config
+            dns_lookup_family: V4_ONLY

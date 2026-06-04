@@ -6,13 +6,19 @@ services:
     build:
       context: ..
       dockerfile: docker/controller.Dockerfile
-    ports:
-      - "9000:9000"
     # The controller spawns sandbox containers via `docker` CLI calls
     # against the host daemon. Mount the socket read-write so it can
     # create/start/cp into containers in the `hive` project.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+  gateway:
+    image: hiveruntime/gateway:${TAG:-latest}
+    build:
+      context: gateway
+      dockerfile: Dockerfile
+    ports:
+      - "10000:10000"
 
   core:
     image: hiveruntime/core:${TAG:-latest}

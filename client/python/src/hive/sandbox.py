@@ -79,10 +79,11 @@ class Sandbox:
     def __init__(
         self,
         ref: SandboxRef,
+        gateway_url: str,
         client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self.id = ref.id
-        self.api_server_url = ref.endpoint.rstrip("/")
+        self.api_server_url = f"{gateway_url.rstrip('/')}/sandbox/{ref.id}"
         self.exposed_endpoint: Optional[str] = ref.exposed_endpoint
         # URL of the MCP Streamable HTTP endpoint for this sandbox.
         self.mcp_endpoint: str = f"{self.api_server_url}/v1/mcp"

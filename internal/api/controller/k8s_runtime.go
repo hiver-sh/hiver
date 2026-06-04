@@ -59,7 +59,7 @@ func (r *K8sRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 		return false, gen.Sandbox{}, nil
 	}
 	ep := r.tcpProxyEndpoint(name)
-	return true, gen.Sandbox{Id: id, Endpoint: r.endpointFor(name), ExposedEndpoint: &ep}, nil
+	return true, gen.Sandbox{Id: id, ExposedEndpoint: &ep}, nil
 }
 
 func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
@@ -76,7 +76,7 @@ func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 		}
 		id := pod.Labels[labelSandboxID]
 		ep := r.tcpProxyEndpoint(pod.Name)
-		sandboxes = append(sandboxes, gen.Sandbox{Id: id, Endpoint: r.endpointFor(pod.Name), ExposedEndpoint: &ep})
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id, ExposedEndpoint: &ep})
 	}
 	return sandboxes, nil
 }
@@ -111,7 +111,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 					Image: r.imageFor(cfg),
 					Args:  []string{"--spec", "/mnt/spec.json"},
 					Ports: []corev1.ContainerPort{
-						{ContainerPort: sandboxAPIPort},
+						{ContainerPort: 8080},
 						{ContainerPort: sandboxTCPProxyPort},
 					},
 					Env: r.envVars(cfg),
@@ -145,7 +145,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 		Spec: corev1.ServiceSpec{
 			Selector: labels,
 			Ports: []corev1.ServicePort{
-				{Port: sandboxAPIPort, Protocol: corev1.ProtocolTCP},
+				{Port: 8080, Protocol: corev1.ProtocolTCP},
 				{Port: sandboxTCPProxyPort, Protocol: corev1.ProtocolTCP},
 			},
 		},
@@ -157,7 +157,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 	}
 
 	ep := r.tcpProxyEndpoint(name)
-	return gen.Sandbox{Id: id, Endpoint: r.endpointFor(name), ExposedEndpoint: &ep}, nil
+	return gen.Sandbox{Id: id, ExposedEndpoint: &ep}, nil
 }
 
 func (r *K8sRuntime) Shutdown(id string) error {
@@ -177,10 +177,6 @@ func (r *K8sRuntime) Shutdown(id string) error {
 		return fmt.Errorf("delete pod %s: %w", name, err)
 	}
 	return nil
-}
-
-func (r *K8sRuntime) endpointFor(name string) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", name, r.namespace, sandboxAPIPort)
 }
 
 func (r *K8sRuntime) tcpProxyEndpoint(svcName string) string {

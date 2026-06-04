@@ -37,7 +37,7 @@ export {
 } from "./sandbox";
 
 export {
-  DEFAULT_CONTROLLER_URL,
+  DEFAULT_GATEWAY_URL,
   getOrCreateSandbox,
   listSandboxes,
   shutdown,

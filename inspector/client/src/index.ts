@@ -8,4 +8,4 @@ export { SandboxDetail } from "./components/SandboxDetail";
 export type { SandboxDetailProps } from "./components/SandboxDetail";
 
 export type { SandboxRef, SandboxEvent } from "./types";
-export { DEFAULT_INSPECTOR_SERVER, DEFAULT_CONTROLLER_URL } from "./types";
+export { DEFAULT_INSPECTOR_SERVER, DEFAULT_GATEWAY_URL } from "./types";

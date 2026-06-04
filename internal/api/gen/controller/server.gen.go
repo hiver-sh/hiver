@@ -21,11 +21,6 @@ import (
 
 // Sandbox A provisioned sandbox.
 type Sandbox struct {
-	// Endpoint Base URL of this sandbox's own API server. Append the paths
-	// documented in `sandbox_server.yaml` (e.g. `/v1/config`,
-	// `/v1/ping`, `/v1/file`) to issue per-sandbox calls.
-	Endpoint string `json:"endpoint"`
-
 	// ExposedEndpoint Host and port of the sandbox's exposed port on the host network,
 	// if the sandbox has an exposed port. Absent when no port is exposed.
 	ExposedEndpoint *string `json:"exposed_endpoint,omitempty"`

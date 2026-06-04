@@ -8,11 +8,11 @@ help:
 build: $(CMDS) ## Build all cmd binaries into bin/
 
 build-images: ## Build docker images
-	docker compose -f docker/compose.yaml --profile build build controller core agent-cli-standalone
-	./scripts/bundle-images.sh hiveruntime/agent-cli-standalone hiveruntime/agent-cli
+	docker compose -f docker/compose.yaml --profile build build controller core gateway
+# 	./scripts/bundle-images.sh hiveruntime/agent-cli-standalone hyve/agent-cli
 
 publish-images: build-images ## Build and push images to the registry (override tag with TAG=...)
-	docker compose -f docker/compose.yaml push controller core
+	docker compose -f docker/compose.yaml push controller core gateway
 	docker push hiveruntime/agent-cli-standalone:latest
 
 up: ## Start services

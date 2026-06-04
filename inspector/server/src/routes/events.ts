@@ -5,7 +5,6 @@ const router = Router();
 
 router.get("/:id/events", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
-  if (!sandbox) { res.status(400).json({ error: "missing sandboxUrl" }); return; }
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");

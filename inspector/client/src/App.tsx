@@ -16,7 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { DEFAULT_CONTROLLER_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } from "@/types";
+import { DEFAULT_GATEWAY_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } from "@/types";
 import { purgeOrphanEvents } from "@/lib/eventStore";
 import { useScrollbarVisibility } from "@/lib/useScrollbarVisibility";
 import { TransportProvider, useTransport } from "@/lib/transport";
@@ -81,17 +81,17 @@ function ControllerUnreachable({ message, loading, onRetry, onOpenSettings }: { 
 
 // --- shared state passed down from the layout ---
 interface LayoutProps {
-  controllerUrl: string;
+  gatewayUrl: string;
   serverUrl: string;
   sandboxes: SandboxRef[];
   loading: boolean;
   fetchError: string | null;
   fetchSandboxes: () => void;
-  setControllerUrl: (url: string) => void;
+  setGatewayUrl: (url: string) => void;
   onConnectedChange: (id: string, connected: boolean) => void;
 }
 
-function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxes, onConnectedChange }: LayoutProps) {
+function SandboxDetailRoute({ serverUrl, gatewayUrl, sandboxes, fetchSandboxes, onConnectedChange }: LayoutProps) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -111,7 +111,7 @@ function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxe
       key={sandbox.id}
       sandbox={sandbox}
       serverUrl={serverUrl}
-      controllerUrl={controllerUrl}
+      gatewayUrl={gatewayUrl}
       initCommand={initCommand}
       onShutdown={() => {
         fetchSandboxes();
@@ -125,9 +125,9 @@ function SandboxDetailRoute({ serverUrl, controllerUrl, sandboxes, fetchSandboxe
 function AppContent() {
   const { transport } = useTransport();
   const { prefs, setPref } = useUserPreferences();
-  const [controllerUrl, setControllerUrl] = useState(DEFAULT_CONTROLLER_URL);
+  const [gatewayUrl, setGatewayUrl] = useState(DEFAULT_GATEWAY_URL);
   const [serverUrl] = useState(DEFAULT_INSPECTOR_SERVER);
-  const [controllerInput, setControllerInput] = useState(DEFAULT_CONTROLLER_URL);
+  const [gatewayInput, setGatewayInput] = useState(DEFAULT_GATEWAY_URL);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const sidebarCollapsed = prefs.sidebarCollapsed;
@@ -146,7 +146,7 @@ function AppContent() {
     setFetchError(null);
     try {
       const url = new URL(`${serverUrl}/api/sandboxes`);
-      url.searchParams.set("controller", controllerUrl);
+      url.searchParams.set("gateway", gatewayUrl);
       const res = await transport.fetch(url);
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: res.statusText }));
@@ -161,7 +161,7 @@ function AppContent() {
     } finally {
       setLoading(false);
     }
-  }, [serverUrl, controllerUrl, transport]);
+  }, [serverUrl, gatewayUrl, transport]);
 
   useEffect(() => {
     fetchSandboxes();
@@ -170,13 +170,13 @@ function AppContent() {
   useScrollbarVisibility();
 
   const layoutProps: LayoutProps = {
-    controllerUrl,
+    gatewayUrl,
     serverUrl,
     sandboxes,
     loading,
     fetchError,
     fetchSandboxes,
-    setControllerUrl,
+    setGatewayUrl,
     onConnectedChange: (id, c) => setConnectedId(c ? id : null),
   };
 
@@ -184,21 +184,21 @@ function AppContent() {
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Controller URL</DialogTitle>
+          <DialogTitle>Gateway URL</DialogTitle>
         </DialogHeader>
         <div className="grid gap-4 py-2">
           <div className="grid gap-1.5">
-            <Label htmlFor="ctrl-url">Controller URL</Label>
+            <Label htmlFor="ctrl-url">Gateway URL</Label>
             <Input
               id="ctrl-url"
-              value={controllerInput}
-              onChange={(e) => setControllerInput(e.target.value)}
-              placeholder={DEFAULT_CONTROLLER_URL}
+              value={gatewayInput}
+              onChange={(e) => setGatewayInput(e.target.value)}
+              placeholder={DEFAULT_GATEWAY_URL}
             />
           </div>
           <Button
             onClick={() => {
-              setControllerUrl(controllerInput.trim() || DEFAULT_CONTROLLER_URL);
+              setGatewayUrl(gatewayInput.trim() || DEFAULT_GATEWAY_URL);
               setSettingsOpen(false);
             }}
           >
@@ -220,6 +220,7 @@ function AppContent() {
 
   return (
     <div className="flex h-screen bg-background text-foreground">
+      {controllerDialog}
       {/* Sidebar */}
       {sidebarCollapsed ? (
         <aside className="flex w-10 shrink-0 flex-col items-center gap-2 py-3 sidebar">
@@ -229,7 +230,7 @@ function AppContent() {
           >
             <ChevronRight className="h-4 w-4" />
           </button>
-          <CreateSandboxDialog compact serverUrl={serverUrl} controllerUrl={controllerUrl} onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }} />
+          <CreateSandboxDialog compact serverUrl={serverUrl} gatewayUrl={gatewayUrl} onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }} />
           <div className="flex flex-col items-center gap-1 mt-1">
             {sandboxes.map((sb) => (
               <button
@@ -274,7 +275,7 @@ function AppContent() {
               className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-foreground/10 transition-colors"
             >
               <span className="font-mono text-[11px] text-muted-foreground leading-none group-hover:text-foreground transition-colors">
-                {controllerUrl}
+                {gatewayUrl}
               </span>
               <Pencil style={{ width: 12, height: 12 }} className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
             </div>
@@ -291,7 +292,7 @@ function AppContent() {
             onRefresh={fetchSandboxes}
             onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }}
             serverUrl={serverUrl}
-            controllerUrl={controllerUrl}
+            gatewayUrl={gatewayUrl}
           />
           <div className="flex items-center px-4 py-3 border-t border-border/50">
             <ThemeToggle />
@@ -302,7 +303,7 @@ function AppContent() {
       {/* Main */}
       <main className="min-w-0 flex-1">
         <Routes>
-          <Route path="/" element={<GettingStarted controllerUrl={controllerUrl} />} />
+          <Route path="/" element={<GettingStarted gatewayUrl={gatewayUrl} />} />
           <Route
             path="/sandboxes/:id"
             element={<SandboxDetailRoute {...layoutProps} />}

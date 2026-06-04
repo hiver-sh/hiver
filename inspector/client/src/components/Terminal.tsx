@@ -9,7 +9,6 @@ import "@xterm/xterm/css/xterm.css";
 interface Props {
   sandboxId: string;
   serverUrl: string;
-  sandboxUrl: string;
   exposedEndpoint?: string;
   initCommand?: string;
 }
@@ -50,7 +49,7 @@ const LIGHT_THEME = {
   white: "#888888",      brightWhite: "#444444",
 };
 
-export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint, initCommand }: Props) {
+export function Terminal({ sandboxId, serverUrl, exposedEndpoint, initCommand }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
   const { prefs, terminalScrollPassthrough } = useUserPreferences();
@@ -171,7 +170,6 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint, in
           `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/input`,
           serverUrl,
         );
-        url.searchParams.set("sandboxUrl", sandboxUrl);
         url.searchParams.set("sessionId", sessionId);
         transport.fetch(url.toString(), {
           method: "POST",
@@ -192,7 +190,6 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint, in
         );
         url.searchParams.set("cols", String(term.cols));
         url.searchParams.set("rows", String(term.rows));
-        url.searchParams.set("sandboxUrl", sandboxUrl);
         url.searchParams.set("sessionId", sessionId);
         if (exposedEndpoint) url.searchParams.set("exposedBackend", exposedEndpoint);
         if (initCommand) url.searchParams.set("initCommand", initCommand);
@@ -282,7 +279,7 @@ export function Terminal({ sandboxId, serverUrl, sandboxUrl, exposedEndpoint, in
       disposed = true;
       cleanup();
     };
-  }, [sandboxId, serverUrl, sandboxUrl, exposedEndpoint, transport]);
+  }, [sandboxId, serverUrl, exposedEndpoint, transport]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden p-1" />;
 }

@@ -57,14 +57,14 @@ result, _ := sandbox.Exec("claude -p 'Write a poem and save it as pdf'")
 fmt.Println(result.Stdout)`;
 
 
-export function GettingStarted({ controllerUrl }: { controllerUrl: string }) {
+export function GettingStarted({ gatewayUrl }: { gatewayUrl: string }) {
   const [lang, setLang] = useState<Lang>("ts");
   const [copied, setCopied] = useState(false);
   const code =
     lang === "ts" ? TS_EXAMPLE : lang === "py" ? PY_EXAMPLE : GO_EXAMPLE;
 
   function handleCopy() {
-    navigator.clipboard.writeText(controllerUrl);
+    navigator.clipboard.writeText(gatewayUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
@@ -109,13 +109,13 @@ export function GettingStarted({ controllerUrl }: { controllerUrl: string }) {
         </div>
 
         <div className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium">Controller URL</h2>
+          <h2 className="text-sm font-medium">Gateway URL</h2>
           <p className="text-sm text-muted-foreground">
             Set this environment variable so the SDK can reach the controller.
           </p>
           <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
             <code className="flex-1 font-mono text-xs text-foreground select-all">
-              HIVE_CONTROLLER_URL={controllerUrl}
+              HIVE_GATEWAY_URL={gatewayUrl}
             </code>
             <button
               onClick={handleCopy}

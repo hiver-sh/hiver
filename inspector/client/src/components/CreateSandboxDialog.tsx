@@ -25,11 +25,11 @@ const DEFAULT_CONFIG = {
 
 interface Props {
   serverUrl: string;
-  controllerUrl: string;
+  gatewayUrl: string;
   onCreated: (id: string, command: string) => void;
 }
 
-export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compact }: Props & { compact?: boolean }) {
+export function CreateSandboxDialog({ serverUrl, gatewayUrl, onCreated, compact }: Props & { compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +58,7 @@ export function CreateSandboxDialog({ serverUrl, controllerUrl, onCreated, compa
     setLoading(true);
     try {
       const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(id)}`);
-      url.searchParams.set("controller", controllerUrl);
+      url.searchParams.set("gateway", gatewayUrl);
       const res = await fetch(url, {
         method: "PUT",
         headers: { "content-type": "application/json" },

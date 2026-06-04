@@ -7,13 +7,11 @@ import traceData from "./trace-sample.json";
 
 const SANDBOX = {
   id: "sandbox-demo",
-  endpoint: "http://sandbox-demo:8080",
 };
 
 const ARGS = {
   sandbox: SANDBOX,
   serverUrl: "http://localhost:3001",
-  controllerUrl: "http://localhost:9000",
   onShutdown: () => {},
 };
 

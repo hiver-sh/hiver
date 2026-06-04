@@ -216,7 +216,6 @@ export type ApiError = z.infer<typeof ApiError>;
 /** Controller response: a provisioned sandbox handle. */
 export const SandboxRef = z.object({
   id: z.string(),
-  endpoint: z.string().url(),
   /** Host and port of the sandbox's exposed port on the host network, if any. */
   exposed_endpoint: z.string().optional(),
 });

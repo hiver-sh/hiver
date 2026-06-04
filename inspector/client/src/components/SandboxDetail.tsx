@@ -32,13 +32,13 @@ const DEFAULT_FILES_FRACTION = 0.2;
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
   serverUrl: string;
-  controllerUrl: string;
+  gatewayUrl: string;
   initCommand?: string;
   onShutdown: () => void;
   onConnectedChange?: (connected: boolean) => void;
 }
 
-export function SandboxDetail({ sandbox, serverUrl, controllerUrl, initCommand, onShutdown, onConnectedChange }: SandboxDetailProps) {
+export function SandboxDetail({ sandbox, serverUrl, gatewayUrl, initCommand, onShutdown, onConnectedChange }: SandboxDetailProps) {
   const { transport, player } = useTransport();
   const { prefs, setPref } = useUserPreferences();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
@@ -109,23 +109,23 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     if (!lang) return;
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/file`);
     url.searchParams.set("path", path);
-    url.searchParams.set("sandboxUrl", sandbox.endpoint);
+
     try {
       const content = await transport.fetch(url).then((r) => r.text());
       setFilePreview({ path, content, lang });
     } catch { /* ignore */ }
-  }, [sandbox.id, sandbox.endpoint, serverUrl, transport]);
+  }, [sandbox.id, serverUrl, transport]);
 
   const proposePolicy = useCallback(async (updater: (cfg: Record<string, unknown>) => Record<string, unknown>) => {
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/config`);
-    url.searchParams.set("sandboxUrl", sandbox.endpoint);
+
     const current = await transport.fetch(url).then((r) => r.json() as Promise<Record<string, unknown>>);
     setConfigProposal({
       current: JSON.stringify(current, null, 2),
       proposed: JSON.stringify(updater(current), null, 2),
     });
     setShowConfig(true);
-  }, [sandbox.id, sandbox.endpoint, serverUrl, transport]);
+  }, [sandbox.id, serverUrl, transport]);
 
   const fsWriteEvents = useMemo(
     () => events.filter((e): e is Extract<SandboxEvent, { type: "fs.request" }> => e.type === "fs.request" && (e as Extract<SandboxEvent, { type: "fs.request" }>).operation === "write"),
@@ -145,7 +145,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     setConnected(false);
 
     const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/events`);
-    url.searchParams.set("sandboxUrl", sandbox.endpoint);
+
     if (lastEventId !== undefined) url.searchParams.set("lastEventId", String(lastEventId));
 
     const es = transport.openEventSource(url);
@@ -169,7 +169,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       es.close();
       setConnected(false);
     });
-  }, [sandbox.id, sandbox.endpoint, serverUrl, transport]);
+  }, [sandbox.id, serverUrl, transport]);
 
   useEffect(() => {
     let cancelled = false;
@@ -204,7 +204,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       const url = new URL(
         `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/shutdown`,
       );
-      url.searchParams.set("controller", controllerUrl);
+      url.searchParams.set("gateway", gatewayUrl);
       await transport.fetch(url, { method: "POST" });
       void clearEvents(sandbox.id);
       onShutdown();
@@ -253,15 +253,10 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
           <div className="flex items-center gap-2">
             <h2 className="truncate text-base font-semibold">{sandbox.id}</h2>
           </div>
-          <a
-            href={sandbox.endpoint}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-0.5"
-          >
+          <span className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
             <ExternalLink className="h-3 w-3" />
-            {sandbox.endpoint}
-          </a>
+            {sandbox.id}
+          </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button
@@ -475,7 +470,6 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               <Terminal
                 sandboxId={sandbox.id}
                 serverUrl={serverUrl}
-                sandboxUrl={sandbox.endpoint}
                 exposedEndpoint={sandbox.exposed_endpoint}
                 initCommand={initCommand}
               />
@@ -502,7 +496,6 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               <FileExplorer
                 sandboxId={sandbox.id}
                 serverUrl={serverUrl}
-                sandboxUrl={sandbox.endpoint}
                 events={fsWriteEvents}
               />
             </div>
@@ -526,7 +519,6 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       <SandboxConfigDialog
         sandboxId={sandbox.id}
         serverUrl={serverUrl}
-        sandboxUrl={sandbox.endpoint}
         open={showConfig}
         onOpenChange={(open) => { setShowConfig(open); if (!open) setConfigProposal(undefined); }}
         proposal={configProposal}

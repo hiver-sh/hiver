@@ -10,7 +10,9 @@ import { parseSSE } from "./sse";
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 export interface SandboxOptions {
-  /** Override the global fetch (e.g. for testing or proxying). */
+  /** Base URL of the gateway. Used to build per-sandbox API URLs. */
+  gatewayUrl: string;
+  /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
 }
 
@@ -80,7 +82,7 @@ export class Sandbox {
 
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
-    this.apiServerUrl = ref.endpoint.replace(/\/+$/, "");
+    this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.id)}`;
     this.exposedEndpoint = ref.exposed_endpoint;
     this.mcpEndpoint = `${this.apiServerUrl}/v1/mcp`;
     this.fetchImpl = opts.fetch ?? fetch;
