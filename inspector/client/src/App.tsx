@@ -167,6 +167,42 @@ function AppContent() {
     fetchSandboxes();
   }, [fetchSandboxes]);
 
+  // Subscribe to sandbox lifecycle events and keep the list in sync.
+  useEffect(() => {
+    const url = new URL(`${serverUrl}/api/sandboxes/events`);
+    url.searchParams.set("gateway", gatewayUrl);
+    const es = transport.openEventSource(url);
+
+    es.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data) as { id: string; status: string };
+        setSandboxes((prev) => {
+          switch (event.status) {
+            case "start":
+              return prev.find((s) => s.id === event.id)
+                ? prev
+                : [...prev, { id: event.id }];
+            case "stop":
+            case "die":
+              return prev.map((s) =>
+                s.id === event.id
+                  ? { ...s, status: event.status as SandboxRef["status"] }
+                  : s,
+              );
+            case "destroy":
+              return prev.filter((s) => s.id !== event.id);
+            default:
+              return prev;
+          }
+        });
+      } catch {
+        // ignore malformed frames
+      }
+    };
+
+    return () => es.close();
+  }, [serverUrl, gatewayUrl, transport]);
+
   useScrollbarVisibility();
 
   const layoutProps: LayoutProps = {
@@ -245,7 +281,11 @@ function AppContent() {
                 <span className={cn(
                   "block rounded-full transition-all",
                   selectedId === sb.id ? "h-2.5 w-2.5" : "h-2 w-2",
-                  connectedId === sb.id ? "bg-green-400" : "bg-muted-foreground/40",
+                  connectedId === sb.id
+                    ? "bg-green-400"
+                    : sb.status === "stop" || sb.status === "die"
+                      ? "bg-yellow-400/70"
+                      : "bg-muted-foreground/40",
                 )} />
               </button>
             ))}
@@ -261,7 +301,7 @@ function AppContent() {
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
               <button onClick={() => navigate("/")} className="flex items-center gap-1.5 text-sm font-semibold tracking-tight hover:opacity-80 transition-opacity">
                 <img src="/favicon.svg" alt="" className="h-4 w-4 invert dark:invert-0" />
-                Hive Inspector
+                DevTools
               </button>
               <button
                 onClick={() => setSidebarCollapsed(true)}

@@ -1,14 +1,15 @@
 package controller
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"encoding/json"
 
 	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
@@ -212,6 +213,63 @@ func containerLogs(name string) string {
 func withContainerLogs(err error, container string) error {
 	logs := containerLogs(container)
 	return fmt.Errorf("%w\n\ncontainer logs:\n%s\n", err, logs)
+}
+
+type dockerRawEvent struct {
+	Type   string `json:"Type"`
+	Action string `json:"Action"`
+	Actor  struct {
+		Attributes map[string]string `json:"Attributes"`
+	} `json:"Actor"`
+}
+
+func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
+	cmd := exec.CommandContext(ctx, "docker", "events",
+		"--filter", "label="+labelSandboxID,
+		"--filter", "type=container",
+		"--format", "{{json .}}")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("docker events pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("docker events start: %w", err)
+	}
+	ch := make(chan gen.SandboxLifecycleEvent, 16)
+	go func() {
+		defer close(ch)
+		defer cmd.Wait() //nolint:errcheck
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			var e dockerRawEvent
+			if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+				continue
+			}
+			var status gen.SandboxLifecycleEventStatus
+			switch e.Action {
+			case "start":
+				status = gen.Start
+			case "stop":
+				status = gen.Stop
+			case "die":
+				status = gen.Die
+			case "destroy":
+				status = gen.Destroy
+			default:
+				continue
+			}
+			id := e.Actor.Attributes[labelSandboxID]
+			if id == "" {
+				continue
+			}
+			select {
+			case ch <- gen.SandboxLifecycleEvent{Id: id, Status: status}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
 }
 
 // lookupTCPProxyEndpoint returns "localhost:<hostPort>" for the container's

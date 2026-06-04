@@ -1,8 +1,32 @@
 import { Router, type Request, type Response } from "express";
-import { type SandboxConfig, getOrCreateSandbox, listSandboxes, shutdown } from "hive";
+import { type SandboxConfig, getOrCreateSandbox, listSandboxes, shutdown, watchSandboxEvents } from "hive";
 import { gatewayUrl } from "../lib/controllerUrl.js";
 
 const router = Router();
+
+router.get("/events", async (req: Request, res: Response) => {
+  const abort = new AbortController();
+  req.on("close", () => abort.abort());
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  try {
+    for await (const event of watchSandboxEvents(
+      { gatewayUrl: gatewayUrl(req) },
+      abort.signal,
+    )) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  } catch {
+    // upstream closed or aborted — end cleanly
+  } finally {
+    res.end();
+  }
+});
 
 router.get("/", async (req: Request, res: Response) => {
   try {

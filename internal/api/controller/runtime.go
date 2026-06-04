@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 
 	gen "github.com/blasten/hive/internal/api/gen/controller"
@@ -26,4 +27,8 @@ type SandboxRuntime interface {
 	// Shutdown stops and removes the sandbox for id.
 	// Returns ErrSandboxNotFound if no sandbox exists for id.
 	Shutdown(id string) error
+
+	// Events streams sandbox lifecycle events until ctx is cancelled.
+	// The returned channel is closed when the stream ends.
+	Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error)
 }

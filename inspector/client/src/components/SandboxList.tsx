@@ -75,7 +75,14 @@ export function SandboxList({
               )}
             >
               <span
-                className={cn("mt-0.5 h-2 w-2 shrink-0 rounded-full", connectedId === sb.id ? "bg-green-400" : "bg-muted-foreground/40")}
+                className={cn(
+                  "mt-0.5 h-2 w-2 shrink-0 rounded-full",
+                  connectedId === sb.id
+                    ? "bg-green-400"
+                    : sb.status === "stop" || sb.status === "die"
+                      ? "bg-yellow-400/70"
+                      : "bg-muted-foreground/40",
+                )}
               />
               <span className="truncate font-mono">{sb.id}</span>
             </button>

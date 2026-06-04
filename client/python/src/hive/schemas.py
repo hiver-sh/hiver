@@ -77,7 +77,7 @@ class SandboxConfig(BaseModel):
     entrypoint: Optional[str] = None
     env: Optional[dict[str, str]] = None
     ttl: Optional[int] = Field(None, ge=0)
-    fs: list[FileSystem] = Field(min_length=1)
+    fs: Optional[list[FileSystem]] = Field(None, min_length=1)
     egress: Optional[list[EgressRule]] = None
     snapshot: Optional[Snapshot] = None
 

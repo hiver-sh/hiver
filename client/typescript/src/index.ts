@@ -41,7 +41,10 @@ export {
   getOrCreateSandbox,
   listSandboxes,
   shutdown,
+  watchSandboxEvents,
   type ControllerOptions,
+  type SandboxLifecycleEvent,
+  type SandboxLifecycleStatus,
 } from "./controller";
 
 export { allowedPythonPackages, allowedNpmPackages } from "./utils";

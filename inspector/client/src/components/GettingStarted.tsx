@@ -13,45 +13,21 @@ const LANG_TABS: { id: Lang; icon: string }[] = [
 
 const TS_EXAMPLE = `import * as hive from "hive-runtime/client";
 
-const sandbox = await hive.getOrCreateSandbox("agent-1", {
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
-});
+const sandbox = await hive.getOrCreateSandbox("agent-1");
 
 const result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'");
 console.log(result.stdout);`;
 
 const PY_EXAMPLE = `import hive_runtime as hive
 
-sandbox = hive.get_or_create_sandbox("agent-1", {
-    "fs": [
-        {
-            "backend": "local",
-            "mount": "/workspace",
-            "acls": [{"path": "/workspace/**", "access": "rw"}],
-        },
-    ],
-})
+sandbox = hive.get_or_create_sandbox("agent-1")
 
 result = sandbox.exec("claude -p 'Write a poem and save it as pdf'")
 print(result.stdout)`;
 
 const GO_EXAMPLE = `import "github.com/hive-run/hive-runtime/client"
 
-sandbox, _ := hive.GetOrCreateSandbox("agent-1", hive.SandboxConfig{
-    FS: []hive.Mount{
-        {
-            Backend: "local",
-            Mount:   "/workspace",
-            ACLs:    []hive.ACL{{Path: "/workspace/**", Access: "rw"}},
-        },
-    },
-})
+sandbox, _ := hive.GetOrCreateSandbox("agent-1", hive.SandboxConfig{})
 
 result, _ := sandbox.Exec("claude -p 'Write a poem and save it as pdf'")
 fmt.Println(result.Stdout)`;

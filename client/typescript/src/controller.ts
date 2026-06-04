@@ -1,5 +1,6 @@
 import { ApiError, SandboxConfig, SandboxRef } from "./schemas";
 import { Sandbox, SandboxError, toError } from "./sandbox";
+import { parseSSE } from "./sse";
 
 export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
 
@@ -33,7 +34,7 @@ const READINESS_POLL_INTERVAL_MS = 200;
  */
 export async function getOrCreateSandbox(
   id: string,
-  config: SandboxConfig,
+  config: SandboxConfig = {},
   opts: ControllerOptions = {},
 ): Promise<Sandbox> {
   if (!SANDBOX_ID_PATTERN.test(id)) {
@@ -41,7 +42,16 @@ export async function getOrCreateSandbox(
       `getOrCreateSandbox: id ${JSON.stringify(id)} must match ${SANDBOX_ID_PATTERN}`,
     );
   }
-  const validated = SandboxConfig.parse(config);
+  const validated = SandboxConfig.parse({
+    fs: [
+      {
+        backend: "local",
+        mount: "/workspace",
+        acls: [{ path: "/workspace/**", access: "rw" }],
+      },
+    ],
+    ...config,
+  });
   const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -190,6 +200,53 @@ export async function shutdown(
   }
   if (res.status === 204) return;
   throw await toError(res, "shutdown");
+}
+
+export type SandboxLifecycleStatus = "start" | "stop" | "die" | "destroy";
+export interface SandboxLifecycleEvent {
+  id: string;
+  status: SandboxLifecycleStatus;
+}
+
+/**
+ * Stream sandbox lifecycle events via SSE from `GET /v1/sandboxes/events`.
+ * Yields events until the signal is aborted or the server closes the stream.
+ */
+export async function* watchSandboxEvents(
+  opts: ControllerOptions = {},
+  signal?: AbortSignal,
+): AsyncGenerator<SandboxLifecycleEvent, void, void> {
+  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
+  const fetchImpl = opts.fetch ?? fetch;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/controller/v1/sandboxes/events`, {
+      headers: { Accept: "text/event-stream" },
+      signal,
+    });
+  } catch (err) {
+    if (isConnectionRefused(err)) {
+      throw new SandboxError(
+        "watchSandboxEvents",
+        0,
+        `gateway is not reachable at ${base} (connection refused). Is it running?`,
+      );
+    }
+    throw err;
+  }
+
+  if (!res.ok || !res.body) {
+    throw new SandboxError("watchSandboxEvents", res.status, res.statusText);
+  }
+
+  for await (const frame of parseSSE(res.body, signal)) {
+    try {
+      yield JSON.parse(frame.data) as SandboxLifecycleEvent;
+    } catch {
+      // skip malformed frames
+    }
+  }
 }
 
 function isConnectionRefused(err: unknown): boolean {

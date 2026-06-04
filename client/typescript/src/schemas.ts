@@ -156,7 +156,7 @@ export const SandboxConfig = z.object({
    * One or more file systems exposed to the agent. Mount paths must be unique and
    * non-overlapping (a mount path may not be a parent directory of another mount path).
    */
-  fs: z.array(FileSystem).min(1),
+  fs: z.array(FileSystem).min(1).optional(),
   /**
    * Ordered list of egress rules. The first rule that matches a request decides the outcome;
    * requests that match no rule are denied.

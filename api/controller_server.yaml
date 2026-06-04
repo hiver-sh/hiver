@@ -29,6 +29,23 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Sandbox' }
 
+  /v1/sandboxes/events:
+    get:
+      tags: [Sandboxes]
+      summary: Stream sandbox lifecycle events.
+      operationId: streamSandboxEvents
+      description: |
+        Server-sent event stream of sandbox lifecycle events. Each event has
+        the form `{"id":"<sandbox-id>","status":"start|stop|die|destroy"}`.
+        The stream stays open until the client disconnects.
+      responses:
+        '200':
+          description: SSE stream of sandbox lifecycle events.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SandboxLifecycleEvent'
+
   /v1/sandboxes/{id}:
     put:
       tags: [Sandboxes]
@@ -121,6 +138,21 @@ paths:
 
 components:
   schemas:
+    SandboxLifecycleEvent:
+      type: object
+      description: A sandbox container lifecycle event.
+      required: [id, status]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: The sandbox id.
+          example: tenant-acme-build-42
+        status:
+          type: string
+          enum: [start, stop, die, destroy]
+          description: The lifecycle transition.
+
     Sandbox:
       type: object
       description: A provisioned sandbox.

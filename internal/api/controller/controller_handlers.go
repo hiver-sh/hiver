@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/blasten/hive/internal/api"
+	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -75,6 +77,37 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, id string) {
 		return
 	}
 	c.JSON(http.StatusCreated, sb)
+}
+
+// StreamSandboxEvents writes a text/event-stream of sandbox lifecycle events.
+func (h *ControllerHandlers) StreamSandboxEvents(c *gin.Context) {
+	ch, err := h.runtime.Events(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.SandboxLifecycleEvent{})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, _ := c.Writer.(http.Flusher)
+	for {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, _ := json.Marshal(event)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-c.Request.Context().Done():
+			return
+		}
+	}
 }
 
 // ShutdownSandbox stops and removes the sandbox for id. An already-exited

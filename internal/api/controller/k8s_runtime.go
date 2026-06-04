@@ -160,6 +160,12 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 	return gen.Sandbox{Id: id, ExposedEndpoint: &ep}, nil
 }
 
+func (r *K8sRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
+	ch := make(chan gen.SandboxLifecycleEvent)
+	close(ch)
+	return ch, nil
+}
+
 func (r *K8sRuntime) Shutdown(id string) error {
 	ctx := context.Background()
 	name := containerNameFor(id)

@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import httpx
 
 from .sandbox import Sandbox, SandboxError, _to_error
 from .schemas import SandboxConfig, SandboxRef
+from .sse import parse_sse
 
 DEFAULT_GATEWAY_URL = "http://localhost:10000"
 
@@ -20,7 +21,7 @@ _READINESS_POLL_INTERVAL_S = 0.2
 
 async def get_or_create_sandbox(
     id: str,
-    config: SandboxConfig,
+    config: SandboxConfig = SandboxConfig(),
     gateway_url: str = DEFAULT_GATEWAY_URL,
     client: Optional[httpx.AsyncClient] = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
@@ -39,7 +40,17 @@ async def get_or_create_sandbox(
         raise ValueError(
             f"get_or_create_sandbox: id {id!r} must match {_SANDBOX_ID_PATTERN.pattern}"
         )
-    validated = SandboxConfig.model_validate(config.model_dump(exclude_none=True))
+    data = {
+        "fs": [
+            {
+                "backend": "local",
+                "mount": "/workspace",
+                "acls": [{"path": "/workspace/**", "access": "rw"}],
+            }
+        ],
+        **config.model_dump(exclude_none=True),
+    }
+    validated = SandboxConfig.model_validate(data)
     base = gateway_url.rstrip("/")
     owns_client = client is None
     http = client or httpx.AsyncClient()
@@ -152,6 +163,50 @@ async def shutdown(
         return
 
     raise _to_error(res, "shutdown")
+
+
+async def watch_sandbox_events(
+    gateway_url: str = DEFAULT_GATEWAY_URL,
+    client: Optional[httpx.AsyncClient] = None,
+    abort: Optional[asyncio.Event] = None,
+) -> AsyncGenerator[dict, None]:
+    """Stream sandbox lifecycle events via SSE from GET /v1/sandboxes/events.
+
+    Yields dicts of the form ``{"id": "<sandbox-id>", "status": "start|stop|die|destroy"}``
+    until *abort* is set or the server closes the stream.
+    """
+    base = gateway_url.rstrip("/")
+    owns_client = client is None
+    http = client or httpx.AsyncClient()
+
+    try:
+        async with http.stream(
+            "GET",
+            f"{base}/controller/v1/sandboxes/events",
+            headers={"Accept": "text/event-stream"},
+        ) as res:
+            if res.status_code != 200:
+                raise SandboxError(
+                    "watch_sandbox_events",
+                    res.status_code,
+                    (await res.aread()).decode(),
+                )
+            async for frame in parse_sse(res, abort):
+                try:
+                    yield json.loads(frame.data)
+                except Exception:
+                    pass
+    except httpx.ConnectError as err:
+        if _is_connection_refused(err):
+            raise SandboxError(
+                "watch_sandbox_events",
+                0,
+                f"gateway is not reachable at {base} (connection refused). Is it running?",
+            ) from err
+        raise
+    finally:
+        if owns_client:
+            await http.aclose()
 
 
 async def _wait_until_reachable(sandbox: Sandbox, timeout_s: float) -> None:
