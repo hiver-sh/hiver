@@ -50,6 +50,7 @@ export async function getOrCreateSandbox(
         acls: [{ path: "/workspace/**", access: "rw" }],
       },
     ],
+    egress: [{ host: "*", access: "allow" }],
     ...config,
   });
   const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
