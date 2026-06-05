@@ -67,12 +67,6 @@ export class Sandbox {
   readonly apiServerUrl: string;
 
   /**
-   * URL of the MCP Streamable HTTP endpoint (`/v1/mcp`) for this sandbox.
-   * Pass this to an MCP client as the transport endpoint.
-   */
-  readonly mcpEndpoint: string;
-
-  /**
    * Returns the base proxy URL for a specific port inside the sandbox.
    * Append the path to get a full URL, e.g. `sandbox.proxyUrl(8080) + "/health"`.
    */
@@ -83,7 +77,6 @@ export class Sandbox {
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.id)}`;
-    this.mcpEndpoint = `${this.apiServerUrl}/v1/mcp`;
     this.proxyUrl = (port) => `${this.apiServerUrl}/v1/proxy/${port}`;
     this.fetchImpl = opts.fetch ?? fetch;
   }

@@ -313,8 +313,8 @@ function SummaryTab({ summary, prevSummary }: { summary: LLMSummaryData; prevSum
 export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOpenFile }: { bar: TimelineBar; prevBar?: TimelineBar | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void }) {
   const req = bar.rawEvents[0];
   const res = bar.rawEvents.find(
-    (e): e is Extract<SandboxEvent, { type: "egress.response" | "fs.response" | "exec.response" }> =>
-      e.type === "egress.response" || e.type === "fs.response" || e.type === "exec.response",
+    (e): e is Extract<SandboxEvent, { type: "egress.response" | "ingress.response" | "fs.response" | "exec.response" }> =>
+      e.type === "egress.response" || e.type === "ingress.response" || e.type === "fs.response" || e.type === "exec.response",
   );
   const chunks = bar.rawEvents.filter(
     (e): e is Extract<SandboxEvent, { type: "egress.chunk" }> =>
@@ -326,7 +326,9 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
     if (lastChunk) {
       return Math.round(new Date(lastChunk.timestamp).getTime() - new Date(req.timestamp).getTime());
     }
-    return res && "duration_ms" in res ? res.duration_ms : null;
+    if (res && "duration_ms" in res) return res.duration_ms;
+    if (res) return Math.round(new Date(res.timestamp).getTime() - new Date(req.timestamp).getTime());
+    return null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bar]);
 
@@ -492,7 +494,8 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
     );
   }
 
-  const reqRawBody = req.type === "egress.request" ? req.body : undefined;
+  const reqRawBody = (req.type === "egress.request" || req.type === "ingress.request") ? req.body : undefined;
+  const resRawBody = res?.type === "ingress.response" ? res.body : undefined;
 
   const tabOptions: { value: DetailTab; label: string }[] = [
     ...(hasSummary ? [{ value: "summary" as DetailTab, label: "Summary" }] : []),
@@ -588,6 +591,13 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                     denyUpdater={fsDenyUpdater(req.mount, req.path)}
                   />
                 </>}
+                {req.type === "ingress.request" && <>
+                  <KV label="method" value={req.method} />
+                  <KV label="port"   value={req.port} />
+                  <KV label="path"   value={req.path} />
+                  {req.query && <KV label="query" value={req.query} />}
+                  {req.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={req.headers} /></div>}
+                </>}
               </div>
             </div>
           </div>
@@ -599,11 +609,11 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
 
       {tab === "response" && (
         <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 ${narrow ? "flex-col" : ""}`}>
-          <div className={`overflow-hidden ${!narrow && chunks.length > 0 ? "w-64 shrink-0 border-r border-border" : narrow && chunks.length > 0 ? "shrink-0 border-b border-border" : "flex-1"}`}>
+          <div className={`overflow-hidden ${!narrow && (chunks.length > 0 || resRawBody) ? "w-64 shrink-0 border-r border-border" : narrow && (chunks.length > 0 || resRawBody) ? "shrink-0 border-b border-border" : "flex-1"}`}>
             <div className="p-3">
               {res ? (
                 <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
-                  {res.type === "egress.response" && <>
+                  {(res.type === "egress.response" || res.type === "ingress.response") && <>
                     <KV label="status"   value={String(res.status)} cls={res.status >= 400 ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"} />
                     {effectiveDurationMs != null && <KV label="duration" value={humanDuration(effectiveDurationMs)} />}
                     {res.headers && <div className="col-span-2 mt-1"><HeadersBlock headers={res.headers} /></div>}
@@ -636,6 +646,9 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                 );
               })()}
             </div>
+          )}
+          {resRawBody && (
+            <BodyBlock raw={resRawBody} className={narrow ? "min-h-[300px]" : "flex-1 min-w-0 min-h-[300px]"} />
           )}
         </div>
       )}

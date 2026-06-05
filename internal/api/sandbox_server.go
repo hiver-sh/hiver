@@ -23,6 +23,11 @@ func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, li
 	swagger.Servers = nil
 
 	r := gin.Default()
+	r.Use(func(c *gin.Context) {
+		// Any request to the API server resets the lifetime of the sandbox.
+		lifetime.Reset()
+		c.Next()
+	})
 
 	oapiGroup := r.Group("/")
 	oapiGroup.Use(middleware.OapiRequestValidator(swagger))

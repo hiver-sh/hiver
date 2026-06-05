@@ -17,7 +17,9 @@ export type SandboxEvent =
   | { id: number; timestamp: string; type: "stdio"; stdout?: string; stderr?: string }
   | { id: number; timestamp: string; type: "resource.usage"; cpu_percent: number; memory_bytes: number }
   | { id: number; timestamp: string; type: "exec.request"; cwd: string; command: string }
-  | { id: number; timestamp: string; type: "exec.response"; request_id: number };
+  | { id: number; timestamp: string; type: "exec.response"; request_id: number }
+  | { id: number; timestamp: string; type: "ingress.request"; port: string; method: string; path: string; query?: string; headers?: Record<string, string>; body?: string }
+  | { id: number; timestamp: string; type: "ingress.response"; request_id: number; status: number; duration_ms: number; headers?: Record<string, string>; body?: string };
 
 export const DEFAULT_INSPECTOR_SERVER = "http://localhost:3001";
 export const DEFAULT_GATEWAY_URL = "http://localhost:10000";

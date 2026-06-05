@@ -174,9 +174,10 @@ function buildMcpServer(): McpServer {
       cmd: z.string().describe("Shell command to execute via /bin/sh -c"),
       cwd: z.string().optional().describe("Absolute working directory. Defaults to the process cwd."),
     },
-  }, async ({ cmd, cwd }) => ({
-    content: [{ type: "text", text: JSON.stringify(await bash(cmd, cwd)) }],
-  }));
+  }, async ({ cmd, cwd }) => {
+    console.log(`[bash] ${cmd}`);
+    return { content: [{ type: "text", text: JSON.stringify(await bash(cmd, cwd)) }] };
+  });
 
   server.registerTool("read", {
     description: "Read the contents of a file. Use this instead of 'cat' when you only need to inspect a file.",
@@ -185,9 +186,10 @@ function buildMcpServer(): McpServer {
       offset: z.number().int().optional().describe("0-based line index to start reading from. Defaults to 0"),
       limit: z.number().int().optional().describe("Maximum number of lines to return. Defaults to 2000"),
     },
-  }, async ({ path, offset, limit }) => ({
-    content: [{ type: "text", text: JSON.stringify(await readTool(path, offset, limit)) }],
-  }));
+  }, async ({ path, offset, limit }) => {
+    console.log(`[read] ${path}`);
+    return { content: [{ type: "text", text: JSON.stringify(await readTool(path, offset, limit)) }] };
+  });
 
   server.registerTool("write", {
     description:
@@ -197,9 +199,10 @@ function buildMcpServer(): McpServer {
       path: z.string().describe("Absolute path of the file to write"),
       content: z.string().describe("File contents to write"),
     },
-  }, async ({ path, content }) => ({
-    content: [{ type: "text", text: JSON.stringify(await writeTool(path, content)) }],
-  }));
+  }, async ({ path, content }) => {
+    console.log(`[write] ${path}`);
+    return { content: [{ type: "text", text: JSON.stringify(await writeTool(path, content)) }] };
+  });
 
   server.registerTool("edit", {
     description:
@@ -211,9 +214,10 @@ function buildMcpServer(): McpServer {
       newString: z.string().describe("Replacement string"),
       replaceAll: z.boolean().optional().describe("Replace every occurrence; otherwise oldString must match exactly once"),
     },
-  }, async ({ path, oldString, newString, replaceAll }) => ({
-    content: [{ type: "text", text: JSON.stringify(await editTool(path, oldString, newString, replaceAll)) }],
-  }));
+  }, async ({ path, oldString, newString, replaceAll }) => {
+    console.log(`[edit] ${path}`);
+    return { content: [{ type: "text", text: JSON.stringify(await editTool(path, oldString, newString, replaceAll)) }] };
+  });
 
   server.registerTool("glob", {
     description: "Find files matching a glob pattern. (e.g. '**/*.csv').",
@@ -221,9 +225,10 @@ function buildMcpServer(): McpServer {
       pattern: z.string().describe("Glob pattern. Supports *, ?, [class] and ** for any number of path segments"),
       root: z.string().optional().describe("Directory to search under. Defaults to /"),
     },
-  }, async ({ pattern, root }) => ({
-    content: [{ type: "text", text: JSON.stringify(await globTool(pattern, root)) }],
-  }));
+  }, async ({ pattern, root }) => {
+    console.log(`[glob] ${pattern}`);
+    return { content: [{ type: "text", text: JSON.stringify(await globTool(pattern, root)) }] };
+  });
 
   server.registerTool("grep", {
     description: "Search files for lines matching a regular expression.",
@@ -231,9 +236,10 @@ function buildMcpServer(): McpServer {
       pattern: z.string().describe("Regular expression to search for"),
       path: z.string().describe("File or directory to search. Directories are searched recursively"),
     },
-  }, async ({ pattern, path }) => ({
-    content: [{ type: "text", text: JSON.stringify(await grepTool(pattern, path)) }],
-  }));
+  }, async ({ pattern, path }) => {
+    console.log(`[grep] ${pattern} ${path}`);
+    return { content: [{ type: "text", text: JSON.stringify(await grepTool(pattern, path)) }] };
+  });
 
   return server;
 }

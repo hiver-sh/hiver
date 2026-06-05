@@ -241,6 +241,62 @@ type FSResponseEvent struct {
 	Type      string    `json:"type"`
 }
 
+// IngressRequestEvent defines model for IngressRequestEvent.
+type IngressRequestEvent struct {
+	// Body Request body. Omitted when the request has no body or the
+	// body exceeds the capture limit.
+	Body *string `json:"body,omitempty"`
+
+	// Headers HTTP request headers forwarded to the sandbox. Multi-value
+	// headers are joined with `, ` per RFC 7230 §3.2.2.
+	Headers *map[string]string `json:"headers,omitempty"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// Method HTTP method (`GET`, `POST`, …).
+	Method string `json:"method"`
+
+	// Path URL path forwarded to the sandbox (no query string).
+	Path string `json:"path"`
+
+	// Port Target port inside the sandbox container.
+	Port string `json:"port"`
+
+	// Query Raw URL query (no leading `?`). Omitted when the request
+	// had no query string.
+	Query     *string   `json:"query,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
+// IngressResponseEvent defines model for IngressResponseEvent.
+type IngressResponseEvent struct {
+	// Body Response body. Omitted when the response has no body or the
+	// body exceeds the capture limit.
+	Body *string `json:"body,omitempty"`
+
+	// DurationMs Wall-clock duration of the proxied request, in milliseconds.
+	DurationMs int `json:"duration_ms"`
+
+	// Headers HTTP response headers returned by the sandbox. Multi-value
+	// headers are joined with `, ` per RFC 7230 §3.2.2.
+	Headers *map[string]string `json:"headers,omitempty"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// RequestId Unique identifier correlating this result to its `IngressRequestEvent`.
+	RequestId int `json:"request_id"`
+
+	// Status HTTP status code returned by the sandbox.
+	Status    int       `json:"status"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
 // ResourceUsageEvent defines model for ResourceUsageEvent.
 type ResourceUsageEvent struct {
 	// CpuPercent CPU utilisation as a percentage (0–100) over the last sample interval.
@@ -569,6 +625,62 @@ func (t *SandboxEvent) MergeExecResponseEvent(v ExecResponseEvent) error {
 	return err
 }
 
+// AsIngressRequestEvent returns the union data inside the SandboxEvent as a IngressRequestEvent
+func (t SandboxEvent) AsIngressRequestEvent() (IngressRequestEvent, error) {
+	var body IngressRequestEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIngressRequestEvent overwrites any union data inside the SandboxEvent as the provided IngressRequestEvent
+func (t *SandboxEvent) FromIngressRequestEvent(v IngressRequestEvent) error {
+	v.Type = "ingress.request"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIngressRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided IngressRequestEvent
+func (t *SandboxEvent) MergeIngressRequestEvent(v IngressRequestEvent) error {
+	v.Type = "ingress.request"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsIngressResponseEvent returns the union data inside the SandboxEvent as a IngressResponseEvent
+func (t SandboxEvent) AsIngressResponseEvent() (IngressResponseEvent, error) {
+	var body IngressResponseEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIngressResponseEvent overwrites any union data inside the SandboxEvent as the provided IngressResponseEvent
+func (t *SandboxEvent) FromIngressResponseEvent(v IngressResponseEvent) error {
+	v.Type = "ingress.response"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIngressResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided IngressResponseEvent
+func (t *SandboxEvent) MergeIngressResponseEvent(v IngressResponseEvent) error {
+	v.Type = "ingress.response"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 func (t SandboxEvent) Discriminator() (string, error) {
 	var discriminator struct {
 		Discriminator string `json:"type"`
@@ -599,6 +711,10 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 		return t.AsFSRequestEvent()
 	case "fs.response":
 		return t.AsFSResponseEvent()
+	case "ingress.request":
+		return t.AsIngressRequestEvent()
+	case "ingress.response":
+		return t.AsIngressResponseEvent()
 	case "resource.usage":
 		return t.AsResourceUsageEvent()
 	case "stdio":

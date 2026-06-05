@@ -160,6 +160,9 @@ func main() {
 			cancel()
 		},
 	)
+	// Any broker event (except resource.usage, which uses PublishSilent)
+	// counts as sandbox activity and resets the inactivity timer.
+	broker.SetActivityHook(lifetime.Reset)
 	for i := range sp.FS {
 		f := &sp.FS[i]
 		// sbxfuse mounts onto f.Mount on the host (both backends); both dirs

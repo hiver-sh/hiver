@@ -16,6 +16,8 @@ components:
         - $ref: '#/components/schemas/ResourceUsageEvent'
         - $ref: '#/components/schemas/ExecRequestEvent'
         - $ref: '#/components/schemas/ExecResponseEvent'
+        - $ref: '#/components/schemas/IngressRequestEvent'
+        - $ref: '#/components/schemas/IngressResponseEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -29,6 +31,8 @@ components:
           resource.usage: '#/components/schemas/ResourceUsageEvent'
           exec.request: '#/components/schemas/ExecRequestEvent'
           exec.response: '#/components/schemas/ExecResponseEvent'
+          ingress.request: '#/components/schemas/IngressRequestEvent'
+          ingress.response: '#/components/schemas/IngressResponseEvent'
 
     SandboxEventBase:
       type: object
@@ -382,3 +386,90 @@ components:
         id: 221
         timestamp: "2026-05-31T10:15:04Z"
         request_id: 220
+
+    IngressRequestEvent:
+      description: |
+        Emitted when an inbound request is proxied through the `/v1/proxy`
+        endpoint to a port exposed by the sandbox container.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, port, method, path]
+          properties:
+            type:
+              type: string
+              const: ingress.request
+            port:
+              type: string
+              description: Target port inside the sandbox container.
+            method:
+              type: string
+              description: HTTP method (`GET`, `POST`, …).
+            path:
+              type: string
+              description: URL path forwarded to the sandbox (no query string).
+            query:
+              type: string
+              description: |
+                Raw URL query (no leading `?`). Omitted when the request
+                had no query string.
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+              description: |
+                HTTP request headers forwarded to the sandbox. Multi-value
+                headers are joined with `, ` per RFC 7230 §3.2.2.
+            body:
+              type: string
+              description: |
+                Request body. Omitted when the request has no body or the
+                body exceeds the capture limit.
+      example:
+        type: ingress.request
+        id: 230
+        timestamp: "2026-06-01T09:00:00Z"
+        port: "8080"
+        method: GET
+        path: /api/health
+
+    IngressResponseEvent:
+      description: |
+        Emitted when a proxied inbound request completes. The `request_id`
+        matches the `id` of the originating `IngressRequestEvent`.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, request_id, status, duration_ms]
+          properties:
+            type:
+              type: string
+              const: ingress.response
+            request_id:
+              type: integer
+              description: Unique identifier correlating this result to its `IngressRequestEvent`.
+            status:
+              type: integer
+              description: HTTP status code returned by the sandbox.
+            duration_ms:
+              type: integer
+              description: Wall-clock duration of the proxied request, in milliseconds.
+            headers:
+              type: object
+              additionalProperties:
+                type: string
+              description: |
+                HTTP response headers returned by the sandbox. Multi-value
+                headers are joined with `, ` per RFC 7230 §3.2.2.
+            body:
+              type: string
+              description: |
+                Response body. Omitted when the response has no body or the
+                body exceeds the capture limit.
+      example:
+        type: ingress.response
+        id: 231
+        timestamp: "2026-06-01T09:00:00Z"
+        request_id: 230
+        status: 200
+        duration_ms: 12

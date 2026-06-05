@@ -310,6 +310,25 @@ export const ExecResponseEvent = SandboxEventBase.extend({
   request_id: z.number().int(),
 });
 
+export const IngressRequestEvent = SandboxEventBase.extend({
+  type: z.literal("ingress.request"),
+  port: z.string(),
+  method: z.string(),
+  path: z.string(),
+  query: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  body: z.string().optional(),
+});
+
+export const IngressResponseEvent = SandboxEventBase.extend({
+  type: z.literal("ingress.response"),
+  request_id: z.number().int(),
+  status: z.number().int(),
+  duration_ms: z.number().int(),
+  headers: z.record(z.string(), z.string()).optional(),
+  body: z.string().optional(),
+});
+
 export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
   EgressRequestEvent,
@@ -321,5 +340,7 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   ResourceUsageEvent,
   ExecRequestEvent,
   ExecResponseEvent,
+  IngressRequestEvent,
+  IngressResponseEvent,
 ]);
 export type SandboxEvent = z.infer<typeof SandboxEvent>;

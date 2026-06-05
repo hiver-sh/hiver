@@ -82,7 +82,7 @@ func PollResourceUsage(ctx context.Context, broker *events.Broker, cgroupPath st
 		lastCPU = cpuPercent
 		lastMem = memBytes
 
-		broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
+		broker.PublishSilent(func(id int64, ts time.Time) gen.SandboxEvent {
 			var ev gen.SandboxEvent
 			_ = ev.FromResourceUsageEvent(gen.ResourceUsageEvent{
 				Type:        "resource.usage",

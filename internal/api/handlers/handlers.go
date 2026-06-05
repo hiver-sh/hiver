@@ -2,22 +2,17 @@ package handlers
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/events"
 	"github.com/blasten/hive/internal/isolation"
-	mcpapi "github.com/blasten/hive/internal/mcp"
-	"github.com/blasten/hive/internal/mcp/tools"
 )
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still
@@ -34,81 +29,22 @@ type lifetime interface {
 }
 
 type SandboxHandlers struct {
-	broker      *events.Broker
-	store       configStore
-	lifetime    lifetime
-	iso         isolation.Isolation // runtime boundary: exec + filesystem access
-	processes  sync.Map     // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
-	mcpHandler http.Handler // MCP Streamable HTTP handler backed by the workload
-	netMark    int          // SO_MARK for the reverse proxy dialer, bypasses iptables REDIRECT
+	broker    *events.Broker
+	store     configStore
+	lifetime  lifetime
+	iso       isolation.Isolation // runtime boundary: exec + filesystem access
+	processes sync.Map            // id → io.Writer (stdin of a running exec-stream process; pty master for tty sessions)
+	netMark   int                 // SO_MARK for the reverse proxy dialer, bypasses iptables REDIRECT
 }
 
 func NewSandboxHandlers(broker *events.Broker, store configStore, lifetime lifetime, iso isolation.Isolation, netMark int) *SandboxHandlers {
-	h := &SandboxHandlers{
+	return &SandboxHandlers{
 		broker:   broker,
 		store:    store,
 		lifetime: lifetime,
 		iso:      iso,
 		netMark:  netMark,
 	}
-	h.mcpHandler = mcpapi.NewContainerHandler(h.execCommand, h.fsBridge())
-	return h
-}
-
-// fsBridge adapts the isolation backend's FileBridge to the MCP file tools'
-// FS, fetching the current FUSE mount list per call so path routing tracks
-// config updates.
-func (h *SandboxHandlers) fsBridge() tools.FS {
-	mounts := func() []string {
-		cfg, err := h.store.Get()
-		if err != nil {
-			return nil
-		}
-		return h.mountPaths(cfg)
-	}
-	return bridgeFS{files: h.iso.Files, mounts: mounts}
-}
-
-// bridgeFS implements tools.FS over the backend FileBridge. files is fetched
-// lazily so a backend swap (tests) or late init is respected.
-type bridgeFS struct {
-	files  func() isolation.FileBridge
-	mounts func() []string
-}
-
-func (b bridgeFS) ReadFile(path string) ([]byte, error) {
-	rc, _, err := b.files().Open(path, b.mounts())
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-	return io.ReadAll(rc)
-}
-
-func (b bridgeFS) WriteFile(path string, data []byte) error {
-	dir, name := filepath.Split(path)
-	_, err := b.files().Save(filepath.Clean(dir), name, b.mounts(), bytes.NewReader(data))
-	return err
-}
-
-func (b bridgeFS) ReadDir(path string) ([]tools.DirEntry, error) {
-	es, err := b.files().List(path, b.mounts())
-	if err != nil {
-		return nil, err
-	}
-	out := make([]tools.DirEntry, 0, len(es))
-	for _, e := range es {
-		out = append(out, tools.DirEntry{Name: e.Name, IsDir: e.IsDir, Size: e.Size})
-	}
-	return out, nil
-}
-
-func (b bridgeFS) Stat(path string) (tools.DirEntry, error) {
-	e, err := b.files().Stat(path, b.mounts())
-	if err != nil {
-		return tools.DirEntry{}, err
-	}
-	return tools.DirEntry{Name: e.Name, IsDir: e.IsDir, Size: e.Size}, nil
 }
 
 // execCommand is the core of the Exec handler: runs command inside the agent

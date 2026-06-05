@@ -33,7 +33,7 @@ $(CMDS):
 	go build -o bin/$@ ./cmd/$@
 
 gen: ## Run go generate on the API package
-	go generate ./internal/api ./internal/mcp
+	go generate ./internal/api
 
 fmt: ## Format Go sources with gofmt -s
 	gofmt -s -w .

@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -122,100 +121,6 @@ type ExecStreamRequest struct {
 	Tty *bool `json:"tty,omitempty"`
 }
 
-// JSONRPCError defines model for JSONRPCError.
-type JSONRPCError struct {
-	// Code Standard JSON-RPC error code. `-32700` parse error,
-	// `-32600` invalid request, `-32601` method not found,
-	// `-32602` invalid params, `-32603` internal error.
-	// Application errors use codes in the range `-32000` to
-	// `-32099`.
-	Code int `json:"code"`
-
-	// Data Optional structured error context.
-	Data    interface{} `json:"data,omitempty"`
-	Message string      `json:"message"`
-}
-
-// JSONRPCNotification A JSON-RPC 2.0 notification envelope (no `id`, no response
-// expected).
-type JSONRPCNotification struct {
-	Jsonrpc string                      `json:"jsonrpc"`
-	Method  string                      `json:"method"`
-	Params  *JSONRPCNotification_Params `json:"params,omitempty"`
-}
-
-// JSONRPCNotificationParams0 defines model for .
-type JSONRPCNotificationParams0 map[string]interface{}
-
-// JSONRPCNotificationParams1 defines model for .
-type JSONRPCNotificationParams1 = []interface{}
-
-// JSONRPCNotification_Params defines model for JSONRPCNotification.Params.
-type JSONRPCNotification_Params struct {
-	union json.RawMessage
-}
-
-// JSONRPCRequest A JSON-RPC 2.0 request envelope.
-type JSONRPCRequest struct {
-	// Id Client-chosen request identifier echoed back in the response.
-	Id      JSONRPCRequest_Id `json:"id"`
-	Jsonrpc string            `json:"jsonrpc"`
-
-	// Method MCP method name, e.g. `initialize`, `tools/list`,
-	// `tools/call`, `resources/list`, `resources/read`,
-	// `prompts/list`, `prompts/get`.
-	Method string `json:"method"`
-
-	// Params Method parameters. Schema depends on `method`.
-	Params *JSONRPCRequest_Params `json:"params,omitempty"`
-}
-
-// JSONRPCRequestId0 defines model for .
-type JSONRPCRequestId0 = string
-
-// JSONRPCRequestId1 defines model for .
-type JSONRPCRequestId1 = int
-
-// JSONRPCRequest_Id Client-chosen request identifier echoed back in the response.
-type JSONRPCRequest_Id struct {
-	union json.RawMessage
-}
-
-// JSONRPCRequestParams0 defines model for .
-type JSONRPCRequestParams0 map[string]interface{}
-
-// JSONRPCRequestParams1 defines model for .
-type JSONRPCRequestParams1 = []interface{}
-
-// JSONRPCRequest_Params Method parameters. Schema depends on `method`.
-type JSONRPCRequest_Params struct {
-	union json.RawMessage
-}
-
-// JSONRPCResponse A JSON-RPC 2.0 response envelope. Exactly one of `result` or
-// `error` is present.
-type JSONRPCResponse struct {
-	Error   *JSONRPCError      `json:"error,omitempty"`
-	Id      JSONRPCResponse_Id `json:"id"`
-	Jsonrpc string             `json:"jsonrpc"`
-
-	// Result Method result. Shape depends on the called method — for
-	// example, `tools/call` returns a `CallToolResult` with a
-	// `content` array and `isError` flag.
-	Result interface{} `json:"result,omitempty"`
-}
-
-// JSONRPCResponseId0 defines model for .
-type JSONRPCResponseId0 = string
-
-// JSONRPCResponseId1 defines model for .
-type JSONRPCResponseId1 = int
-
-// JSONRPCResponse_Id defines model for JSONRPCResponse.Id.
-type JSONRPCResponse_Id struct {
-	union json.RawMessage
-}
-
 // ListDirectoryParams defines parameters for ListDirectory.
 type ListDirectoryParams struct {
 	// Path Agent-visible absolute path of the directory to list. Must be
@@ -254,44 +159,6 @@ type UploadFileMultipartBody struct {
 	File openapi_types.File `json:"file"`
 }
 
-// McpDeleteParams defines parameters for McpDelete.
-type McpDeleteParams struct {
-	// McpSessionId Identifier of the session to close.
-	McpSessionId string `json:"Mcp-Session-Id"`
-}
-
-// McpStreamParams defines parameters for McpStream.
-type McpStreamParams struct {
-	McpSessionId *string `json:"Mcp-Session-Id,omitempty"`
-}
-
-// McpRequestJSONBody defines parameters for McpRequest.
-type McpRequestJSONBody struct {
-	union json.RawMessage
-}
-
-// McpRequestParams defines parameters for McpRequest.
-type McpRequestParams struct {
-	// McpSessionId Optional client-supplied session identifier.
-	McpSessionId *string `json:"Mcp-Session-Id,omitempty"`
-}
-
-// McpRequestJSONBody2 defines parameters for McpRequest.
-type McpRequestJSONBody2 = []McpRequestJSONBody_2_Item
-
-// McpRequestJSONBody_2_Item defines parameters for McpRequest.
-type McpRequestJSONBody_2_Item struct {
-	union json.RawMessage
-}
-
-// McpRequest200JSONResponseBody1 defines parameters for McpRequest.
-type McpRequest200JSONResponseBody1 = []JSONRPCResponse
-
-// McpRequest200JSONResponseBody defines parameters for McpRequest.
-type McpRequest200JSONResponseBody struct {
-	union json.RawMessage
-}
-
 // ApplyConfigJSONRequestBody defines body for ApplyConfig for application/json ContentType.
 type ApplyConfigJSONRequestBody = SandboxConfig
 
@@ -306,469 +173,6 @@ type ExecStreamStdinJSONRequestBody ExecStreamStdinJSONBody
 
 // UploadFileMultipartRequestBody defines body for UploadFile for multipart/form-data ContentType.
 type UploadFileMultipartRequestBody UploadFileMultipartBody
-
-// McpRequestJSONRequestBody defines body for McpRequest for application/json ContentType.
-type McpRequestJSONRequestBody McpRequestJSONBody
-
-// AsJSONRPCNotificationParams0 returns the union data inside the JSONRPCNotification_Params as a JSONRPCNotificationParams0
-func (t JSONRPCNotification_Params) AsJSONRPCNotificationParams0() (JSONRPCNotificationParams0, error) {
-	var body JSONRPCNotificationParams0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCNotificationParams0 overwrites any union data inside the JSONRPCNotification_Params as the provided JSONRPCNotificationParams0
-func (t *JSONRPCNotification_Params) FromJSONRPCNotificationParams0(v JSONRPCNotificationParams0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCNotificationParams0 performs a merge with any union data inside the JSONRPCNotification_Params, using the provided JSONRPCNotificationParams0
-func (t *JSONRPCNotification_Params) MergeJSONRPCNotificationParams0(v JSONRPCNotificationParams0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsJSONRPCNotificationParams1 returns the union data inside the JSONRPCNotification_Params as a JSONRPCNotificationParams1
-func (t JSONRPCNotification_Params) AsJSONRPCNotificationParams1() (JSONRPCNotificationParams1, error) {
-	var body JSONRPCNotificationParams1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCNotificationParams1 overwrites any union data inside the JSONRPCNotification_Params as the provided JSONRPCNotificationParams1
-func (t *JSONRPCNotification_Params) FromJSONRPCNotificationParams1(v JSONRPCNotificationParams1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCNotificationParams1 performs a merge with any union data inside the JSONRPCNotification_Params, using the provided JSONRPCNotificationParams1
-func (t *JSONRPCNotification_Params) MergeJSONRPCNotificationParams1(v JSONRPCNotificationParams1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t JSONRPCNotification_Params) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *JSONRPCNotification_Params) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsJSONRPCRequestId0 returns the union data inside the JSONRPCRequest_Id as a JSONRPCRequestId0
-func (t JSONRPCRequest_Id) AsJSONRPCRequestId0() (JSONRPCRequestId0, error) {
-	var body JSONRPCRequestId0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCRequestId0 overwrites any union data inside the JSONRPCRequest_Id as the provided JSONRPCRequestId0
-func (t *JSONRPCRequest_Id) FromJSONRPCRequestId0(v JSONRPCRequestId0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCRequestId0 performs a merge with any union data inside the JSONRPCRequest_Id, using the provided JSONRPCRequestId0
-func (t *JSONRPCRequest_Id) MergeJSONRPCRequestId0(v JSONRPCRequestId0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsJSONRPCRequestId1 returns the union data inside the JSONRPCRequest_Id as a JSONRPCRequestId1
-func (t JSONRPCRequest_Id) AsJSONRPCRequestId1() (JSONRPCRequestId1, error) {
-	var body JSONRPCRequestId1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCRequestId1 overwrites any union data inside the JSONRPCRequest_Id as the provided JSONRPCRequestId1
-func (t *JSONRPCRequest_Id) FromJSONRPCRequestId1(v JSONRPCRequestId1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCRequestId1 performs a merge with any union data inside the JSONRPCRequest_Id, using the provided JSONRPCRequestId1
-func (t *JSONRPCRequest_Id) MergeJSONRPCRequestId1(v JSONRPCRequestId1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t JSONRPCRequest_Id) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *JSONRPCRequest_Id) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsJSONRPCRequestParams0 returns the union data inside the JSONRPCRequest_Params as a JSONRPCRequestParams0
-func (t JSONRPCRequest_Params) AsJSONRPCRequestParams0() (JSONRPCRequestParams0, error) {
-	var body JSONRPCRequestParams0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCRequestParams0 overwrites any union data inside the JSONRPCRequest_Params as the provided JSONRPCRequestParams0
-func (t *JSONRPCRequest_Params) FromJSONRPCRequestParams0(v JSONRPCRequestParams0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCRequestParams0 performs a merge with any union data inside the JSONRPCRequest_Params, using the provided JSONRPCRequestParams0
-func (t *JSONRPCRequest_Params) MergeJSONRPCRequestParams0(v JSONRPCRequestParams0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsJSONRPCRequestParams1 returns the union data inside the JSONRPCRequest_Params as a JSONRPCRequestParams1
-func (t JSONRPCRequest_Params) AsJSONRPCRequestParams1() (JSONRPCRequestParams1, error) {
-	var body JSONRPCRequestParams1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCRequestParams1 overwrites any union data inside the JSONRPCRequest_Params as the provided JSONRPCRequestParams1
-func (t *JSONRPCRequest_Params) FromJSONRPCRequestParams1(v JSONRPCRequestParams1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCRequestParams1 performs a merge with any union data inside the JSONRPCRequest_Params, using the provided JSONRPCRequestParams1
-func (t *JSONRPCRequest_Params) MergeJSONRPCRequestParams1(v JSONRPCRequestParams1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t JSONRPCRequest_Params) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *JSONRPCRequest_Params) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsJSONRPCResponseId0 returns the union data inside the JSONRPCResponse_Id as a JSONRPCResponseId0
-func (t JSONRPCResponse_Id) AsJSONRPCResponseId0() (JSONRPCResponseId0, error) {
-	var body JSONRPCResponseId0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCResponseId0 overwrites any union data inside the JSONRPCResponse_Id as the provided JSONRPCResponseId0
-func (t *JSONRPCResponse_Id) FromJSONRPCResponseId0(v JSONRPCResponseId0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCResponseId0 performs a merge with any union data inside the JSONRPCResponse_Id, using the provided JSONRPCResponseId0
-func (t *JSONRPCResponse_Id) MergeJSONRPCResponseId0(v JSONRPCResponseId0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsJSONRPCResponseId1 returns the union data inside the JSONRPCResponse_Id as a JSONRPCResponseId1
-func (t JSONRPCResponse_Id) AsJSONRPCResponseId1() (JSONRPCResponseId1, error) {
-	var body JSONRPCResponseId1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCResponseId1 overwrites any union data inside the JSONRPCResponse_Id as the provided JSONRPCResponseId1
-func (t *JSONRPCResponse_Id) FromJSONRPCResponseId1(v JSONRPCResponseId1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCResponseId1 performs a merge with any union data inside the JSONRPCResponse_Id, using the provided JSONRPCResponseId1
-func (t *JSONRPCResponse_Id) MergeJSONRPCResponseId1(v JSONRPCResponseId1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t JSONRPCResponse_Id) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *JSONRPCResponse_Id) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsJSONRPCRequest returns the union data inside the McpRequestJSONBody as a JSONRPCRequest
-func (t McpRequestJSONBody) AsJSONRPCRequest() (JSONRPCRequest, error) {
-	var body JSONRPCRequest
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCRequest overwrites any union data inside the McpRequestJSONBody as the provided JSONRPCRequest
-func (t *McpRequestJSONBody) FromJSONRPCRequest(v JSONRPCRequest) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCRequest performs a merge with any union data inside the McpRequestJSONBody, using the provided JSONRPCRequest
-func (t *McpRequestJSONBody) MergeJSONRPCRequest(v JSONRPCRequest) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsJSONRPCNotification returns the union data inside the McpRequestJSONBody as a JSONRPCNotification
-func (t McpRequestJSONBody) AsJSONRPCNotification() (JSONRPCNotification, error) {
-	var body JSONRPCNotification
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCNotification overwrites any union data inside the McpRequestJSONBody as the provided JSONRPCNotification
-func (t *McpRequestJSONBody) FromJSONRPCNotification(v JSONRPCNotification) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCNotification performs a merge with any union data inside the McpRequestJSONBody, using the provided JSONRPCNotification
-func (t *McpRequestJSONBody) MergeJSONRPCNotification(v JSONRPCNotification) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsMcpRequestJSONBody2 returns the union data inside the McpRequestJSONBody as a McpRequestJSONBody2
-func (t McpRequestJSONBody) AsMcpRequestJSONBody2() (McpRequestJSONBody2, error) {
-	var body McpRequestJSONBody2
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromMcpRequestJSONBody2 overwrites any union data inside the McpRequestJSONBody as the provided McpRequestJSONBody2
-func (t *McpRequestJSONBody) FromMcpRequestJSONBody2(v McpRequestJSONBody2) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeMcpRequestJSONBody2 performs a merge with any union data inside the McpRequestJSONBody, using the provided McpRequestJSONBody2
-func (t *McpRequestJSONBody) MergeMcpRequestJSONBody2(v McpRequestJSONBody2) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t McpRequestJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *McpRequestJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsJSONRPCRequest returns the union data inside the McpRequestJSONBody_2_Item as a JSONRPCRequest
-func (t McpRequestJSONBody_2_Item) AsJSONRPCRequest() (JSONRPCRequest, error) {
-	var body JSONRPCRequest
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCRequest overwrites any union data inside the McpRequestJSONBody_2_Item as the provided JSONRPCRequest
-func (t *McpRequestJSONBody_2_Item) FromJSONRPCRequest(v JSONRPCRequest) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCRequest performs a merge with any union data inside the McpRequestJSONBody_2_Item, using the provided JSONRPCRequest
-func (t *McpRequestJSONBody_2_Item) MergeJSONRPCRequest(v JSONRPCRequest) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsJSONRPCNotification returns the union data inside the McpRequestJSONBody_2_Item as a JSONRPCNotification
-func (t McpRequestJSONBody_2_Item) AsJSONRPCNotification() (JSONRPCNotification, error) {
-	var body JSONRPCNotification
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCNotification overwrites any union data inside the McpRequestJSONBody_2_Item as the provided JSONRPCNotification
-func (t *McpRequestJSONBody_2_Item) FromJSONRPCNotification(v JSONRPCNotification) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCNotification performs a merge with any union data inside the McpRequestJSONBody_2_Item, using the provided JSONRPCNotification
-func (t *McpRequestJSONBody_2_Item) MergeJSONRPCNotification(v JSONRPCNotification) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t McpRequestJSONBody_2_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *McpRequestJSONBody_2_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsJSONRPCResponse returns the union data inside the McpRequest200JSONResponseBody as a JSONRPCResponse
-func (t McpRequest200JSONResponseBody) AsJSONRPCResponse() (JSONRPCResponse, error) {
-	var body JSONRPCResponse
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromJSONRPCResponse overwrites any union data inside the McpRequest200JSONResponseBody as the provided JSONRPCResponse
-func (t *McpRequest200JSONResponseBody) FromJSONRPCResponse(v JSONRPCResponse) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeJSONRPCResponse performs a merge with any union data inside the McpRequest200JSONResponseBody, using the provided JSONRPCResponse
-func (t *McpRequest200JSONResponseBody) MergeJSONRPCResponse(v JSONRPCResponse) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsMcpRequest200JSONResponseBody1 returns the union data inside the McpRequest200JSONResponseBody as a McpRequest200JSONResponseBody1
-func (t McpRequest200JSONResponseBody) AsMcpRequest200JSONResponseBody1() (McpRequest200JSONResponseBody1, error) {
-	var body McpRequest200JSONResponseBody1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromMcpRequest200JSONResponseBody1 overwrites any union data inside the McpRequest200JSONResponseBody as the provided McpRequest200JSONResponseBody1
-func (t *McpRequest200JSONResponseBody) FromMcpRequest200JSONResponseBody1(v McpRequest200JSONResponseBody1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeMcpRequest200JSONResponseBody1 performs a merge with any union data inside the McpRequest200JSONResponseBody, using the provided McpRequest200JSONResponseBody1
-func (t *McpRequest200JSONResponseBody) MergeMcpRequest200JSONResponseBody1(v McpRequest200JSONResponseBody1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t McpRequest200JSONResponseBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *McpRequest200JSONResponseBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -799,15 +203,6 @@ type ServerInterface interface {
 	// Upload a file into a sandbox mount.
 	// (POST /v1/file)
 	UploadFile(c *gin.Context)
-	// Terminate an MCP session.
-	// (DELETE /v1/mcp)
-	McpDelete(c *gin.Context, params McpDeleteParams)
-	// Open a server-to-client SSE stream.
-	// (GET /v1/mcp)
-	McpStream(c *gin.Context, params McpStreamParams)
-	// Send an MCP request.
-	// (POST /v1/mcp)
-	McpRequest(c *gin.Context, params McpRequestParams)
 	// Send a ping to the sandbox.
 	// (GET /v1/ping)
 	Ping(c *gin.Context)
@@ -1021,129 +416,6 @@ func (siw *ServerInterfaceWrapper) UploadFile(c *gin.Context) {
 	}
 
 	siw.Handler.UploadFile(c)
-}
-
-// McpDelete operation middleware
-func (siw *ServerInterfaceWrapper) McpDelete(c *gin.Context) {
-
-	var err error
-	_ = err
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params McpDeleteParams
-
-	headers := c.Request.Header
-
-	// ------------- Required header parameter "Mcp-Session-Id" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("Mcp-Session-Id")]; found {
-		var McpSessionId string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Mcp-Session-Id, got %d", n), http.StatusBadRequest)
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "Mcp-Session-Id", valueList[0], &McpSessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Mcp-Session-Id: %w", err), http.StatusBadRequest)
-			return
-		}
-
-		params.McpSessionId = McpSessionId
-
-	} else {
-		siw.ErrorHandler(c, fmt.Errorf("Header parameter Mcp-Session-Id is required, but not found"), http.StatusBadRequest)
-		return
-	}
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		middleware(c)
-		if c.IsAborted() {
-			return
-		}
-	}
-
-	siw.Handler.McpDelete(c, params)
-}
-
-// McpStream operation middleware
-func (siw *ServerInterfaceWrapper) McpStream(c *gin.Context) {
-
-	var err error
-	_ = err
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params McpStreamParams
-
-	headers := c.Request.Header
-
-	// ------------- Optional header parameter "Mcp-Session-Id" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("Mcp-Session-Id")]; found {
-		var McpSessionId string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Mcp-Session-Id, got %d", n), http.StatusBadRequest)
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "Mcp-Session-Id", valueList[0], &McpSessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Mcp-Session-Id: %w", err), http.StatusBadRequest)
-			return
-		}
-
-		params.McpSessionId = &McpSessionId
-
-	}
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		middleware(c)
-		if c.IsAborted() {
-			return
-		}
-	}
-
-	siw.Handler.McpStream(c, params)
-}
-
-// McpRequest operation middleware
-func (siw *ServerInterfaceWrapper) McpRequest(c *gin.Context) {
-
-	var err error
-	_ = err
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params McpRequestParams
-
-	headers := c.Request.Header
-
-	// ------------- Optional header parameter "Mcp-Session-Id" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("Mcp-Session-Id")]; found {
-		var McpSessionId string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Mcp-Session-Id, got %d", n), http.StatusBadRequest)
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "Mcp-Session-Id", valueList[0], &McpSessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Mcp-Session-Id: %w", err), http.StatusBadRequest)
-			return
-		}
-
-		params.McpSessionId = &McpSessionId
-
-	}
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		middleware(c)
-		if c.IsAborted() {
-			return
-		}
-	}
-
-	siw.Handler.McpRequest(c, params)
 }
 
 // Ping operation middleware
@@ -1399,9 +671,6 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/v1/exec-stream/:id/stdin", wrapper.ExecStreamStdin)
 	router.GET(options.BaseURL+"/v1/file", wrapper.GetFile)
 	router.POST(options.BaseURL+"/v1/file", wrapper.UploadFile)
-	router.DELETE(options.BaseURL+"/v1/mcp", wrapper.McpDelete)
-	router.GET(options.BaseURL+"/v1/mcp", wrapper.McpStream)
-	router.POST(options.BaseURL+"/v1/mcp", wrapper.McpRequest)
 	router.GET(options.BaseURL+"/v1/ping", wrapper.Ping)
 	router.DELETE(options.BaseURL+"/v1/proxy/:port/:path", wrapper.ProxyDelete)
 	router.GET(options.BaseURL+"/v1/proxy/:port/:path", wrapper.ProxyGet)
@@ -1416,153 +685,128 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"e2VN6LUVnzk6Q+/t/wcAAP//",
+	"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",
+	"l+mxG60Zmqz73fu7/wkAAP//",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

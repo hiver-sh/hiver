@@ -43,6 +43,7 @@ type Broker struct {
 	subDepth      int
 	lastPublishAt time.Time // updated under mu on every Publish
 	closed        bool      // Close() flips this; rejects new subscribers
+	activityHook  func()   // called by Publish (not PublishSilent) outside the lock
 }
 
 // New returns a Broker that keeps the most recent `capacity` events for
@@ -63,12 +64,31 @@ func New(capacity, subDepth int) *Broker {
 	}
 }
 
+// SetActivityHook registers fn to be called on every Publish (but not
+// PublishSilent). fn is invoked outside the broker's lock; it must be
+// set before the first Publish call to avoid data races.
+func (b *Broker) SetActivityHook(fn func()) {
+	b.activityHook = fn
+}
+
 // Publish allocates the next id+timestamp, hands them to `build` to
 // construct the event variant, stores the result in the ring, and fans
 // it out to subscribers. Non-blocking sends mean a stuck subscriber
 // can't stall publishers (gaps are filled by ring replay on reconnect).
-// Returns the assigned id.
+// Returns the assigned id. Publish calls the activity hook (if set);
+// use PublishSilent for events that should not reset the inactivity timer.
 func (b *Broker) Publish(build Factory) int64 {
+	id := b.publish(build, true)
+	if fn := b.activityHook; fn != nil {
+		fn()
+	}
+	return id
+}
+
+// PublishSilent is like Publish but does not trigger the activity hook.
+// Use it for background telemetry events (e.g. resource.usage) that
+// should not reset the sandbox inactivity timer.
+func (b *Broker) PublishSilent(build Factory) int64 {
 	return b.publish(build, true)
 }
 

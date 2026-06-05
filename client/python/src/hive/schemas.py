@@ -197,6 +197,25 @@ class ExecResponseEvent(_SandboxEventBase):
     request_id: int
 
 
+class IngressRequestEvent(_SandboxEventBase):
+    type: Literal["ingress.request"]
+    port: str
+    method: str
+    path: str
+    query: Optional[str] = None
+    headers: Optional[dict[str, str]] = None
+    body: Optional[str] = None
+
+
+class IngressResponseEvent(_SandboxEventBase):
+    type: Literal["ingress.response"]
+    request_id: int
+    status: int
+    duration_ms: int
+    headers: Optional[dict[str, str]] = None
+    body: Optional[str] = None
+
+
 SandboxEvent = Annotated[
     Union[
         ConfigApplyEvent,
@@ -209,6 +228,8 @@ SandboxEvent = Annotated[
         ResourceUsageEvent,
         ExecRequestEvent,
         ExecResponseEvent,
+        IngressRequestEvent,
+        IngressResponseEvent,
     ],
     Field(discriminator="type"),
 ]

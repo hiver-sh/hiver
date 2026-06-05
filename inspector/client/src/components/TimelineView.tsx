@@ -19,7 +19,7 @@ export interface TimelineBar {
 
 export interface TimelineRow {
   key: string;
-  type: "egress" | "fs" | "stdio" | "resource" | "exec";
+  type: "egress" | "ingress" | "fs" | "stdio" | "resource" | "exec";
   label: string;
   method?: string;
   isPoint: boolean;
@@ -29,6 +29,7 @@ export interface TimelineRow {
 export function buildRows(events: SandboxEvent[]): TimelineRow[] {
   const chunkMap = new Map<number, Extract<SandboxEvent, { type: "egress.chunk" }>[]>();
   const egressResMap = new Map<number, Extract<SandboxEvent, { type: "egress.response" }>>();
+  const ingressResMap = new Map<number, Extract<SandboxEvent, { type: "ingress.response" }>>();
   const fsResMap = new Map<number, Extract<SandboxEvent, { type: "fs.response" }>>();
   const execResMap = new Map<number, Extract<SandboxEvent, { type: "exec.response" }>>();
   const rowMap = new Map<string, TimelineRow>();
@@ -41,6 +42,8 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       chunkMap.set(event.request_id, list);
     } else if (event.type === "egress.response") {
       egressResMap.set(event.request_id, event);
+    } else if (event.type === "ingress.response") {
+      ingressResMap.set(event.request_id, event);
     } else if (event.type === "fs.response") {
       fsResMap.set(event.request_id, event);
     } else if (event.type === "exec.response") {
@@ -83,6 +86,20 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
         access: event.access,
         pending: !res,
         rawEvents: res ? [event, res, ...chunks] : [event, ...chunks],
+      });
+    } else if (event.type === "ingress.request") {
+      const res = ingressResMap.get(event.id);
+      const startMs = new Date(event.timestamp).getTime();
+      const durationMs = res ? res.duration_ms : 0;
+      const key = `ingress:${event.port}`;
+      const row = getOrCreateRow(key, "ingress", `:${event.port}`);
+      row.bars.push({
+        id: event.id,
+        startTime: startMs,
+        durationMs,
+        status: res?.status,
+        pending: !res,
+        rawEvents: res ? [event, res] : [event],
       });
     } else if (event.type === "fs.request") {
       const res = fsResMap.get(event.id);
@@ -195,6 +212,7 @@ function isLiveBar(bar: TimelineBar): boolean {
 
 function liveBarClass(row: TimelineRow): string {
   if (row.type === "exec") return "bg-emerald-500/50 border border-emerald-400/60";
+  if (row.type === "ingress") return "bg-orange-500/50 border border-orange-400/60";
   return "bg-blue-500/50 border border-blue-400/60";
 }
 
@@ -203,6 +221,9 @@ function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
   if (bar.access === "denied" || bar.error) return "bg-red-500/80";
   if (type === "egress") {
     return bar.status !== undefined && bar.status >= 400 ? "bg-red-500/80" : "bg-blue-500/80";
+  }
+  if (type === "ingress") {
+    return bar.status !== undefined && bar.status >= 400 ? "bg-red-500/80" : "bg-orange-500/80";
   }
   if (type === "exec") return "bg-emerald-500/80";
   if (type === "stdio") {
@@ -217,6 +238,7 @@ function methodClass(row: TimelineRow): string {
   if (row.type === "exec") return "text-emerald-500 dark:text-emerald-400";
   if (row.type === "fs") return "text-purple-600 dark:text-purple-400";
   if (row.type === "resource") return row.key === "resource:cpu" ? "text-sky-600 dark:text-sky-400" : "text-emerald-600 dark:text-emerald-400";
+  if (row.type === "ingress") return "text-orange-500 dark:text-orange-400";
   switch (row.method) {
     case "GET":    return "text-green-600 dark:text-green-400";
     case "POST":   return "text-foreground";
@@ -228,14 +250,15 @@ function methodClass(row: TimelineRow): string {
 }
 
 
-export type FilterKind = "all" | "egress" | "fs" | "llm";
+export type FilterKind = "all" | "egress" | "ingress" | "fs" | "llm";
 export type FilterAccess = "all" | "allowed" | "denied";
 
 export const KIND_OPTIONS: { value: FilterKind; label: string }[] = [
-  { value: "all",    label: "All" },
-  { value: "egress", label: "Egress" },
-  { value: "fs",     label: "File system" },
-  { value: "llm",    label: "LLM" },
+  { value: "all",     label: "All" },
+  { value: "egress",  label: "Egress" },
+  { value: "ingress", label: "Ingress" },
+  { value: "fs",      label: "File system" },
+  { value: "llm",     label: "LLM" },
 ];
 
 export const ACCESS_OPTIONS: { value: FilterAccess; label: string }[] = [
@@ -257,6 +280,7 @@ export function applyFilter(rows: TimelineRow[], f: FilterState): TimelineRow[] 
     return e?.type === "egress.request" && LLM_PROVIDERS.some(p => p.matches(e));
   });
   else if (f.kind === "egress") out = out.filter((r) => r.type === "egress");
+  else if (f.kind === "ingress") out = out.filter((r) => r.type === "ingress");
   if (f.query) {
     const q = f.query.toLowerCase();
     out = out.filter((r) => r.label.toLowerCase().includes(q));
@@ -280,6 +304,7 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
       : null;
     out = out.filter(e => {
       if (f.kind === "egress") return e.type === "egress.request" || e.type === "egress.response" || e.type === "egress.chunk";
+      if (f.kind === "ingress") return e.type === "ingress.request" || e.type === "ingress.response";
       if (f.kind === "fs") return e.type === "fs.request" || e.type === "fs.response";
       if (f.kind === "llm") {
         if (e.type === "egress.request") return llmIds!.has(e.id);
@@ -297,6 +322,7 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
     const q = f.query.toLowerCase();
     out = out.filter(e => {
       if (e.type === "egress.request") return `${e.host}${e.path}`.toLowerCase().includes(q);
+      if (e.type === "ingress.request") return `${e.port}${e.path}`.toLowerCase().includes(q);
       if (e.type === "fs.request") return e.path.toLowerCase().includes(q);
       if (e.type === "stdio") return (e.stdout ?? e.stderr ?? "").toLowerCase().includes(q);
       if (e.type === "exec.request") return e.command.toLowerCase().includes(q) || e.cwd.toLowerCase().includes(q);
@@ -309,13 +335,14 @@ export function filterEvents(events: SandboxEvent[], f: FilterState): SandboxEve
 
 const DEFAULT_labelW = 220;
 
-type Category = "llm" | "fs" | "egress" | "stdio" | "resource";
+type Category = "llm" | "fs" | "egress" | "ingress" | "stdio" | "resource";
 
-const CATEGORY_ORDER: Category[] = ["resource", "llm", "fs", "egress", "stdio"];
+const CATEGORY_ORDER: Category[] = ["resource", "llm", "fs", "egress", "ingress", "stdio"];
 const CATEGORY_LABELS: Record<Category, string> = {
   llm: "LLM",
   fs: "File System",
   egress: "Egress",
+  ingress: "Ingress",
   stdio: "Stdio",
   resource: "Resources",
 };
@@ -324,6 +351,7 @@ function getRowCategory(row: TimelineRow): Category {
   if (row.type === "stdio" || row.type === "exec") return "stdio";
   if (row.type === "fs") return "fs";
   if (row.type === "resource") return "resource";
+  if (row.type === "ingress") return "ingress";
   const e = row.bars[0]?.rawEvents[0];
   if (e?.type === "egress.request" && LLM_PROVIDERS.some(p => p.matches(e))) {
     return "llm";
@@ -336,6 +364,10 @@ function getSubgroupKey(row: TimelineRow): string | null {
   if (row.type === "egress") {
     const e = row.bars[0]?.rawEvents[0];
     return e?.type === "egress.request" ? e.host : null;
+  }
+  if (row.type === "ingress") {
+    const e = row.bars[0]?.rawEvents[0];
+    return e?.type === "ingress.request" ? e.port : null;
   }
   return null;
 }
@@ -365,7 +397,7 @@ function buildDisplayItems(
     items.push({ kind: "category", category: cat, allBars: rows.flatMap(r => r.bars) });
     if (collapsedCategories.has(cat)) continue;
 
-    if (cat === "fs" || cat === "egress") {
+    if (cat === "fs" || cat === "egress" || cat === "ingress") {
       const bySubgroup = new Map<string, TimelineRow[]>();
       const subgroupOrder: string[] = [];
       for (const row of rows) {
@@ -1152,7 +1184,7 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
                       <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
                     ))}
                     {collapsed && (() => {
-                      const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70", resource: "bg-emerald-500/70" }[section.category];
+                      const catColor = { llm: "bg-blue-500/70", egress: "bg-blue-500/70", ingress: "bg-orange-500/70", fs: "bg-purple-500/70", stdio: "bg-zinc-500/70", resource: "bg-emerald-500/70" }[section.category];
                       const ranges = section.allBars
                         .map(b => ({
                           left: toDisplay(b.startTime),
