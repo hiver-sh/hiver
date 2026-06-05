@@ -25,6 +25,9 @@ const resourcePollInterval = 5 * time.Second
 // (e.g. "/sandbox-<hostname>"); the cgroup v2 files are read from
 // /sys/fs/cgroup<cgroupPath>/.
 func PollResourceUsage(ctx context.Context, broker *events.Broker, cgroupPath string) {
+	if cgroupPath == "" {
+		return
+	}
 	cgroupDir := filepath.Join("/sys/fs/cgroup", cgroupPath)
 
 	type sample struct {

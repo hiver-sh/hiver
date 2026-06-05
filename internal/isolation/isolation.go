@@ -183,6 +183,13 @@ type Isolation interface {
 	// WaitReady blocks until the workload is running or ctx is cancelled.
 	WaitReady(ctx context.Context) error
 
+	// FlushAgent flushes the running workload's filesystem so its recent
+	// writes are durable before the workload is stopped and a snapshot
+	// captured. The microvm backend syncs the guest, whose writes are
+	// otherwise trapped in the guest page cache and lost when the VM is killed;
+	// the container backend is a no-op (its overlay upper is a host directory).
+	FlushAgent(ctx context.Context) error
+
 	// ExecCmd builds (but does not start) an *exec.Cmd that runs cfg
 	// inside the running workload. The caller wires stdin/stdout/stderr
 	// (attaching a pty or pipes) and calls Start. The returned cleanup
@@ -193,6 +200,14 @@ type Isolation interface {
 	// Files exposes the workload filesystem to the /v1/file* handlers.
 	Files() FileBridge
 }
+
+// sandboxCgroupPath is the absolute cgroup the agent's resource usage is
+// accounted under, derived from the pod hostname so sandboxes sharing a host
+// don't collide. Both backends place the workload here — runc via the bundle
+// config, the microvm by moving the firecracker VMM into it — and
+// PollResourceUsage reads /sys/fs/cgroup<path>. The pod runs with --cgroupns
+// host and a writable /sys/fs/cgroup, so this is a real host cgroup path.
+func sandboxCgroupPath(hostname string) string { return "/sandbox-" + hostname }
 
 // New constructs the isolation backend selected by kind.
 func New(kind Kind, cfg Config) (Isolation, error) {

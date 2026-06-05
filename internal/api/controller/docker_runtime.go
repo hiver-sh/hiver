@@ -103,14 +103,31 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--security-opt", "seccomp=unconfined",
 
 	}
-	// The microvm backend boots a firecracker guest: it needs /dev/kvm (the
-	// VMM) and /dev/net/tun (the tap device that carries guest egress). These
-	// are only passed for microvm so container sandboxes still run on hosts
-	// without KVM.
+	// Both container (runc) and microvm (firecracker) isolation create cgroup
+	// sub-trees, so the host cgroup tree must be writable and the cgroup
+	// namespace shared with the host.
+	createArgs = append(createArgs,
+		"--cgroupns", "host",
+		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+	)
+	// The microvm backend additionally needs /dev/kvm (the VMM) and
+	// /dev/net/tun (the tap device that carries guest egress). It also
+	// loop-mounts the guest's overlay image on the host to capture/restore
+	// snapshots; a container's /dev has no loop nodes and its device cgroup
+	// denies them, so grant the loop block major (7) and the loop-control char
+	// device (10:237). sandboxd mknod's the nodes on demand under these rules.
 	if cfg.Isolation != nil && *cfg.Isolation == sandboxgen.Microvm {
 		createArgs = append(createArgs,
 			"--device", "/dev/kvm",
 			"--device", "/dev/net/tun",
+			"--device-cgroup-rule", "b 7:* rmw",
+			"--device-cgroup-rule", "c 10:237 rmw",
+			// Guest egress is DNAT'd to the host-loopback proxy on the tap; the
+			// kernel otherwise drops those loopback-destined forwarded packets as
+			// martians. route_localnet lifts that, but the pod's /proc/sys is
+			// read-only, so set it at create time. The kernel ORs the per-device
+			// and "all" values, so "all" covers the runtime-created tap.
+			"--sysctl", "net.ipv4.conf.all.route_localnet=1",
 		)
 	}
 	if cfg.Env != nil {
@@ -120,7 +137,6 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 	}
 
 	// Mount volumes
-	createArgs = append(createArgs, "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw")
 	for _, fs := range cfg.Fs {
 		local, err := fs.AsLocalFileSystem()
 		if err != nil || local.Origin == nil {

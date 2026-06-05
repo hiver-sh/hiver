@@ -1,127 +1,170 @@
 package isolation
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"strings"
+	"net"
+	"time"
 
-	"github.com/blasten/hive/internal/spec"
+	"github.com/blasten/hive/internal/firecracker"
+	"github.com/blasten/hive/internal/vsockfile"
 )
 
-// Files serves the management file API host-side. With host-side FUSE the
-// workspace data lives in the host backend dirs, so paths under a configured
-// mount resolve there directly (bypassing ACLs, like the container backend).
-// Paths outside a mount live in the guest's overlay (its own block device)
-// and are not host-visible while the VM runs, so they're reported as
-// unsupported rather than silently reading the host root.
-func (m *microvm) Files() FileBridge { return microvmHostFiles{} }
+// Files serves the management file API by proxying every operation to the
+// in-guest file service over vsock. The guest sees the assembled workload root
+// — the overlay plus the 9p-mounted workspaces — at its real agent paths, so a
+// single path handles every request without distinguishing workspace mounts
+// from the guest overlay. The mounts argument the interface passes is unused
+// for the same reason: the guest resolves the path itself.
+func (m *microvm) Files() FileBridge { return microvmGuestFiles{vsockUDS: m.vsockUDS} }
 
-type microvmHostFiles struct{}
-
-// backendPath maps an agent path under a configured mount to its host backend
-// dir; ok is false when the path is outside every mount (guest-only overlay).
-func (microvmHostFiles) backendPath(agentPath string, mounts []string) (string, bool) {
-	cleaned := filepath.Clean(agentPath)
-	var matched string
-	for _, mnt := range mounts {
-		if cleaned == mnt || strings.HasPrefix(cleaned, strings.TrimRight(mnt, "/")+"/") {
-			if len(mnt) > len(matched) {
-				matched = mnt
-			}
-		}
-	}
-	if matched == "" {
-		return "", false
-	}
-	rel := strings.TrimPrefix(cleaned, matched)
-	return filepath.Join(matched+spec.BackendSuffix, rel), true
+type microvmGuestFiles struct {
+	vsockUDS string
 }
 
-var errGuestOnly = fmt.Errorf("path is in the guest overlay; only workspace mounts are accessible host-side under microvm")
-
-func (f microvmHostFiles) List(agentPath string, mounts []string) ([]FileEntry, error) {
-	host, ok := f.backendPath(agentPath, mounts)
-	if !ok {
-		return nil, errGuestOnly
+// dial opens a fresh connection to the guest file service, retrying until the
+// guest agent is listening (it starts the service right after boot) or the
+// deadline passes.
+func (f microvmGuestFiles) dial() (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for {
+		conn, err := firecracker.DialGuest(ctx, f.vsockUDS, vsockfile.GuestPort)
+		if err == nil {
+			return conn, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(150 * time.Millisecond):
+		}
 	}
-	es, err := os.ReadDir(host)
+}
+
+func readResult(conn net.Conn) (vsockfile.Result, error) {
+	t, payload, err := vsockfile.ReadFrame(conn)
+	if err != nil {
+		return vsockfile.Result{}, err
+	}
+	if t != vsockfile.FrameResult {
+		return vsockfile.Result{}, fmt.Errorf("expected result frame, got %d", t)
+	}
+	var res vsockfile.Result
+	if err := json.Unmarshal(payload, &res); err != nil {
+		return vsockfile.Result{}, err
+	}
+	if res.Err != "" {
+		return res, errors.New(res.Err)
+	}
+	return res, nil
+}
+
+func (f microvmGuestFiles) List(agentPath string, _ []string) ([]FileEntry, error) {
+	conn, err := f.dial()
 	if err != nil {
 		return nil, err
 	}
-	out := make([]FileEntry, 0, len(es))
-	for _, e := range es {
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		var size int64
-		if !e.IsDir() {
-			size = info.Size()
-		}
-		out = append(out, FileEntry{Name: e.Name(), IsDir: e.IsDir(), Size: size})
+	defer conn.Close()
+	if err := vsockfile.WriteJSON(conn, vsockfile.FrameRequest, vsockfile.Request{Op: vsockfile.OpList, Path: agentPath}); err != nil {
+		return nil, err
+	}
+	res, err := readResult(conn)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FileEntry, len(res.Entries))
+	for i, e := range res.Entries {
+		out[i] = FileEntry{Name: e.Name, IsDir: e.IsDir, Size: e.Size}
 	}
 	return out, nil
 }
 
-func (f microvmHostFiles) Open(agentPath string, mounts []string) (io.ReadCloser, int64, error) {
-	host, ok := f.backendPath(agentPath, mounts)
-	if !ok {
-		return nil, 0, errGuestOnly
-	}
-	info, err := os.Stat(host)
-	if err != nil {
-		return nil, 0, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, 0, fmt.Errorf("not a regular file")
-	}
-	fh, err := os.Open(host)
-	if err != nil {
-		return nil, 0, err
-	}
-	return fh, info.Size(), nil
-}
-
-func (f microvmHostFiles) Stat(agentPath string, mounts []string) (FileEntry, error) {
-	host, ok := f.backendPath(agentPath, mounts)
-	if !ok {
-		return FileEntry{}, errGuestOnly
-	}
-	info, err := os.Stat(host)
+func (f microvmGuestFiles) Stat(agentPath string, _ []string) (FileEntry, error) {
+	conn, err := f.dial()
 	if err != nil {
 		return FileEntry{}, err
 	}
-	var size int64
-	if !info.IsDir() {
-		size = info.Size()
+	defer conn.Close()
+	if err := vsockfile.WriteJSON(conn, vsockfile.FrameRequest, vsockfile.Request{Op: vsockfile.OpStat, Path: agentPath}); err != nil {
+		return FileEntry{}, err
 	}
-	return FileEntry{Name: filepath.Base(host), IsDir: info.IsDir(), Size: size}, nil
+	res, err := readResult(conn)
+	if err != nil {
+		return FileEntry{}, err
+	}
+	if res.Entry == nil {
+		return FileEntry{}, fmt.Errorf("stat: empty result")
+	}
+	return FileEntry{Name: res.Entry.Name, IsDir: res.Entry.IsDir, Size: res.Entry.Size}, nil
 }
 
-func (f microvmHostFiles) Save(agentDir, name string, mounts []string, r io.Reader) (int64, error) {
-	host, ok := f.backendPath(agentDir, mounts)
-	if !ok {
-		return 0, errGuestOnly
+func (f microvmGuestFiles) Open(agentPath string, _ []string) (io.ReadCloser, int64, error) {
+	conn, err := f.dial()
+	if err != nil {
+		return nil, 0, err
 	}
-	if err := os.MkdirAll(host, 0o755); err != nil {
-		return 0, err
+	defer conn.Close()
+	if err := vsockfile.WriteJSON(conn, vsockfile.FrameRequest, vsockfile.Request{Op: vsockfile.OpRead, Path: agentPath}); err != nil {
+		return nil, 0, err
 	}
-	target := filepath.Join(host, name)
-	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	res, err := readResult(conn)
+	if err != nil {
+		return nil, 0, err
+	}
+	// The body is read into memory and the connection released here: the
+	// management API hands the whole file back to one HTTP response, so a
+	// streaming reader tied to the live vsock conn buys nothing.
+	var buf bytes.Buffer
+	for {
+		t, payload, rerr := vsockfile.ReadFrame(conn)
+		if rerr != nil {
+			return nil, 0, rerr
+		}
+		if t == vsockfile.FrameEnd {
+			break
+		}
+		if t != vsockfile.FrameData {
+			return nil, 0, fmt.Errorf("expected data frame, got %d", t)
+		}
+		buf.Write(payload)
+	}
+	return io.NopCloser(&buf), res.Size, nil
+}
+
+func (f microvmGuestFiles) Save(agentDir, name string, _ []string, r io.Reader) (int64, error) {
+	conn, err := f.dial()
 	if err != nil {
 		return 0, err
 	}
-	n, copyErr := io.Copy(out, r)
-	closeErr := out.Close()
-	if copyErr != nil {
-		_ = os.Remove(target)
-		return 0, copyErr
+	defer conn.Close()
+	if err := vsockfile.WriteJSON(conn, vsockfile.FrameRequest, vsockfile.Request{Op: vsockfile.OpWrite, Path: agentDir, Name: name}); err != nil {
+		return 0, err
 	}
-	if closeErr != nil {
-		_ = os.Remove(target)
-		return 0, closeErr
+	buf := make([]byte, vsockfile.ChunkSize)
+	for {
+		n, rerr := r.Read(buf)
+		if n > 0 {
+			if err := vsockfile.WriteFrame(conn, vsockfile.FrameData, buf[:n]); err != nil {
+				return 0, err
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return 0, rerr
+		}
 	}
-	return n, nil
+	if err := vsockfile.WriteFrame(conn, vsockfile.FrameEnd, nil); err != nil {
+		return 0, err
+	}
+	res, err := readResult(conn)
+	if err != nil {
+		return 0, err
+	}
+	return res.Size, nil
 }

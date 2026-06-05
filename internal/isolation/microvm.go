@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/blasten/hive/internal/firecracker"
 	"github.com/blasten/hive/internal/runc"
 	"github.com/blasten/hive/internal/snapshot"
@@ -37,17 +39,20 @@ const (
 //   - network: a host tap device carries guest egress, which the host
 //     REDIRECTs to sbxproxy; the in-guest firewall mirrors the rules
 //     (capability 2);
-//   - cgroup: the host cgroup confines the firecracker VMM process
-//     (capability 3);
 //   - exec: commands are proxied to the in-guest agent over vsock via the
-//     sbxvsock bridge (capability 4).
+//     sbxvsock bridge (capability 3).
 //
-// Host-controllable work (building the drives, the tap, the cgroup, the
-// firecracker boot config, and the vsock channel) is implemented here. The
-// guest kernel, rootfs, and the in-guest agent (cmd/sbxguest) supply the
-// other half; their paths are resolved from the environment at runtime.
+// Host-controllable work (building the drives, the tap, the firecracker boot
+// config, the vsock channel, and placing the VMM in the sandbox cgroup for
+// resource accounting) is implemented here. The guest kernel, rootfs, and the
+// in-guest agent (cmd/sbxguest) supply the other half; their paths are
+// resolved from the environment at runtime.
 type microvm struct {
-	hostname   string
+	hostname string
+
+	// cgroupPath is the absolute cgroup the firecracker VMM is placed in so
+	// its (and thus the guest's) CPU/memory are accounted; PollResourceUsage
+	// reads /sys/fs/cgroup<cgroupPath>.
 	cgroupPath string
 
 	// Host-side artifact paths, all under jailDir.
@@ -80,7 +85,7 @@ func newMicroVM(cfg Config) *microvm {
 	jail := filepath.Join(envOr("FIRECRACKER_RUN_DIR", "/run/firecracker"), cfg.Hostname)
 	return &microvm{
 		hostname:    cfg.Hostname,
-		cgroupPath:  "/sandbox-" + cfg.Hostname,
+		cgroupPath:  sandboxCgroupPath(cfg.Hostname),
 		jailDir:     jail,
 		apiSock:     filepath.Join(jail, "firecracker.sock"),
 		vsockUDS:    filepath.Join(jail, "vsock.sock"),
@@ -98,21 +103,33 @@ func newMicroVM(cfg Config) *microvm {
 
 func (m *microvm) Kind() Kind { return KindMicroVM }
 
-// MountRoot builds the two block devices the guest stacks into its root:
-// rootfs.ext4 (the image rootfs, read-only lower) and overlay.ext4 (an
-// empty writable upper). The guest agent assembles the overlay; the host
-// only has to materialise the images.
+// bundledRootfsImg is the read-only rootfs ext4 the bundler pre-builds from the
+// agent rootfs at image-build time (docker/bundler.Dockerfile). MountRoot
+// attaches it directly instead of running mke2fs -d on every boot — it's
+// identical across every sandbox of this image and mounted read-only, so all
+// guests safely share the one baked file. It already carries the guest init
+// (/usr/bin/sbxguest, matching init= in the boot args); sbxfuse is not in here
+// (it runs host-side, reached over 9p-over-vsock).
+const bundledRootfsImg = runc.MntDir + "/rootfs.ext4"
+
+// MountRoot materialises the two block devices the guest stacks into its root:
+// the pre-built read-only rootfs image (bundledRootfsImg, the lower) and a
+// freshly-created empty overlay.ext4 (the writable upper). The guest agent
+// assembles the overlay; the host only points the root drive at the baked image
+// (shared, outside jailDir, so UnmountRoot's RemoveAll leaves it intact) and
+// builds the per-sandbox overlay.
 func (m *microvm) MountRoot() error {
 	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
 		return fmt.Errorf("create jail dir: %w", err)
 	}
-	// runc.RootfsDir already carries the guest init (/usr/bin/sbxguest,
-	// matching init= in the boot args) and sbxfuse — baked into the agent
-	// rootfs by docker/bundler.Dockerfile — so the root drive is built
-	// straight from it.
-	if err := buildExt4FromDir(m.rootfsImg, runc.RootfsDir); err != nil {
-		return fmt.Errorf("build rootfs image: %w", err)
+	fi, err := os.Stat(bundledRootfsImg)
+	if err != nil {
+		return fmt.Errorf("stat bundled rootfs image: %w", err)
 	}
+	if fi.Size() == 0 {
+		return fmt.Errorf("bundled rootfs image %s is empty", bundledRootfsImg)
+	}
+	m.rootfsImg = bundledRootfsImg
 	if err := buildEmptyExt4(m.overlayImg, 2048); err != nil { // 2 GiB writable upper
 		return fmt.Errorf("build overlay image: %w", err)
 	}
@@ -130,6 +147,12 @@ func (m *microvm) UnmountRoot() error {
 // Every guest workspace op then lands on the host FUSE daemon, reusing its
 // ACL enforcement, audit events, and remote-backend handling.
 func (m *microvm) ExportWorkspace(ctx context.Context, mount string) error {
+	// ExportWorkspace runs before MountRoot (which also creates jailDir), so
+	// ensure the jail exists before binding the 9p vsock socket under it.
+	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
+		return fmt.Errorf("create jail dir: %w", err)
+	}
+
 	m.mu.Lock()
 	port := firecracker.GuestFuseBasePort + uint32(len(m.fuse))
 	m.fuse = append(m.fuse, firecracker.GuestFuse{Mount: mount, Port: port})
@@ -158,10 +181,19 @@ func (m *microvm) InstallCA(certPEM []byte) error {
 }
 
 // RedirectEgress provisions the host tap device that carries guest egress
-// and installs the nat rules that REDIRECT guest TCP to sbxproxy. The guest
+// and installs the nat rules that funnel guest TCP to sbxproxy. The guest
 // reaches the host at gatewayIP; the host receives the forwarded packets in
-// PREROUTING (not OUTPUT — the guest is a separate network stack) and
-// rewrites them to the local proxy port.
+// PREROUTING (not OUTPUT — the guest is a separate network stack) and DNATs
+// them to the proxy on loopback.
+//
+// DNAT to 127.0.0.1, not REDIRECT: sbxproxy listens on 127.0.0.1:proxyPort,
+// but REDIRECT on a *forwarded* packet rewrites the destination to the
+// incoming interface's primary address (gatewayIP), where nothing is
+// listening — so the redirect would silently black-hole guest egress.
+// DNAT'ing straight to 127.0.0.1 lands it on the proxy; route_localnet (set
+// below) lifts the kernel's martian-drop of loopback-destined packets
+// arriving on the tap, and SO_ORIGINAL_DST still recovers the guest's real
+// destination from conntrack.
 func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, mark int) error {
 	m.mu.Lock()
 	m.proxyPort = proxyPort
@@ -172,18 +204,35 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, mark int) error
 		{"ip", "tuntap", "add", "dev", m.tapName, "mode", "tap"},
 		{"ip", "addr", "add", gatewayIP + "/30", "dev", m.tapName},
 		{"ip", "link", "set", "dev", m.tapName, "up"},
-		{"sysctl", "-w", "net.ipv4.ip_forward=1"},
-		// Guest TCP arriving on the tap is redirected to the host proxy.
-		{"iptables", "-t", "nat", "-A", "PREROUTING", "-i", m.tapName, "-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(proxyPort)},
+		// DNS-over-TCP to the gateway is served by the in-pod relay (startDNSForwarder
+		// below), not the proxy: exempt it from the redirect that follows.
+		{"iptables", "-t", "nat", "-A", "PREROUTING", "-i", m.tapName, "-p", "tcp", "--dport", guestDNSPort, "-j", "RETURN"},
+		// Guest TCP arriving on the tap is DNAT'd to the host proxy on loopback.
+		{"iptables", "-t", "nat", "-A", "PREROUTING", "-i", m.tapName, "-p", "tcp", "-j", "DNAT", "--to-destination", fmt.Sprintf("127.0.0.1:%d", proxyPort)},
 		// Proxy-originated upstream traffic (stamped with SO_MARK) escapes
 		// any redirect so it isn't looped back.
 		{"iptables", "-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", fmt.Sprintf("0x%x", mark), "-j", "RETURN"},
+	}
+	if err := enableIPForward(); err != nil {
+		return err
 	}
 	for _, s := range steps {
 		if out, err := exec.CommandContext(ctx, s[0], s[1:]...).CombinedOutput(); err != nil {
 			return fmt.Errorf("%v: %w (%s)", s, err, out)
 		}
 	}
+	// The guest's resolv.conf points at the tap gateway; relay its DNS to the
+	// pod's own resolver, which the guest's separate network stack can't reach.
+	// UDP DNS lands here directly (it isn't matched by the TCP redirect above);
+	// TCP DNS is exempted by the RETURN rule.
+	if err := startDNSForwarder(ctx, gatewayIP, podUpstreamDNS()); err != nil {
+		return err
+	}
+	// route_localnet (needed so the kernel delivers the DNAT-to-127.0.0.1
+	// packets instead of dropping them as martians) is enabled at pod-create
+	// time via a docker --sysctl on net.ipv4.conf.all: the pod's /proc/sys is
+	// read-only, so it can't be set here, and the kernel ORs the "all" value
+	// over this tap anyway. See the controller's DockerRuntime.Start.
 	return nil
 }
 
@@ -222,11 +271,20 @@ func (m *microvm) withOverlayMount(readonly bool, fn func(upper string, mounts [
 	}
 	defer os.RemoveAll(mp)
 
-	opt := "loop"
-	if readonly {
-		opt = "loop,ro"
+	// The sandbox container's /dev has no loop nodes (it is a tmpfs, not
+	// devtmpfs, so the kernel never populates them). Create loop-control and a
+	// pool of loop devices so `mount -o loop` can allocate one; the controller
+	// grants the matching device-cgroup rules for microvm sandboxes.
+	if err := ensureLoopNodes(); err != nil {
+		return fmt.Errorf("provision loop devices: %w", err)
 	}
-	if out, err := exec.Command("mount", "-o", opt, m.overlayImg, mp).CombinedOutput(); err != nil {
+
+	// Always loop-mount read-write, even for capture: the guest powers off
+	// without cleanly unmounting its ext4 overlay, so the journal is dirty and
+	// a read-only mount is refused ("cannot mount ... read-only") because the
+	// journal cannot be replayed. The image is quiescent here (VM stopped), so
+	// a read-write mount safely recovers it; capture only reads from it.
+	if out, err := exec.Command("mount", "-o", "loop", m.overlayImg, mp).CombinedOutput(); err != nil {
 		return fmt.Errorf("mount overlay image: %w (%s)", err, out)
 	}
 	defer exec.Command("umount", mp).Run()
@@ -247,16 +305,52 @@ func (m *microvm) withOverlayMount(readonly bool, fn func(upper string, mounts [
 	return fn(upper, mounts)
 }
 
+// loopDevicePoolSize is how many /dev/loopN nodes ensureLoopNodes creates.
+// `mount -o loop` allocates the first free one via /dev/loop-control; a small
+// pool covers concurrent snapshot mounts within a sandbox.
+const loopDevicePoolSize = 8
+
+// ensureLoopNodes creates the loop-control char device and a pool of loop
+// block devices in the container's /dev when they are missing. The host kernel
+// owns the loop subsystem; these are just the device nodes `mount -o loop`
+// needs to find, which a container tmpfs /dev lacks. Requires CAP_MKNOD and the
+// device-cgroup rules the controller grants for microvm sandboxes.
+func ensureLoopNodes() error {
+	// loop-control: char 10:237; loopN: block 7:N (see <linux/major.h>).
+	if err := mknodIfMissing("/dev/loop-control", unix.S_IFCHR|0o660, 10, 237); err != nil {
+		return err
+	}
+	for i := 0; i < loopDevicePoolSize; i++ {
+		if err := mknodIfMissing(fmt.Sprintf("/dev/loop%d", i), unix.S_IFBLK|0o660, 7, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mknodIfMissing creates a device node, treating an already-existing node as
+// success (the host may have populated it, e.g. when /dev is devtmpfs).
+func mknodIfMissing(path string, mode uint32, major, minor int) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if err := unix.Mknod(path, mode, int(unix.Mkdev(uint32(major), uint32(minor)))); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("mknod %s: %w", path, err)
+	}
+	return nil
+}
+
 // LaunchAgent writes the metadata drive + firecracker boot config from the
 // accumulated capability state and returns the command that boots the VM.
-// The command places itself in the sandbox cgroup before exec'ing
-// firecracker so PollResourceUsage attributes the VMM's CPU/memory.
 func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
-	// /etc/hosts and /etc/resolv.conf from the pod are handed to the guest
-	// so name resolution matches a shared-netns container (which bind-mounts
-	// them). Best-effort: a missing file just yields empty content.
+	// /etc/hosts from the pod is handed to the guest so name resolution matches
+	// a shared-netns container (which bind-mounts it). Best-effort: a missing
+	// file just yields empty content. resolv.conf is rewritten to point at the
+	// tap gateway, where the in-pod DNS relay (RedirectEgress) listens — the
+	// guest can't reach the pod's loopback resolver directly.
 	etcHosts, _ := os.ReadFile("/etc/hosts")
-	etcResolv, _ := os.ReadFile("/etc/resolv.conf")
+	podResolv, _ := os.ReadFile("/etc/resolv.conf")
+	etcResolv := resolvConfForGuest(podResolv, gatewayIP)
 
 	m.mu.Lock()
 	params := firecracker.GuestParams{
@@ -277,6 +371,11 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 
 	if err := m.buildParamsDrive(params); err != nil {
 		return "", nil, fmt.Errorf("build metadata drive: %w", err)
+	}
+
+	// Firecracker opens the log file for appending rather than creating it.
+	if err := os.WriteFile(m.logFile, nil, 0o644); err != nil {
+		return "", nil, fmt.Errorf("create log file: %w", err)
 	}
 
 	fcCfg := firecracker.Config{
@@ -306,7 +405,9 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 
 	bin, args := firecracker.Command(m.fcBin, m.apiSock, m.configFile)
 	// Place the firecracker process in the sandbox cgroup before exec so its
-	// CPU/memory are accounted under CgroupPath, then hand off via exec.
+	// CPU/memory (the guest runs as VMM threads) are accounted under
+	// CgroupPath, then hand off via exec so the PID — already in the cgroup —
+	// is preserved as the supervised agent process.
 	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
 	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s %s",
 		shellQuote(cgDir), shellQuote(cgDir), shellQuote(bin), shellJoin(args))
@@ -317,6 +418,20 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 // its vsock port (it listens only after the workload root is assembled).
 func (m *microvm) WaitReady(ctx context.Context) error {
 	return firecracker.WaitGuestPort(ctx, m.vsockUDS, firecracker.GuestExecPort)
+}
+
+// FlushAgent runs `sync` inside the guest so the agent's writes reach the
+// overlay block device before the VM is stopped. reboot(POWER_OFF) and a host
+// SIGTERM to firecracker do not flush the guest page cache, so without this the
+// host would loop-mount a stale overlay image at capture time. The guest is
+// still running here (the caller flushes before stopping it).
+func (m *microvm) FlushAgent(ctx context.Context) error {
+	cmd, cleanup, err := m.ExecCmd(ctx, ExecConfig{Command: "sync"})
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	return cmd.Run()
 }
 
 // ExecCmd returns a command that bridges an exec session to the in-guest
@@ -446,6 +561,21 @@ func envOr(key, def string) string {
 	return def
 }
 
+// enableIPForward ensures net.ipv4.ip_forward=1. It reads the current value
+// first so it skips the write (and the permission requirement) when the host
+// already has forwarding enabled — common on cloud nodes.
+func enableIPForward() error {
+	const proc = "/proc/sys/net/ipv4/ip_forward"
+	v, err := os.ReadFile(proc)
+	if err == nil && strings.TrimSpace(string(v)) == "1" {
+		return nil
+	}
+	if err := os.WriteFile(proc, []byte("1"), 0); err != nil {
+		return fmt.Errorf("enable ip_forward: %w", err)
+	}
+	return nil
+}
+
 // tapNameFor derives a stable, interface-name-safe tap device name from the
 // pod hostname (Linux caps interface names at 15 bytes).
 func tapNameFor(hostname string) string {
@@ -470,3 +600,4 @@ func shellJoin(args []string) string {
 	}
 	return strings.Join(quoted, " ")
 }
+

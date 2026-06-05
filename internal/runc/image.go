@@ -64,7 +64,14 @@ func ExtractImageConfig() (*ImageConfig, error) {
 
 	var dic dockerImageConfig
 	if img.Config != "" {
-		cfgData, err := os.ReadFile(filepath.Join(MntDir, "rootfs", img.Config))
+		// The bundler relocates the OCI blobs to /mnt/blobs — out of the rootfs
+		// that becomes the workload root — so the image-distribution scaffolding
+		// (blobs/, index.json, …) doesn't leak into the guest. Resolve the config
+		// there, falling back to the in-rootfs path for older/legacy bundles.
+		cfgData, err := os.ReadFile(filepath.Join(MntDir, img.Config))
+		if os.IsNotExist(err) {
+			cfgData, err = os.ReadFile(filepath.Join(RootfsDir, img.Config))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read image config %s: %w", img.Config, err)
 		}

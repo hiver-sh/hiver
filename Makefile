@@ -13,7 +13,7 @@ build-images: ## Build docker images
 
 publish-images: build-images ## Build and push images to the registry (override tag with TAG=...)
 	docker compose -f docker/compose.yaml push controller core gateway
-	docker push hiveruntime/agent-cli-standalone:latest
+	docker push hiveruntime/agent-cli:latest
 
 up: ## Start services
 	docker compose -f docker/compose.yaml up -d

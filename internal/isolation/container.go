@@ -31,7 +31,8 @@ type container struct {
 	// the pid keeps it in lockstep with the value sandboxd's launcher uses.
 	containerID string
 	// cgroupPath is the absolute cgroup the agent runs under, derived from
-	// the pod hostname so sandboxes sharing a host don't collide.
+	// the pod hostname so sandboxes sharing a host don't collide. runc places
+	// the agent here via the bundle config; PollResourceUsage reads it.
 	cgroupPath string
 	// localMounts are the local-backend FUSE workspaces snapshot routes to.
 	localMounts []SnapshotMount
@@ -40,7 +41,7 @@ type container struct {
 func newContainer(cfg Config) *container {
 	return &container{
 		containerID: fmt.Sprintf("agent-%d", os.Getpid()),
-		cgroupPath:  "/sandbox-" + cfg.Hostname,
+		cgroupPath:  sandboxCgroupPath(cfg.Hostname),
 		localMounts: cfg.LocalMounts,
 	}
 }
@@ -139,6 +140,11 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, mark int) err
 // --- capability 3: cgroup ---
 
 func (c *container) CgroupPath() string { return c.cgroupPath }
+
+// FlushAgent is a no-op for the container backend: the agent's overlayfs upper
+// layer is a host directory in the shared host page cache, so snapshot capture
+// already reads a consistent view without an explicit sync.
+func (c *container) FlushAgent(ctx context.Context) error { return nil }
 
 // --- snapshot ---
 

@@ -17,7 +17,12 @@ type BundleParams struct {
 	ExtraEnv    map[string]string // sandboxd-injected KEY=VAL entries
 	Mounts      []BindMount       // additional host bind mounts (e.g. /workspace)
 	Hostname    string
-	CgroupsPath string // absolute cgroup path for the container (e.g. "/agent-<pid>")
+	// CgroupsPath, if non-empty, is set as the container's cgroupsPath in the
+	// OCI spec and a poststop hook is added to drain the cgroup before runc
+	// destroys it.  This eliminates the "container's cgroup is not empty"
+	// warning that appears when exec'd processes haven't been fully reaped by
+	// the time runc runs its cleanup.
+	CgroupsPath string
 }
 
 // BindMount represents a host→container bind. Source is interpreted in
@@ -85,6 +90,28 @@ func WriteConfig(p BundleParams) error {
 		})
 	}
 
+	linux := map[string]any{
+		"namespaces": []map[string]string{
+			{"type": "pid"},
+			{"type": "ipc"},
+			{"type": "uts"},
+			{"type": "mount"},
+			// network: omitted — share parent (sandbox-pod) netns.
+		},
+		"maskedPaths": []string{
+			"/proc/kcore", "/proc/latency_stats",
+			"/proc/timer_list", "/proc/timer_stats", "/proc/sched_debug",
+			"/sys/firmware",
+		},
+		"readonlyPaths": []string{
+			"/proc/asound", "/proc/bus", "/proc/fs",
+			"/proc/irq", "/proc/sys", "/proc/sysrq-trigger",
+		},
+	}
+	if p.CgroupsPath != "" {
+		linux["cgroupsPath"] = p.CgroupsPath
+	}
+
 	spec := map[string]any{
 		"ociVersion": "1.0.2-dev",
 		"process": map[string]any{
@@ -108,25 +135,7 @@ func WriteConfig(p BundleParams) error {
 		"root":     map[string]any{"path": rootPath, "readonly": false},
 		"hostname": p.Hostname,
 		"mounts":   mounts,
-		"linux": map[string]any{
-			"cgroupsPath": p.CgroupsPath,
-			"namespaces": []map[string]string{
-				{"type": "pid"},
-				{"type": "ipc"},
-				{"type": "uts"},
-				{"type": "mount"},
-				// network: omitted — share parent (sandbox-pod) netns.
-			},
-			"maskedPaths": []string{
-				"/proc/kcore", "/proc/latency_stats",
-				"/proc/timer_list", "/proc/timer_stats", "/proc/sched_debug",
-				"/sys/firmware",
-			},
-			"readonlyPaths": []string{
-				"/proc/asound", "/proc/bus", "/proc/fs",
-				"/proc/irq", "/proc/sys", "/proc/sysrq-trigger",
-			},
-		},
+		"linux":    linux,
 	}
 
 	out, err := os.Create(filepath.Join(p.BundleDir, "config.json"))

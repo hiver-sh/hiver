@@ -23,6 +23,7 @@ import (
 
 	"github.com/blasten/hive/internal/firecracker"
 	"github.com/blasten/hive/internal/vsockexec"
+	"github.com/creack/pty"
 )
 
 type envFlag []string
@@ -62,14 +63,57 @@ func main() {
 	}
 	defer conn.Close()
 
+	// Serialise all host→guest frame writes: the stdin pump and the SIGWINCH
+	// resize watcher both write to the same vsock stream, and one frame's
+	// header+payload must not interleave with another's.
+	var writeMu sync.Mutex
+	writeFrame := func(t vsockexec.FrameType, payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return vsockexec.WriteFrame(conn, t, payload)
+	}
+	writeJSON := func(t vsockexec.FrameType, v any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return vsockexec.WriteJSON(conn, t, v)
+	}
+
 	start := vsockexec.Start{
 		Command: *command,
 		Cwd:     *cwd,
 		Env:     envMap(env),
 		TTY:     *tty,
 	}
-	if err := vsockexec.WriteJSON(conn, vsockexec.FrameStart, start); err != nil {
+	// Seed the guest pty with the current window size so the program starts at
+	// the right dimensions; SIGWINCH (below) carries later changes. os.Stdin is
+	// the pty slave the exec handler wired up.
+	if *tty {
+		if rows, cols, err := pty.Getsize(os.Stdin); err == nil {
+			start.Rows, start.Cols = uint16(rows), uint16(cols)
+		}
+	}
+	if err := writeJSON(vsockexec.FrameStart, start); err != nil {
 		log.Fatalf("send start: %v", err)
+	}
+
+	// Relay terminal resizes: the exec handler resizes the outer pty master,
+	// the kernel delivers SIGWINCH here (we hold its controlling tty), and we
+	// forward the new size to the guest, which applies it to the in-guest pty.
+	// Without this the guest pty is stuck at its startup size and clears leave
+	// stale content — the same failure the container tty path avoids via SIGWINCH.
+	if *tty {
+		winch := make(chan os.Signal, 1)
+		signal.Notify(winch, syscall.SIGWINCH)
+		defer signal.Stop(winch)
+		go func() {
+			for range winch {
+				rows, cols, err := pty.Getsize(os.Stdin)
+				if err != nil {
+					continue
+				}
+				_ = writeJSON(vsockexec.FrameResize, vsockexec.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+			}
+		}()
 	}
 
 	// Pump local stdin → guest as Stdin frames; signal EOF with StdinClose.
@@ -78,12 +122,12 @@ func main() {
 		for {
 			n, rerr := os.Stdin.Read(buf)
 			if n > 0 {
-				if werr := vsockexec.WriteFrame(conn, vsockexec.FrameStdin, buf[:n]); werr != nil {
+				if werr := writeFrame(vsockexec.FrameStdin, buf[:n]); werr != nil {
 					return
 				}
 			}
 			if rerr != nil {
-				_ = vsockexec.WriteFrame(conn, vsockexec.FrameStdinClose, nil)
+				_ = writeFrame(vsockexec.FrameStdinClose, nil)
 				return
 			}
 		}

@@ -47,16 +47,29 @@ func Command(bin, apiSock, configPath string) (string, []string) {
 	return bin, []string{"--api-sock", apiSock, "--config-file", configPath}
 }
 
-// DefaultBootArgs is the kernel command line for a minimal serial-console
-// guest whose init is the in-guest agent. ip=... hands the guest its
-// static address on the tap link so it needs no in-guest DHCP. The agent
-// receives its runtime parameters (overlay/FUSE/egress config) over vsock
-// rather than the cmdline, so this stays fixed across sandboxes.
+// DefaultBootArgs is the kernel command line for a minimal guest whose init is
+// the in-guest agent. ip=... hands the guest its static address on the tap link
+// so it needs no in-guest DHCP. The agent receives its runtime parameters
+// (overlay/FUSE/egress config) over vsock rather than the cmdline, so this stays
+// fixed across sandboxes.
+//
+// By default no serial console is configured: kernel boot logs otherwise go to
+// the emulated 16550 UART, where every line blocks on a synchronous VM-exit to
+// the host — hundreds of boot lines, which dominate guest boot time. Omitting
+// console= makes the kernel skip that I/O entirely (the single biggest boot-time
+// win). All sandbox I/O — exec, file ops, and interactive TTYs — runs over vsock
+// and a devpts PTY, independent of the system console, so dropping it is
+// transparent to the workload. Set FIRECRACKER_DEBUG_CONSOLE=1 to restore
+// console=ttyS0 when you need to watch a boot failure on the serial log.
 func DefaultBootArgs(guestIP, gatewayIP string) string {
+	console := ""
+	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
+		console = "console=ttyS0 "
+	}
 	return fmt.Sprintf(
-		"console=ttyS0 reboot=k panic=1 pci=off i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd "+
+		"%sreboot=k panic=1 pci=off i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd "+
 			"ip=%s::%s:255.255.255.252::eth0:off "+
 			"init=/usr/bin/sbxguest",
-		guestIP, gatewayIP,
+		console, guestIP, gatewayIP,
 	)
 }

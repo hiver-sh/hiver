@@ -27,6 +27,7 @@ import (
 
 	"github.com/blasten/hive/internal/firecracker"
 	"github.com/blasten/hive/internal/vsockexec"
+	"github.com/blasten/hive/internal/vsockfile"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
@@ -51,11 +52,39 @@ func main() {
 		log.Fatalf("bootstrap: %v", err)
 	}
 
-	// Serve exec sessions to the host for the lifetime of the workload.
+	// Apply the workload environment to this process so that LookPath and
+	// os.Environ() (used in exec sessions) resolve binaries correctly.
+	for _, kv := range params.Env {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			_ = os.Setenv(kv[:idx], kv[idx+1:])
+		}
+	}
+
+	// Record the workspace mounts so the file API routes their paths to the
+	// live 9p mounts and every other path to the overlay upper layer.
+	for _, fu := range params.Fuse {
+		if fu.Mount != "" {
+			fileWorkspaceMounts = append(fileWorkspaceMounts, fu.Mount)
+		}
+	}
+
+	// Serve exec sessions and file operations to the host for the lifetime of
+	// the workload. The guest sees the assembled root (overlay + 9p
+	// workspaces), so the host proxies every /v1/file* request here instead of
+	// reaching into host-side backend dirs.
 	go serveExec(firecracker.GuestExecPort)
+	go serveFiles(vsockfile.GuestPort)
 
 	code := runWorkload(params)
 	log.Printf("workload exited with code %d", code)
+
+	// Flush the overlay drive before power-off. reboot(POWER_OFF) does not sync
+	// filesystems, so without this the agent's most recent writes (still in the
+	// guest page cache) never reach the virtio block device backing the overlay
+	// image — the host would then snapshot stale/zero-length files. sync()
+	// blocks until writeback completes, so the data is on the image by the time
+	// the host loop-mounts it for capture.
+	unix.Sync()
 
 	// As guest init, powering off makes the firecracker process exit, which
 	// the host supervises as the agent's lifecycle end.
@@ -176,6 +205,20 @@ func mountPseudoFS() {
 			log.Printf("mount %s: %v (continuing)", e.dst, err)
 		}
 	}
+
+	// devpts provides the pseudo-terminal multiplexor: the TTY exec path
+	// (creack/pty) opens /dev/ptmx to allocate a pty, which devtmpfs alone does
+	// not supply. Mount it and point /dev/ptmx at the multiplexor so interactive
+	// `tty: true` exec sessions work the same as on the container backend.
+	_ = os.MkdirAll("/dev/pts", 0o755)
+	if err := syscall.Mount("devpts", "/dev/pts", "devpts", 0, "gid=5,mode=620,ptmxmode=666"); err != nil {
+		log.Printf("mount /dev/pts: %v (continuing)", err)
+	} else {
+		_ = os.Remove("/dev/ptmx")
+		if err := os.Symlink("pts/ptmx", "/dev/ptmx"); err != nil {
+			log.Printf("link /dev/ptmx: %v (continuing)", err)
+		}
+	}
 }
 
 func readParams(path string) (firecracker.GuestParams, error) {
@@ -193,7 +236,22 @@ func readParams(path string) (firecracker.GuestParams, error) {
 // assembleRoot stacks the writable overlay drive on top of the read-only
 // image root and pivot_roots into the merged view — the in-guest equivalent
 // of the container backend's overlayfs mount.
+//
+// The overlay is an implementation detail and must not be reachable from the
+// assembled root the workload runs in (just as the container backend keeps its
+// upper dir host-side). Two things enforce that here: the overlay drive is
+// detached from the mount namespace the instant the overlayfs is live (the
+// overlayfs keeps its own kernel references, so upperdir/workdir survive with
+// no path leading to them), and the old image root is made private and lazily
+// detached after pivot_root so nothing under /.oldroot lingers.
 func assembleRoot() error {
+	// Make the whole tree private first: the guest's boot-time root may be a
+	// shared mount, which would make the lazy unmounts below propagate or be
+	// refused — leaving the overlay drive reachable. (Silent failure here was
+	// why the upper layer leaked into the workload.)
+	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make / private: %w", err)
+	}
 	if err := os.MkdirAll(overlayMnt, 0o755); err != nil {
 		return err
 	}
@@ -212,10 +270,29 @@ func assembleRoot() error {
 	if err := syscall.Mount("overlay", mergedMnt, "overlay", 0, opts); err != nil {
 		return fmt.Errorf("mount overlayfs: %w", err)
 	}
+	// Hold an fd on the upper dir before it leaves the namespace: the file API
+	// serves the sandbox's own writes from here (overlayUpperRoot), so it never
+	// exposes the read-only base image. The fd stays valid after the lazy
+	// detach below — no path leads to the upper, but this handle does.
+	upperRoot, err := os.OpenRoot(upper)
+	if err != nil {
+		return fmt.Errorf("open overlay upper: %w", err)
+	}
+	overlayUpperRoot = upperRoot
+	// The overlayfs now pins the upper/work dirs internally, so the drive can
+	// leave the namespace: detach it lazily. Writes still land on the (busy,
+	// still-mounted) ext4 and flush on the shutdown sync; the workload simply
+	// has no path to upperdir/workdir anymore.
+	if err := syscall.Unmount(overlayMnt, syscall.MNT_DETACH); err != nil {
+		return fmt.Errorf("detach overlay drive: %w", err)
+	}
 
-	// Carry the pseudo-filesystems and metadata mount into the new root,
-	// then pivot_root so the workload sees the merged view as /.
-	for _, d := range []string{"/proc", "/sys", "/dev", metadataMnt} {
+	// Carry only the pseudo-filesystems into the new root, then pivot_root so
+	// the workload sees the merged view as /. The metadata drive (params.json:
+	// the sandbox CA and full env) is deliberately NOT carried over — it was
+	// consumed at boot, so leaving it out of the merged root keeps it, like the
+	// overlay, an implementation detail the workload can't read.
+	for _, d := range []string{"/proc", "/sys", "/dev"} {
 		dst := filepath.Join(mergedMnt, d)
 		_ = os.MkdirAll(dst, 0o755)
 		_ = syscall.Mount(d, dst, "", syscall.MS_BIND|syscall.MS_REC, "")
@@ -230,8 +307,41 @@ func assembleRoot() error {
 	if err := syscall.Chdir("/"); err != nil {
 		return err
 	}
-	_ = syscall.Unmount("/.oldroot", syscall.MNT_DETACH)
+	// Detach the old image root for good. Private first so the lazy unmount
+	// drops the subtree instead of being silently refused.
+	if err := syscall.Mount("", "/.oldroot", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make old root private: %w", err)
+	}
+	if err := syscall.Unmount("/.oldroot", syscall.MNT_DETACH); err != nil {
+		return fmt.Errorf("detach old root: %w", err)
+	}
 	_ = os.Remove("/.oldroot")
+
+	// Strip the raw overlay/metadata block-device nodes from the workload's
+	// /dev as a final speed bump. Their filesystems stay mounted (the kernel
+	// holds each bdev open regardless of the node), but with no /dev entry a
+	// process can't re-open and re-mount them to reach the overlay upper or the
+	// params drive. virtio majors are dynamically allocated, so recreating the
+	// node by guesswork is impractical — best-effort, since this is hardening,
+	// not correctness (a privileged process could still read the major from
+	// /sys and mknod).
+	for _, dev := range []string{overlayDev, metadataDev} {
+		if err := os.Remove(dev); err != nil && !os.IsNotExist(err) {
+			log.Printf("hide device node %s: %v", dev, err)
+		}
+	}
+
+	// The overlay/merged/metadata mountpoints are baked into the read-only image
+	// (the guest mounts onto them, and a read-only root can't mkdir them at
+	// boot), but they're implementation details the workload shouldn't see. Now
+	// that we're in the writable merged view, rmdir them: overlay records each
+	// as a whiteout in the upper layer, hiding the empty lower dirs from the
+	// workload (and the whiteout persists in snapshots).
+	for _, d := range []string{overlayMnt, mergedMnt, metadataMnt} {
+		if err := os.Remove(d); err != nil && !os.IsNotExist(err) {
+			log.Printf("hide mountpoint %s: %v", d, err)
+		}
+	}
 	return nil
 }
 
@@ -331,7 +441,7 @@ func handleExec(conn io.ReadWriter) error {
 	cmd.Env = append(os.Environ(), envEntries(start.Env)...)
 
 	if start.TTY {
-		return execTTY(conn, cmd)
+		return execTTY(conn, cmd, start)
 	}
 	return execPipes(conn, cmd)
 }
@@ -384,12 +494,18 @@ func execPipes(conn io.ReadWriter, cmd *exec.Cmd) error {
 	return vsockexec.WriteJSON(conn, vsockexec.FrameExit, vsockexec.Exit{Code: code})
 }
 
-func execTTY(conn io.ReadWriter, cmd *exec.Cmd) error {
+func execTTY(conn io.ReadWriter, cmd *exec.Cmd, start vsockexec.Start) error {
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return err
 	}
 	defer ptmx.Close()
+
+	// Apply the host's initial window size so the program starts at the right
+	// dimensions; subsequent changes arrive as FrameResize via relayStdin.
+	if start.Rows > 0 && start.Cols > 0 {
+		_ = pty.Setsize(ptmx, &pty.Winsize{Rows: start.Rows, Cols: start.Cols})
+	}
 
 	go relayStdin(conn, ptmx)
 
@@ -446,6 +562,282 @@ func waitCode(cmd *exec.Cmd) int {
 		return 1
 	}
 	return 0
+}
+
+// serveFiles listens on the guest vsock file port and handles one file
+// operation per connection for the host-side /v1/file* API. Because the guest
+// sees the workload root at real agent paths, a single handler serves every
+// path uniformly — workspace mounts and the overlay alike.
+func serveFiles(port uint32) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		log.Printf("files: vsock socket: %v", err)
+		return
+	}
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+		log.Printf("files: vsock bind: %v", err)
+		_ = unix.Close(fd)
+		return
+	}
+	if err := unix.Listen(fd, 16); err != nil {
+		log.Printf("files: vsock listen: %v", err)
+		_ = unix.Close(fd)
+		return
+	}
+	log.Printf("files: listening on vsock port %d", port)
+	for {
+		nfd, _, err := unix.Accept(fd)
+		if err != nil {
+			log.Printf("files: accept: %v", err)
+			continue
+		}
+		conn := os.NewFile(uintptr(nfd), "vsock-file")
+		go func() {
+			defer conn.Close()
+			if err := handleFile(conn); err != nil && err != io.EOF {
+				log.Printf("files: session: %v", err)
+			}
+		}()
+	}
+}
+
+// handleFile runs one file operation: read the Request frame, dispatch to the
+// matching filesystem op, and reply with a Result (plus a Data/End body for
+// read/write). Operation failures are reported in-band via Result.Err.
+func handleFile(conn io.ReadWriter) error {
+	t, payload, err := vsockfile.ReadFrame(conn)
+	if err != nil {
+		return err
+	}
+	if t != vsockfile.FrameRequest {
+		return fmt.Errorf("expected request frame, got %d", t)
+	}
+	var req vsockfile.Request
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return fmt.Errorf("decode request: %w", err)
+	}
+	switch req.Op {
+	case vsockfile.OpList:
+		return fileList(conn, req.Path)
+	case vsockfile.OpStat:
+		return fileStat(conn, req.Path)
+	case vsockfile.OpRead:
+		return fileRead(conn, req.Path)
+	case vsockfile.OpWrite:
+		return fileWrite(conn, req.Path, req.Name)
+	default:
+		return fileErr(conn, fmt.Errorf("unknown op %q", req.Op))
+	}
+}
+
+func fileErr(conn io.Writer, err error) error {
+	return vsockfile.WriteJSON(conn, vsockfile.FrameResult, vsockfile.Result{Err: err.Error()})
+}
+
+// File-API routing state, set during bootstrap. The file API must expose only
+// the sandbox's own writes, not the read-only base image: workspace paths are
+// served from the live merged path (the host-backed 9p mount), and every other
+// path from overlayUpperRoot (the overlay upper layer). This mirrors the
+// container backend, whose file API reads the workspace backend dirs and the
+// overlay upper dir directly — never the merged image.
+var (
+	fileWorkspaceMounts []string
+	overlayUpperRoot    *os.Root
+)
+
+// resolveFile routes an agent path. Paths inside a workspace mount return
+// (abs, "", false) to be served from the live merged path; all others return
+// ("", rel, true) to be served within the overlay upper layer.
+func resolveFile(agentPath string) (abs, rel string, useUpper bool) {
+	clean := filepath.Clean("/" + agentPath)
+	for _, m := range fileWorkspaceMounts {
+		if clean == m || strings.HasPrefix(clean, strings.TrimRight(m, "/")+"/") {
+			return clean, "", false
+		}
+	}
+	rel = strings.TrimPrefix(clean, "/")
+	if rel == "" {
+		rel = "."
+	}
+	return "", rel, true
+}
+
+func fileList(conn io.Writer, path string) error {
+	abs, rel, useUpper := resolveFile(path)
+	var es []os.DirEntry
+	var err error
+	if useUpper {
+		if overlayUpperRoot == nil {
+			return fileErr(conn, fmt.Errorf("upper layer unavailable"))
+		}
+		var d *os.File
+		if d, err = overlayUpperRoot.Open(rel); err == nil {
+			defer d.Close()
+			es, err = d.ReadDir(-1)
+		}
+	} else {
+		es, err = os.ReadDir(abs)
+	}
+	if err != nil {
+		return fileErr(conn, err)
+	}
+	entries := make([]vsockfile.Entry, 0, len(es))
+	for _, e := range es {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		// Overlay records a deleted lower file/dir as a whiteout (a char device
+		// 0:0) in the upper layer. Skip them: they're overlay bookkeeping, not
+		// files the workload can see, and would otherwise re-expose the names of
+		// things we deliberately removed (e.g. the mnt/overlay mountpoint).
+		if isOverlayWhiteout(info) {
+			continue
+		}
+		var size int64
+		if !e.IsDir() {
+			size = info.Size()
+		}
+		entries = append(entries, vsockfile.Entry{Name: e.Name(), IsDir: e.IsDir(), Size: size})
+	}
+	return vsockfile.WriteJSON(conn, vsockfile.FrameResult, vsockfile.Result{Entries: entries})
+}
+
+// isOverlayWhiteout reports whether info is an overlayfs whiteout — a
+// character device with rdev 0:0, which overlay uses in the upper layer to
+// mark a lower entry as deleted.
+func isOverlayWhiteout(info os.FileInfo) bool {
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && st.Rdev == 0
+}
+
+func fileStat(conn io.Writer, path string) error {
+	abs, rel, useUpper := resolveFile(path)
+	var info os.FileInfo
+	var err error
+	if useUpper {
+		if overlayUpperRoot == nil {
+			return fileErr(conn, fmt.Errorf("upper layer unavailable"))
+		}
+		info, err = overlayUpperRoot.Stat(rel)
+	} else {
+		info, err = os.Stat(abs)
+	}
+	if err != nil {
+		return fileErr(conn, err)
+	}
+	var size int64
+	if !info.IsDir() {
+		size = info.Size()
+	}
+	e := vsockfile.Entry{Name: filepath.Base(path), IsDir: info.IsDir(), Size: size}
+	return vsockfile.WriteJSON(conn, vsockfile.FrameResult, vsockfile.Result{Entry: &e})
+}
+
+func fileRead(conn io.Writer, path string) error {
+	abs, rel, useUpper := resolveFile(path)
+	var info os.FileInfo
+	var fh *os.File
+	var err error
+	if useUpper {
+		if overlayUpperRoot == nil {
+			return fileErr(conn, fmt.Errorf("upper layer unavailable"))
+		}
+		if info, err = overlayUpperRoot.Stat(rel); err == nil {
+			if !info.Mode().IsRegular() {
+				return fileErr(conn, fmt.Errorf("not a regular file"))
+			}
+			fh, err = overlayUpperRoot.Open(rel)
+		}
+	} else {
+		if info, err = os.Stat(abs); err == nil {
+			if !info.Mode().IsRegular() {
+				return fileErr(conn, fmt.Errorf("not a regular file"))
+			}
+			fh, err = os.Open(abs)
+		}
+	}
+	if err != nil {
+		return fileErr(conn, err)
+	}
+	defer fh.Close()
+	if err := vsockfile.WriteJSON(conn, vsockfile.FrameResult, vsockfile.Result{Size: info.Size()}); err != nil {
+		return err
+	}
+	buf := make([]byte, vsockfile.ChunkSize)
+	for {
+		n, rerr := fh.Read(buf)
+		if n > 0 {
+			if err := vsockfile.WriteFrame(conn, vsockfile.FrameData, buf[:n]); err != nil {
+				return err
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
+	return vsockfile.WriteFrame(conn, vsockfile.FrameEnd, nil)
+}
+
+// fileWrite drains the whole data stream before replying so the host↔guest
+// stream stays framed-aligned even when the create fails up front.
+func fileWrite(conn io.ReadWriter, dir, name string) error {
+	target := filepath.Join(dir, name)
+	var out *os.File
+	openErr := os.MkdirAll(dir, 0o755)
+	if openErr == nil {
+		out, openErr = os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	}
+
+	var written int64
+	var writeErr error
+	for {
+		t, payload, rerr := vsockfile.ReadFrame(conn)
+		if rerr != nil {
+			if out != nil {
+				out.Close()
+				_ = os.Remove(target)
+			}
+			return rerr
+		}
+		if t == vsockfile.FrameEnd {
+			break
+		}
+		if t != vsockfile.FrameData {
+			if out != nil {
+				out.Close()
+				_ = os.Remove(target)
+			}
+			return fmt.Errorf("expected data frame, got %d", t)
+		}
+		if out != nil && writeErr == nil {
+			if _, werr := out.Write(payload); werr != nil {
+				writeErr = werr
+			} else {
+				written += int64(len(payload))
+			}
+		}
+	}
+
+	switch {
+	case openErr != nil:
+		return fileErr(conn, openErr)
+	case writeErr != nil:
+		out.Close()
+		_ = os.Remove(target)
+		return fileErr(conn, writeErr)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(target)
+		return fileErr(conn, err)
+	}
+	return vsockfile.WriteJSON(conn, vsockfile.FrameResult, vsockfile.Result{Size: written})
 }
 
 // --- small helpers ---

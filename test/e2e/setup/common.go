@@ -491,10 +491,7 @@ func runSandboxPod(t *testing.T, bundleImage, specPath string, expectations []Ex
 		// unshare(CLONE_NEWUSER), etc.). A tightened custom profile
 		// is the natural next step; for now keep seccomp off.
 		"--security-opt", "seccomp=unconfined",
-		// runc creates the agent's cgroup under /sys/fs/cgroup; that
-		// tree is read-only in non-privileged containers, so bind it
-		// back rw. Strictly less than --privileged because we still
-		// don't grant access to /dev/* or other host bind paths.
+		"--cgroupns", "host",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"--add-host", "upstream-allowed:host-gateway",
 		"--add-host", "upstream-denied:host-gateway",

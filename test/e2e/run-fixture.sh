@@ -163,6 +163,7 @@ docker run -d --rm \
   --cap-add DAC_READ_SEARCH --cap-add FOWNER --cap-add CHOWN \
   --security-opt apparmor=unconfined \
   --security-opt seccomp=unconfined \
+  --cgroupns host \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   --add-host upstream-allowed:host-gateway \
   --add-host upstream-denied:host-gateway \

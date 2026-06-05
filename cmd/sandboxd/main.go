@@ -62,6 +62,12 @@ const (
 	// kernel needs a moment to flush the trailing bytes + FIN to
 	// every subscriber over the docker bridge.
 	httpShutdownTimeout = 3 * time.Second
+
+	// agentFlushTimeout caps how long we'll wait for the workload filesystem
+	// flush (microvm guest `sync`) on shutdown before stopping the workload
+	// anyway, so a wedged guest can't block teardown past the controller's
+	// shutdown grace period.
+	agentFlushTimeout = 10 * time.Second
 )
 
 func main() {
@@ -380,12 +386,28 @@ func main() {
 	if err != nil {
 		log.Fatalf("prepare agent: %v", err)
 	}
-	agentCmd, agentStdioDone, err := startChild(ctx, &children, "sandbox", agentBin,
+	// The agent runs on its own context so that on shutdown we can flush the
+	// workload filesystem (sync the microvm guest) *before* the workload is
+	// stopped — otherwise the guest's recent writes never reach the overlay
+	// image and the captured snapshot is stale. The container backend's flush
+	// is a no-op.
+	agentCtx, stopAgent := context.WithCancel(context.Background())
+	defer stopAgent()
+	agentCmd, agentStdioDone, err := startChild(agentCtx, &children, "sandbox", agentBin,
 		agentArgs, nil, nil,
 		publishAgentStdio(broker))
 	if err != nil {
 		log.Fatalf("start agent: %v", err)
 	}
+	children.Go(func() {
+		<-ctx.Done()
+		flushCtx, cancelFlush := context.WithTimeout(context.Background(), agentFlushTimeout)
+		if err := iso.FlushAgent(flushCtx); err != nil {
+			log.Printf("sandboxd: flush agent before stop: %v", err)
+		}
+		cancelFlush()
+		stopAgent()
+	})
 
 	go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
 
