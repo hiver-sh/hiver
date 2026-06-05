@@ -88,20 +88,31 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		"--label", labelSandboxID + "=" + id,
 		"--network", composeProject + "_default",
 		"--device", "/dev/fuse",
+		// The caps runc needs to set up the inner container (MKNOD, SYS_CHROOT,
+		// SET*, FOWNER, CHOWN) are already in Docker's default set; only the three
+		// below go beyond it.
+		//
+		// SYS_ADMIN: the catch-all "do privileged things" cap. Enables the mount()
+		// syscall and namespace creation, e.g. mounting the FUSE filesystem on
+		// /dev/fuse, the overlayfs that backs each sandbox rootfs, and unsharing
+		// the mount/pid namespaces runc and firecracker set up.
 		"--cap-add", "SYS_ADMIN",
+		// NET_ADMIN: network configuration inside the container, e.g. creating the
+		// firecracker tap device, bringing it up, and installing the iptables DNAT
+		// rule that redirects guest egress to the host-loopback proxy.
 		"--cap-add", "NET_ADMIN",
-		"--cap-add", "MKNOD",
-		"--cap-add", "SYS_CHROOT",
-		"--cap-add", "SETPCAP",
-		"--cap-add", "SETFCAP",
-		"--cap-add", "SETUID",
-		"--cap-add", "SETGID",
+		// DAC_READ_SEARCH: bypass file read + directory-execute permission checks,
+		// e.g. traversing and reading snapshot/overlay trees whose dirs are owned
+		// by other UIDs (DAC_OVERRIDE, a Docker default, covers write; this covers
+		// read/search).
 		"--cap-add", "DAC_READ_SEARCH",
-		"--cap-add", "FOWNER",
-		"--cap-add", "CHOWN",
+		// apparmor=unconfined: the default Docker AppArmor profile blocks the
+		// mount/umount operations above; unconfined lifts that.
 		"--security-opt", "apparmor=unconfined",
+		// seccomp=unconfined: the default seccomp profile blocks syscalls the
+		// nested runtimes need, e.g. mount(), the loop-device ioctls used for
+		// snapshotting, and keyctl(); unconfined allows them.
 		"--security-opt", "seccomp=unconfined",
-
 	}
 	// Both container (runc) and microvm (firecracker) isolation create cgroup
 	// sub-trees, so the host cgroup tree must be writable and the cgroup
@@ -162,8 +173,9 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 	}
 
 	if out, err := exec.Command("docker", "start", containerName).CombinedOutput(); err != nil {
+		startErr := withContainerLogs(fmt.Errorf("docker start %s: %v: %s", image, err, out), containerName)
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
-		return gen.Sandbox{}, fmt.Errorf("docker start %s: %v: %s", image, err, out)
+		return gen.Sandbox{}, startErr
 	}
 
 	return gen.Sandbox{Id: id}, nil
@@ -209,12 +221,6 @@ func containerState(name string) (exists, running bool, err error) {
 		return false, false, fmt.Errorf("docker inspect %s: %w", name, err)
 	}
 	return true, strings.TrimSpace(string(out)) == "true", nil
-}
-
-// containerImage returns the image name a container was started from.
-func containerImage(name string) string {
-	out, _ := exec.Command("docker", "inspect", "-f", "{{.Config.Image}}", name).Output()
-	return strings.TrimSpace(string(out))
 }
 
 // containerLogs returns recent log output for a container, or empty string if
@@ -286,5 +292,3 @@ func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycle
 	}()
 	return ch, nil
 }
-
-

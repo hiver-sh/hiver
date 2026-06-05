@@ -409,8 +409,19 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	// CgroupPath, then hand off via exec so the PID — already in the cgroup —
 	// is preserved as the supervised agent process.
 	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
-	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s %s",
-		shellQuote(cgDir), shellQuote(cgDir), shellQuote(bin), shellJoin(args))
+	// firecracker's stdout/stderr only ever carry the VMM banner ("Running
+	// Firecracker ...") and the few early guest-kernel boot lines the serial
+	// console emits before the cmdline disables it — all real workload I/O
+	// (exec, file ops, TTYs) runs over vsock. That boot noise would otherwise
+	// surface on the published sandbox log stream, so drop it. Gated by the
+	// same FIRECRACKER_DEBUG_CONSOLE toggle as the serial console (DefaultBootArgs)
+	// so it stays visible when you need to watch a boot failure.
+	redirect := ">/dev/null 2>&1"
+	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
+		redirect = ""
+	}
+	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s %s %s",
+		shellQuote(cgDir), shellQuote(cgDir), shellQuote(bin), shellJoin(args), redirect)
 	return "sh", []string{"-c", shell}, nil
 }
 
