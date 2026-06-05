@@ -43,6 +43,14 @@ const (
 	KindMicroVM   Kind = "microvm"
 )
 
+// Default compute allocation applied when a SandboxConfig omits cpu/memory.
+// Both backends use these: the microvm as the guest vCPU count / RAM size, the
+// container as a CPU quota / cgroup memory limit.
+const (
+	DefaultVcpuCount = 1   // virtual CPUs
+	DefaultMemoryMiB = 512 // MiB
+)
+
 // Parse maps a config string (SandboxConfig.isolation) to a Kind. The
 // empty string selects KindContainer so existing configs that predate the
 // field keep their behaviour.
@@ -70,6 +78,14 @@ type Config struct {
 	// directly; the microvm backend captures the guest's writable image
 	// instead and ignores them.
 	LocalMounts []SnapshotMount
+
+	// VcpuCount and MemoryMiB are the compute allocation for the sandbox,
+	// fixed at boot (SandboxConfig.cpu / .memory). The microvm backend boots
+	// the guest with exactly these; the container backend enforces them as a
+	// CPU quota and cgroup memory limit. New fills zero values with
+	// DefaultVcpuCount / DefaultMemoryMiB.
+	VcpuCount int
+	MemoryMiB int
 }
 
 // SnapshotMount pairs an agent-visible mount path with the host directory
@@ -211,6 +227,12 @@ func sandboxCgroupPath(hostname string) string { return "/sandbox-" + hostname }
 
 // New constructs the isolation backend selected by kind.
 func New(kind Kind, cfg Config) (Isolation, error) {
+	if cfg.VcpuCount <= 0 {
+		cfg.VcpuCount = DefaultVcpuCount
+	}
+	if cfg.MemoryMiB <= 0 {
+		cfg.MemoryMiB = DefaultMemoryMiB
+	}
 	switch kind {
 	case KindContainer:
 		return newContainer(cfg), nil

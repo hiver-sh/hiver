@@ -23,11 +23,9 @@ import (
 // guest routes all egress at the gateway, where the host REDIRECTs it to
 // sbxproxy.
 const (
-	guestIP    = "172.16.0.2"
-	gatewayIP  = "172.16.0.1"
-	guestMAC   = "06:00:ac:10:00:02"
-	guestVcpu  = 2
-	guestMemMi = 1024
+	guestIP   = "172.16.0.2"
+	gatewayIP = "172.16.0.1"
+	guestMAC  = "06:00:ac:10:00:02"
 )
 
 // microvm is the firecracker-backed Isolation. The agent runs inside a
@@ -65,6 +63,11 @@ type microvm struct {
 	overlayImg string
 	paramsImg  string
 
+	// Compute allocation for the guest, fixed at boot (SandboxConfig.cpu /
+	// .memory). New defaults these before construction.
+	vcpuCount  int
+	memSizeMib int
+
 	// Toolchain + guest assets, resolved from env with defaults.
 	fcBin   string // firecracker binary
 	kernel  string // guest kernel (vmlinux)
@@ -94,6 +97,8 @@ func newMicroVM(cfg Config) *microvm {
 		rootfsImg:   filepath.Join(jail, "rootfs.ext4"),
 		overlayImg:  filepath.Join(jail, "overlay.ext4"),
 		paramsImg:   filepath.Join(jail, "metadata.ext4"),
+		vcpuCount:   cfg.VcpuCount,
+		memSizeMib:  cfg.MemoryMiB,
 		fcBin:       envOr("FIRECRACKER_BIN", "firecracker"),
 		kernel:      envOr("FIRECRACKER_KERNEL", "/var/lib/firecracker/vmlinux"),
 		tapName:     tapNameFor(cfg.Hostname),
@@ -384,8 +389,8 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 			BootArgs:        firecracker.DefaultBootArgs(guestIP, gatewayIP),
 		},
 		MachineConfig: firecracker.MachineConfig{
-			VcpuCount:  guestVcpu,
-			MemSizeMib: guestMemMi,
+			VcpuCount:  m.vcpuCount,
+			MemSizeMib: m.memSizeMib,
 			Smt:        false,
 		},
 		Drives: []firecracker.Drive{

@@ -20,6 +20,26 @@ components:
             The isolation mechanism used to run the sandbox.
             This cannot be changed after the sandbox is initialized.
           example: container
+        cpu:
+          type: integer
+          minimum: 1
+          default: 1
+          description: >
+            Number of virtual CPUs allocated to the sandbox. For the microvm
+            isolation this is the guest vCPU count; for the container isolation
+            it is enforced as a CPU quota.
+            This cannot be changed after the sandbox is initialized.
+          example: 1
+        memory:
+          type: integer
+          minimum: 128
+          default: 512
+          description: >
+            Memory allocated to the sandbox, in MiB. For the microvm isolation
+            this is the guest RAM size; for the container isolation it is
+            enforced as a cgroup memory limit.
+            This cannot be changed after the sandbox is initialized.
+          example: 512
         entrypoint:
           type: string
           description: >

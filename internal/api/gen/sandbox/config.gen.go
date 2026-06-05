@@ -388,6 +388,9 @@ type LocalFileSystemBackend string
 
 // SandboxConfig Hive sandbox configuration.
 type SandboxConfig struct {
+	// Cpu Number of virtual CPUs allocated to the sandbox. For the microvm isolation this is the guest vCPU count; for the container isolation it is enforced as a CPU quota. This cannot be changed after the sandbox is initialized.
+	Cpu *int `json:"cpu,omitempty"`
+
 	// Egress Ordered list of egress rules. The first rule that matches a
 	// request decides the outcome; requests that match no rule
 	// are denied.
@@ -409,6 +412,9 @@ type SandboxConfig struct {
 
 	// Isolation The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized.
 	Isolation *SandboxConfigIsolation `json:"isolation,omitempty"`
+
+	// Memory Memory allocated to the sandbox, in MiB. For the microvm isolation this is the guest RAM size; for the container isolation it is enforced as a cgroup memory limit. This cannot be changed after the sandbox is initialized.
+	Memory *int `json:"memory,omitempty"`
 
 	// Snapshot Snapshot configuration. A snapshot is captured automatically before
 	// the sandbox shuts down and restored before the sandbox starts.

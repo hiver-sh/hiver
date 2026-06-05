@@ -36,6 +36,10 @@ type container struct {
 	cgroupPath string
 	// localMounts are the local-backend FUSE workspaces snapshot routes to.
 	localMounts []SnapshotMount
+	// vcpuCount and memSizeMib are the compute allocation enforced on the
+	// agent via the runc bundle's linux.resources (CPU quota + memory limit).
+	vcpuCount  int
+	memSizeMib int
 }
 
 func newContainer(cfg Config) *container {
@@ -43,6 +47,8 @@ func newContainer(cfg Config) *container {
 		containerID: fmt.Sprintf("agent-%d", os.Getpid()),
 		cgroupPath:  sandboxCgroupPath(cfg.Hostname),
 		localMounts: cfg.LocalMounts,
+		vcpuCount:   cfg.VcpuCount,
+		memSizeMib:  cfg.MemoryMiB,
 	}
 }
 
@@ -179,6 +185,8 @@ func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		Hostname:    "agent",
 		Mounts:      cfg.Mounts,
 		CgroupsPath: c.cgroupPath,
+		VcpuCount:   c.vcpuCount,
+		MemoryMiB:   c.memSizeMib,
 	}); err != nil {
 		return "", nil, fmt.Errorf("write bundle config: %w", err)
 	}

@@ -113,6 +113,8 @@ func main() {
 	iso, err := isolation.New(isoKind, isolation.Config{
 		Hostname:    podHostname,
 		LocalMounts: isolationLocalMounts(sp.FS),
+		VcpuCount:   intOrZero(sp.CPU),
+		MemoryMiB:   intOrZero(sp.Memory),
 	})
 	if err != nil {
 		log.Fatalf("isolation: %v", err)
@@ -798,6 +800,15 @@ func localFSMounts(fsList []spec.FS) []snapshot.MountSource {
 		}
 	}
 	return mounts
+}
+
+// intOrZero dereferences an optional spec int, returning 0 when unset so
+// isolation.New applies its default.
+func intOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // isolationLocalMounts converts the local-backend FS list into the

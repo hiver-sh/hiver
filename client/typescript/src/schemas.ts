@@ -142,6 +142,18 @@ export const SandboxConfig = z.object({
   image: z.string().optional(),
   /** The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized. */
   isolation: z.enum(["container", "microvm"]).optional(),
+  /**
+   * Number of virtual CPUs allocated to the sandbox (microvm: guest vCPU count;
+   * container: enforced as a CPU quota). Defaults to 1.
+   * This cannot be changed after the sandbox is initialized.
+   */
+  cpu: z.number().int().min(1).optional(),
+  /**
+   * Memory allocated to the sandbox, in MiB (microvm: guest RAM size;
+   * container: enforced as a cgroup memory limit). Defaults to 512.
+   * This cannot be changed after the sandbox is initialized.
+   */
+  memory: z.number().int().min(128).optional(),
   /** Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. */
   entrypoint: z.string().optional(),
   /** Additional environment variables in `KEY=VALUE` form. This cannot be changed after the sandbox is initialized. */

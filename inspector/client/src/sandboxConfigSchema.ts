@@ -22,6 +22,20 @@ export const SANDBOX_CONFIG_SCHEMA = {
           description: "The isolation mechanism used to run the sandbox. Cannot be changed after the sandbox is initialized.",
           examples: ["container"],
         },
+        cpu: {
+          type: "integer",
+          minimum: 1,
+          default: 1,
+          description: "Number of virtual CPUs allocated to the sandbox (microvm: guest vCPU count; container: enforced as a CPU quota). Cannot be changed after the sandbox is initialized.",
+          examples: [1],
+        },
+        memory: {
+          type: "integer",
+          minimum: 128,
+          default: 512,
+          description: "Memory allocated to the sandbox, in MiB (microvm: guest RAM size; container: enforced as a cgroup memory limit). Cannot be changed after the sandbox is initialized.",
+          examples: [512],
+        },
         entrypoint: {
           type: "string",
           description: "Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. e.g. \"tail -f /dev/null\" blocks indefinitely with near-zero CPU.",

@@ -23,6 +23,8 @@ const BackendSuffix = "-backend"
 type Spec struct {
 	Image      string             `json:"image,omitempty"`
 	Isolation  Isolation          `json:"isolation,omitempty"`
+	CPU        *int               `json:"cpu,omitempty"`
+	Memory     *int               `json:"memory,omitempty"`
 	Entrypoint string             `json:"entrypoint,omitempty"`
 	Ttl        *int               `json:"ttl,omitempty"`
 	Env        map[string]string  `json:"env,omitempty"`
@@ -294,6 +296,12 @@ func Parse(path string) (*Spec, error) {
 func (s *Spec) Validate() error {
 	if !s.Isolation.Valid() {
 		return fmt.Errorf("isolation: unknown value %q (supported: %q, %q)", s.Isolation, IsolationContainer, IsolationMicroVM)
+	}
+	if s.CPU != nil && *s.CPU < 1 {
+		return fmt.Errorf("cpu: must be >= 1, got %d", *s.CPU)
+	}
+	if s.Memory != nil && *s.Memory < 128 {
+		return fmt.Errorf("memory: must be >= 128 (MiB), got %d", *s.Memory)
 	}
 	if len(s.FS) == 0 {
 		return errors.New("fs is required (at least one mount)")

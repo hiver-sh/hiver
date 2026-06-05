@@ -23,7 +23,17 @@ type BundleParams struct {
 	// warning that appears when exec'd processes haven't been fully reaped by
 	// the time runc runs its cleanup.
 	CgroupsPath string
+	// VcpuCount and MemoryMiB, when > 0, are written into the bundle's
+	// linux.resources to cap the agent's CPU and memory. CPU is enforced as a
+	// quota over the standard 100ms period (VcpuCount full cores); memory as a
+	// hard cgroup limit in bytes.
+	VcpuCount int
+	MemoryMiB int
 }
+
+// cpuQuotaPeriodUs is the CFS scheduling period (microseconds) the CPU quota is
+// expressed against; quota = VcpuCount * period yields VcpuCount whole cores.
+const cpuQuotaPeriodUs = 100_000
 
 // BindMount represents a host→container bind. Source is interpreted in
 // runc's mount namespace (i.e. inside the sandbox-pod container).
@@ -111,6 +121,9 @@ func WriteConfig(p BundleParams) error {
 	if p.CgroupsPath != "" {
 		linux["cgroupsPath"] = p.CgroupsPath
 	}
+	if resources := bundleResources(p.VcpuCount, p.MemoryMiB); resources != nil {
+		linux["resources"] = resources
+	}
 
 	spec := map[string]any{
 		"ociVersion": "1.0.2-dev",
@@ -146,4 +159,26 @@ func WriteConfig(p BundleParams) error {
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(spec)
+}
+
+// bundleResources builds the OCI linux.resources map capping CPU and memory,
+// or nil when neither is set. runc translates these to the host's cgroup
+// version, so the same shape works on cgroup v1 and v2.
+func bundleResources(vcpuCount, memoryMiB int) map[string]any {
+	resources := map[string]any{}
+	if vcpuCount > 0 {
+		resources["cpu"] = map[string]any{
+			"quota":  vcpuCount * cpuQuotaPeriodUs,
+			"period": cpuQuotaPeriodUs,
+		}
+	}
+	if memoryMiB > 0 {
+		resources["memory"] = map[string]any{
+			"limit": int64(memoryMiB) * 1024 * 1024,
+		}
+	}
+	if len(resources) == 0 {
+		return nil
+	}
+	return resources
 }
