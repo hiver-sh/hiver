@@ -81,7 +81,6 @@ function ControllerUnreachable({ message, loading, onRetry, onOpenSettings }: { 
 
 // --- shared state passed down from the layout ---
 interface LayoutProps {
-  gatewayUrl: string;
   serverUrl: string;
   sandboxes: SandboxRef[];
   loading: boolean;
@@ -91,11 +90,12 @@ interface LayoutProps {
   onConnectedChange: (id: string, connected: boolean) => void;
 }
 
-function SandboxDetailRoute({ serverUrl, gatewayUrl, sandboxes, fetchSandboxes, onConnectedChange }: LayoutProps) {
+function SandboxDetailRoute({ serverUrl, sandboxes, fetchSandboxes, onConnectedChange }: LayoutProps) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const initCommand = (location.state as { initCommand?: string } | null)?.initCommand;
+  const initCommand = (location.state as { initCommand?: string } | null)?.initCommand
+    ?? (id ? localStorage.getItem(`sandbox.command.${id}`) ?? undefined : undefined);
   const sandbox = sandboxes.find((s) => s.id === id);
 
   if (!sandbox) {
@@ -111,7 +111,6 @@ function SandboxDetailRoute({ serverUrl, gatewayUrl, sandboxes, fetchSandboxes, 
       key={sandbox.id}
       sandbox={sandbox}
       serverUrl={serverUrl}
-      gatewayUrl={gatewayUrl}
       initCommand={initCommand}
       onShutdown={() => {
         fetchSandboxes();
@@ -123,11 +122,10 @@ function SandboxDetailRoute({ serverUrl, gatewayUrl, sandboxes, fetchSandboxes, 
 }
 
 function AppContent() {
-  const { transport } = useTransport();
+  const { transport, gatewayUrl, setGatewayUrl } = useTransport();
   const { prefs, setPref } = useUserPreferences();
-  const [gatewayUrl, setGatewayUrl] = useState(DEFAULT_GATEWAY_URL);
   const [serverUrl] = useState(DEFAULT_INSPECTOR_SERVER);
-  const [gatewayInput, setGatewayInput] = useState(DEFAULT_GATEWAY_URL);
+  const [gatewayInput, setGatewayInput] = useState(gatewayUrl);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const sidebarCollapsed = prefs.sidebarCollapsed;
@@ -146,7 +144,6 @@ function AppContent() {
     setFetchError(null);
     try {
       const url = new URL(`${serverUrl}/api/sandboxes`);
-      url.searchParams.set("gateway", gatewayUrl);
       const res = await transport.fetch(url);
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: res.statusText }));
@@ -170,7 +167,6 @@ function AppContent() {
   // Subscribe to sandbox lifecycle events and keep the list in sync.
   useEffect(() => {
     const url = new URL(`${serverUrl}/api/sandboxes/events`);
-    url.searchParams.set("gateway", gatewayUrl);
     const es = transport.openEventSource(url);
 
     es.onmessage = (e) => {
@@ -206,7 +202,6 @@ function AppContent() {
   useScrollbarVisibility();
 
   const layoutProps: LayoutProps = {
-    gatewayUrl,
     serverUrl,
     sandboxes,
     loading,
@@ -266,7 +261,7 @@ function AppContent() {
           >
             <ChevronRight className="h-4 w-4" />
           </button>
-          <CreateSandboxDialog compact serverUrl={serverUrl} gatewayUrl={gatewayUrl} onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }} />
+          <CreateSandboxDialog compact serverUrl={serverUrl} onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }} />
           <div className="flex flex-col items-center gap-1 mt-1">
             {sandboxes.map((sb) => (
               <button
@@ -332,7 +327,6 @@ function AppContent() {
             onRefresh={fetchSandboxes}
             onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }}
             serverUrl={serverUrl}
-            gatewayUrl={gatewayUrl}
           />
           <div className="flex items-center px-4 py-3 border-t border-border/50">
             <ThemeToggle />

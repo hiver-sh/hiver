@@ -32,13 +32,12 @@ const DEFAULT_FILES_FRACTION = 0.2;
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
   serverUrl: string;
-  gatewayUrl: string;
   initCommand?: string;
   onShutdown: () => void;
   onConnectedChange?: (connected: boolean) => void;
 }
 
-export function SandboxDetail({ sandbox, serverUrl, gatewayUrl, initCommand, onShutdown, onConnectedChange }: SandboxDetailProps) {
+export function SandboxDetail({ sandbox, serverUrl, initCommand, onShutdown, onConnectedChange }: SandboxDetailProps) {
   const { transport, player } = useTransport();
   const { prefs, setPref } = useUserPreferences();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
@@ -204,7 +203,6 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       const url = new URL(
         `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/shutdown`,
       );
-      url.searchParams.set("gateway", gatewayUrl);
       await transport.fetch(url, { method: "POST" });
       void clearEvents(sandbox.id);
       onShutdown();
@@ -248,16 +246,8 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex h-[70px] items-start justify-between gap-4 p-4 pb-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h2 className="truncate text-base font-semibold">{sandbox.id}</h2>
-          </div>
-          <span className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
-            <ExternalLink className="h-3 w-3" />
-            {sandbox.id}
-          </span>
-        </div>
+      <div className="flex h-[70px] items-center justify-between gap-4 p-4 pb-3">
+        <h2 className="truncate text-base font-semibold">{sandbox.id}</h2>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             size="sm"

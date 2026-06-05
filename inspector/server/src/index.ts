@@ -11,7 +11,7 @@ import { DEFAULT_URL } from "./lib/controllerUrl.js";
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
 
-app.use(cors());
+app.use(cors({ allowedHeaders: ["Content-Type", "x-gateway-url"] }));
 app.use(express.json());
 
 app.use("/api/sandboxes", sandboxRoutes);

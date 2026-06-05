@@ -12,7 +12,6 @@ interface Props {
   onRefresh: () => void;
   onCreated: (id: string, command: string) => void;
   serverUrl: string;
-  gatewayUrl: string;
 }
 
 export function SandboxList({
@@ -24,14 +23,12 @@ export function SandboxList({
   onRefresh,
   onCreated,
   serverUrl,
-  gatewayUrl,
 }: Props) {
   return (
     <div className="flex h-full flex-col">
       <div className="px-5 py-3 flex">
         <CreateSandboxDialog
           serverUrl={serverUrl}
-          gatewayUrl={gatewayUrl}
           onCreated={onCreated}
         />
       </div>

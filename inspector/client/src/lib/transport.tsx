@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useUserPreferences } from "./userPreferences";
+import { DEFAULT_GATEWAY_URL } from "@/types";
 
 export type TraceRecord = {
   time: number; // ms from recording start
@@ -93,6 +94,56 @@ export const liveTransport: Transport = {
   openEventSource: (url) => new NativeEventSource(url),
 };
 
+class FetchEventSource implements EventSourceLike {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  private _abort = new AbortController();
+
+  constructor(url: string | URL, fetchFn: (url: string | URL, init?: RequestInit) => Promise<Response>) {
+    (async () => {
+      let res: Response;
+      try {
+        res = await fetchFn(url, { signal: this._abort.signal });
+      } catch {
+        if (!this._abort.signal.aborted) this.onerror?.();
+        return;
+      }
+      if (!res.ok || !res.body) { this.onerror?.(); return; }
+      this.onopen?.();
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        let done: boolean; let value: Uint8Array | undefined;
+        try { ({ done, value } = await reader.read()); }
+        catch { if (!this._abort.signal.aborted) this.onerror?.(); return; }
+        if (done) { this.onerror?.(); return; }
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const part of parts)
+          for (const line of part.split("\n"))
+            if (line.startsWith("data: ")) this.onmessage?.({ data: line.slice(6) });
+      }
+    })();
+  }
+
+  close() { this._abort.abort(); }
+}
+
+function createGatewayTransport(base: Transport, gatewayUrl: string): Transport {
+  const gatewayFetch: Transport["fetch"] = (url, init) => {
+    const headers = new Headers(init?.headers);
+    headers.set("x-gateway-url", gatewayUrl);
+    return base.fetch(url, { ...init, headers });
+  };
+  return {
+    fetch: gatewayFetch,
+    openEventSource: (url) => new FetchEventSource(url, gatewayFetch),
+  };
+}
+
 
 export class TracePlayer {
   private _trace: TraceData;
@@ -142,7 +193,7 @@ export class TracePlayer {
     // Connection-specific params that change every session and should not block
     // matching. sandboxUrl and controller are dynamic ports; the sandbox identity
     // is already encoded in the pathname. exposedBackend changes similarly.
-    const IGNORE_PARAMS = new Set(["sessionId", "cols", "rows", "sandboxUrl", "controller", "exposedBackend", "lastEventId"]);
+    const IGNORE_PARAMS = new Set(["sessionId", "cols", "rows", "sandboxUrl", "controller", "exposedBackend", "lastEventId", "gateway"]);
 
     let best: TraceRecord[] | null = null;
     let bestKey = "";
@@ -300,6 +351,8 @@ export interface TransportContextValue {
   setPlaybackSpeed: (speed: number) => void;
   loadTraceFromData: (data: TraceData) => void;
   clearTrace: () => void;
+  gatewayUrl: string;
+  setGatewayUrl: (url: string) => void;
 }
 
 export const TransportContext = createContext<TransportContextValue>({
@@ -309,6 +362,8 @@ export const TransportContext = createContext<TransportContextValue>({
   setPlaybackSpeed: () => {},
   loadTraceFromData: () => {},
   clearTrace: () => {},
+  gatewayUrl: DEFAULT_GATEWAY_URL,
+  setGatewayUrl: () => {},
 });
 
 export function useTransport(): TransportContextValue {
@@ -326,10 +381,23 @@ export function TransportProvider({ children, tracePath, traceData: initialTrace
   const { enableNetworkRequests } = useUserPreferences();
   const [player, setPlayer] = useState<TracePlayer | null>(null);
   const [playbackSpeed, setPlaybackSpeedState] = useState(speed);
+  const [gatewayUrl, setGatewayUrlState] = useState(() => {
+    try { return localStorage.getItem("inspector:gatewayUrl") ?? DEFAULT_GATEWAY_URL; } catch { return DEFAULT_GATEWAY_URL; }
+  });
 
-  const transport = useMemo(
+  const setGatewayUrl = useCallback((url: string) => {
+    setGatewayUrlState(url);
+    try { localStorage.setItem("inspector:gatewayUrl", url); } catch { /* ignore */ }
+  }, []);
+
+  const baseTransport = useMemo(
     () => player ? new TraceTransport(player) : enableNetworkRequests ? liveTransport : noopTransport,
     [player, enableNetworkRequests],
+  );
+
+  const transport = useMemo(
+    () => createGatewayTransport(baseTransport, gatewayUrl),
+    [baseTransport, gatewayUrl],
   );
 
   const setPlaybackSpeed = useCallback(
@@ -366,7 +434,7 @@ export function TransportProvider({ children, tracePath, traceData: initialTrace
 
   return (
     <TransportContext.Provider
-      value={{ transport, player, playbackSpeed, setPlaybackSpeed, loadTraceFromData, clearTrace }}
+      value={{ transport, player, playbackSpeed, setPlaybackSpeed, loadTraceFromData, clearTrace, gatewayUrl, setGatewayUrl }}
     >
       {children}
     </TransportContext.Provider>

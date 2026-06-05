@@ -1,5 +1,6 @@
 import { Loader2, Plus } from "lucide-react";
 import { useState } from "react";
+import { useTransport } from "@/lib/transport";
 import { useSandboxCommand } from "@/lib/useSandboxCommand";
 import { CodeEditor } from "@/components/CodeEditor";
 import { Button } from "@/components/ui/button";
@@ -25,11 +26,11 @@ const DEFAULT_CONFIG = {
 
 interface Props {
   serverUrl: string;
-  gatewayUrl: string;
   onCreated: (id: string, command: string) => void;
 }
 
-export function CreateSandboxDialog({ serverUrl, gatewayUrl, onCreated, compact }: Props & { compact?: boolean }) {
+export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & { compact?: boolean }) {
+  const { transport } = useTransport();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,8 +59,7 @@ export function CreateSandboxDialog({ serverUrl, gatewayUrl, onCreated, compact 
     setLoading(true);
     try {
       const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(id)}`);
-      url.searchParams.set("gateway", gatewayUrl);
-      const res = await fetch(url, {
+      const res = await transport.fetch(url, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(config),

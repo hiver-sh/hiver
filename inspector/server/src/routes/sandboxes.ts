@@ -59,7 +59,7 @@ router.post("/:id/shutdown", async (req: Request, res: Response) => {
       res.status(404).json({ error: "sandbox not found" });
       return;
     }
-    await shutdown(sandbox);
+    await shutdown(sandbox, { gatewayUrl: gatewayUrl(req) });
     res.status(204).send();
   } catch (err) {
     res.status(502).json({ error: String(err) });
