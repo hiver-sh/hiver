@@ -1,111 +1,101 @@
 <p align="center">
 <img src="./docs/hive.svg" width="100">
 </p>
-<h1 align="center">Hive</h1>
+<h1 align="center">Hiver</h1>
+<h3 align="center">Chrome DevTools for Agents</h3>
 
-Hive provides each agent with a persistent, governed workspace — its own virtual filesystem and controlled network environment. Storage can be backed by _Google Drive_, _OneDrive_, _S3_, _GCS_, _Azure Blob Storage_, or local disks, allowing agents to work directly over real user and enterprise data.
+<p align="center">
+Run agents autonomously with controlled network access, auditable file operations, and full execution visibility.
+</p>
+
+<p align="center">
+<img src="./docs/devtools.png">
+</p>
 
 ## 🚀 Getting Started
 
-Start the controller locally:
 ```sh
-make up
+curl -fsSL https://hiver.sh/install.sh | sh
+
+hiver up
 ```
 
-Example client:
-```ts
-import * as hive from "hive";
+### Launch first agent
 
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
-  egress: {
-    allow: [{ host: "api.github.com", methods: ["GET"], paths: ["/repos/*"] }],
-  },
-});
-```
-
-Find a complete example [Stateful claude agent](client/typescript/examples/README.md).
-
-### Custom Images
-
-By default, an MCP server with `Bash`, and file operations tools is available via `sandbox.exposedEndpoint`. That said,
-but you can also use a custom Docker image.
-
-Dockerfile:
-
-```Dockerfile
-FROM node:20-slim
-# ....
-
-EXPOSE 8080
-ENTRYPOINT ["node", "index.js"]
-```
-
-Then build and bundle the image:
-
-```sh
-docker build -t custom-node:latest .
-./scripts/bundle-images.sh custom-node:latest custom-node-hive-bundle:latest
-```
-
-Finally, set `image`:
+#### TypeScript
 
 ```ts
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  image: 'custom-node-hive-bundle:latest'
-  // the rest
-});
+import * as hiver from "@hiver.sh/client";
 
-// `sandbox.exposedEndpoint` points to the port `:8080`
+const sandbox = await hiver.getOrCreateSandbox("agent-1");
+const result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'");
+console.log(result.stdout);
 ```
 
-</details>
+#### Python
+
+```py
+import hiver
+
+sandbox = hiver.get_or_create_sandbox("agent-1")
+
+result = sandbox.exec("claude -p 'Write a poem and save it as pdf'")
+print(result.stdout)
+```
+
+#### Go
+
+```go
+import "github.com/hive-run/hive-runtime/client"
+
+sandbox, _ := hive.GetOrCreateSandbox("agent-1", hive.SandboxConfig{})
+
+result, _ := sandbox.Exec("claude -p 'Write a poem and save it as pdf'")
+fmt.Println(result.Stdout)
+```
+
+### Hiver CLI
+
+#### Start stack
+
+`hiver up`
+
+#### Stop stack
+
+`hiver down`
+
+#### Bundle a custom Docker image
+
+`hiver bundle ./custom-agent custom-agent:latest`
+
+#### Launch DevTools
+
+`hiver devtools`
+
+#### List sandboxes
+
+`hiver list`
+
+#### Sandbox events
+
+`hiver events --sandbox agent-1 --follow`
 
 ## Documentation
 
-- [TypeScript](client/typescript/README.md)
-- Python (WIP)
+* [Docs](https://hiver.sh/docs)
 
-## How it works
+* [Self-improving loop](https://hiver.sh/docs/self-improving)
 
-<p align="center">
-<img src="./docs/hive-diagram.svg" width="500">
-</p>
+* [Examples](https://hiver.sh/docs/examples)
 
-A Hive sandbox is composed of an orchestrator (sbxd), 2 sidecar processes, and an agent container run via runc.
+### Isolation Modes
+Container-level isolation using [`runc`](https://github.com/opencontainers/runc) and kernel-level isolation using [`firecracker`](https://github.com/firecracker-microvm/firecracker).
 
-### Components
+### File Systems
+Local, Google Drive, Google Cloud Storage, Microsoft OneDrive, Amazon S3,Azure Blob Storage.
 
-* **sbxd**: The orchestrator. Provides the API server and manages the lifecycle of the sidecars and agent container.
-* **sbxfuse**: A FUSE filesystem sidecar that mediates and logs all file access. One instance runs per configured mount.
-* **sbxproxy**: A transparent TCP proxy sidecar that enforces egress ACLs and logs all outbound requests. The agent does not need to set `HTTP_PROXY` — the kernel redirects all outbound TCP to sbxproxy transparently, so no changes to agent code are required. A CA certificate is automatically generated and injected into the agent container so TLS connections are trusted without any manual certificate configuration.
-* **Agent container**: Runs in an isolated OCI container via [runc](https://github.com/opencontainers/runc). By default the image runs an MCP server that provides tools like `Bash` and `Read` to agents.
-* **Controller**: Creates and destroys a sandbox.
-
-Beyond security and ease of use, this architecture lets agents share a persistent file system. Each agent can accumulate its own findings, and a coordinating agent can read across all of them to synthesize global insights. This applies to skills, reports, or any other artifacts worth sharing.
-
-<p align="center">
-<img src="./docs/multi-agent.svg" width="300">
-</p>
-
-### Supported File Systems
-* Google Drive
-* Google Cloud Storage
-* Local
-* Microsoft OneDrive (WIP)
-* Azure Blob Storage (WIP)
-* Amazon S3 (WIP)
-* Your own K/V store (WIP)
-
-### Supported Platforms
-* Docker
-* k8s
+### Container Orchestration
+Docker, k8s.
 
 ## Why
 
