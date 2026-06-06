@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, History } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WsChunkRow } from "./WsChunkRow";
-import type { ReactNode } from "react";
 import type { SandboxEvent } from "@/types";
 import type { TimelineBar } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
 import { SegmentedControl } from "./SegmentedControl";
 import { humanDuration } from "@/lib/utils";
 import { LLM_PROVIDERS } from "@/lib/llmProviders";
-import type { LLMSummaryData, LLMContentBlock } from "@/lib/llmProviders";
+import type { LLMSummaryData } from "@/lib/llmProviders";
+import { LLMSummary } from "./LLMSummary";
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
@@ -185,132 +185,34 @@ function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
   return (
     <div className={`flex flex-col bg-muted/20 overflow-hidden ${className ?? ""}`}>
       <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium border-b border-border shrink-0 bg-background">Body</div>
-      <CodeViewer content={parsed.content} lang={parsed.isJson ? "json" : "text"} className="min-h-[300px]" expandable />
-    </div>
-  );
-}
-
-function prettyJson(s?: string): string {
-  if (!s) return "";
-  try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
-}
-
-// ─── summary rendering ───────────────────────────────────────────────────────
-
-function Bubble({ role, children, defaultCollapsed = false, repeated = false }: { role: string; children: ReactNode; defaultCollapsed?: boolean; repeated?: boolean }) {
-  const roleColor: Record<string, string> = {
-    user: "text-green-600 dark:text-green-400",
-    assistant: "text-blue-600 dark:text-blue-400",
-    system: "text-yellow-600 dark:text-yellow-500",
-    tool: "text-purple-600 dark:text-purple-400",
-  };
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
-  return (
-    <div className="flex flex-col rounded-md bg-muted/20 px-2.5 py-2 gap-2">
-      <button
-        className={`flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wider w-fit ${roleColor[role] ?? "text-muted-foreground"}`}
-        onClick={() => setCollapsed((v) => !v)}
-      >
-        {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-        {role}
-        {repeated && (
-          <span className="group/hist inline-flex items-center ml-1">
-            <History className="h-3 w-3 text-muted-foreground/40" />
-            <span className="ml-1 text-[10px] font-normal normal-case tracking-normal text-muted-foreground/40 opacity-0 group-hover/hist:opacity-100 transition-opacity duration-150">
-              previous context
-            </span>
-          </span>
-        )}
-      </button>
-      {!collapsed && (
-        <div className="px-2.5 py-2 flex flex-col gap-2">
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function PlainText({ text }: { text: string }) {
-  return (
-    <p className="font-mono text-xs whitespace-pre-wrap break-all text-foreground/90 select-text">{text}</p>
-  );
-}
-
-function ToolUseBlock({ name, input }: { name: string; input?: unknown }) {
-  const pretty = useMemo(() => prettyJson(input !== undefined ? JSON.stringify(input) : undefined), [input]);
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400 font-semibold">{name}</span>
-      {pretty && (
-        <div className="rounded border border-border overflow-hidden">
-          <CodeViewer content={pretty} lang="json" minHeight={60} maxHeight={160} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function renderBlocks(blocks: LLMContentBlock[]): ReactNode {
-  return blocks.map((blk, i) => {
-    if (blk.type === "text" && blk.text)
-      return <PlainText key={i} text={blk.text} />;
-    if (blk.type === "tool_use")
-      return <ToolUseBlock key={i} name={blk.toolName ?? "unknown"} input={blk.toolInput} />;
-    if (blk.type === "tool_result") {
-      const raw = typeof blk.toolResultContent === "string" ? blk.toolResultContent : JSON.stringify(blk.toolResultContent);
-      const { content: pretty, isJson } = tryPretty(raw) ?? { content: raw ?? "", isJson: false };
-      return (
-        <div key={i} className="flex flex-col gap-1">
-          <span className="font-mono text-[10px] text-purple-600/70 dark:text-purple-400/70">result · {blk.toolId}</span>
-          <div className="rounded border border-border overflow-hidden">
-            <CodeViewer content={pretty} lang={isJson ? "json" : "text"} minHeight={60} maxHeight={320} />
-          </div>
-        </div>
-      );
-    }
-    return null;
-  });
-}
-
-function SummaryTab({ summary, prevSummary }: { summary: LLMSummaryData; prevSummary?: LLMSummaryData | null }) {
-  const sharedIndices = useMemo(() => {
-    const current = summary.messages;
-    const prev = prevSummary?.messages ?? [];
-    const shared = new Set<number>();
-    for (let i = 0; i < current.length && i < prev.length; i++) {
-      if (JSON.stringify(current[i]) === JSON.stringify(prev[i])) shared.add(i);
-    }
-    return shared;
-  }, [summary.messages, prevSummary?.messages]);
-
-  return (
-    <div className="flex flex-col gap-3 px-3 pb-3">
-      {summary.system && (
-        <Bubble role="system" defaultCollapsed>
-          <PlainText text={summary.system} />
-        </Bubble>
-      )}
-
-      {summary.messages.map((msg, i) => (
-        <Bubble key={i} role={msg.role} defaultCollapsed={sharedIndices.has(i)} repeated={sharedIndices.has(i)}>
-          {renderBlocks(msg.content)}
-        </Bubble>
-      ))}
-
-      {summary.response && summary.response.blocks.length > 0 && (
-        <Bubble role="assistant">
-          {renderBlocks(summary.response.blocks)}
-        </Bubble>
-      )}
+      <CodeViewer content={parsed.content} lang={parsed.isJson ? "json" : "text"} className="flex-1 min-h-0" />
     </div>
   );
 }
 
 // ─── main detail panel ───────────────────────────────────────────────────────
 
+// Prev/next navigation plus the expand control, shared by every event type.
+// `pr-8` in the expanded view keeps the buttons clear of the dialog's close (×).
+function DetailNav({ onPrev, onNext, onExpand, expandedView }: { onPrev?: () => void; onNext?: () => void; onExpand?: () => void; expandedView?: boolean }) {
+  return (
+    <div className={`ml-auto flex items-center gap-2 ${expandedView ? "pr-8" : ""}`}>
+      <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
+        <ArrowLeft className="h-3.5 w-3.5" />
+      </Button>
+      <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
+        <ArrowRight className="h-3.5 w-3.5" />
+      </Button>
+      {!expandedView && onExpand && (
+        <Button size="sm" variant="ghost" onClick={onExpand} title="Expand">
+          <Maximize2 className="h-3.5 w-3.5" />
+        </Button>
+      )}
+    </div>
+  );
+}
 
-export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOpenFile }: { bar: TimelineBar; prevBar?: TimelineBar | null; onPrev?: () => void; onNext?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void }) {
+export function RowDetailPanel({ bar, prevBar, onPrev, onNext, onExpand, applyConfig, onOpenFile, expandedView }: { bar: TimelineBar; prevBar?: TimelineBar | null; onPrev?: () => void; onNext?: () => void; onExpand?: () => void; applyConfig?: (updater: ConfigUpdater) => Promise<void>; onOpenFile?: (path: string) => void; expandedView?: boolean }) {
   const req = bar.rawEvents[0];
   const res = bar.rawEvents.find(
     (e): e is Extract<SandboxEvent, { type: "egress.response" | "ingress.response" | "fs.response" | "exec.response" }> =>
@@ -408,24 +310,17 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
   if (req.type === "stdio") {
     const text = (req.stdout ?? req.stderr ?? "").trimEnd();
     return (
-      <div ref={containerRef} className="flex flex-col min-h-full shrink-0 text-xs">
+      <div ref={containerRef} className="flex flex-col h-full text-xs">
         <div className="relative shrink-0">
           <div className="flex items-center gap-2 px-3 py-2">
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
               {req.stderr ? "stderr" : "stdout"}
             </span>
-            <div className="ml-auto flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
-                <ArrowUp className="h-3.5 w-3.5" />
-              </Button>
-              <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
-                <ArrowDown className="h-3.5 w-3.5" />
-              </Button>
-            </div>
+            <DetailNav onPrev={onPrev} onNext={onNext} onExpand={onExpand} expandedView={expandedView} />
           </div>
           <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
         </div>
-        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 flex-1 min-h-0 ${narrow ? "flex-col" : ""}`}>
+        <div className={`flex rounded-md border border-border mx-3 mb-3 flex-1 min-h-0 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}>
           <div className={`overflow-hidden shrink-0 ${narrow ? "border-b border-border" : "w-48 border-r border-border"}`}>
             <div className="p-3">
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
@@ -435,7 +330,7 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
               </div>
             </div>
           </div>
-          <CodeViewer content={text} className="flex-1 min-h-[300px]" />
+          <CodeViewer content={text} className="flex-1 min-h-0" />
         </div>
       </div>
     );
@@ -444,24 +339,17 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
   if (req.type === "exec.request") {
     const durationMs = res ? Math.round(new Date(res.timestamp).getTime() - new Date(req.timestamp).getTime()) : null;
     return (
-      <div ref={containerRef} className="flex flex-col min-h-full shrink-0 flex-1 text-xs">
+      <div ref={containerRef} className="flex flex-col h-full text-xs">
         <div className="relative shrink-0">
           <div className="flex items-center gap-2 px-3 py-2">
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
               exec
             </span>
-            <div className="ml-auto flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
-                <ArrowUp className="h-3.5 w-3.5" />
-              </Button>
-              <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
-                <ArrowDown className="h-3.5 w-3.5" />
-              </Button>
-            </div>
+            <DetailNav onPrev={onPrev} onNext={onNext} onExpand={onExpand} expandedView={expandedView} />
           </div>
           <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
         </div>
-        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 flex-1 min-h-0 ${narrow ? "flex-col" : ""}`}>
+        <div className={`flex rounded-md border border-border mx-3 mb-3 flex-1 min-h-0 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}>
           <div className={`overflow-hidden shrink-0 ${narrow ? "border-b border-border" : "w-48 border-r border-border"}`}>
             <div className="p-3">
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
@@ -480,11 +368,16 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
 
   if (req.type === "resource.usage") {
     return (
-      <div className="flex flex-col p-3 gap-2">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold shrink-0">
-          resource usage · {ts}
+      <div ref={containerRef} className="flex flex-col h-full text-xs">
+        <div className="relative shrink-0">
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+              resource usage · {ts}
+            </span>
+            <DetailNav onPrev={onPrev} onNext={onNext} onExpand={onExpand} expandedView={expandedView} />
+          </div>
         </div>
-        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 font-mono text-xs">
+        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 px-3 pb-3 font-mono text-xs">
           <span className="text-muted-foreground/70">cpu</span>
           <span className="text-foreground">{req.cpu_percent.toFixed(1)}%</span>
           <span className="text-muted-foreground/70">memory</span>
@@ -504,53 +397,41 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
   ];
 
   return (
-    <div ref={containerRef} className="flex flex-col min-h-full shrink-0 text-xs">
+    <div ref={containerRef} className="flex flex-col h-full text-xs">
       <div className="relative shrink-0">
         <div className="detail-header-scroll overflow-x-auto">
           <div className="flex items-center gap-2 px-3 py-2 min-w-max">
           <SegmentedControl options={tabOptions} value={tab} onChange={setTab} />
-          <div className="ml-auto flex items-center gap-2">
-            {hasSummary && summaryData && tab === "summary" && (
-              <>
-                {summaryData.model && (
-                  <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                    {summaryData.model}
-                  </span>
-                )}
-                {summaryData.response?.stopReason && (
-                  <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
-                    {summaryData.response.stopReason}
-                  </span>
-                )}
-                {(summaryData.usage?.inputTokens != null || summaryData.usage?.outputTokens != null) && (
-                  <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
-                    {summaryData.usage.inputTokens ?? "?"}↑ {summaryData.usage.outputTokens ?? "?"}↓
-                  </span>
-                )}
-                {bar.pending && !summaryData.response?.stopReason && (
-                  <span className="font-mono text-[10px] text-blue-600/70 dark:text-blue-400/70">streaming…</span>
-                )}
-              </>
-            )}
-            <Button size="sm" variant="ghost" onClick={onPrev} disabled={!onPrev}>
-              <ArrowUp className="h-3.5 w-3.5" />
-            </Button>
-            <Button size="sm" variant="ghost" onClick={onNext} disabled={!onNext}>
-              <ArrowDown className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+          {hasSummary && summaryData && tab === "summary" && (
+            <div className="ml-auto flex items-center gap-2">
+              {summaryData.model && (
+                <span className="font-mono text-[10px] bg-muted/50 rounded px-1.5 py-0.5 text-muted-foreground text-nowrap">
+                  {summaryData.model}
+                </span>
+              )}
+              {(summaryData.usage?.inputTokens != null || summaryData.usage?.outputTokens != null) && (
+                <span className="font-mono text-[10px] text-muted-foreground/60 text-nowrap">
+                  {summaryData.usage.inputTokens ?? "?"}↑ {summaryData.usage.outputTokens ?? "?"}↓
+                </span>
+              )}
+              {bar.pending && (
+                <span className="font-mono text-[10px] text-blue-600/70 dark:text-blue-400/70">streaming…</span>
+              )}
+            </div>
+          )}
+          <DetailNav onPrev={onPrev} onNext={onNext} onExpand={onExpand} expandedView={expandedView} />
           </div>
         </div>
         <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
       </div>
 
       {tab === "summary" && summaryData && (
-        <SummaryTab summary={summaryData} prevSummary={prevSummaryData} />
+        <LLMSummary summary={summaryData} prevSummary={prevSummaryData} />
       )}
 
       {tab === "request" && (
-        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 ${narrow ? "flex-col" : ""}`}>
-          <div className={`overflow-hidden ${!narrow && reqRawBody ? "w-64 shrink-0 border-r border-border" : narrow && reqRawBody ? "shrink-0 border-b border-border" : "flex-1"}`}>
+        <div className={`flex flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}>
+          <div className={`overflow-y-auto scroll-container ${!narrow && reqRawBody ? "flex-1 min-w-0 border-r border-border" : narrow && reqRawBody ? "shrink-0 border-b border-border" : "flex-1"}`}>
             <div className="p-3">
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
                 <KV label="id"   value={String(req.id)} />
@@ -602,14 +483,14 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
             </div>
           </div>
           {reqRawBody && (
-            <BodyBlock raw={reqRawBody} className={narrow ? "min-h-[300px]" : "flex-1 min-w-0 min-h-[300px]"} />
+            <BodyBlock raw={reqRawBody} className={narrow ? "flex-1 min-h-[300px]" : "flex-1 min-w-0 min-h-0"} />
           )}
         </div>
       )}
 
       {tab === "response" && (
-        <div className={`flex rounded-md border border-border overflow-hidden mx-3 mb-3 ${narrow ? "flex-col" : ""}`}>
-          <div className={`overflow-hidden ${!narrow && (chunks.length > 0 || resRawBody) ? "w-64 shrink-0 border-r border-border" : narrow && (chunks.length > 0 || resRawBody) ? "shrink-0 border-b border-border" : "flex-1"}`}>
+        <div className={`flex flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}>
+          <div className={`overflow-y-auto scroll-container ${!narrow && (chunks.length > 0 || resRawBody) ? "flex-1 min-w-0 border-r border-border" : narrow && (chunks.length > 0 || resRawBody) ? "shrink-0 border-b border-border" : "flex-1"}`}>
             <div className="p-3">
               {res ? (
                 <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
@@ -630,10 +511,10 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
             </div>
           </div>
           {chunks.length > 0 && (
-            <div className={`flex flex-col bg-muted/20 overflow-hidden min-h-[300px] ${narrow ? "" : "flex-1 min-w-0"}`}>
+            <div className={`flex flex-col bg-muted/20 overflow-hidden ${narrow ? "flex-1 min-h-[300px]" : "flex-1 min-w-0 min-h-0"}`}>
               <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium border-b border-border shrink-0 bg-background">Body</div>
               {isWebSocket ? (
-                <div className="flex flex-col py-1">
+                <div className="flex flex-1 min-h-0 flex-col overflow-y-auto py-1 scroll-container">
                   {chunks.map((chunk) => (
                     <WsChunkRow key={chunk.id} chunk={chunk} />
                   ))}
@@ -642,13 +523,13 @@ export function RowDetailPanel({ bar, prevBar, onPrev, onNext, applyConfig, onOp
                 const raw = chunks.map((c) => c.body).join("\n\n");
                 const pretty = tryPretty(raw);
                 return (
-                  <CodeViewer content={pretty?.content ?? raw} lang={pretty?.isJson ? "json" : "text"} className="min-h-[300px]" expandable />
+                  <CodeViewer content={pretty?.content ?? raw} lang={pretty?.isJson ? "json" : "text"} className="flex-1 min-h-0" />
                 );
               })()}
             </div>
           )}
           {resRawBody && (
-            <BodyBlock raw={resRawBody} className={narrow ? "min-h-[300px]" : "flex-1 min-w-0 min-h-[300px]"} />
+            <BodyBlock raw={resRawBody} className={narrow ? "flex-1 min-h-[300px]" : "flex-1 min-w-0 min-h-0"} />
           )}
         </div>
       )}

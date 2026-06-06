@@ -17,13 +17,13 @@ const termPending = new Map<string, TermInput[]>();
 
 async function openExecStreamSession(
   gw: string,
-  sandboxId: string,
+  sandboxKey: string,
   onData: (buf: Buffer) => void,
   onExit: () => void,
   initCommand?: string,
 ): Promise<TermSession> {
   const ac = new AbortController();
-  const sandbox = new Sandbox({ id: sandboxId }, { gatewayUrl: gw });
+  const sandbox = new Sandbox({ id: "", key: sandboxKey }, { gatewayUrl: gw });
   const config = await sandbox.getConfig().catch(() => null);
   const cwd = config?.fs?.[0]?.mount ?? undefined;
   const env = {
@@ -46,7 +46,7 @@ async function openExecStreamSession(
   };
 }
 
-router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
+router.get("/:key/terminal/stream", async (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string | undefined;
   if (!sessionId) { res.status(400).json({ error: "missing sessionId" }); return; }
 
@@ -83,7 +83,7 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
 
   let session: TermSession;
   try {
-    session = await openExecStreamSession(gatewayUrl(req), req.params.id, sendBytes, onExit, initCommand);
+    session = await openExecStreamSession(gatewayUrl(req), req.params.key, sendBytes, onExit, initCommand);
   } catch {
     sendCtrl("error", { message: "no terminal available" });
     res.end();
@@ -104,7 +104,7 @@ router.get("/:id/terminal/stream", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/:id/terminal/input", (req: Request, res: Response) => {
+router.post("/:key/terminal/input", (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string | undefined;
   if (!sessionId) { res.status(400).json({ error: "missing sessionId" }); return; }
 

@@ -3,7 +3,7 @@ import { Sandbox } from "./sandbox";
 import type { ApplyResult, SandboxConfig } from "./schemas";
 
 const GATEWAY = "http://gateway:10000";
-const REF = { id: "sb-1" };
+const REF = { id: "11111111-1111-1111-1111-111111111111", key: "sb-1" };
 const SANDBOX_BASE = `${GATEWAY}/sandbox/sb-1`;
 
 function makeSandbox(mockFetch: ReturnType<typeof vi.fn>): Sandbox {
@@ -69,6 +69,27 @@ it("ping throws SandboxError on non-200", async () => {
     name: "SandboxError",
     status: 503,
     operation: "ping",
+  });
+});
+
+// getPorts
+
+it("getPorts sends GET /v1/ports and returns the port list", async () => {
+  const mockFetch = vi.fn().mockResolvedValue(jsonResp([8080, 9000]));
+  const ports = await makeSandbox(mockFetch).getPorts();
+  const [url] = mockFetch.mock.calls[0] as [string];
+  expect(url).toBe(`${SANDBOX_BASE}/v1/ports`);
+  expect(ports).toEqual([8080, 9000]);
+});
+
+it("getPorts throws SandboxError on non-200", async () => {
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(jsonResp({ error: "internal" }, 500));
+  await expect(makeSandbox(mockFetch).getPorts()).rejects.toMatchObject({
+    name: "SandboxError",
+    status: 500,
+    operation: "getPorts",
   });
 });
 

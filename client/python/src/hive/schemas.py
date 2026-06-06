@@ -113,7 +113,10 @@ class ApiError(BaseModel):
 
 
 class SandboxRef(BaseModel):
+    #: Server-assigned unique identifier (uuid).
     id: str
+    #: Caller-chosen key the sandbox was provisioned under; used for routing.
+    key: str
 
 
 

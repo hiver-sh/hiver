@@ -1,7 +1,7 @@
 <p align="center">
 <img src="./docs/hive.svg" width="100">
 </p>
-<h1 align="center">Hive Sandbox</h1>
+<h1 align="center">Hive</h1>
 
 Hive provides each agent with a persistent, governed workspace — its own virtual filesystem and controlled network environment. Storage can be backed by _Google Drive_, _OneDrive_, _S3_, _GCS_, _Azure Blob Storage_, or local disks, allowing agents to work directly over real user and enterprise data.
 

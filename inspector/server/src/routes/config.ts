@@ -4,7 +4,7 @@ import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 
 const router = Router();
 
-router.get("/:id/config", async (req: Request, res: Response) => {
+router.get("/:key/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
     const config = await sandbox.getConfig();
@@ -14,7 +14,7 @@ router.get("/:id/config", async (req: Request, res: Response) => {
   }
 });
 
-router.put("/:id/config", async (req: Request, res: Response) => {
+router.put("/:key/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
     await sandbox.applyConfig(req.body as SandboxConfig);

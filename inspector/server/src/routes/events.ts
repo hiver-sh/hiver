@@ -3,7 +3,7 @@ import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 
 const router = Router();
 
-router.get("/:id/events", async (req: Request, res: Response) => {
+router.get("/:key/events", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
 
   res.setHeader("Content-Type", "text/event-stream");

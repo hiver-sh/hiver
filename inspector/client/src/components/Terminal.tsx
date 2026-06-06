@@ -7,7 +7,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 interface Props {
-  sandboxId: string;
+  sandboxKey: string;
   serverUrl: string;
   exposedEndpoint?: string;
   initCommand?: string;
@@ -49,7 +49,7 @@ const LIGHT_THEME = {
   white: "#888888",      brightWhite: "#444444",
 };
 
-export function Terminal({ sandboxId, serverUrl, exposedEndpoint, initCommand }: Props) {
+export function Terminal({ sandboxKey, serverUrl, exposedEndpoint, initCommand }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
   const { prefs, terminalScrollPassthrough } = useUserPreferences();
@@ -167,7 +167,7 @@ export function Terminal({ sandboxId, serverUrl, exposedEndpoint, initCommand }:
       function sendInput(msg: { type: string; data?: string; cols?: number; rows?: number }) {
         if (!connected) return;
         const url = new URL(
-          `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/input`,
+          `/api/sandboxes/${encodeURIComponent(sandboxKey)}/terminal/input`,
           serverUrl,
         );
         url.searchParams.set("sessionId", sessionId);
@@ -185,7 +185,7 @@ export function Terminal({ sandboxId, serverUrl, exposedEndpoint, initCommand }:
         abortCtrl = new AbortController();
 
         const url = new URL(
-          `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/stream`,
+          `/api/sandboxes/${encodeURIComponent(sandboxKey)}/terminal/stream`,
           serverUrl,
         );
         url.searchParams.set("cols", String(term.cols));
@@ -279,7 +279,7 @@ export function Terminal({ sandboxId, serverUrl, exposedEndpoint, initCommand }:
       disposed = true;
       cleanup();
     };
-  }, [sandboxId, serverUrl, exposedEndpoint, transport]);
+  }, [sandboxKey, serverUrl, exposedEndpoint, transport]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden p-1" />;
 }

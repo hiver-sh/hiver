@@ -1,5 +1,5 @@
 import type { SandboxEvent } from "@/types";
-import type { LLMProvider, LLMContentBlock, LLMMessage, LLMSummaryData } from "./llmProviders";
+import type { LLMProvider, LLMContentBlock, LLMMessage, LLMSummaryData, LLMTool } from "./llmProviders";
 
 type EgressChunk = Extract<SandboxEvent, { type: "egress.chunk" }>;
 
@@ -28,6 +28,7 @@ type MsgContentPart =
 interface AnthropicReqBody {
   model?: string;
   system?: string | Array<{ type: string; text?: string }>;
+  tools?: Array<{ name?: string; description?: string; input_schema?: unknown }>;
   messages?: Array<{ role: string; content: string | MsgContentPart[] }>;
 }
 
@@ -177,9 +178,14 @@ export const anthropicProvider: LLMProvider = {
     const inputTokens = stream.inputTokens ?? resBody?.usage?.input_tokens;
     const outputTokens = stream.outputTokens ?? resBody?.usage?.output_tokens;
 
+    const tools: LLMTool[] | undefined = reqBody?.tools?.length
+      ? reqBody.tools.map((t) => ({ name: t.name ?? "unknown", description: t.description, inputSchema: t.input_schema }))
+      : undefined;
+
     return {
       model,
       system: resolveSystem(reqBody?.system),
+      tools,
       messages,
       response: responseBlocks.length > 0 || stopReason
         ? { blocks: responseBlocks, stopReason }

@@ -1,4 +1,4 @@
-import { Activity, ExternalLink, Filter, FolderTree, Loader2, LocateFixed, Pause, Play, Power, SlidersHorizontal, SquareTerminal, Trash2, X } from "lucide-react";
+import { Activity, Filter, FolderTree, Loader2, LocateFixed, Pause, Play, Power, SlidersHorizontal, SquareTerminal, Trash2, X } from "lucide-react";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
 import type { ConfigProposal } from "@/components/SandboxConfigDialog";
 import { Terminal } from "@/components/Terminal";
+import { PortUsageDialog } from "@/components/PortUsageDialog";
 import { FileExplorer } from "@/components/FileExplorer";
 import { TimelineView, EMPTY_FILTER, KIND_OPTIONS, ACCESS_OPTIONS, isFilterActive, buildRows, applyFilter } from "@/components/TimelineView";
 import type { FilterKind, FilterAccess, FilterState } from "@/components/TimelineView";
@@ -44,6 +45,9 @@ export function SandboxDetail({ sandbox, serverUrl, initCommand, onShutdown, onC
   const [connected, setConnected] = useState(false);
   useEffect(() => { onConnectedChange?.(connected); }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
 const [shutdownLoading, setShutdownLoading] = useState(false);
+  const [ports, setPorts] = useState<number[]>([]);
+  // null = dialog closed; { port } = open for that port (port null = no exposed ports).
+  const [portDialog, setPortDialog] = useState<{ port: number | null } | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [zoomWindow, setZoomWindow] = useState<{ realStart: number; realEnd: number } | null>(null);
   const follow = prefs.followEvents;
@@ -103,20 +107,33 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     return () => ro.disconnect();
   }, []);
 
+  // Load the sandbox's exposed ports (image EXPOSE directives) for the header.
+  useEffect(() => {
+    let cancelled = false;
+    setPorts([]);
+    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/ports`);
+    transport
+      .fetch(url)
+      .then((r) => r.json() as Promise<{ ports?: number[] }>)
+      .then((data) => { if (!cancelled) setPorts(data.ports ?? []); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [sandbox.key, serverUrl, transport]);
+
   const openFile = useCallback(async (path: string) => {
     const lang = langForPath(path);
     if (!lang) return;
-    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/file`);
+    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/file`);
     url.searchParams.set("path", path);
 
     try {
       const content = await transport.fetch(url).then((r) => r.text());
       setFilePreview({ path, content, lang });
     } catch { /* ignore */ }
-  }, [sandbox.id, serverUrl, transport]);
+  }, [sandbox.key, serverUrl, transport]);
 
   const proposePolicy = useCallback(async (updater: (cfg: Record<string, unknown>) => Record<string, unknown>) => {
-    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/config`);
+    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/config`);
 
     const current = await transport.fetch(url).then((r) => r.json() as Promise<Record<string, unknown>>);
     setConfigProposal({
@@ -124,7 +141,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       proposed: JSON.stringify(updater(current), null, 2),
     });
     setShowConfig(true);
-  }, [sandbox.id, serverUrl, transport]);
+  }, [sandbox.key, serverUrl, transport]);
 
   const fsWriteEvents = useMemo(
     () => events.filter((e): e is Extract<SandboxEvent, { type: "fs.request" }> => e.type === "fs.request" && (e as Extract<SandboxEvent, { type: "fs.request" }>).operation === "write"),
@@ -143,7 +160,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     abortRef.current = ac;
     setConnected(false);
 
-    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/events`);
+    const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/events`);
 
     if (lastEventId !== undefined) url.searchParams.set("lastEventId", String(lastEventId));
 
@@ -168,7 +185,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
       es.close();
       setConnected(false);
     });
-  }, [sandbox.id, serverUrl, transport]);
+  }, [sandbox.key, sandbox.id, serverUrl, transport]);
 
   useEffect(() => {
     let cancelled = false;
@@ -197,11 +214,11 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
   }, [startStream, player]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleShutdown() {
-    if (!confirm(`Shut down sandbox "${sandbox.id}"?`)) return;
+    if (!confirm(`Shut down sandbox "${sandbox.key}"?`)) return;
     setShutdownLoading(true);
     try {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/shutdown`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/shutdown`,
       );
       await transport.fetch(url, { method: "POST" });
       void clearEvents(sandbox.id);
@@ -247,7 +264,31 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex h-[70px] items-center justify-between gap-4 p-4 pb-3">
-        <h2 className="truncate text-base font-semibold">{sandbox.id}</h2>
+        <div className="flex min-w-0 items-center gap-2">
+          <h2 className="truncate text-base font-semibold">{sandbox.key}</h2>
+          <div className="flex shrink-0 items-center gap-1">
+            {ports.length > 0 ? (
+              ports.map((port) => (
+                <button
+                  key={port}
+                  onClick={() => setPortDialog({ port })}
+                  title={`Exposed port ${port} — show SDK usage`}
+                  className="rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  :{port}
+                </button>
+              ))
+            ) : (
+              <button
+                onClick={() => setPortDialog({ port: null })}
+                title="No exposed ports — show SDK usage"
+                className="rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                :
+              </button>
+            )}
+          </div>
+        </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             size="sm"
@@ -458,7 +499,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               style={showTimeline ? { width: terminalWidth, flexShrink: 0, minWidth: MIN_TERMINAL_WIDTH } : { flex: 1, minWidth: MIN_TERMINAL_WIDTH }}
             >
               <Terminal
-                sandboxId={sandbox.id}
+                sandboxKey={sandbox.key}
                 serverUrl={serverUrl}
                 initCommand={initCommand}
               />
@@ -483,7 +524,7 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
               style={(showTimeline || showTerminal) ? { width: filesWidth, flexShrink: 0, minWidth: MIN_FILES_WIDTH } : { flex: 1, minWidth: MIN_FILES_WIDTH }}
             >
               <FileExplorer
-                sandboxId={sandbox.id}
+                sandboxKey={sandbox.key}
                 serverUrl={serverUrl}
                 events={fsWriteEvents}
               />
@@ -505,8 +546,15 @@ const [shutdownLoading, setShutdownLoading] = useState(false);
         </DialogContent>
       </Dialog>
 
+      <PortUsageDialog
+        sandboxKey={sandbox.key}
+        open={portDialog !== null}
+        port={portDialog?.port ?? null}
+        onOpenChange={(open) => { if (!open) setPortDialog(null); }}
+      />
+
       <SandboxConfigDialog
-        sandboxId={sandbox.id}
+        sandboxKey={sandbox.key}
         serverUrl={serverUrl}
         open={showConfig}
         onOpenChange={(open) => { setShowConfig(open); if (!open) setConfigProposal(undefined); }}

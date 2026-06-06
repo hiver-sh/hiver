@@ -14,12 +14,17 @@ import (
 	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/spec"
+	"github.com/google/uuid"
 )
 
 const (
 	composeProject      = "hive"
 	defaultSandboxImage = "hiveruntime/agent-cli:latest"
-	labelSandboxID      = "hive.sandbox.id"
+	// labelSandboxKey holds the caller-chosen key; labelSandboxID holds the
+	// server-assigned uuid. The container name is derived from the key, so
+	// idempotent lookups resolve by key while the uuid travels as a label.
+	labelSandboxKey = "hive.sandbox.key"
+	labelSandboxID  = "hive.sandbox.id"
 )
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.
@@ -29,8 +34,8 @@ func newDockerRuntime() *DockerRuntime {
 	return &DockerRuntime{}
 }
 
-func (r *DockerRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
-	name := containerNameFor(id)
+func (r *DockerRuntime) Lookup(key string) (bool, gen.Sandbox, error) {
+	name := containerNameFor(key)
 	_, running, err := containerState(name)
 	if err != nil {
 		return false, gen.Sandbox{}, err
@@ -38,37 +43,52 @@ func (r *DockerRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	if !running {
 		return false, gen.Sandbox{}, nil
 	}
-	sb := gen.Sandbox{Id: id}
-	return true, sb, nil
+	idStr, err := containerLabel(name, labelSandboxID)
+	if err != nil {
+		return false, gen.Sandbox{}, err
+	}
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		return false, gen.Sandbox{}, fmt.Errorf("parse sandbox id label %q: %w", idStr, err)
+	}
+	return true, gen.Sandbox{Id: id, Key: key}, nil
 }
 
 func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
-	out, err := exec.Command("docker", "ps", "--filter", "label="+labelSandboxID, "--format", "{{.Names}}").Output()
+	format := `{{.Label "` + labelSandboxKey + `"}} {{.Label "` + labelSandboxID + `"}}`
+	out, err := exec.Command("docker", "ps", "--filter", "label="+labelSandboxKey, "--format", format).Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker ps: %w", err)
 	}
-	names := strings.Fields(strings.TrimSpace(string(out)))
-	prefix := composeProject + "-sandbox-"
-	sandboxes := make([]gen.Sandbox, 0, len(names))
-	for _, name := range names {
-		id := strings.TrimPrefix(name, prefix)
-		sandboxes = append(sandboxes, gen.Sandbox{Id: id})
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	sandboxes := make([]gen.Sandbox, 0, len(lines))
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		id, err := uuid.Parse(fields[1])
+		if err != nil {
+			continue
+		}
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id, Key: fields[0]})
 	}
 	return sandboxes, nil
 }
 
-func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
+func (r *DockerRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
+	id := uuid.New()
 	specBytes, err := json.Marshal(cfg)
 	if err != nil {
 		return gen.Sandbox{}, fmt.Errorf("marshal spec: %w", err)
 	}
-	specPath := filepath.Join(os.TempDir(), "hive-spec-"+id+".yaml")
+	specPath := filepath.Join(os.TempDir(), "hive-spec-"+key+".yaml")
 	if err := os.WriteFile(specPath, specBytes, 0o644); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("write spec: %w", err)
 	}
 	defer os.Remove(specPath)
 
-	containerName := containerNameFor(id)
+	containerName := containerNameFor(key)
 	// Clear any lingering container of the same name (e.g. one that exited
 	// but wasn't auto-removed) so `docker create --name` below doesn't fail
 	// with a name conflict. No-op if nothing matches.
@@ -79,13 +99,14 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		image = *cfg.Image
 	}
 
-	serviceLabel := "sandbox-" + id
+	serviceLabel := "sandbox-" + key
 	createArgs := []string{
 		"create",
 		"--name", containerName,
 		"--label", "com.docker.compose.project=" + composeProject,
 		"--label", "com.docker.compose.service=" + serviceLabel,
-		"--label", labelSandboxID + "=" + id,
+		"--label", labelSandboxKey + "=" + key,
+		"--label", labelSandboxID + "=" + id.String(),
 		"--network", composeProject + "_default",
 		"--device", "/dev/fuse",
 		// The caps runc needs to set up the inner container (MKNOD, SYS_CHROOT,
@@ -178,11 +199,11 @@ func (r *DockerRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sand
 		return gen.Sandbox{}, startErr
 	}
 
-	return gen.Sandbox{Id: id}, nil
+	return gen.Sandbox{Id: id, Key: key}, nil
 }
 
-func (r *DockerRuntime) Shutdown(id string) error {
-	name := containerNameFor(id)
+func (r *DockerRuntime) Shutdown(key string) error {
+	name := containerNameFor(key)
 	exists, running, err := containerState(name)
 	if err != nil {
 		return err
@@ -204,8 +225,17 @@ func (r *DockerRuntime) Shutdown(id string) error {
 	return nil
 }
 
-func containerNameFor(id string) string {
-	return composeProject + "-sandbox-" + id
+func containerNameFor(key string) string {
+	return composeProject + "-sandbox-" + key
+}
+
+// containerLabel returns the value of a single label on the named container.
+func containerLabel(name, label string) (string, error) {
+	out, err := exec.Command("docker", "inspect", "-f", `{{index .Config.Labels "`+label+`"}}`, name).Output()
+	if err != nil {
+		return "", fmt.Errorf("docker inspect %s label %s: %w", name, label, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // containerState returns whether the named container exists and whether it is
@@ -246,7 +276,7 @@ type dockerRawEvent struct {
 
 func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
 	cmd := exec.CommandContext(ctx, "docker", "events",
-		"--filter", "label="+labelSandboxID,
+		"--filter", "label="+labelSandboxKey,
 		"--filter", "type=container",
 		"--format", "{{json .}}")
 	stdout, err := cmd.StdoutPipe()
@@ -279,12 +309,17 @@ func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycle
 			default:
 				continue
 			}
-			id := e.Actor.Attributes[labelSandboxID]
-			if id == "" {
+			key := e.Actor.Attributes[labelSandboxKey]
+			idStr := e.Actor.Attributes[labelSandboxID]
+			if key == "" || idStr == "" {
+				continue
+			}
+			id, err := uuid.Parse(idStr)
+			if err != nil {
 				continue
 			}
 			select {
-			case ch <- gen.SandboxLifecycleEvent{Id: id, Status: status}:
+			case ch <- gen.SandboxLifecycleEvent{Id: id, Key: key, Status: status}:
 			case <-ctx.Done():
 				return
 			}

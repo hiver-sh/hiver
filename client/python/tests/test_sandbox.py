@@ -11,7 +11,7 @@ from hive.schemas import SandboxRef
 
 GATEWAY = "http://gateway:10000"
 SANDBOX_BASE = f"{GATEWAY}/sandbox/sb-1"
-REF = SandboxRef(id="sb-1")
+REF = SandboxRef(id="11111111-1111-1111-1111-111111111111", key="sb-1")
 
 MIN_CONFIG = {"fs": [{"backend": "local", "mount": "/workspace"}]}
 MIN_APPLY_RESULT = {
@@ -81,6 +81,34 @@ async def test_ping_raises_sandbox_error_on_non_200() -> None:
             await make_sandbox(client).ping()
     assert exc.value.status == 503
     assert exc.value.operation == "ping"
+
+
+# get_ports
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_ports_sends_get_v1_ports_and_returns_list() -> None:
+    route = respx.get(f"{SANDBOX_BASE}/v1/ports").mock(
+        return_value=httpx.Response(200, json=[8080, 9000])
+    )
+    async with httpx.AsyncClient() as client:
+        ports = await make_sandbox(client).get_ports()
+    assert route.called
+    assert ports == [8080, 9000]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_ports_raises_sandbox_error_on_non_200() -> None:
+    respx.get(f"{SANDBOX_BASE}/v1/ports").mock(
+        return_value=httpx.Response(500, json={"error": "internal"})
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(SandboxError) as exc:
+            await make_sandbox(client).get_ports()
+    assert exc.value.status == 500
+    assert exc.value.operation == "get_ports"
 
 
 # get_config

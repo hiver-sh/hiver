@@ -1,4 +1,4 @@
-import { Check, ChevronLeft, ChevronRight, Monitor, Moon, Pencil, RefreshCw, ServerCrash, Settings, Sun } from "lucide-react";
+import { ChevronLeft, ChevronRight, Monitor, Moon, Pencil, RefreshCw, ServerCrash, Settings, Sun } from "lucide-react";
 import React, { useCallback, useEffect, useState } from "react";
 import { Route, Routes, useLocation, useMatch, useNavigate, useParams } from "react-router-dom";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
@@ -17,7 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { DEFAULT_GATEWAY_URL, DEFAULT_INSPECTOR_SERVER, type SandboxRef } from "@/types";
-import { purgeOrphanEvents } from "@/lib/eventStore";
+import { usePurgeOrphanEvents } from "@/lib/usePurgeOrphanEvents";
+import { useSandboxLifecycleEvents } from "@/lib/useSandboxLifecycleEvents";
 import { useScrollbarVisibility } from "@/lib/useScrollbarVisibility";
 import { TransportProvider, useTransport } from "@/lib/transport";
 import { UserPreferencesProvider, useUserPreferences, type Theme } from "@/lib/userPreferences";
@@ -87,16 +88,16 @@ interface LayoutProps {
   fetchError: string | null;
   fetchSandboxes: () => void;
   setGatewayUrl: (url: string) => void;
-  onConnectedChange: (id: string, connected: boolean) => void;
+  onConnectedChange: (key: string, connected: boolean) => void;
 }
 
 function SandboxDetailRoute({ serverUrl, sandboxes, fetchSandboxes, onConnectedChange }: LayoutProps) {
-  const { id } = useParams<{ id: string }>();
+  const { key } = useParams<{ key: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const initCommand = (location.state as { initCommand?: string } | null)?.initCommand
-    ?? (id ? localStorage.getItem(`sandbox.command.${id}`) ?? undefined : undefined);
-  const sandbox = sandboxes.find((s) => s.id === id);
+    ?? (key ? localStorage.getItem(`sandbox.command.${key}`) ?? undefined : undefined);
+  const sandbox = sandboxes.find((s) => s.key === key);
 
   if (!sandbox) {
     return (
@@ -116,7 +117,7 @@ function SandboxDetailRoute({ serverUrl, sandboxes, fetchSandboxes, onConnectedC
         fetchSandboxes();
         navigate("/");
       }}
-      onConnectedChange={(c) => onConnectedChange(sandbox.id, c)}
+      onConnectedChange={(c) => onConnectedChange(sandbox.key, c)}
     />
   );
 }
@@ -133,11 +134,11 @@ function AppContent() {
   const [sandboxes, setSandboxes] = useState<SandboxRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [connectedId, setConnectedId] = useState<string | null>(null);
+  const [connectedKey, setConnectedKey] = useState<string | null>(null);
 
   const navigate = useNavigate();
-  const match = useMatch("/sandboxes/:id");
-  const selectedId = match?.params.id ?? null;
+  const match = useMatch("/sandboxes/:key");
+  const selectedKey = match?.params.key ?? null;
 
   const fetchSandboxes = useCallback(async () => {
     setLoading(true);
@@ -152,7 +153,6 @@ function AppContent() {
       }
       const list = (await res.json()) as SandboxRef[];
       setSandboxes(list);
-      void purgeOrphanEvents(list.map((s) => s.id));
     } catch (err) {
       setFetchError(String(err));
     } finally {
@@ -164,40 +164,11 @@ function AppContent() {
     fetchSandboxes();
   }, [fetchSandboxes]);
 
+  // Periodically evict stored events for sandboxes that no longer exist.
+  usePurgeOrphanEvents(serverUrl);
+
   // Subscribe to sandbox lifecycle events and keep the list in sync.
-  useEffect(() => {
-    const url = new URL(`${serverUrl}/api/sandboxes/events`);
-    const es = transport.openEventSource(url);
-
-    es.onmessage = (e) => {
-      try {
-        const event = JSON.parse(e.data) as { id: string; status: string };
-        setSandboxes((prev) => {
-          switch (event.status) {
-            case "start":
-              return prev.find((s) => s.id === event.id)
-                ? prev
-                : [...prev, { id: event.id }];
-            case "stop":
-            case "die":
-              return prev.map((s) =>
-                s.id === event.id
-                  ? { ...s, status: event.status as SandboxRef["status"] }
-                  : s,
-              );
-            case "destroy":
-              return prev.filter((s) => s.id !== event.id);
-            default:
-              return prev;
-          }
-        });
-      } catch {
-        // ignore malformed frames
-      }
-    };
-
-    return () => es.close();
-  }, [serverUrl, gatewayUrl, transport]);
+  useSandboxLifecycleEvents(serverUrl, setSandboxes);
 
   useScrollbarVisibility();
 
@@ -208,7 +179,7 @@ function AppContent() {
     fetchError,
     fetchSandboxes,
     setGatewayUrl,
-    onConnectedChange: (id, c) => setConnectedId(c ? id : null),
+    onConnectedChange: (key, c) => setConnectedKey(c ? key : null),
   };
 
   const controllerDialog = (
@@ -254,29 +225,29 @@ function AppContent() {
       {controllerDialog}
       {/* Sidebar */}
       {sidebarCollapsed ? (
-        <aside className="flex w-10 shrink-0 flex-col items-center gap-2 py-3 sidebar">
+        <aside className="flex w-10 shrink-0 flex-col items-center gap-2 py-3 sidebar border-r border-border">
           <button
             onClick={() => setSidebarCollapsed(false)}
             className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
           >
             <ChevronRight className="h-4 w-4" />
           </button>
-          <CreateSandboxDialog compact serverUrl={serverUrl} onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }} />
+          <CreateSandboxDialog compact serverUrl={serverUrl} onCreated={(key, command) => { fetchSandboxes(); navigate(`/sandboxes/${key}`, { state: { initCommand: command } }); }} />
           <div className="flex flex-col items-center gap-1 mt-1">
             {sandboxes.map((sb) => (
               <button
                 key={sb.id}
-                onClick={() => navigate(`/sandboxes/${sb.id}`)}
-                title={sb.id}
+                onClick={() => navigate(`/sandboxes/${sb.key}`)}
+                title={sb.key}
                 className={cn(
                   "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent",
-                  selectedId === sb.id && "bg-sidebar-accent",
+                  selectedKey === sb.key && "bg-sidebar-accent",
                 )}
               >
                 <span className={cn(
                   "block rounded-full transition-all",
-                  selectedId === sb.id ? "h-2.5 w-2.5" : "h-2 w-2",
-                  connectedId === sb.id
+                  selectedKey === sb.key ? "h-2.5 w-2.5" : "h-2 w-2",
+                  connectedKey === sb.key
                     ? "bg-green-400"
                     : sb.status === "stop" || sb.status === "die"
                       ? "bg-yellow-400/70"
@@ -290,7 +261,7 @@ function AppContent() {
           </div>
         </aside>
       ) : (
-        <aside className="flex w-72 flex-none flex-col sidebar">
+        <aside className="flex w-72 flex-none flex-col sidebar border-r border-border">
           {/* Branding + controller URL */}
           <div className="h-[70px] flex flex-col justify-center">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
@@ -320,12 +291,12 @@ function AppContent() {
 
           <SandboxList
             sandboxes={sandboxes}
-            selectedId={selectedId ?? null}
-            connectedId={connectedId}
+            selectedKey={selectedKey ?? null}
+            connectedKey={connectedKey}
             loading={loading}
-            onSelect={(id) => navigate(`/sandboxes/${id}`)}
+            onSelect={(key) => navigate(`/sandboxes/${key}`)}
             onRefresh={fetchSandboxes}
-            onCreated={(id, command) => { fetchSandboxes(); navigate(`/sandboxes/${id}`, { state: { initCommand: command } }); }}
+            onCreated={(key, command) => { fetchSandboxes(); navigate(`/sandboxes/${key}`, { state: { initCommand: command } }); }}
             serverUrl={serverUrl}
           />
           <div className="flex items-center px-4 py-3 border-t border-border/50">
@@ -339,7 +310,7 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<GettingStarted gatewayUrl={gatewayUrl} />} />
           <Route
-            path="/sandboxes/:id"
+            path="/sandboxes/:key"
             element={<SandboxDetailRoute {...layoutProps} />}
           />
         </Routes>

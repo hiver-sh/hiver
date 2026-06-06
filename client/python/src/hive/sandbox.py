@@ -83,11 +83,18 @@ class Sandbox:
         client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self.id = ref.id
-        self.api_server_url = f"{gateway_url.rstrip('/')}/sandbox/{ref.id}"
+        self.key = ref.key
+        self.api_server_url = f"{gateway_url.rstrip('/')}/sandbox/{ref.key}"
         self.mcp_endpoint: str = f"{self.api_server_url}/v1/mcp"
-        self.proxy_url: str = f"{self.api_server_url}/v1/proxy"
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
+
+    def proxy_url(self, port: Union[int, str]) -> str:
+        """
+        Base proxy URL for a specific port inside the sandbox. Append the
+        path to get a full URL, e.g. `sandbox.proxy_url(8080) + "/health"`.
+        """
+        return f"{self.api_server_url}/v1/proxy/{port}"
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -104,6 +111,16 @@ class Sandbox:
         res = await self._client.get(f"{self.api_server_url}/v1/ping")
         if not res.is_success:
             raise _to_error(res, "ping")
+
+    async def get_ports(self) -> list[int]:
+        """
+        List the TCP ports the sandbox exposes (the image's EXPOSE
+        directives). Each is reachable via `proxy_url(port)`.
+        """
+        res = await self._client.get(f"{self.api_server_url}/v1/ports")
+        if not res.is_success:
+            raise _to_error(res, "get_ports")
+        return res.json()
 
     async def get_config(self) -> SandboxConfig:
         """Read the current SandboxConfig."""

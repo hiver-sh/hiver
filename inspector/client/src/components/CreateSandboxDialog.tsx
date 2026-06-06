@@ -26,7 +26,7 @@ const DEFAULT_CONFIG = {
 
 interface Props {
   serverUrl: string;
-  onCreated: (id: string, command: string) => void;
+  onCreated: (key: string, command: string) => void;
 }
 
 export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & { compact?: boolean }) {
@@ -35,16 +35,16 @@ export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [id, setId] = useState("");
+  const [key, setKey] = useState("");
   const [configJson, setConfigJson] = useState(JSON.stringify(DEFAULT_CONFIG, null, 2));
-  const [command, setCommand, persistCommand] = useSandboxCommand(id);
+  const [command, setCommand, persistCommand] = useSandboxCommand(key);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
-      setError("ID: only letters, numbers, _ and - (1–64 chars)");
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
+      setError("Key: only letters, numbers, _ and - (1–64 chars)");
       return;
     }
 
@@ -58,7 +58,7 @@ export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & {
 
     setLoading(true);
     try {
-      const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(id)}`);
+      const url = new URL(`${serverUrl}/api/sandboxes/${encodeURIComponent(key)}`);
       const res = await transport.fetch(url, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -71,7 +71,7 @@ export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & {
       }
       persistCommand();
       setOpen(false);
-      onCreated(id, command.trim());
+      onCreated(key, command.trim());
     } catch (err) {
       setError(String(err));
     } finally {
@@ -82,7 +82,7 @@ export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & {
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (next) {
-      setId("");
+      setKey("");
       setConfigJson(JSON.stringify(DEFAULT_CONFIG, null, 2));
       setError(null);
     }
@@ -111,12 +111,12 @@ export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & {
         </DialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-4 py-2">
           <div className="grid gap-1.5">
-            <Label htmlFor="sb-id">ID</Label>
+            <Label htmlFor="sb-key">Key</Label>
             <Input
-              id="sb-id"
+              id="sb-key"
               placeholder="agent-1"
-              value={id}
-              onChange={(e) => setId(e.target.value)}
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
               disabled={loading}
             />
           </div>
@@ -133,7 +133,7 @@ export function CreateSandboxDialog({ serverUrl, onCreated, compact }: Props & {
                     setError("Current config is not valid JSON — fix it before applying a template");
                   }
                 }}
-                onSuggestId={setId}
+                onSuggestId={setKey}
                 onSuggestCommand={setCommand}
               />
             </div>

@@ -13,22 +13,22 @@ from .sse import parse_sse
 
 DEFAULT_GATEWAY_URL = "http://localhost:10000"
 
-_SANDBOX_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SANDBOX_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _DEFAULT_TIMEOUT_S = 30.0
 _READINESS_POLL_INTERVAL_S = 0.2
 
 
 async def get_or_create_sandbox(
-    id: str,
+    key: str,
     config: SandboxConfig = SandboxConfig(),
     gateway_url: str = DEFAULT_GATEWAY_URL,
     client: Optional[httpx.AsyncClient] = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> Sandbox:
     """
-    Idempotent provision against PUT /v1/sandboxes/{id}. If a sandbox
-    with `id` already exists the controller returns it unchanged and
+    Idempotent provision against PUT /v1/sandboxes/{key}. If a sandbox
+    with `key` already exists the controller returns it unchanged and
     the supplied `config` is ignored; otherwise the controller creates
     a new sandbox from `config`.
 
@@ -36,9 +36,9 @@ async def get_or_create_sandbox(
     fails fast on the caller side instead of producing a 400 from the
     controller.
     """
-    if not _SANDBOX_ID_PATTERN.match(id):
+    if not _SANDBOX_KEY_PATTERN.match(key):
         raise ValueError(
-            f"get_or_create_sandbox: id {id!r} must match {_SANDBOX_ID_PATTERN.pattern}"
+            f"get_or_create_sandbox: key {key!r} must match {_SANDBOX_KEY_PATTERN.pattern}"
         )
     data = {
         "fs": [
@@ -59,7 +59,7 @@ async def get_or_create_sandbox(
     try:
         try:
             res = await http.put(
-                f"{base}/controller/v1/sandboxes/{id}",
+                f"{base}/controller/v1/sandboxes/{key}",
                 json=validated.model_dump(exclude_none=True),
                 timeout=req_timeout,
             )
@@ -144,7 +144,7 @@ async def shutdown(
     owns_client = client is None
     http = client or httpx.AsyncClient()
     req_timeout = timeout_s if timeout_s > 0 else None
-    url = f"{base}/controller/v1/shutdown/{sandbox.id}"
+    url = f"{base}/controller/v1/shutdown/{sandbox.key}"
     try:
         res = await http.post(url, timeout=req_timeout)
     except httpx.ConnectError as err:
@@ -172,7 +172,8 @@ async def watch_sandbox_events(
 ) -> AsyncGenerator[dict, None]:
     """Stream sandbox lifecycle events via SSE from GET /v1/sandboxes/events.
 
-    Yields dicts of the form ``{"id": "<sandbox-id>", "status": "start|stop|die|destroy"}``
+    Yields dicts of the form
+    ``{"id": "<uuid>", "key": "<key>", "status": "start|stop|die|destroy"}``
     until *abort* is set or the server closes the stream.
     """
     base = gateway_url.rstrip("/")

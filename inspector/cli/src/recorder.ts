@@ -120,13 +120,13 @@ export class EventRecorder {
     })();
   }
 
-  private trackDirectory(sandboxId: string, dirPath: string): void {
-    const key = `${sandboxId}:${dirPath}`;
+  private trackDirectory(sandboxKey: string, dirPath: string): void {
+    const key = `${sandboxKey}:${dirPath}`;
     if (this.knownDirs.has(key)) return;
     this.knownDirs.add(key);
 
-    const traceKey = `/api/sandboxes/${sandboxId}/directories?path=${dirPath}`;
-    const url = this.buildSandboxUrl(`/api/sandboxes/${sandboxId}/directories`, { path: dirPath });
+    const traceKey = `/api/sandboxes/${sandboxKey}/directories?path=${dirPath}`;
+    const url = this.buildSandboxUrl(`/api/sandboxes/${sandboxKey}/directories`, { path: dirPath });
     let lastPayload: string | undefined;
 
     const poll = async () => {
@@ -146,13 +146,13 @@ export class EventRecorder {
     this.timers.push(setInterval(poll, 1000));
   }
 
-  private trackFile(sandboxId: string, filePath: string): void {
-    const key = `${sandboxId}:${filePath}`;
+  private trackFile(sandboxKey: string, filePath: string): void {
+    const key = `${sandboxKey}:${filePath}`;
     if (this.knownFiles.has(key)) return;
     this.knownFiles.add(key);
 
-    const traceKey = `/api/sandboxes/${sandboxId}/file?path=${filePath}`;
-    const url = this.buildSandboxUrl(`/api/sandboxes/${sandboxId}/file`, { path: filePath });
+    const traceKey = `/api/sandboxes/${sandboxKey}/file?path=${filePath}`;
+    const url = this.buildSandboxUrl(`/api/sandboxes/${sandboxKey}/file`, { path: filePath });
     this.pollEndpoint(url);
   }
 
@@ -164,8 +164,8 @@ export class EventRecorder {
         const res = await fetch(listUrl);
         const text = await res.text();
         this.addEvent("/api/sandboxes", text, this.headersToMap(res.headers));
-        const sandboxes = JSON.parse(text) as { id: string; exposed_endpoint?: string }[];
-        for (const s of sandboxes) this.trackSandbox(s.id, s.exposed_endpoint);
+        const sandboxes = JSON.parse(text) as { id: string; key: string; exposed_endpoint?: string }[];
+        for (const s of sandboxes) this.trackSandbox(s.key, s.exposed_endpoint);
       } catch {
         // server not up yet — retry in 1 s
         this.timers.push(setTimeout(() => void fetchOnce(), 1000) as unknown as ReturnType<typeof setInterval>);
@@ -175,8 +175,8 @@ export class EventRecorder {
     void fetchOnce();
   }
 
-  private trackSandbox(id: string, exposedEndpoint?: string): void {
-    const configUrl = this.buildSandboxUrl(`/api/sandboxes/${id}/config`);
+  private trackSandbox(sandboxKey: string, exposedEndpoint?: string): void {
+    const configUrl = this.buildSandboxUrl(`/api/sandboxes/${sandboxKey}/config`);
 
     // Fetch config once to discover volume mount paths, then start directory tracking.
     void (async () => {
@@ -188,16 +188,16 @@ export class EventRecorder {
       } catch {
         // config unavailable — fall back to root only
       }
-      this.trackDirectory(id, "/");
-      for (const mount of mountPaths) this.trackDirectory(id, mount);
+      this.trackDirectory(sandboxKey, "/");
+      for (const mount of mountPaths) this.trackDirectory(sandboxKey, mount);
     })();
 
     this.pollEndpoint(configUrl);
-    this.streamEndpoint(this.buildSandboxUrl(`/api/sandboxes/${id}/events`));
+    this.streamEndpoint(this.buildSandboxUrl(`/api/sandboxes/${sandboxKey}/events`));
     const sessionId = crypto.randomUUID();
     const params: Record<string, string> = { sessionId };
     if (exposedEndpoint) params.exposedBackend = exposedEndpoint;
-    this.streamEndpoint(this.buildSandboxUrl(`/api/sandboxes/${id}/terminal/stream`, params));
+    this.streamEndpoint(this.buildSandboxUrl(`/api/sandboxes/${sandboxKey}/terminal/stream`, params));
   }
 
   stop(): void {

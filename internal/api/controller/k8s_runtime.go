@@ -9,6 +9,7 @@ import (
 
 	gen "github.com/blasten/hive/internal/api/gen/controller"
 	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,8 +47,8 @@ func newK8sRuntime() (*K8sRuntime, error) {
 	return &K8sRuntime{client: client, namespace: ns}, nil
 }
 
-func (r *K8sRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
-	name := containerNameFor(id)
+func (r *K8sRuntime) Lookup(key string) (bool, gen.Sandbox, error) {
+	name := containerNameFor(key)
 	pod, err := r.client.CoreV1().Pods(r.namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -58,12 +59,16 @@ func (r *K8sRuntime) Lookup(id string) (bool, gen.Sandbox, error) {
 	if pod.Status.Phase != corev1.PodRunning {
 		return false, gen.Sandbox{}, nil
 	}
-	return true, gen.Sandbox{Id: id}, nil
+	id, err := uuid.Parse(pod.Labels[labelSandboxID])
+	if err != nil {
+		return false, gen.Sandbox{}, fmt.Errorf("parse sandbox id label %q: %w", pod.Labels[labelSandboxID], err)
+	}
+	return true, gen.Sandbox{Id: id, Key: key}, nil
 }
 
 func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 	pods, err := r.client.CoreV1().Pods(r.namespace).List(context.Background(), metav1.ListOptions{
-		LabelSelector: labelSandboxID,
+		LabelSelector: labelSandboxKey,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)
@@ -73,17 +78,21 @@ func (r *K8sRuntime) List() ([]gen.Sandbox, error) {
 		if pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
-		id := pod.Labels[labelSandboxID]
-		sandboxes = append(sandboxes, gen.Sandbox{Id: id})
+		id, err := uuid.Parse(pod.Labels[labelSandboxID])
+		if err != nil {
+			continue
+		}
+		sandboxes = append(sandboxes, gen.Sandbox{Id: id, Key: pod.Labels[labelSandboxKey]})
 	}
 	return sandboxes, nil
 }
 
-func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
+func (r *K8sRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	ctx := context.Background()
-	name := containerNameFor(id)
+	name := containerNameFor(key)
+	id := uuid.New()
 
-	labels := map[string]string{labelSandboxID: id}
+	labels := map[string]string{labelSandboxKey: key, labelSandboxID: id.String()}
 
 	specBytes, err := json.Marshal(cfg)
 	if err != nil {
@@ -152,7 +161,7 @@ func (r *K8sRuntime) Start(id string, cfg sandboxgen.SandboxConfig) (gen.Sandbox
 		return gen.Sandbox{}, fmt.Errorf("create service: %w", err)
 	}
 
-	return gen.Sandbox{Id: id}, nil
+	return gen.Sandbox{Id: id, Key: key}, nil
 }
 
 func (r *K8sRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
@@ -161,9 +170,9 @@ func (r *K8sRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEve
 	return ch, nil
 }
 
-func (r *K8sRuntime) Shutdown(id string) error {
+func (r *K8sRuntime) Shutdown(key string) error {
 	ctx := context.Background()
-	name := containerNameFor(id)
+	name := containerNameFor(key)
 
 	if _, err := r.client.CoreV1().Pods(r.namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
 		if k8serrors.IsNotFound(err) {

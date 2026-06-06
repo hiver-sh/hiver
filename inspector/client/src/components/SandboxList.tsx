@@ -5,19 +5,19 @@ import type { SandboxRef } from "@/types";
 
 interface Props {
   sandboxes: SandboxRef[];
-  selectedId: string | null;
-  connectedId: string | null;
+  selectedKey: string | null;
+  connectedKey: string | null;
   loading: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (key: string) => void;
   onRefresh: () => void;
-  onCreated: (id: string, command: string) => void;
+  onCreated: (key: string, command: string) => void;
   serverUrl: string;
 }
 
 export function SandboxList({
   sandboxes,
-  selectedId,
-  connectedId,
+  selectedKey,
+  connectedKey,
   loading,
   onSelect,
   onRefresh,
@@ -65,23 +65,23 @@ export function SandboxList({
           {sandboxes.map((sb) => (
             <button
               key={sb.id}
-              onClick={() => onSelect(sb.id)}
+              onClick={() => onSelect(sb.key)}
               className={cn(
                 "flex w-full items-center gap-2 px-5 py-2 text-left text-sm transition-colors hover:bg-sidebar-accent",
-                selectedId === sb.id && "bg-sidebar-accent text-sidebar-accent-foreground",
+                selectedKey === sb.key && "bg-sidebar-accent text-sidebar-accent-foreground",
               )}
             >
               <span
                 className={cn(
                   "mt-0.5 h-2 w-2 shrink-0 rounded-full",
-                  connectedId === sb.id
+                  connectedKey === sb.key
                     ? "bg-green-400"
                     : sb.status === "stop" || sb.status === "die"
                       ? "bg-yellow-400/70"
                       : "bg-muted-foreground/40",
                 )}
               />
-              <span className="truncate font-mono">{sb.id}</span>
+              <span className="truncate font-mono">{sb.key}</span>
             </button>
           ))}
         </div>

@@ -62,7 +62,10 @@ export interface EventsStreamOptions {
  * A handle to a provisioned sandbox.
  */
 export class Sandbox {
+  /** Server-assigned unique identifier (uuid). */
   readonly id: string;
+  /** Caller-chosen key the sandbox was provisioned under; routes requests. */
+  readonly key: string;
   /** Base URL of the per-sandbox API server. */
   readonly apiServerUrl: string;
 
@@ -76,7 +79,8 @@ export class Sandbox {
 
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
-    this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.id)}`;
+    this.key = ref.key;
+    this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.key)}`;
     this.proxyUrl = (port) => `${this.apiServerUrl}/v1/proxy/${port}`;
     this.fetchImpl = opts.fetch ?? fetch;
   }
@@ -91,6 +95,17 @@ export class Sandbox {
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`, { signal });
     if (!res.ok) throw await toError(res, "ping");
   };
+
+  /**
+   * List the TCP ports the sandbox exposes (the image's EXPOSE
+   * directives). Each is reachable via {@link proxyUrl}.
+   */
+  async getPorts(opts?: RequestOptions): Promise<number[]> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ports`, { signal });
+    if (!res.ok) throw await toError(res, "getPorts");
+    return (await res.json()) as number[];
+  }
 
   /** Read the current `SandboxConfig`. */
   async getConfig(opts?: RequestOptions): Promise<SandboxConfig> {

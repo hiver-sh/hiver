@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -29,6 +31,8 @@ type ImageConfig struct {
 	Env         []string
 	WorkingDir  string
 	ExposedPort *string
+	// ExposedPorts is every TCP port the image declares via EXPOSE, ascending.
+	ExposedPorts []int
 }
 
 // dockerArchiveManifest mirrors the top-level manifest.json that
@@ -83,12 +87,34 @@ func ExtractImageConfig() (*ImageConfig, error) {
 	exposedPort := findExposedTcpPort(dic.Config.ExposedPorts)
 
 	return &ImageConfig{
-		Entrypoint:  dic.Config.Entrypoint,
-		Cmd:         dic.Config.Cmd,
-		Env:         dic.Config.Env,
-		WorkingDir:  dic.Config.WorkingDir,
-		ExposedPort: exposedPort,
+		Entrypoint:   dic.Config.Entrypoint,
+		Cmd:          dic.Config.Cmd,
+		Env:          dic.Config.Env,
+		WorkingDir:   dic.Config.WorkingDir,
+		ExposedPort:  exposedPort,
+		ExposedPorts: findExposedTcpPorts(dic.Config.ExposedPorts),
 	}, nil
+}
+
+// findExposedTcpPorts returns every TCP port in the image's ExposedPorts set
+// (the Dockerfile EXPOSE directives), ascending. Keys are "port/proto"; UDP
+// and malformed entries are skipped. Never nil, so callers serialize an empty
+// set as `[]`.
+func findExposedTcpPorts(exposedPorts map[string]any) []int {
+	ports := make([]int, 0, len(exposedPorts))
+	for key := range exposedPorts {
+		portStr, protocol, ok := strings.Cut(key, "/")
+		if !ok || protocol != "tcp" {
+			continue
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			continue
+		}
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	return ports
 }
 
 func findExposedTcpPort(exposedPorts map[string]any) *string {

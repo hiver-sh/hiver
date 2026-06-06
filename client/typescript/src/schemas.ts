@@ -227,7 +227,10 @@ export type ApiError = z.infer<typeof ApiError>;
 
 /** Controller response: a provisioned sandbox handle. */
 export const SandboxRef = z.object({
+  /** Server-assigned unique identifier (uuid). */
   id: z.string(),
+  /** Caller-chosen key the sandbox was provisioned under; used for routing. */
+  key: z.string(),
 });
 export type SandboxRef = z.infer<typeof SandboxRef>;
 

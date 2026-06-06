@@ -1,6 +1,6 @@
 openapi: 3.0.0
 info:
-  title: Sandbox Control Plane API
+  title: Hive Control Plane API
   version: 0.0.1
   summary: Provision sandboxes on demand.
   description: |
@@ -36,7 +36,8 @@ paths:
       operationId: streamSandboxEvents
       description: |
         Server-sent event stream of sandbox lifecycle events. Each event has
-        the form `{"id":"<sandbox-id>","status":"start|stop|die|destroy"}`.
+        the form
+        `{"id":"<uuid>","key":"<key>","status":"start|stop|die|destroy"}`.
         The stream stays open until the client disconnects.
       responses:
         '200':
@@ -46,23 +47,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/SandboxLifecycleEvent'
 
-  /v1/sandboxes/{id}:
+  /v1/sandboxes/{key}:
     put:
       tags: [Sandboxes]
       summary: Get or create a sandbox.
       operationId: getOrCreateSandbox
       description: |
-        Idempotent provision. If a sandbox with `id` already exists, it
-        is returned unchanged (`200 OK`) and the request body is
+        Idempotent provision. If a sandbox with `key` already
+        exists, it is returned unchanged (`200 OK`) and the request body is
         ignored. If not, a new sandbox is created from the supplied
         `SandboxConfig` (`201 Created`) and returned.
 
-        Two callers racing on the same id will both observe the same
-        sandbox: whichever request creates it returns `201`, the other
+        Two callers racing on the same key will both observe the
+        same sandbox: whichever request creates it returns `201`, the other
         returns `200` against the now-existing record.
       parameters:
         - in: path
-          name: id
+          name: key
           required: true
           schema:
             type: string
@@ -87,7 +88,7 @@ paths:
       responses:
         '200':
           description: |
-            A sandbox with `id` already existed; the existing record is
+            A sandbox with `key` already existed; the existing record is
             returned and the request body was ignored.
           content:
             application/json:
@@ -98,12 +99,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Sandbox' }
         '400':
-          description: The `id` or `SandboxConfig` is malformed.
+          description: The `key` or `SandboxConfig` is malformed.
           content:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/shutdown/{id}:
+  /v1/shutdown/{key}:
     post:
       tags: [Sandboxes]
       summary: Shut down and remove a sandbox.
@@ -117,21 +118,21 @@ paths:
         complete.
 
         Idempotent on already-stopped containers: an exited container
-        is simply removed. Unknown ids return `404`.
+        is simply removed. Unknown keys return `404`.
       parameters:
         - in: path
-          name: id
+          name: key
           required: true
           schema:
             type: string
             pattern: '^[A-Za-z0-9_-]{1,64}$'
-          description: The sandbox id.
+          description: The sandbox key.
           example: tenant-acme-build-42
       responses:
         '204':
           description: Sandbox stopped and removed.
         '404':
-          description: No sandbox with that id exists.
+          description: No sandbox with that key exists.
           content:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
@@ -141,12 +142,18 @@ components:
     SandboxLifecycleEvent:
       type: object
       description: A sandbox container lifecycle event.
-      required: [id, status]
+      required: [id, key, status]
       additionalProperties: false
       properties:
         id:
           type: string
-          description: The sandbox id.
+          format: uuid
+          description: Server-assigned unique identifier of the sandbox.
+          example: 1e9d6c3a-8f4b-4c2e-9a7d-2b5f0c8e1a34
+        key:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: The caller-chosen key of the sandbox.
           example: tenant-acme-build-42
         status:
           type: string
@@ -156,10 +163,16 @@ components:
     Sandbox:
       type: object
       description: A provisioned sandbox.
-      required: [id]
+      required: [id, key]
       additionalProperties: false
       properties:
         id:
           type: string
-          description: The id supplied at creation.
+          format: uuid
+          description: Server-assigned unique identifier.
+          example: 1e9d6c3a-8f4b-4c2e-9a7d-2b5f0c8e1a34
+        key:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: The caller-chosen key supplied at creation.
           example: tenant-acme-build-42

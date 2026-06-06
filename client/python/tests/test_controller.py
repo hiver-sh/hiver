@@ -6,14 +6,15 @@ from hive.controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox, shutdown
 from hive.sandbox import Sandbox, SandboxError
 from hive.schemas import SandboxConfig, SandboxRef
 
-SANDBOX_REF = {"id": "test-sandbox"}
+SANDBOX_ID = "11111111-1111-1111-1111-111111111111"
+SANDBOX_REF = {"id": SANDBOX_ID, "key": "test-sandbox"}
 BASE_CONFIG = SandboxConfig.model_validate(
     {"fs": [{"backend": "local", "mount": "/workspace"}]}
 )
 
 
 def make_sandbox() -> Sandbox:
-    return Sandbox(SandboxRef(id="test-sandbox"), DEFAULT_GATEWAY_URL)
+    return Sandbox(SandboxRef(id=SANDBOX_ID, key="test-sandbox"), DEFAULT_GATEWAY_URL)
 
 
 # get_or_create_sandbox
@@ -45,7 +46,8 @@ async def test_get_or_create_sandbox_returns_sandbox_with_correct_id_and_endpoin
     )
     sandbox = await get_or_create_sandbox("test-sandbox", BASE_CONFIG, timeout_s=0)
     assert isinstance(sandbox, Sandbox)
-    assert sandbox.id == "test-sandbox"
+    assert sandbox.id == SANDBOX_ID
+    assert sandbox.key == "test-sandbox"
     assert sandbox.api_server_url == f"{DEFAULT_GATEWAY_URL}/sandbox/test-sandbox"
 
 

@@ -9,10 +9,6 @@ info:
     configuration and the API computes the minimum set of changes
     required to converge the running sandbox to that state.
 
-servers:
-  - url: http://localhost:8099
-    description: Sandbox config endpoint.
-
 tags:
   - name: Configuration
     description: Read and apply the sandbox's configuration document.
@@ -518,6 +514,26 @@ paths:
       summary: Proxy a DELETE request to the sandbox's exposed port.
       operationId: proxyDelete
       responses: *proxy_responses
+
+  /v1/ports:
+    get:
+      tags: [Proxy]
+      summary: List the ports exposed by the sandbox.
+      operationId: getPorts
+      description: |
+        Returns the TCP ports currently being listened on inside the
+        sandbox workload. Each entry is a port that can be reached
+        through `/v1/proxy/{port}/{path}`.
+      responses:
+        '200':
+          description: The exposed ports, ascending. May be empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: integer
+                example: [8080, 9000]
 
   /v1/ping:
     get:

@@ -15,7 +15,10 @@ export interface UserPreferences {
   /** File explorer panel width in px. null = not set yet (see terminalWidth). */
   filesWidth: number | null;
   followEvents: boolean;
-  expandedPaths: string[];
+  /** Expanded file-explorer directories, keyed by sandbox key. Each sandbox
+   *  restores only its own expanded folders; an entry is dropped when the
+   *  sandbox is destroyed (see `forgetSandbox`). */
+  expandedPaths: Record<string, string[]>;
   /** When false, the terminal never writes selections to the system clipboard,
    *  avoiding the browser's clipboard-permission prompt. */
   terminalClipboardCopy: boolean;
@@ -30,7 +33,7 @@ export const DEFAULT_PREFS: UserPreferences = {
   terminalWidth: null,
   filesWidth: null,
   followEvents: false,
-  expandedPaths: [],
+  expandedPaths: {},
   terminalClipboardCopy: true,
 };
 
@@ -38,7 +41,11 @@ const STORAGE_KEY = "inspector:prefs";
 
 function loadFromStorage(): Partial<UserPreferences> {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<UserPreferences>;
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<UserPreferences>;
+    // Migrate the legacy global `expandedPaths: string[]` to the per-sandbox
+    // map shape. Old data isn't worth keying to any sandbox, so drop it.
+    if (Array.isArray(parsed.expandedPaths)) parsed.expandedPaths = {};
+    return parsed;
   } catch {
     return {};
   }
@@ -60,7 +67,9 @@ function applyTheme(theme: Theme) {
 export interface UserPreferencesContextValue {
   prefs: UserPreferences;
   setPref<K extends keyof UserPreferences>(key: K, value: UserPreferences[K]): void;
-  toggleExpandedPath(path: string): void;
+  toggleExpandedPath(sandboxKey: string, path: string): void;
+  /** Drop a sandbox's persisted file-explorer state when it is destroyed. */
+  forgetSandbox(sandboxKey: string): void;
   terminalScrollPassthrough: boolean;
   enableNetworkRequests: boolean;
 }
@@ -69,6 +78,7 @@ const UserPreferencesContext = createContext<UserPreferencesContextValue>({
   prefs: DEFAULT_PREFS,
   setPref: () => {},
   toggleExpandedPath: () => {},
+  forgetSandbox: () => {},
   terminalScrollPassthrough: false,
   enableNetworkRequests: true,
 });
@@ -110,12 +120,27 @@ export function UserPreferencesProvider({
     });
   }, [persist]);
 
-  const toggleExpandedPath = useCallback((path: string) => {
+  const toggleExpandedPath = useCallback((sandboxKey: string, path: string) => {
     setPrefs((prev) => {
-      const paths = prev.expandedPaths.includes(path)
-        ? prev.expandedPaths.filter((p) => p !== path)
-        : [...prev.expandedPaths, path];
-      const next = { ...prev, expandedPaths: paths };
+      const current = prev.expandedPaths[sandboxKey] ?? [];
+      const paths = current.includes(path)
+        ? current.filter((p) => p !== path)
+        : [...current, path];
+      const nextMap = { ...prev.expandedPaths };
+      if (paths.length === 0) delete nextMap[sandboxKey];
+      else nextMap[sandboxKey] = paths;
+      const next = { ...prev, expandedPaths: nextMap };
+      if (persist) saveToStorage(next);
+      return next;
+    });
+  }, [persist]);
+
+  const forgetSandbox = useCallback((sandboxKey: string) => {
+    setPrefs((prev) => {
+      if (!(sandboxKey in prev.expandedPaths)) return prev;
+      const nextMap = { ...prev.expandedPaths };
+      delete nextMap[sandboxKey];
+      const next = { ...prev, expandedPaths: nextMap };
       if (persist) saveToStorage(next);
       return next;
     });
@@ -136,7 +161,7 @@ export function UserPreferencesProvider({
   }, [prefs.theme]);
 
   return (
-    <UserPreferencesContext.Provider value={{ prefs, setPref, toggleExpandedPath, terminalScrollPassthrough, enableNetworkRequests }}>
+    <UserPreferencesContext.Provider value={{ prefs, setPref, toggleExpandedPath, forgetSandbox, terminalScrollPassthrough, enableNetworkRequests }}>
       {children}
     </UserPreferencesContext.Provider>
   );

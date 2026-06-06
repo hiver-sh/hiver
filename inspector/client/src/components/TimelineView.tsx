@@ -5,6 +5,7 @@ import type { SandboxEvent } from "@/types";
 import { humanDuration } from "@/lib/utils";
 import { LLM_PROVIDERS } from "@/lib/llmProviders";
 import { RowDetailPanel } from "./TimelineDetail";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 
 export interface TimelineBar {
   id: number;
@@ -546,10 +547,18 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
   const [panelCollapsed, setPanelCollapsed] = useState(
     () => localStorage.getItem("timeline:panelCollapsed") === "true",
   );
+  // Full-screen detail dialog. Lives here (not inside RowDetailPanel) so it stays
+  // open while the user pages through events with prev/next.
+  const [detailExpanded, setDetailExpanded] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("timeline:panelCollapsed", String(panelCollapsed));
   }, [panelCollapsed]);
+
+  // Closing the detail panel (deselecting) also closes the expanded dialog.
+  useEffect(() => {
+    if (selectedId === null) setDetailExpanded(false);
+  }, [selectedId]);
 
   const [panelHeight, setPanelHeight] = useState(
     () => parseInt(localStorage.getItem("timeline:panelHeight") ?? "300", 10),
@@ -1405,19 +1414,37 @@ export function TimelineView({ events, filter, applyConfig, onOpenFile, zoomWind
               className="h-[5px] shrink-0 cursor-row-resize bg-border hover:bg-foreground/20 transition-colors"
               onMouseDown={startPanelDrag}
             />
-            <div className="shrink-0 flex flex-col overflow-x-hidden overflow-y-auto scroll-container" style={{ height: panelHeight }}>
+            <div className="shrink-0 flex flex-col overflow-hidden scroll-container" style={{ height: panelHeight }}>
               <RowDetailPanel
                 key={selectedBar.id}
                 bar={selectedBar}
                 prevBar={prevAnthropicBar}
                 onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
                 onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
+                onExpand={() => setDetailExpanded(true)}
                 applyConfig={applyConfig}
                 onOpenFile={onOpenFile}
               />
             </div>
           </>
         )
+      )}
+
+      {selectedBar && (
+        <Dialog open={detailExpanded} onOpenChange={setDetailExpanded}>
+          <DialogContent className="max-w-5xl p-0 flex flex-col overflow-hidden h-[80vh]">
+            <RowDetailPanel
+              key={selectedBar.id}
+              bar={selectedBar}
+              prevBar={prevAnthropicBar}
+              onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
+              onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
+              applyConfig={applyConfig}
+              onOpenFile={onOpenFile}
+              expandedView
+            />
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

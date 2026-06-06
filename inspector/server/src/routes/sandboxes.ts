@@ -31,29 +31,29 @@ router.get("/events", async (req: Request, res: Response) => {
 router.get("/", async (req: Request, res: Response) => {
   try {
     const sandboxes = await listSandboxes({ gatewayUrl: gatewayUrl(req) });
-    res.json(sandboxes.map((s) => ({ id: s.id })));
+    res.json(sandboxes.map((s) => ({ id: s.id, key: s.key })));
   } catch (err) {
     res.status(502).json({ error: String(err) });
   }
 });
 
-router.put("/:id", async (req: Request, res: Response) => {
+router.put("/:key", async (req: Request, res: Response) => {
   try {
     const sandbox = await getOrCreateSandbox(
-      req.params.id,
+      req.params.key,
       req.body as SandboxConfig,
       { gatewayUrl: gatewayUrl(req) },
     );
-    res.json({ id: sandbox.id });
+    res.json({ id: sandbox.id, key: sandbox.key });
   } catch (err) {
     res.status(502).json({ error: String(err) });
   }
 });
 
-router.post("/:id/shutdown", async (req: Request, res: Response) => {
+router.post("/:key/shutdown", async (req: Request, res: Response) => {
   try {
     const [sandbox] = await listSandboxes({ gatewayUrl: gatewayUrl(req) }).then(
-      (list) => list.filter((s) => s.id === req.params.id),
+      (list) => list.filter((s) => s.key === req.params.key),
     );
     if (!sandbox) {
       res.status(404).json({ error: "sandbox not found" });

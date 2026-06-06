@@ -1,15 +1,6 @@
 import { useState } from "react";
 import { Check, Clipboard } from "lucide-react";
-import { CodeViewer } from "@/components/CodeViewer";
-import { LangIcon } from "@/components/LangIcon";
-
-type Lang = "ts" | "py" | "go";
-
-const LANG_TABS: { id: Lang; icon: string }[] = [
-  { id: "ts", icon: "typescript" },
-  { id: "py", icon: "python" },
-  { id: "go", icon: "go" },
-];
+import { CodeTabs } from "@/components/CodeTabs";
 
 const TS_EXAMPLE = `import * as hive from "hive-runtime/client";
 
@@ -34,10 +25,7 @@ fmt.Println(result.Stdout)`;
 
 
 export function GettingStarted({ gatewayUrl }: { gatewayUrl: string }) {
-  const [lang, setLang] = useState<Lang>("ts");
   const [copied, setCopied] = useState(false);
-  const code =
-    lang === "ts" ? TS_EXAMPLE : lang === "py" ? PY_EXAMPLE : GO_EXAMPLE;
 
   function handleCopy() {
     navigator.clipboard.writeText(gatewayUrl);
@@ -56,33 +44,7 @@ export function GettingStarted({ gatewayUrl }: { gatewayUrl: string }) {
           </p>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <div className="flex gap-0.5 rounded-md border border-border p-0.5 text-xs">
-              {LANG_TABS.map(({ id, icon }) => (
-                <button
-                  key={id}
-                  onClick={() => setLang(id)}
-                  className={`flex items-center gap-1.5 rounded px-2.5 py-1 transition-colors ${
-                    lang === id
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <LangIcon lang={icon} className="h-3.5 w-3.5" />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-lg overflow-hidden border border-border">
-            <CodeViewer
-              content={code}
-              lang={lang === "ts" ? "typescript" : lang === "py" ? "python" : "go"}
-              autoSize
-            />
-          </div>
-        </div>
+        <CodeTabs examples={{ ts: TS_EXAMPLE, py: PY_EXAMPLE, go: GO_EXAMPLE }} />
 
         <div className="flex flex-col gap-2">
           <h2 className="text-sm font-medium">Gateway URL</h2>

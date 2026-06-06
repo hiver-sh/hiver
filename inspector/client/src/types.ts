@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 export const SandboxRef = z.object({
+  // Server-assigned unique identifier (uuid). Used only to partition
+  // persisted events in IndexedDB, where a reused key must not collide.
   id: z.string(),
+  // Caller-chosen key the sandbox was provisioned under. Used for routing,
+  // selection, and display everywhere in the UI.
+  key: z.string(),
   status: z.enum(["start", "stop", "die"]).optional(),
 });
 export type SandboxRef = z.infer<typeof SandboxRef>;

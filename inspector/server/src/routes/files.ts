@@ -3,7 +3,7 @@ import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 
 const router = Router();
 
-router.get("/:id/directories", async (req: Request, res: Response) => {
+router.get("/:key/directories", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   const path = req.query.path as string | undefined;
   if (!path) { res.status(400).json({ error: "missing query param: path" }); return; }
@@ -15,7 +15,7 @@ router.get("/:id/directories", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/:id/file", async (req: Request, res: Response) => {
+router.get("/:key/file", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   const path = req.query.path as string | undefined;
   if (!path) { res.status(400).json({ error: "missing query param: path" }); return; }

@@ -18,7 +18,7 @@ import (
 
 type ControllerHandlers struct {
 	// mu serializes container lifecycle operations so two requests for the
-	// same id can't both decide "not running" and race on docker create.
+	// same key can't both decide "not running" and race on docker create.
 	mu      sync.Mutex
 	runtime SandboxRuntime
 }
@@ -48,14 +48,14 @@ func (h *ControllerHandlers) ListSandboxes(c *gin.Context) {
 	c.JSON(http.StatusOK, sandboxes)
 }
 
-// GetOrCreateSandbox is idempotent on id: if a sandbox for id is already
+// GetOrCreateSandbox is idempotent on key: if a sandbox for key is already
 // running its existing endpoint is returned (200); otherwise a new sandbox
 // is booted from the request body (201).
-func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, id string) {
+func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, key string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	running, sb, err := h.runtime.Lookup(id)
+	running, sb, err := h.runtime.Lookup(key)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
 		return
@@ -71,7 +71,7 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, id string) {
 		return
 	}
 
-	sb, err = h.runtime.Start(id, api.NormalizeConfig(cfg))
+	sb, err = h.runtime.Start(key, api.NormalizeConfig(cfg))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
 		return
@@ -110,15 +110,15 @@ func (h *ControllerHandlers) StreamSandboxEvents(c *gin.Context) {
 	}
 }
 
-// ShutdownSandbox stops and removes the sandbox for id. An already-exited
+// ShutdownSandbox stops and removes the sandbox for key. An already-exited
 // container is simply removed; a missing sandbox returns 404.
-func (h *ControllerHandlers) ShutdownSandbox(c *gin.Context, id string) {
+func (h *ControllerHandlers) ShutdownSandbox(c *gin.Context, key string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if err := h.runtime.Shutdown(id); err != nil {
+	if err := h.runtime.Shutdown(key); err != nil {
 		if errors.Is(err, ErrSandboxNotFound) {
-			c.JSON(http.StatusNotFound, sandboxgen.Error{Error: fmt.Sprintf("sandbox %q does not exist", id)})
+			c.JSON(http.StatusNotFound, sandboxgen.Error{Error: fmt.Sprintf("sandbox %q does not exist", key)})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})

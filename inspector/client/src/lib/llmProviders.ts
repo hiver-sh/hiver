@@ -21,9 +21,16 @@ export interface LLMMessage {
   content: LLMContentBlock[];
 }
 
+export interface LLMTool {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+}
+
 export interface LLMSummaryData {
   model?: string;
   system?: string;
+  tools?: LLMTool[];
   messages: LLMMessage[];
   response?: {
     blocks: LLMContentBlock[];

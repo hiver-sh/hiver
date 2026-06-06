@@ -4,7 +4,7 @@ import { parseSSE } from "./sse";
 
 export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
 
-const SANDBOX_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const SANDBOX_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export interface ControllerOptions {
   /** Base URL of the gateway. Defaults to `http://localhost:10000`. */
@@ -23,8 +23,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const READINESS_POLL_INTERVAL_MS = 200;
 
 /**
- * Idempotent provision against `PUT /v1/sandboxes/{id}`. If a sandbox
- * with `id` already exists the controller returns it unchanged and
+ * Idempotent provision against `PUT /v1/sandboxes/{key}`. If a sandbox
+ * with `key` already exists the controller returns it unchanged and
  * the supplied `config` is ignored; otherwise the controller creates
  * a new sandbox from `config`.
  *
@@ -33,13 +33,13 @@ const READINESS_POLL_INTERVAL_MS = 200;
  * instead of producing a 400 from the controller.
  */
 export async function getOrCreateSandbox(
-  id: string,
+  key: string,
   config: SandboxConfig = {},
   opts: ControllerOptions = {},
 ): Promise<Sandbox> {
-  if (!SANDBOX_ID_PATTERN.test(id)) {
+  if (!SANDBOX_KEY_PATTERN.test(key)) {
     throw new Error(
-      `getOrCreateSandbox: id ${JSON.stringify(id)} must match ${SANDBOX_ID_PATTERN}`,
+      `getOrCreateSandbox: key ${JSON.stringify(key)} must match ${SANDBOX_KEY_PATTERN}`,
     );
   }
   const validated = SandboxConfig.parse({
@@ -58,17 +58,17 @@ export async function getOrCreateSandbox(
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   try {
-    return await provisionSandbox(id, validated, base, fetchImpl, timeout);
+    return await provisionSandbox(key, validated, base, fetchImpl, timeout);
   } catch (err) {
     if (err instanceof SandboxError && err.status === 0 && timeout > 0) {
-      return provisionSandbox(id, validated, base, fetchImpl, timeout);
+      return provisionSandbox(key, validated, base, fetchImpl, timeout);
     }
     throw err;
   }
 }
 
 async function provisionSandbox(
-  id: string,
+  key: string,
   config: SandboxConfig,
   base: string,
   fetchImpl: typeof fetch,
@@ -76,7 +76,7 @@ async function provisionSandbox(
 ): Promise<Sandbox> {
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/controller/v1/sandboxes/${encodeURIComponent(id)}`, {
+    res = await fetchImpl(`${base}/controller/v1/sandboxes/${encodeURIComponent(key)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(config),
@@ -182,7 +182,7 @@ export async function shutdown(
   const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url = `${base}/controller/v1/shutdown/${encodeURIComponent(sandbox.id)}`;
+  const url = `${base}/controller/v1/shutdown/${encodeURIComponent(sandbox.key)}`;
   let res: Response;
   try {
     res = await fetchImpl(url, {
@@ -205,7 +205,10 @@ export async function shutdown(
 
 export type SandboxLifecycleStatus = "start" | "stop" | "die" | "destroy";
 export interface SandboxLifecycleEvent {
+  /** Server-assigned unique identifier (uuid). */
   id: string;
+  /** Caller-chosen key the sandbox was provisioned under. */
+  key: string;
   status: SandboxLifecycleStatus;
 }
 

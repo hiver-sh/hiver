@@ -7,7 +7,8 @@ import {
 import { Sandbox, SandboxError } from "./sandbox";
 import type { SandboxConfig } from "./schemas";
 
-const SANDBOX_REF = { id: "test-sandbox" };
+const SANDBOX_ID = "11111111-1111-1111-1111-111111111111";
+const SANDBOX_REF = { id: SANDBOX_ID, key: "test-sandbox" };
 const BASE_CONFIG: SandboxConfig = {
   fs: [{ backend: "local", mount: "/workspace" }],
 };
@@ -42,14 +43,15 @@ it("getOrCreateSandbox sends PUT /controller/v1/sandboxes/{id} with JSON body", 
   expect(JSON.parse(init.body as string)).toMatchObject(BASE_CONFIG);
 });
 
-it("getOrCreateSandbox returns Sandbox with correct id and apiServerUrl on 200", async () => {
+it("getOrCreateSandbox returns Sandbox with correct id, key and apiServerUrl on 200", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
   const sandbox = await getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
     fetch: mockFetch as unknown as typeof fetch,
     timeoutMs: 0,
   });
   expect(sandbox).toBeInstanceOf(Sandbox);
-  expect(sandbox.id).toBe("test-sandbox");
+  expect(sandbox.id).toBe(SANDBOX_ID);
+  expect(sandbox.key).toBe("test-sandbox");
   expect(sandbox.apiServerUrl).toBe(`${DEFAULT_GATEWAY_URL}/sandbox/test-sandbox`);
 });
 
