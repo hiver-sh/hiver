@@ -20,11 +20,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-node-exec-tty", {
 
 const exec = await sandbox.execStream("node", { cwd: "/workspace", tty: true });
 
-const lines = [
-  "const x = 6 * 7;",
-  "console.log('the answer is', x);",
-  ".exit",
-];
+const lines = ["const x = 6 * 7;", "console.log('the answer is', x);", ".exit"];
 
 (async () => {
   for (const line of lines) {
@@ -38,4 +34,3 @@ for await (const pipe of exec.pipes) {
 }
 
 console.info("\nexit code:", await exec.exitCode);
-

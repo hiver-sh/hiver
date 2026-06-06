@@ -241,7 +241,6 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, mark int) error
 	return nil
 }
 
-
 func (m *microvm) CgroupPath() string { return m.cgroupPath }
 
 // CaptureSnapshot writes the same gzip-tar snapshot format the container
@@ -616,4 +615,3 @@ func shellJoin(args []string) string {
 	}
 	return strings.Join(quoted, " ")
 }
-

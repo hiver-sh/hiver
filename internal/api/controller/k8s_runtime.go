@@ -189,7 +189,6 @@ func (r *K8sRuntime) Shutdown(key string) error {
 	return nil
 }
 
-
 func (r *K8sRuntime) imageFor(cfg sandboxgen.SandboxConfig) string {
 	if cfg.Image != nil && *cfg.Image != "" {
 		return *cfg.Image

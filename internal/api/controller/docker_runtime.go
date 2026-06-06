@@ -19,7 +19,7 @@ import (
 
 const (
 	composeProject      = "hive"
-	defaultSandboxImage = "hiveruntime/agent-cli:latest"
+	defaultSandboxImage = "hiversh/agent-cli:latest"
 	// labelSandboxKey holds the caller-chosen key; labelSandboxID holds the
 	// server-assigned uuid. The container name is derived from the key, so
 	// idempotent lookups resolve by key while the uuid travels as a label.

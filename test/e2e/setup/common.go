@@ -23,7 +23,7 @@ import (
 
 const (
 	moduleRoot          = "../.."
-	sandboxRuntimeImage = "hiveruntime/agent-cli:latest"
+	sandboxRuntimeImage = "hiversh/agent-cli:latest"
 	// Pinned ports for the host-side upstream HTTP servers. They have
 	// to be fixed because the spec.json fixture references them
 	// literally (no template substitution). Picked high enough to

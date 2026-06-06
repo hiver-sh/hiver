@@ -29,7 +29,9 @@ def greet(name):
 greet("world")
 `.trim();
 
-const exec = await sandbox.execStream(`python3 -c '${script}'`, { cwd: "/workspace" });
+const exec = await sandbox.execStream(`python3 -c '${script}'`, {
+  cwd: "/workspace",
+});
 
 for await (const pipe of exec.pipes) {
   if (pipe.stdout) process.stdout.write("stdout: " + pipe.stdout);

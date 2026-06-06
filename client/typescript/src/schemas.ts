@@ -128,9 +128,15 @@ export type EgressRule = z.infer<typeof EgressRule>;
  */
 export const Snapshot = z.object({
   /** Key identifying the snapshot to restore when the sandbox starts. When omitted, no snapshot is restored on start. */
-  restore_key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+  restore_key: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/)
+    .optional(),
   /** Key under which the snapshot is saved on shutdown. When omitted, `restore_key` is used. */
-  write_key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+  write_key: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/)
+    .optional(),
   /** Glob patterns specifying which paths to include in the snapshot (e.g. `/home/user/*`). */
   include: z.array(z.string()).min(1).optional(),
 });
@@ -233,7 +239,6 @@ export const SandboxRef = z.object({
   key: z.string(),
 });
 export type SandboxRef = z.infer<typeof SandboxRef>;
-
 
 const SandboxEventBase = z.object({
   id: z.number().int(),

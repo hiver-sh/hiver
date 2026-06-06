@@ -12,8 +12,10 @@ const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.PORT ?? 3000);
 const DEFAULT_READ_LIMIT = 2000;
 
-
-async function bash(cmd: string, cwd?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+async function bash(
+  cmd: string,
+  cwd?: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   try {
     const { stdout, stderr } = await execFileAsync("/bin/sh", ["-c", cmd], {
       cwd: cwd || undefined,
@@ -33,7 +35,12 @@ async function readTool(
   path: string,
   offset = 0,
   limit = DEFAULT_READ_LIMIT,
-): Promise<{ content: string; startLine: number; lineCount: number; truncated: boolean }> {
+): Promise<{
+  content: string;
+  startLine: number;
+  lineCount: number;
+  truncated: boolean;
+}> {
   const data = await readFile(path, "utf8");
   const lines = data.replace(/\n$/, "").split("\n");
   const slice = lines.slice(offset, offset + limit);
@@ -46,7 +53,10 @@ async function readTool(
   };
 }
 
-async function writeTool(path: string, content: string): Promise<{ bytes: number }> {
+async function writeTool(
+  path: string,
+  content: string,
+): Promise<{ bytes: number }> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content, "utf8");
   return { bytes: Buffer.byteLength(content, "utf8") };
@@ -62,9 +72,13 @@ async function editTool(
   const count = src.split(oldString).length - 1;
   if (count === 0) throw new Error(`oldString not found in ${path}`);
   if (!replaceAll && count > 1)
-    throw new Error(`oldString matches ${count} times in ${path}; pass replaceAll=true or include more context`);
+    throw new Error(
+      `oldString matches ${count} times in ${path}; pass replaceAll=true or include more context`,
+    );
 
-  const out = replaceAll ? src.split(oldString).join(newString) : src.replace(oldString, newString);
+  const out = replaceAll
+    ? src.split(oldString).join(newString)
+    : src.replace(oldString, newString);
   await writeFile(path, out, "utf8");
   return { replacements: replaceAll ? count : 1 };
 }
@@ -87,7 +101,9 @@ function matchGlob(pattern: string, name: string): boolean {
   if (first) {
     const prefix = first + "/";
     if (!name.startsWith(prefix) && name !== first) return false;
-    name = name.startsWith(prefix) ? name.slice(prefix.length) : name.slice(first.length);
+    name = name.startsWith(prefix)
+      ? name.slice(prefix.length)
+      : name.slice(first.length);
   }
   for (let i = 1; i < parts.length; i++) {
     const seg = parts[i]!.replace(/^\//, "");
@@ -103,7 +119,10 @@ function matchGlob(pattern: string, name: string): boolean {
     for (let j = 0; j <= name.length; j++) {
       const slash = name.indexOf("/", j);
       if (slash < 0) break;
-      if (fnmatch(seg, name.slice(j, slash))) { found = slash + 1; break; }
+      if (fnmatch(seg, name.slice(j, slash))) {
+        found = slash + 1;
+        break;
+      }
     }
     if (found < 0) return false;
     name = name.slice(found);
@@ -112,11 +131,20 @@ function matchGlob(pattern: string, name: string): boolean {
 }
 
 function fnmatch(pattern: string, name: string): boolean {
-  const re = "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]") + "$";
+  const re =
+    "^" +
+    pattern
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, "[^/]*")
+      .replace(/\?/g, "[^/]") +
+    "$";
   return new RegExp(re).test(name);
 }
 
-async function globTool(pattern: string, root = "/"): Promise<{ paths: string[] }> {
+async function globTool(
+  pattern: string,
+  root = "/",
+): Promise<{ paths: string[] }> {
   const paths: string[] = [];
   try {
     for await (const full of walkDir(root)) {
@@ -131,7 +159,10 @@ async function globTool(pattern: string, root = "/"): Promise<{ paths: string[] 
   return { paths };
 }
 
-async function grepTool(pattern: string, path: string): Promise<{ matches: { path: string; line: number; text: string }[] }> {
+async function grepTool(
+  pattern: string,
+  path: string,
+): Promise<{ matches: { path: string; line: number; text: string }[] }> {
   const re = new RegExp(pattern);
   const matches: { path: string; line: number; text: string }[] = [];
 
@@ -146,12 +177,17 @@ async function grepTool(pattern: string, path: string): Promise<{ matches: { pat
     const head = Buffer.from(data.slice(0, 512));
     if (head.includes(0)) return;
     data.split("\n").forEach((line, i) => {
-      if (re.test(line)) matches.push({ path: filePath, line: i + 1, text: line });
+      if (re.test(line))
+        matches.push({ path: filePath, line: i + 1, text: line });
     });
   }
 
   let info: Awaited<ReturnType<typeof stat>>;
-  try { info = await stat(path); } catch (err) { throw err; }
+  try {
+    info = await stat(path);
+  } catch (err) {
+    throw err;
+  }
 
   if (info.isDirectory()) {
     for await (const file of walkDir(path)) await grepFile(file);
@@ -164,82 +200,170 @@ async function grepTool(pattern: string, path: string): Promise<{ matches: { pat
 // ── MCP server setup ──────────────────────────────────────────────────────────
 
 function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: "sandbox-mcp-server", version: "1.0.0" });
-
-  server.registerTool("bash", {
-    description:
-      "Execute a shell command and return stdout, stderr, and exit code. " +
-      "Use 'read'/'write'/'edit'/'glob'/'grep' before falling back to 'bash' equivalents — they are typed, faster, and produce cleaner diffs.",
-    inputSchema: {
-      cmd: z.string().describe("Shell command to execute via /bin/sh -c"),
-      cwd: z.string().optional().describe("Absolute working directory. Defaults to the process cwd."),
-    },
-  }, async ({ cmd, cwd }) => {
-    console.log(`[bash] ${cmd}`);
-    return { content: [{ type: "text", text: JSON.stringify(await bash(cmd, cwd)) }] };
+  const server = new McpServer({
+    name: "sandbox-mcp-server",
+    version: "1.0.0",
   });
 
-  server.registerTool("read", {
-    description: "Read the contents of a file. Use this instead of 'cat' when you only need to inspect a file.",
-    inputSchema: {
-      path: z.string().describe("Absolute path of the file to read"),
-      offset: z.number().int().optional().describe("0-based line index to start reading from. Defaults to 0"),
-      limit: z.number().int().optional().describe("Maximum number of lines to return. Defaults to 2000"),
+  server.registerTool(
+    "bash",
+    {
+      description:
+        "Execute a shell command and return stdout, stderr, and exit code. " +
+        "Use 'read'/'write'/'edit'/'glob'/'grep' before falling back to 'bash' equivalents — they are typed, faster, and produce cleaner diffs.",
+      inputSchema: {
+        cmd: z.string().describe("Shell command to execute via /bin/sh -c"),
+        cwd: z
+          .string()
+          .optional()
+          .describe("Absolute working directory. Defaults to the process cwd."),
+      },
     },
-  }, async ({ path, offset, limit }) => {
-    console.log(`[read] ${path}`);
-    return { content: [{ type: "text", text: JSON.stringify(await readTool(path, offset, limit)) }] };
-  });
+    async ({ cmd, cwd }) => {
+      console.log(`[bash] ${cmd}`);
+      return {
+        content: [{ type: "text", text: JSON.stringify(await bash(cmd, cwd)) }],
+      };
+    },
+  );
 
-  server.registerTool("write", {
-    description:
-      "Write contents to a file, creating parent directories as needed. " +
-      "Use this instead of shell redirection so the file is captured atomically.",
-    inputSchema: {
-      path: z.string().describe("Absolute path of the file to write"),
-      content: z.string().describe("File contents to write"),
+  server.registerTool(
+    "read",
+    {
+      description:
+        "Read the contents of a file. Use this instead of 'cat' when you only need to inspect a file.",
+      inputSchema: {
+        path: z.string().describe("Absolute path of the file to read"),
+        offset: z
+          .number()
+          .int()
+          .optional()
+          .describe("0-based line index to start reading from. Defaults to 0"),
+        limit: z
+          .number()
+          .int()
+          .optional()
+          .describe("Maximum number of lines to return. Defaults to 2000"),
+      },
     },
-  }, async ({ path, content }) => {
-    console.log(`[write] ${path}`);
-    return { content: [{ type: "text", text: JSON.stringify(await writeTool(path, content)) }] };
-  });
+    async ({ path, offset, limit }) => {
+      console.log(`[read] ${path}`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(await readTool(path, offset, limit)),
+          },
+        ],
+      };
+    },
+  );
 
-  server.registerTool("edit", {
-    description:
-      "Replace a substring in a file. " +
-      "Cheaper than rewriting the whole file when you're tweaking a script or report.",
-    inputSchema: {
-      path: z.string().describe("Absolute path of the file to edit"),
-      oldString: z.string().describe("Substring to replace"),
-      newString: z.string().describe("Replacement string"),
-      replaceAll: z.boolean().optional().describe("Replace every occurrence; otherwise oldString must match exactly once"),
+  server.registerTool(
+    "write",
+    {
+      description:
+        "Write contents to a file, creating parent directories as needed. " +
+        "Use this instead of shell redirection so the file is captured atomically.",
+      inputSchema: {
+        path: z.string().describe("Absolute path of the file to write"),
+        content: z.string().describe("File contents to write"),
+      },
     },
-  }, async ({ path, oldString, newString, replaceAll }) => {
-    console.log(`[edit] ${path}`);
-    return { content: [{ type: "text", text: JSON.stringify(await editTool(path, oldString, newString, replaceAll)) }] };
-  });
+    async ({ path, content }) => {
+      console.log(`[write] ${path}`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(await writeTool(path, content)),
+          },
+        ],
+      };
+    },
+  );
 
-  server.registerTool("glob", {
-    description: "Find files matching a glob pattern. (e.g. '**/*.csv').",
-    inputSchema: {
-      pattern: z.string().describe("Glob pattern. Supports *, ?, [class] and ** for any number of path segments"),
-      root: z.string().optional().describe("Directory to search under. Defaults to /"),
+  server.registerTool(
+    "edit",
+    {
+      description:
+        "Replace a substring in a file. " +
+        "Cheaper than rewriting the whole file when you're tweaking a script or report.",
+      inputSchema: {
+        path: z.string().describe("Absolute path of the file to edit"),
+        oldString: z.string().describe("Substring to replace"),
+        newString: z.string().describe("Replacement string"),
+        replaceAll: z
+          .boolean()
+          .optional()
+          .describe(
+            "Replace every occurrence; otherwise oldString must match exactly once",
+          ),
+      },
     },
-  }, async ({ pattern, root }) => {
-    console.log(`[glob] ${pattern}`);
-    return { content: [{ type: "text", text: JSON.stringify(await globTool(pattern, root)) }] };
-  });
+    async ({ path, oldString, newString, replaceAll }) => {
+      console.log(`[edit] ${path}`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              await editTool(path, oldString, newString, replaceAll),
+            ),
+          },
+        ],
+      };
+    },
+  );
 
-  server.registerTool("grep", {
-    description: "Search files for lines matching a regular expression.",
-    inputSchema: {
-      pattern: z.string().describe("Regular expression to search for"),
-      path: z.string().describe("File or directory to search. Directories are searched recursively"),
+  server.registerTool(
+    "glob",
+    {
+      description: "Find files matching a glob pattern. (e.g. '**/*.csv').",
+      inputSchema: {
+        pattern: z
+          .string()
+          .describe(
+            "Glob pattern. Supports *, ?, [class] and ** for any number of path segments",
+          ),
+        root: z
+          .string()
+          .optional()
+          .describe("Directory to search under. Defaults to /"),
+      },
     },
-  }, async ({ pattern, path }) => {
-    console.log(`[grep] ${pattern} ${path}`);
-    return { content: [{ type: "text", text: JSON.stringify(await grepTool(pattern, path)) }] };
-  });
+    async ({ pattern, root }) => {
+      console.log(`[glob] ${pattern}`);
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(await globTool(pattern, root)) },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "grep",
+    {
+      description: "Search files for lines matching a regular expression.",
+      inputSchema: {
+        pattern: z.string().describe("Regular expression to search for"),
+        path: z
+          .string()
+          .describe(
+            "File or directory to search. Directories are searched recursively",
+          ),
+      },
+    },
+    async ({ pattern, path }) => {
+      console.log(`[grep] ${pattern} ${path}`);
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(await grepTool(pattern, path)) },
+        ],
+      };
+    },
+  );
 
   return server;
 }
@@ -251,7 +375,9 @@ const httpServer = createServer(async (req, res) => {
     res.writeHead(404).end();
     return;
   }
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
   const mcpServer = buildMcpServer();
   await mcpServer.connect(transport);
   await transport.handleRequest(req, res);

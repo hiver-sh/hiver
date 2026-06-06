@@ -57,7 +57,7 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 	waitForController(t, controllerURL)
 
 	id := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
-	body := []byte(fmt.Sprintf(`{
+	body := fmt.Appendf(nil, `{
 		"image": %q,
 		"fs": [{
 			"mount": "/workspace",
@@ -67,15 +67,15 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 				{"path": "/workspace/**", "access": "rw"}
 			]
 		}]
-	}`, sandboxImage))
+	}`, sandboxImage)
 
 	// First PUT → 201 Created with the new record.
 	created, status := putSandbox(t, controllerURL, id, body)
 	if status != http.StatusCreated {
 		t.Fatalf("first PUT: status %d, want 201", status)
 	}
-	if created.Id != id {
-		t.Errorf("sandbox.id = %q, want %q", created.Id, id)
+	if created.Key != id {
+		t.Errorf("sandbox.key = %q, want %q", created.Key, id)
 	}
 
 	// The container exists on the host daemon and is grouped into

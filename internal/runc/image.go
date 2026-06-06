@@ -122,7 +122,7 @@ func findExposedTcpPort(exposedPorts map[string]any) *string {
 		return nil
 	}
 
-	for key, _ := range exposedPorts {
+	for key := range exposedPorts {
 		portParts := strings.Split(key, "/")
 		port, protocol := portParts[0], portParts[1]
 		if protocol == "tcp" {

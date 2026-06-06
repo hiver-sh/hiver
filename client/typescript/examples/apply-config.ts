@@ -27,7 +27,12 @@ const desired: hive.SandboxConfig = {
   ...current,
   egress: [
     ...(current.egress ?? []),
-    { access: "allow", host: "api.github.com", methods: ["GET"], paths: ["/repos/*"] },
+    {
+      access: "allow",
+      host: "api.github.com",
+      methods: ["GET"],
+      paths: ["/repos/*"],
+    },
   ],
 };
 

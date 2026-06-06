@@ -155,9 +155,21 @@ func (h *SandboxHandlers) publishIngressResponse(requestID int64, status, durati
 	})
 }
 
-func (h *SandboxHandlers) ProxyGet(c *gin.Context, port, path string)    { h.newReverseProxy(c, port, path) }
-func (h *SandboxHandlers) ProxyHead(c *gin.Context, port, path string)   { h.newReverseProxy(c, port, path) }
-func (h *SandboxHandlers) ProxyPost(c *gin.Context, port, path string)   { h.newReverseProxy(c, port, path) }
-func (h *SandboxHandlers) ProxyPut(c *gin.Context, port, path string)    { h.newReverseProxy(c, port, path) }
-func (h *SandboxHandlers) ProxyPatch(c *gin.Context, port, path string)  { h.newReverseProxy(c, port, path) }
-func (h *SandboxHandlers) ProxyDelete(c *gin.Context, port, path string) { h.newReverseProxy(c, port, path) }
+func (h *SandboxHandlers) ProxyGet(c *gin.Context, port, path string) {
+	h.newReverseProxy(c, port, path)
+}
+func (h *SandboxHandlers) ProxyHead(c *gin.Context, port, path string) {
+	h.newReverseProxy(c, port, path)
+}
+func (h *SandboxHandlers) ProxyPost(c *gin.Context, port, path string) {
+	h.newReverseProxy(c, port, path)
+}
+func (h *SandboxHandlers) ProxyPut(c *gin.Context, port, path string) {
+	h.newReverseProxy(c, port, path)
+}
+func (h *SandboxHandlers) ProxyPatch(c *gin.Context, port, path string) {
+	h.newReverseProxy(c, port, path)
+}
+func (h *SandboxHandlers) ProxyDelete(c *gin.Context, port, path string) {
+	h.newReverseProxy(c, port, path)
+}

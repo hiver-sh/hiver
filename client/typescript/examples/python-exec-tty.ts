@@ -18,14 +18,13 @@ const sandbox = await hive.getOrCreateSandbox("hive-python-exec-tty", {
   ttl: 0,
 });
 
-const exec = await sandbox.execStream("python3", { cwd: "/workspace", tty: true });
+const exec = await sandbox.execStream("python3", {
+  cwd: "/workspace",
+  tty: true,
+});
 
 // Feed a short script to the REPL line by line, then ask it to exit.
-const lines = [
-  "x = 6 * 7",
-  "print('the answer is', x)",
-  "exit()",
-];
+const lines = ["x = 6 * 7", "print('the answer is', x)", "exit()"];
 
 (async () => {
   for (const line of lines) {

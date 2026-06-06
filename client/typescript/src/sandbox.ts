@@ -92,7 +92,9 @@ export class Sandbox {
    */
   ping = async (opts?: RequestOptions): Promise<void> => {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`, { signal });
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`, {
+      signal,
+    });
     if (!res.ok) throw await toError(res, "ping");
   };
 
@@ -102,7 +104,9 @@ export class Sandbox {
    */
   async getPorts(opts?: RequestOptions): Promise<number[]> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ports`, { signal });
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ports`, {
+      signal,
+    });
     if (!res.ok) throw await toError(res, "getPorts");
     return (await res.json()) as number[];
   }
@@ -110,7 +114,9 @@ export class Sandbox {
   /** Read the current `SandboxConfig`. */
   async getConfig(opts?: RequestOptions): Promise<SandboxConfig> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`, { signal });
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`, {
+      signal,
+    });
     if (!res.ok) throw await toError(res, "getConfig");
     return SandboxConfig.parse(await res.json());
   }
@@ -120,7 +126,10 @@ export class Sandbox {
    * `applied` field reports whether the change was committed or
    * rolled back.
    */
-  async applyConfig(config: SandboxConfig, opts?: RequestOptions): Promise<ApplyResult> {
+  async applyConfig(
+    config: SandboxConfig,
+    opts?: RequestOptions,
+  ): Promise<ApplyResult> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const validated = SandboxConfig.parse(config);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`, {
@@ -235,7 +244,10 @@ export class Sandbox {
    * The returned promise resolves once the server has accepted the connection
    * and registered the process — at that point `writeStdin` is safe to call.
    */
-  async execStream(command: string, opts?: ExecStreamOptions): Promise<ExecProcess> {
+  async execStream(
+    command: string,
+    opts?: ExecStreamOptions,
+  ): Promise<ExecProcess> {
     const id = crypto.randomUUID();
     const streamUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}`;
     const stdinUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}/stdin`;
@@ -283,9 +295,12 @@ export class Sandbox {
         const event = JSON.parse(frame.data) as ExecStreamEvent;
         if (event.type === "stdout") push({ stdout: event.text });
         else if (event.type === "stderr") push({ stderr: event.text });
-        else if (event.type === "exit") { resolveExit(event.code); push(null); }
+        else if (event.type === "exit") {
+          resolveExit(event.code);
+          push(null);
+        }
       }
-    })().catch(err => {
+    })().catch((err) => {
       rejectExit(err);
       push(null);
     });
@@ -297,7 +312,9 @@ export class Sandbox {
           if (item === null) return;
           yield item;
         } else {
-          await new Promise<void>(r => { notify = r; });
+          await new Promise<void>((r) => {
+            notify = r;
+          });
         }
       }
     }
@@ -427,10 +444,20 @@ function resolveSignal(
   const timeout = AbortSignal.timeout(timeoutMs);
   if (!signal) return timeout;
   const ac = new AbortController();
-  if (signal.aborted) { ac.abort(signal.reason); return ac.signal; }
-  if (timeout.aborted) { ac.abort(timeout.reason); return ac.signal; }
-  signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
-  timeout.addEventListener("abort", () => ac.abort(timeout.reason), { once: true });
+  if (signal.aborted) {
+    ac.abort(signal.reason);
+    return ac.signal;
+  }
+  if (timeout.aborted) {
+    ac.abort(timeout.reason);
+    return ac.signal;
+  }
+  signal.addEventListener("abort", () => ac.abort(signal.reason), {
+    once: true,
+  });
+  timeout.addEventListener("abort", () => ac.abort(timeout.reason), {
+    once: true,
+  });
   return ac.signal;
 }
 

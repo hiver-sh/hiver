@@ -176,7 +176,6 @@ type Isolation interface {
 	// traffic) so they aren't redirected back into the proxy.
 	RedirectEgress(ctx context.Context, proxyPort, mark int) error
 
-
 	// CgroupPath is the absolute cgroup the workload runs under, used both
 	// to confine it (written into the runtime config) and to read resource
 	// usage from /sys/fs/cgroup<CgroupPath>.

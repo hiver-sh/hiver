@@ -12,14 +12,16 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 const sandbox = await hive.getOrCreateSandbox("hive-claude-exec", {
-  image: "hiveruntime/agent-cli:latest",
+  image: "hiversh/agent-cli:latest",
   env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
 });
 
-const result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'", {
-  cwd: "/workspace",
-});
+const result = await sandbox.exec(
+  "claude -p 'Write a poem and save it as pdf'",
+  {
+    cwd: "/workspace",
+  },
+);
 console.log(result.stdout);
 
 if (result.stderr) console.error(result.stderr);
-

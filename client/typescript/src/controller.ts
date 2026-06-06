@@ -76,12 +76,15 @@ async function provisionSandbox(
 ): Promise<Sandbox> {
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/controller/v1/sandboxes/${encodeURIComponent(key)}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(config),
-      signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
-    });
+    res = await fetchImpl(
+      `${base}/controller/v1/sandboxes/${encodeURIComponent(key)}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(config),
+        signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
+      },
+    );
   } catch (err) {
     if (isConnectionRefused(err)) {
       throw new SandboxError(
@@ -169,7 +172,9 @@ export async function listSandboxes(
   const refs = ((await res.json()) as unknown[]).map((r) =>
     SandboxRef.parse(r),
   );
-  return refs.map((ref) => new Sandbox(ref, { gatewayUrl: base, fetch: fetchImpl }));
+  return refs.map(
+    (ref) => new Sandbox(ref, { gatewayUrl: base, fetch: fetchImpl }),
+  );
 }
 
 /**

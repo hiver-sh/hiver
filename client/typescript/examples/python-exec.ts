@@ -16,11 +16,9 @@ const sandbox = await hive.getOrCreateSandbox("hive-python-exec", {
   ],
 });
 
-
-const result = await sandbox.exec(
-  `python3 -c "print('Hello, world!')"`,
-  { cwd: "/workspace" },
-);
+const result = await sandbox.exec(`python3 -c "print('Hello, world!')"`, {
+  cwd: "/workspace",
+});
 
 console.info("stdout: " + result.stdout);
 if (result.stderr) console.error("stderr: " + result.stderr);

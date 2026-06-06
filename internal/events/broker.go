@@ -43,7 +43,7 @@ type Broker struct {
 	subDepth      int
 	lastPublishAt time.Time // updated under mu on every Publish
 	closed        bool      // Close() flips this; rejects new subscribers
-	activityHook  func()   // called by Publish (not PublishSilent) outside the lock
+	activityHook  func()    // called by Publish (not PublishSilent) outside the lock
 }
 
 // New returns a Broker that keeps the most recent `capacity` events for

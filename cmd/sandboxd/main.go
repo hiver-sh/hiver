@@ -424,7 +424,6 @@ func main() {
 		iso,
 		soMark)
 
-
 	// Start the TTL countdown from when the API is reachable, not from
 	// sandboxd startup. Image unpacking can take several seconds, which
 	// would otherwise eat into the client's ping window.

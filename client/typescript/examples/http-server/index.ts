@@ -40,7 +40,12 @@ await request(9000, "GET", "/ping");
 
 await shutdown();
 
-async function request(port: number, method: string, path: string, body?: string): Promise<void> {
+async function request(
+  port: number,
+  method: string,
+  path: string,
+  body?: string,
+): Promise<void> {
   const url = `${sandbox.proxyUrl(port)}${path}`;
   console.log(`\n> ${method} ${url}`);
 

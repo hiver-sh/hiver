@@ -142,7 +142,6 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, mark int) err
 	return nil
 }
 
-
 // --- capability 3: cgroup ---
 
 func (c *container) CgroupPath() string { return c.cgroupPath }

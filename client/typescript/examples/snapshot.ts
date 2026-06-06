@@ -15,7 +15,7 @@ const KEY = "snapshot-example";
 const snapshot = { restore_key: KEY, write_key: KEY, include: ["/root/**"] };
 const config: hive.SandboxConfig = {
   image: "hive-node-sandbox",
-  isolation: 'microvm',
+  isolation: "microvm",
   fs: [
     {
       backend: "local",

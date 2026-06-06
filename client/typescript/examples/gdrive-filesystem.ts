@@ -156,7 +156,11 @@ console.info("MCP inspector → ", sandbox.exposedEndpoint);
 
 const mcpInspector = spawn(
   "npx",
-  ["@modelcontextprotocol/inspector", "--server-url", `http://${sandbox.exposedEndpoint}`],
+  [
+    "@modelcontextprotocol/inspector",
+    "--server-url",
+    `http://${sandbox.exposedEndpoint}`,
+  ],
   { stdio: "inherit" },
 );
 

@@ -23,7 +23,11 @@ const { shutdown } = createShutdown(sandbox);
 
 // Seed a couple of files and a subdirectory so the listing has something to show.
 await sandbox.uploadFile("/workspace", "readme.txt", "hello from the host\n");
-await sandbox.uploadFile("/workspace", "data.json", JSON.stringify({ ok: true }));
+await sandbox.uploadFile(
+  "/workspace",
+  "data.json",
+  JSON.stringify({ ok: true }),
+);
 await sandbox.exec("mkdir -p /workspace/logs");
 
 async function list(path: string) {

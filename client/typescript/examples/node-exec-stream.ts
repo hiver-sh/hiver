@@ -20,21 +20,26 @@ const sandbox = await hive.getOrCreateSandbox("hive-node-exec-stream", {
 async function greet(name: string): Promise<void> {
   console.log(`Hello, ${name}!`);
   for (let i = 0; i < 2; i++) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    console.log(`Hello, ${name} again after ${i+1}s!`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    console.log(`Hello, ${name} again after ${i + 1}s!`);
   }
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
   console.error(`Bye!`);
 }
 
-function execFunction(fn: (...args: any[]) => unknown, ...args: unknown[]): string {
+function execFunction(
+  fn: (...args: any[]) => unknown,
+  ...args: unknown[]
+): string {
   const serializedFn = fn.toString();
-  const serializedArgs = args.map(a => JSON.stringify(a)).join(", ");
+  const serializedArgs = args.map((a) => JSON.stringify(a)).join(", ");
   const script = `(async () => { const fn = ${serializedFn}; await fn(${serializedArgs}); })()`;
   return `node -e '${script}'`;
 }
 
-const exec = await sandbox.execStream(execFunction(greet, "world"), { cwd: "/workspace" });
+const exec = await sandbox.execStream(execFunction(greet, "world"), {
+  cwd: "/workspace",
+});
 
 for await (const pipe of exec.pipes) {
   if (pipe.stdout) process.stdout.write("stdout: " + pipe.stdout);

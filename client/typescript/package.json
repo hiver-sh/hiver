@@ -1,6 +1,6 @@
 {
-  "name": "hive",
-  "version": "0.0.1",
+  "name": "@hiver.sh/client",
+  "version": "0.1.0",
   "description": "TypeScript client for the Hive sandbox control plane.",
   "type": "module",
   "main": "./dist/index.js",

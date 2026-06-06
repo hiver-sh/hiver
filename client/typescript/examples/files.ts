@@ -7,7 +7,7 @@ import * as hive from "../src";
 import { createShutdown } from "./shutdown.js";
 
 const sandbox = await hive.getOrCreateSandbox("hive-files-example", {
-  image: 'hive-node-sandbox',
+  image: "hive-node-sandbox",
   fs: [
     {
       backend: "local",

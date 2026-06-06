@@ -1,0 +1,164 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Match iTerm2's thin overlay scrollbar */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5.9% 10%;
+    --radius: 0.5rem;
+    --sidebar: 240 4.8% 95.9%;
+    --sidebar-accent: 240 4.8% 87%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --scrollbar-thumb: rgba(0, 0, 0, 0.08);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.2);
+    --scrollbar-thumb-visible: rgba(0, 0, 0, 0.15);
+    --scrollbar-thumb-visible-hover: rgba(0, 0, 0, 0.25);
+    --chart-crosshair: rgba(0, 0, 0, 0.2);
+    --chart-tooltip-bg: rgba(255, 255, 255, 0.92);
+    --chart-tooltip-text: hsl(240 10% 3.9%);
+    --stripe-color: rgba(0, 0, 0, 0.08);
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --sidebar: 0 0% 9.4%;
+    --sidebar-accent: 240 3.7% 17%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --scrollbar-thumb: rgba(255, 255, 255, 0.05);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+    --scrollbar-thumb-visible: rgba(255, 255, 255, 0.2);
+    --scrollbar-thumb-visible-hover: rgba(255, 255, 255, 0.32);
+    --chart-crosshair: rgba(255, 255, 255, 0.25);
+    --chart-tooltip-bg: rgba(0, 0, 0, 0.65);
+    --chart-tooltip-text: hsl(0 0% 98%);
+    --stripe-color: rgba(255, 255, 255, 0.12);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Google Sans", sans-serif;
+    font-size: 17px;
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
+  }
+}
+
+@keyframes stripe-slide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 28px 0;
+  }
+}
+
+.sidebar {
+  background-color: hsl(var(--sidebar));
+}
+
+.monaco-editor,
+.monaco-editor-background,
+.monaco-editor .margin {
+  background-color: transparent !important;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.scroll-container.scrollbar-visible::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-visible);
+}
+.scroll-container.scrollbar-visible::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-visible-hover);
+}
+
+.detail-header-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.detail-header-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.bar-in-flight {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0px,
+    transparent 8px,
+    var(--stripe-color) 8px,
+    var(--stripe-color) 16px
+  );
+  animation: stripe-slide 0.5s linear infinite;
+}

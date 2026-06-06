@@ -234,7 +234,11 @@ const response = query({
     includePartialMessages: true,
     tools: [],
     mcpServers: {
-      sandbox: { type: "http", url: `http://${sandbox.exposedEndpoint!}`, alwaysLoad: true },
+      sandbox: {
+        type: "http",
+        url: `http://${sandbox.exposedEndpoint!}`,
+        alwaysLoad: true,
+      },
     },
     allowedTools: [
       "mcp__sandbox__bash",

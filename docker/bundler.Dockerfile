@@ -13,7 +13,7 @@ RUN mkdir -p /mnt/rootfs \
     && rm -f /sandbox.tar
 
 # ── extend sandbox-runtime with the pre-bundled agent tar ─────────────────────
-FROM hiveruntime/core
+FROM hiversh/core
 RUN mkdir -p /mnt
 COPY --from=tar-builder /mnt /mnt
 

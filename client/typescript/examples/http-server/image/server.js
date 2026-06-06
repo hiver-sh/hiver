@@ -28,7 +28,10 @@ server.listen(8080, () => {
 
 const server2 = http.createServer((req, res) => {
   const payload = JSON.stringify({ port: 9000, url: req.url }, null, 2);
-  res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(payload) });
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(payload),
+  });
   res.end(payload);
 });
 

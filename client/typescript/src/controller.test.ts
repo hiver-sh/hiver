@@ -35,7 +35,9 @@ it("getOrCreateSandbox sends PUT /controller/v1/sandboxes/{id} with JSON body", 
 
   expect(mockFetch).toHaveBeenCalledOnce();
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(`${DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox`);
+  expect(url).toBe(
+    `${DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox`,
+  );
   expect(init.method).toBe("PUT");
   expect((init.headers as Record<string, string>)["content-type"]).toBe(
     "application/json",
@@ -52,7 +54,9 @@ it("getOrCreateSandbox returns Sandbox with correct id, key and apiServerUrl on 
   expect(sandbox).toBeInstanceOf(Sandbox);
   expect(sandbox.id).toBe(SANDBOX_ID);
   expect(sandbox.key).toBe("test-sandbox");
-  expect(sandbox.apiServerUrl).toBe(`${DEFAULT_GATEWAY_URL}/sandbox/test-sandbox`);
+  expect(sandbox.apiServerUrl).toBe(
+    `${DEFAULT_GATEWAY_URL}/sandbox/test-sandbox`,
+  );
 });
 
 it("getOrCreateSandbox returns Sandbox on 201 (created)", async () => {
@@ -72,7 +76,9 @@ it("getOrCreateSandbox uses custom gatewayUrl", async () => {
     timeoutMs: 0,
   });
   const [url] = mockFetch.mock.calls[0] as [string];
-  expect(url).toBe("http://custom-gateway:1234/controller/v1/sandboxes/test-sandbox");
+  expect(url).toBe(
+    "http://custom-gateway:1234/controller/v1/sandboxes/test-sandbox",
+  );
 });
 
 it("getOrCreateSandbox throws Error for id that does not match pattern", async () => {
@@ -139,9 +145,13 @@ it("shutdown sends POST /controller/v1/shutdown/{id}", async () => {
   const mockFetch = vi
     .fn()
     .mockResolvedValue(new Response(null, { status: 204 }));
-  await shutdown(mockSandbox(), { fetch: mockFetch as unknown as typeof fetch });
+  await shutdown(mockSandbox(), {
+    fetch: mockFetch as unknown as typeof fetch,
+  });
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(`${DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox`);
+  expect(url).toBe(
+    `${DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox`,
+  );
   expect(init.method).toBe("POST");
 });
 
