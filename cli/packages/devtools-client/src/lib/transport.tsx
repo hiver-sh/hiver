@@ -185,12 +185,20 @@ export class TracePlayer {
   private _speed: number;
   private _baseReplayMs = 0;
   private _baseWallMs: number;
+  private _listeners = new Set<() => void>();
 
   constructor(trace: TraceData, speed = 1) {
     this._trace = trace;
     this._index = buildIndex(trace);
     this._speed = speed;
     this._baseWallMs = Date.now();
+  }
+
+  // Notified whenever records are added (e.g. while a trace streams in), so
+  // consumers can re-query a player that started empty and filled in over time.
+  subscribe(fn: () => void): () => void {
+    this._listeners.add(fn);
+    return () => this._listeners.delete(fn);
   }
 
   get speed() {
@@ -213,6 +221,24 @@ export class TracePlayer {
     return new Promise((resolve) =>
       setTimeout(resolve, remaining / this._speed),
     );
+  }
+
+  addRecord(endpoint: string, record: TraceRecord): void {
+    let records = this._trace[endpoint];
+    if (!records) {
+      // First sighting of this endpoint: compute its canonical key once and
+      // point the index at the array. Later records mutate the same array, so
+      // the index entry stays valid without recomputing the key.
+      records = this._trace[endpoint] = [];
+      const { pathname, params } = parseUrlParts(endpoint);
+      const sorted = [...params.entries()].sort(([a], [b]) =>
+        a.localeCompare(b),
+      );
+      const qs = new URLSearchParams(sorted).toString();
+      this._index.set(pathname + (qs ? `?${qs}` : ""), records);
+    }
+    records.push(record);
+    for (const fn of this._listeners) fn();
   }
 
   findEntries(url: string | URL): TraceRecord[] | null {
@@ -472,6 +498,23 @@ export function TransportProvider({
     }
   }, []);
 
+  // Bumped (throttled) whenever the player gains records while a trace streams
+  // in, so the transport identity changes and consumers re-query for new data.
+  const [traceVersion, setTraceVersion] = useState(0);
+  useEffect(() => {
+    if (!player) return;
+    let scheduled = false;
+    const unsub = player.subscribe(() => {
+      if (scheduled) return;
+      scheduled = true;
+      setTimeout(() => {
+        scheduled = false;
+        setTraceVersion((v) => v + 1);
+      }, 250);
+    });
+    return unsub;
+  }, [player]);
+
   const baseTransport = useMemo(
     () =>
       player
@@ -479,7 +522,10 @@ export function TransportProvider({
         : enableNetworkRequests
           ? liveTransport
           : noopTransport,
-    [player, enableNetworkRequests],
+    // traceVersion intentionally included: a new transport identity makes
+    // consumers re-fetch as the streaming trace fills in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [player, enableNetworkRequests, traceVersion],
   );
 
   const transport = useMemo(
@@ -513,11 +559,39 @@ export function TransportProvider({
 
   useEffect(() => {
     if (!tracePath) return;
-    globalThis
-      .fetch(tracePath)
-      .then((r) => r.json())
-      .then((data: TraceData) => setPlayer(new TracePlayer(data, speed)))
-      .catch((e) => console.error("Failed to load trace:", e));
+    const player = new TracePlayer({}, speed);
+    setPlayer(player);
+    const ac = new AbortController();
+
+    const addLine = (line: string) => {
+      const t = line.trim();
+      if (!t) return;
+      const { endpoint, ...record } = JSON.parse(t) as {
+        endpoint: string;
+      } & TraceRecord;
+      player.addRecord(endpoint, record);
+    };
+
+    (async () => {
+      const res = await globalThis.fetch(tracePath, { signal: ac.signal });
+      if (!res.body) return;
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? ""; // keep the trailing partial line
+        for (const line of lines) addLine(line);
+      }
+      addLine(buf); // flush the final line (no trailing newline)
+    })().catch((e) => {
+      if (!ac.signal.aborted) console.error("Failed to load trace:", e);
+    });
+
+    return () => ac.abort();
   }, [tracePath]);
 
   return (

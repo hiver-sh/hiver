@@ -42,7 +42,7 @@ let tracePath: string | undefined;
 if (recording) {
   const tracesDir = join(homedir(), ".hive", "traces");
   mkdirSync(tracesDir, { recursive: true });
-  tracePath = join(tracesDir, `recording-${Date.now()}.json`);
+  tracePath = join(tracesDir, `recording-${Date.now()}.jsonl`);
 }
 
 // The devtools UI is useless without the gateway, so check it's up first and

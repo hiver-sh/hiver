@@ -26,6 +26,8 @@ interface PersistentSession {
   clients: Set<ClientHandle>;
 }
 
+const MAX_SCROLLBACK = 10 * 1024 * 1024; // 10 MB
+
 const sessions = new Map<string, PersistentSession>();
 const termPending = new Map<string, TermInput[]>();
 
@@ -106,7 +108,11 @@ router.get("/:key/terminal/stream", async (req: Request, res: Response) => {
     };
 
     const onData = (buf: Buffer) => {
-      ps.scrollback = Buffer.concat([ps.scrollback, buf]);
+      const combined = Buffer.concat([ps.scrollback, buf]);
+      ps.scrollback =
+        combined.length > MAX_SCROLLBACK
+          ? combined.subarray(combined.length - MAX_SCROLLBACK)
+          : combined;
       for (const c of ps.clients) c.sendData(buf);
     };
 

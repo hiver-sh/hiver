@@ -1,13 +1,5 @@
-import { writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
-
-interface RecordedEvent {
-  time: number;
-  payload: string;
-  headers: Record<string, string>;
-}
-
-type Trace = Record<string, RecordedEvent[]>;
+import { appendFileSync, writeFileSync } from "node:fs";
+import { extname } from "node:path";
 
 const TEXT_EXTS = new Set([".md", ".py", ".json", ".txt", ".js", ".xml"]);
 
@@ -17,7 +9,6 @@ interface DirEntry {
 }
 
 export class EventRecorder {
-  private trace: Trace = {};
   private startTime = Date.now();
   private timers: ReturnType<typeof setInterval>[] = [];
   private abortControllers: AbortController[] = [];
@@ -39,8 +30,8 @@ export class EventRecorder {
     payload: string,
     headers: Record<string, string>,
   ): void {
-    if (!this.trace[endpoint]) this.trace[endpoint] = [];
-    this.trace[endpoint].push({ time: this.elapsed(), payload, headers });
+    const line = JSON.stringify({ endpoint, time: this.elapsed(), payload, headers });
+    appendFileSync(this.outputPath, line + "\n");
   }
 
   private buildUrl(path: string, params?: Record<string, string>): string {
@@ -170,6 +161,7 @@ export class EventRecorder {
   }
 
   start(): void {
+    writeFileSync(this.outputPath, "");
     const listUrl = this.buildUrl("/api/sandboxes");
 
     const fetchOnce = async (): Promise<void> => {
@@ -223,7 +215,6 @@ export class EventRecorder {
   stop(): void {
     for (const t of this.timers) clearInterval(t);
     for (const ac of this.abortControllers) ac.abort();
-    writeFileSync(this.outputPath, JSON.stringify(this.trace, null, 2));
     process.stdout.write(`Recording saved → ${this.outputPath}\n`);
   }
 }
