@@ -5,21 +5,19 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import ora from "ora";
 import { brand, accent, bright, bold, dim, red } from "../theme.js";
+import { requireDocker } from "../docker.js";
+import { parseArgs } from "../args.js";
+
+await requireDocker();
 
 // src/bundle (and dist/bundle) → repo root, where docker/ lives.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../../../..");
 const DOCKERFILE = "docker/bundler.Dockerfile";
 
-// Args after the command name (`hiver bundle <image> ...`).
-const args = process.argv.slice(3);
-function getArg(name: string): string | undefined {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
-}
-const image = args.find((a) => !a.startsWith("--"));
-const tag =
-  getArg("tag") ?? (image ? `${image.split(":")[0]}-bundled` : undefined);
+const args = parseArgs({ "--tag": String });
+const image = args._[0];
+const tag = args["--tag"] ?? (image ? `${image.split(":")[0]}-bundled` : undefined);
 
 if (!image || !tag) {
   console.error(

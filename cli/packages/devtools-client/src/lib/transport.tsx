@@ -450,13 +450,17 @@ export function TransportProvider({
   const [player, setPlayer] = useState<TracePlayer | null>(null);
   const [playbackSpeed, setPlaybackSpeedState] = useState(speed);
   const [gatewayUrl, setGatewayUrlState] = useState(() => {
+    // A user override (set via the UI) wins; otherwise use the value the server
+    // injected from its GATEWAY_URL, falling back to the built-in default.
     try {
-      return (
-        localStorage.getItem("inspector:gatewayUrl") ?? DEFAULT_GATEWAY_URL
-      );
+      const stored = localStorage.getItem("inspector:gatewayUrl");
+      if (stored) return stored;
     } catch {
-      return DEFAULT_GATEWAY_URL;
+      /* localStorage unavailable */
     }
+    const injected = (window as { __HIVE_GATEWAY_URL__?: string })
+      .__HIVE_GATEWAY_URL__;
+    return injected || DEFAULT_GATEWAY_URL;
   });
 
   const setGatewayUrl = useCallback((url: string) => {

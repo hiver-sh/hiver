@@ -10,13 +10,6 @@ import { createShutdown } from "./shutdown.js";
 const sandbox = await hive.getOrCreateSandbox("hive-list-directory-example", {
   image: "hive-node-sandbox",
   isolation: "microvm",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
 });
 
 const { shutdown } = createShutdown(sandbox);

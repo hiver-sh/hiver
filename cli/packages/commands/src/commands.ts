@@ -17,6 +17,18 @@ export interface CommandSpec {
 
 export const COMMANDS: CommandSpec[] = [
   {
+    name: "up",
+    summary: "Start the stack.",
+    entry: "compose/index.ts",
+    usage: ["hiver up"],
+  },
+  {
+    name: "down",
+    summary: "Stop the stack.",
+    entry: "compose/index.ts",
+    usage: ["hiver down"],
+  },
+  {
     name: "list",
     summary: "List the sandboxes currently running on the gateway.",
     entry: "list/index.ts",
@@ -33,7 +45,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: "inspect",
-    summary: "Launch the Hiver devtools.",
+    summary: "Launch the Hiver DevTools.",
     entry: "inspect/index.ts",
     usage: [
       "hiver inspect",
@@ -46,18 +58,6 @@ export const COMMANDS: CommandSpec[] = [
     summary: "Bundle a Docker image into a Hiver runtime image.",
     entry: "bundle/index.ts",
     usage: ["hiver bundle <image>", "hiver bundle <image> --tag <runtime-tag>"],
-  },
-  {
-    name: "up",
-    summary: "Start the Hiver stack in the background.",
-    entry: "compose/index.ts",
-    usage: ["hiver up"],
-  },
-  {
-    name: "down",
-    summary: "Stop the Hiver stack and remove its containers.",
-    entry: "compose/index.ts",
-    usage: ["hiver down"],
   },
 ];
 

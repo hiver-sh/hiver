@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import cors from "cors";
 import express from "express";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import sandboxRoutes from "./routes/sandboxes.js";
@@ -30,8 +30,14 @@ app.use("/api/trace", traceRoutes);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const clientDist = join(__dirname, "../../devtools-client/dist");
 if (existsSync(clientDist)) {
-  app.use(express.static(clientDist));
-  app.get("*", (_req, res) => res.sendFile(join(clientDist, "index.html")));
+  app.use(express.static(clientDist, { index: false }));
+  // Inject the configured gateway URL so the web client defaults to it instead
+  // of its own hard-coded default.
+  const indexHtml = readFileSync(join(clientDist, "index.html"), "utf8").replace(
+    "</head>",
+    `<script>window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}</script></head>`,
+  );
+  app.get("*", (_req, res) => res.type("html").send(indexHtml));
 }
 
 app.listen(PORT, () => {

@@ -18,7 +18,7 @@
     "build": "npm run build:client && npm run build:server && npm run build:commands",
     "build:client": "cd packages/devtools-client && vite build",
     "build:server": "tsc -p packages/devtools-server/tsconfig.build.json",
-    "build:commands": "tsc -p packages/commands/tsconfig.build.json",
+    "build:commands": "tsc -p packages/commands/tsconfig.build.json && cp packages/commands/src/compose/compose.yaml packages/commands/dist/compose/compose.yaml",
     "cli": "DEV=1 ./packages/commands/bin.js",
     "dev": "tsx watch packages/devtools-server/src/index.ts & (cd packages/devtools-client && vite) & wait",
     "start": "PORT=5173 node packages/devtools-server/dist/index.js",
@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@hiver.sh/client": "file:../client/typescript",
+    "arg": "^5.0.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "ora": "^8.2.0",

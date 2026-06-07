@@ -1,13 +1,8 @@
-import { listSandboxes, DEFAULT_GATEWAY_URL } from "@hiver.sh/client";
+import { listSandboxes } from "@hiver.sh/client";
 import { brand, accent, bold, dim, red } from "../theme.js";
+import { resolveGatewayUrl } from "../args.js";
 
-// Args after the command name (`hiver list ...`).
-const args = process.argv.slice(3);
-function getArg(name: string): string | undefined {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
-}
-const gatewayUrl = getArg("gateway-url") ?? DEFAULT_GATEWAY_URL;
+const gatewayUrl = resolveGatewayUrl();
 
 console.log(`\n${bold(brand("Sandboxes"))} ${dim(gatewayUrl)}\n`);
 

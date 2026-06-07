@@ -1,0 +1,32 @@
+# Optimized compose for `hiver up` / `hiver down`.
+#
+# The CLI runs this against published images, so unlike docker/compose.yaml it
+# carries no `build:` sections and none of the build-only services (core,
+# bundler, agent-cli-standalone). Only the runtime stack — controller and
+# gateway — is defined here.
+name: hive
+
+services:
+  controller:
+    image: hiversh/controller:${TAG:-latest}
+    # The controller spawns sandbox containers via the host docker daemon.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  gateway:
+    image: hiversh/gateway:${TAG:-latest}
+    # Host port is chosen by `hiver up` (falls back to 10000); container stays 10000.
+    ports:
+      - "${GATEWAY_PORT:-10000}:10000"
+    restart: unless-stopped
+
+volumes:
+  snapshots:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.hive/snapshots
+
+

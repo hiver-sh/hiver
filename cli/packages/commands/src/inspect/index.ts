@@ -1,83 +1,119 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import ora, { type Ora } from "ora";
-import { tag, brand, accent, bright, bold, dim } from "../theme.js";
+import { listSandboxes } from "@hiver.sh/client";
+import { brand, accent, bright, bold, dim, red } from "../theme.js";
+import { parseArgs, resolveGatewayUrl } from "../args.js";
+import { createLoader } from "../hive.js";
+import { confirm } from "../prompt.js";
 import { EventRecorder } from "./recorder.js";
 
+// packages/commands/{src,dist}/inspect → packages/devtools-server/dist/index.js.
+// The built server also serves the built web client, so one process is enough.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// src/inspect → packages/commands (mirrored as dist/inspect → packages/commands).
-const ROOT = resolve(__dirname, "../../..");
+const SERVER_ENTRY = resolve(__dirname, "../../../devtools-server/dist/index.js");
+const BIN = resolve(__dirname, "../../bin.js"); // the `hiver` entry, for `up`
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const SERVER_DIR = resolve(ROOT, "server");
-const CLIENT_DIR = resolve(ROOT, "client");
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const args = parseArgs({ "--record": Boolean, "--port": String });
+const recording = args["--record"] ?? false;
+const port = args["--port"] ?? "5173";
+const serverUrl = `http://localhost:${port}`;
+let gatewayUrl = resolveGatewayUrl();
 
-const args = process.argv.slice(2);
-function getArg(name: string): string | undefined {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+if (!existsSync(SERVER_ENTRY)) {
+  console.error(
+    `\n  ${red("✖")} devtools server not built — ${dim("run `npm run build` in cli/ first.")}\n`,
+  );
+  process.exit(1);
 }
-const recording = args.includes("--record");
-const serverUrl = getArg("server-url") ?? "http://localhost:3001";
-const gatewayUrl = getArg("gateway-url");
 
-// With --record, an EventRecorder polls the dev server (retrying until it's up)
-// and writes a trace to ~/.hive/traces on shutdown.
-let recorder: EventRecorder | undefined;
+// With --record, a trace is written to ~/.hive/traces; the recorder itself is
+// created once the (possibly newly-started) gateway URL is settled.
 let tracePath: string | undefined;
 if (recording) {
   const tracesDir = join(homedir(), ".hive", "traces");
   mkdirSync(tracesDir, { recursive: true });
   tracePath = join(tracesDir, `recording-${Date.now()}.json`);
-  recorder = new EventRecorder(gatewayUrl, serverUrl, tracePath);
 }
 
+// The devtools UI is useless without the gateway, so check it's up first and
+// point the user at `hiver up` if it isn't.
+async function gatewayReachable(url: string): Promise<boolean> {
+  try {
+    await listSandboxes({ gatewayUrl: url, timeoutMs: 500 });
+    return true;
+  } catch {
+    return false; // connection refused / timed out
+  }
+}
+
+// Run `hiver up` (the CLI's own entry), inheriting stdio so its output shows.
+function runUp(): Promise<boolean> {
+  return new Promise((res) => {
+    const child = spawn(process.execPath, [BIN, "up"], { stdio: "inherit" });
+    child.on("error", () => res(false));
+    child.on("exit", (code) => res(code === 0));
+  });
+}
+
+// Ensure the gateway is up; if not, offer to start the stack (like the
+// install-docker dialog), then wait for it to come online.
+{
+  const ping = createLoader(`checking gateway ${gatewayUrl}`).start();
+  if (await gatewayReachable(gatewayUrl)) {
+    ping.stop();
+  } else {
+    ping.fail(`gateway not reachable at ${gatewayUrl}`);
+
+    if (!(await confirm(`  Start the local stack now with ${bright("hiver up")}?`))) {
+      console.error(`  ${dim("start it with")} ${bold("hiver up")}\n`);
+      process.exit(1);
+    }
+
+    console.log();
+    if (!(await runUp())) {
+      console.error(`\n  ${red("✖")} could not start the stack\n`);
+      process.exit(1);
+    }
+
+    // `up` may have published the gateway on a different port; re-resolve and
+    // wait for it to answer (it already printed the URL, so this stays quiet).
+    gatewayUrl = resolveGatewayUrl();
+    const wait = createLoader("waiting for gateway").start();
+    let ready = false;
+    for (let i = 0; i < 20 && !ready; i++) {
+      ready = await gatewayReachable(gatewayUrl);
+      if (!ready) await sleep(500);
+    }
+    if (!ready) {
+      wait.fail(`gateway still not reachable at ${gatewayUrl}`);
+      process.exit(1);
+    }
+    wait.stop();
+  }
+}
+
+// Gateway is ready — now show the banner.
 console.log(
-  `\n${bold(brand("Sandbox Inspector"))}${recording ? " " + accent("[recording]") : ""}\n`,
+  `\n${bold(brand("DevTools"))}${recording ? " " + accent("[recording]") : ""}\n`,
 );
-console.log(`${dim("  server")}  → http://localhost:3001`);
-console.log(`${dim("  client")}  → http://localhost:5173`);
-if (recording) console.log(`${dim("  trace")}   → ${tracePath}`);
+console.log(`${dim("  inspector")} → ${serverUrl}`);
+console.log(`${dim("  gateway")}   → ${gatewayUrl}`);
+if (recording) console.log(`${dim("  trace")}     → ${tracePath}`);
 console.log();
 
-const spinner: Ora = ora({
-  text: "starting dev servers…",
-  color: "magenta",
-}).start();
+// Now that the gateway URL is settled, create the recorder if requested.
+const recorder =
+  recording && tracePath
+    ? new EventRecorder(gatewayUrl, serverUrl, tracePath)
+    : undefined;
 
-// While the spinner owns the last terminal line, buffer child output so the
-// animation isn't shredded by interleaved logs. Flush once it resolves.
-const buffered: string[] = [];
-function emit(text: string) {
-  if (spinner.isSpinning) buffered.push(text);
-  else process.stdout.write(text);
-}
-function flush() {
-  if (buffered.length) {
-    process.stdout.write(buffered.join(""));
-    buffered.length = 0;
-  }
-}
-
-function pipeLines(
-  proc: ChildProcess,
-  label: string,
-  color: (s: string) => string,
-  onLine?: (line: string) => void,
-) {
-  for (const stream of [proc.stdout, proc.stderr]) {
-    if (!stream) continue;
-    const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    rl.on("line", (line) => {
-      emit(tag(label, color) + line + "\n");
-      onLine?.(line);
-    });
-  }
-}
+const loader = createLoader("starting devtools server…").start();
+let spinning = true;
 
 function openBrowser(url: string) {
   const cmd =
@@ -89,54 +125,52 @@ function openBrowser(url: string) {
   spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
 }
 
-const server = spawn(npm, ["run", "dev"], {
-  cwd: SERVER_DIR,
+const server = spawn(process.execPath, [SERVER_ENTRY], {
   stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env },
+  env: { ...process.env, PORT: port, GATEWAY_URL: gatewayUrl },
 });
-pipeLines(server, "server", brand);
 
+// Read the server's output to detect readiness but don't print it — keep this
+// view to just the banner and status. Output is kept for error reporting.
+let serverOutput = "";
 let opened = false;
-const client = spawn(npm, ["run", "dev"], {
-  cwd: CLIENT_DIR,
-  stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env },
-});
-pipeLines(client, "client", accent, (line) => {
-  if (!opened && line.includes("Local:") && line.includes("localhost")) {
-    opened = true;
-    const match = line.match(/https?:\/\/localhost:\d+/);
-    const url = match?.[0] ?? "http://localhost:5173";
-    spinner.succeed(`Inspector ready — opening ${bright(url)}`);
-    flush();
-    openBrowser(url);
-  }
-});
+for (const stream of [server.stdout, server.stderr]) {
+  if (!stream) continue;
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  rl.on("line", (line) => {
+    serverOutput += line + "\n";
+    if (!opened && line.includes("DevTools server on")) {
+      opened = true;
+      const match = line.match(/https?:\/\/localhost:\d+/);
+      const url = match?.[0] ?? serverUrl;
+      loader.succeed("Inspector ready");
+      spinning = false;
+      openBrowser(url);
+    }
+  });
+}
 
 // The recorder retries until the server answers, so it's safe to start now.
 recorder?.start();
 
 server.on("exit", (code) => {
   if (code !== null && code !== 0) {
-    if (spinner.isSpinning) spinner.fail("server exited");
-    flush();
-    process.stderr.write(tag("server", brand) + `exited with code ${code}\n`);
-  }
-});
-client.on("exit", (code) => {
-  if (code !== null && code !== 0) {
-    if (spinner.isSpinning) spinner.fail("client exited");
-    flush();
-    process.stderr.write(tag("client", accent) + `exited with code ${code}\n`);
+    if (spinning) {
+      loader.fail("server exited");
+      spinning = false;
+    }
+    process.stderr.write(`server exited with code ${code}\n`);
+    if (serverOutput.trim()) process.stderr.write("\n" + serverOutput.trimEnd() + "\n");
   }
 });
 
 function shutdown() {
-  if (spinner.isSpinning) spinner.stop();
-  flush();
+  if (spinning) {
+    loader.stop();
+    spinning = false;
+  }
   recorder?.stop(); // writes the trace to disk
   server.kill();
-  client.kill();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);
