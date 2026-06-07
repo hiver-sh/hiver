@@ -5,11 +5,11 @@
 // Run with: npx tsx examples/local-filesystem-mount
 import * as path from "path";
 import { fileURLToPath } from "url";
-import * as hive from "../../src";
+import * as hiver from "@hiver.sh/client";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const sandboxConfig: hive.SandboxConfig = {
+const sandboxConfig: hiver.SandboxConfig = {
   ttl: 1800,
   fs: [
     {
@@ -21,7 +21,7 @@ const sandboxConfig: hive.SandboxConfig = {
   ],
 };
 
-const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);
+const sandbox = await hiver.getOrCreateSandbox("hive-example", sandboxConfig);
 
 const readFile = async (file: string) => {
   const bytes = await sandbox.downloadFile(file);
@@ -33,4 +33,4 @@ const readFile = async (file: string) => {
 await readFile("/workspace/echo/SKILL.md");
 await readFile("/workspace/echo/echo.sh");
 
-await hive.shutdown(sandbox);
+await hiver.shutdown(sandbox);

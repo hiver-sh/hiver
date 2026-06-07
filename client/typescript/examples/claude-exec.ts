@@ -4,14 +4,15 @@
 //   ANTHROPIC_API_KEY=sk-ant-... \
 //     npx tsx examples/claude-exec.ts
 import process from "node:process";
-import * as hive from "../src";
+
+import * as hiver from "@hiver.sh/client";
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error("ANTHROPIC_API_KEY must be defined");
   process.exit(1);
 }
 
-const sandbox = await hive.getOrCreateSandbox("hive-claude-exec", {
+const sandbox = await hiver.getOrCreateSandbox("hive-claude-exec", {
   image: "hiversh/agent-cli:latest",
   env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
 });

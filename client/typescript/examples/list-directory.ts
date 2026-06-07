@@ -4,12 +4,12 @@
 // control-plane is higher privilege than the agent itself.
 //
 // Run with: npx tsx examples/list-directory.ts
-import * as hive from "../src";
-import { createShutdown } from "./shutdown.js";
+import { createShutdown } from "./utils/index.js";
 
-const sandbox = await hive.getOrCreateSandbox("hive-list-directory-example", {
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("hiver-list-directory-example", {
   image: "hiversh/node:alpine",
-  isolation: "microvm",
 });
 
 const { shutdown } = createShutdown(sandbox);

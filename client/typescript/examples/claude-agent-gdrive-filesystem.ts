@@ -1,29 +1,31 @@
-// Hook the Claude Agent SDK up to a Hive-managed MCP server. The
-// sandbox boots the `mcp-server` image, and `sandbox.exposedEndpoint` is handed to
-// the SDK as an HTTP MCP server so every tool call the model makes is
-// mediated by sandboxd's egress + FUSE policies.
+// Hook the Claude Agent SDK up to a Hiver-managed MCP server. The
+// `mcp-server/image` is built with the hiver CLI, the sandbox boots that
+// bundle, and `sandbox.proxyUrl(3000)` is handed to the SDK as an HTTP MCP
+// server so every tool call the model makes is mediated by the sandbox's
+// egress + FUSE policies.
 //
 // Run with:
 //   ANTHROPIC_API_KEY=<value>
 //   FINNHUB_API_KEY=<value> \
 //   GOOGLE_CLIENT_ID=<value> \
 //   GOOGLE_CLIENT_SECRET=<value> \
-//     npx tsx examples/claude-agent.ts
+//     npx tsx examples/claude-agent-gdrive-filesystem.ts
 //
 // Grab a free Finnhub key at https://finnhub.io/register
 // Grab a Google Client id and secret at https://console.cloud.google.com/apis/credential
+import { dirname, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { createShutdown } from "./shutdown.js";
+import { buildBundle, createShutdown } from "./utils/index.js";
 import chalk from "chalk";
-
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import { google } from "googleapis";
 
-import * as hive from "../src";
+import * as hiver from "@hiver.sh/client";
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.error("ANTHROPIC_API_KEY must be defined");
@@ -154,8 +156,14 @@ const folderId = await (async () => {
   }
 })();
 
-const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
-  image: "mcp-server",
+const here = dirname(fileURLToPath(import.meta.url));
+const imageTag = "mcp-server-image-bundle";
+
+console.log(`> Building sandbox bundle ${imageTag}`);
+await buildBundle(join(here, "mcp-server", "image"), imageTag);
+
+const sandbox = await hiver.getOrCreateSandbox("hiver-claude-agent-gdrive", {
+  image: imageTag,
   fs: [
     {
       backend: "gdrive",
@@ -179,7 +187,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-claude-agent", {
         },
       },
     },
-    ...hive.allowedPythonPackages(
+    ...hiver.allowedPythonPackages(
       "numpy",
       "pandas",
       "statsmodels",
@@ -236,7 +244,7 @@ const response = query({
     mcpServers: {
       sandbox: {
         type: "http",
-        url: `http://${sandbox.exposedEndpoint!}`,
+        url: `${sandbox.proxyUrl(3000)}/mcp`,
         alwaysLoad: true,
       },
     },

@@ -1,18 +1,11 @@
 // Run a Node.js function inside the sandbox and print the buffered result.
 //
 // Run with: npx tsx examples/node-exec.ts
-import * as hive from "../src";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("hive-node-exec", {
+const sandbox = await hiver.getOrCreateSandbox("hiver-node-exec", {
   image: "hiversh/node:alpine",
   entrypoint: "tail -f /dev/null",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
 });
 
 const result = await sandbox.exec(`node -e "console.log('Hello, world!')"`, {
@@ -23,4 +16,4 @@ console.info("stdout: " + result.stdout);
 if (result.stderr) console.error("stderr: " + result.stderr);
 console.info("exit code:", result.exit_code);
 
-await hive.shutdown(sandbox);
+await hiver.shutdown(sandbox);

@@ -5,11 +5,10 @@
 // doesn't track a cursor.
 //
 // Run with: npx tsx examples/custom-image
-import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as hive from "../../src";
-import { createShutdown } from "../shutdown.js";
+import * as hiver from "@hiver.sh/client";
+import { buildBundle, createShutdown } from "../utils/index.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const imageTag = "node-example-image-bundle";
 
@@ -17,7 +16,7 @@ console.log(`> Building sandbox bundle ${imageTag}`);
 await buildBundle(join(here, "image"), imageTag);
 
 console.log("> Starting sandbox");
-const sandbox = await hive.getOrCreateSandbox("hive-example", {
+const sandbox = await hiver.getOrCreateSandbox("hive-example", {
   image: imageTag,
   fs: [
     {
@@ -47,19 +46,3 @@ for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
 }
 
 await shutdown();
-
-function buildBundle(sandboxImage: string, bundleTag: string): Promise<void> {
-  return spawnOk("hiver", ["bundle", sandboxImage, "--tag", bundleTag]);
-}
-
-function spawnOk(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: "inherit" });
-    child.once("error", reject);
-    child.once("exit", (code: number | null) =>
-      code === 0
-        ? resolve()
-        : reject(new Error(`${cmd} ${args[0]}: exit ${code}`)),
-    );
-  });
-}

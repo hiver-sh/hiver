@@ -3,9 +3,9 @@
 // fail), then uses applyConfig to allow the controller host and fetches again.
 //
 // Run with: npx tsx examples/node-internal-service.ts
-import * as hive from "../src";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("hive-node-internal-service", {
+const sandbox = await hiver.getOrCreateSandbox("hiver-node-internal-service", {
   image: "hiversh/node:alpine",
   entrypoint: "tail -f /dev/null",
   egress: [{ access: "deny", host: "*" }],
@@ -56,4 +56,4 @@ console.info("\napplyConfig changes:", JSON.stringify(result.changes, null, 2));
 
 await fetchSandboxes("allow controller — expect success");
 
-await hive.shutdown(sandbox);
+await hiver.shutdown(sandbox);

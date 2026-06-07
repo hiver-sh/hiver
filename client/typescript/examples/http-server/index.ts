@@ -3,11 +3,10 @@
 // incoming request (method, URL, headers, body) as JSON.
 //
 // Run with: npx tsx examples/http-server
-import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as hive from "../../src";
-import { createShutdown } from "../shutdown.js";
+import * as hiver from "@hiver.sh/client";
+import { buildBundle, createShutdown } from "../utils/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const imageTag = "http-server-image-bundle";
@@ -16,7 +15,7 @@ console.log(`> Building sandbox bundle ${imageTag}`);
 await buildBundle(join(here, "image"), imageTag);
 
 console.log("> Starting sandbox");
-const sandbox = await hive.getOrCreateSandbox("hive-http-server-example", {
+const sandbox = await hiver.getOrCreateSandbox("hive-http-server-example", {
   image: imageTag,
 });
 
@@ -52,20 +51,4 @@ async function request(
   const text = await res.text();
   console.log(`< ${res.status} ${res.statusText}`);
   console.log(text);
-}
-
-function buildBundle(sandboxImage: string, bundleTag: string): Promise<void> {
-  return spawnOk("hiver", ["bundle", sandboxImage, "--tag", bundleTag]);
-}
-
-function spawnOk(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: "inherit" });
-    child.once("error", reject);
-    child.once("exit", (code: number | null) =>
-      code === 0
-        ? resolve()
-        : reject(new Error(`${cmd} ${args[0]}: exit ${code}`)),
-    );
-  });
 }

@@ -4,26 +4,18 @@
 // concrete additions/removals in `result.changes`.
 //
 // Run with: npx tsx examples/apply-config.ts
-import * as hive from "../src";
-import { createShutdown } from "./shutdown.js";
+import { createShutdown } from "./utils/index.js";
 
-const sandbox = await hive.getOrCreateSandbox("hive-example", {
-  image: "mcp-server",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
-});
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("hiver-apply-config-example");
 
 const { shutdown } = createShutdown(sandbox);
 
 const current = await sandbox.getConfig();
 console.info("current:", current);
 
-const desired: hive.SandboxConfig = {
+const desired: hiver.SandboxConfig = {
   ...current,
   egress: [
     ...(current.egress ?? []),

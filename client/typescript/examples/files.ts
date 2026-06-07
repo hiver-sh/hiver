@@ -3,18 +3,12 @@
 // than the agent itself.
 //
 // Run with: npx tsx examples/files.ts
-import * as hive from "../src";
-import { createShutdown } from "./shutdown.js";
+import { createShutdown } from "./utils/index.js";
 
-const sandbox = await hive.getOrCreateSandbox("hive-files-example", {
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("hive-files-example", {
   image: "hiversh/node:alpine",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
 });
 
 const { shutdown } = createShutdown(sandbox);

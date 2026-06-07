@@ -14,14 +14,15 @@
 //   4. The sandbox is created with the resolved gdrive_* params.
 //
 // Run with: npx tsx examples/google-drive-filesystem.ts
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
 import { google } from "googleapis";
-import * as hive from "../src";
+import { createShutdown } from "./utils/index.js";
+
+import * as hiver from "@hiver.sh/client";
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -137,7 +138,7 @@ const folderId = await (async () => {
 })();
 rl.close();
 
-const sandbox = await hive.getOrCreateSandbox("hive-gdrive", {
+const sandbox = await hiver.getOrCreateSandbox("hive-gdrive", {
   fs: [
     {
       backend: "gdrive",
@@ -152,30 +153,7 @@ const sandbox = await hive.getOrCreateSandbox("hive-gdrive", {
   ],
 });
 
-console.info("MCP inspector → ", sandbox.exposedEndpoint);
-
-const mcpInspector = spawn(
-  "npx",
-  [
-    "@modelcontextprotocol/inspector",
-    "--server-url",
-    `http://${sandbox.exposedEndpoint}`,
-  ],
-  { stdio: "inherit" },
-);
-
-const ac = new AbortController();
-async function shutdown(code: number) {
-  if (ac.signal.aborted) return;
-  ac.abort();
-  mcpInspector.kill("SIGINT");
-  await hive.shutdown(sandbox);
-  process.exit(code);
-}
-
-process.once("SIGINT", () => shutdown(130));
-process.once("SIGTERM", () => shutdown(143));
-mcpInspector.on("exit", (code: number | null) => shutdown(code ?? 0));
+const { ac } = createShutdown(sandbox);
 
 for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
   console.info("sandbox event", event);

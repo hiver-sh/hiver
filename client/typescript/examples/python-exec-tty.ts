@@ -2,18 +2,11 @@
 // stdin to drive it programmatically.
 //
 // Run with: npx tsx examples/python-exec-tty.ts
-import * as hive from "../src";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("hive-python-exec-tty", {
+const sandbox = await hiver.getOrCreateSandbox("hiver-python-exec-tty", {
   image: "hiversh/python:3.13-alpine",
   entrypoint: "tail -f /dev/null",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
   ttl: 0,
 });
 

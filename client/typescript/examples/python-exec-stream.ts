@@ -1,18 +1,11 @@
 // Run a Python function inside the sandbox and stream its output via SSE.
 //
 // Run with: npx tsx examples/python-exec-stream.ts
-import * as hive from "../src";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("hive-python-exec-stream", {
+const sandbox = await hiver.getOrCreateSandbox("hiver-python-exec-stream", {
   image: "hiversh/python:3.13-alpine",
   entrypoint: "tail -f /dev/null",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
 });
 
 const script = `

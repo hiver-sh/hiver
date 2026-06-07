@@ -1,18 +1,11 @@
 // Run a Node.js function inside the sandbox and stream its output via SSE.
 //
 // Run with: npx tsx examples/node-exec-stream.ts
-import * as hive from "../src";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("hive-node-exec-stream", {
+const sandbox = await hiver.getOrCreateSandbox("hiver-node-exec-stream", {
   image: "hiversh/node:alpine",
   entrypoint: "tail -f /dev/null",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
   ttl: 0,
 });
 

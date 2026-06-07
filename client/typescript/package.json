@@ -1,8 +1,11 @@
 {
   "name": "@hiver.sh/client",
   "version": "0.1.0",
-  "description": "TypeScript client for the Hive sandbox control plane.",
+  "description": "TypeScript client for the Hiver runtime.",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -14,6 +17,7 @@
   "files": [
     "dist",
     "src",
+    "examples",
     "README.md"
   ],
   "scripts": {

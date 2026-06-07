@@ -2,18 +2,12 @@
 // stream its events, and keep it alive with periodic pings.
 //
 // Run with: npx tsx examples/quickstart.ts
-import * as hive from "../src";
-import { createShutdown } from "./shutdown.js";
+import { createShutdown } from "./utils/index.js";
 
-const sandboxConfig: hive.SandboxConfig = {
+import * as hiver from "@hiver.sh/client";
+
+const sandboxConfig: hiver.SandboxConfig = {
   ttl: 1800,
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
   egress: [
     {
       access: "allow",
@@ -24,7 +18,10 @@ const sandboxConfig: hive.SandboxConfig = {
   ],
 };
 
-const sandbox = await hive.getOrCreateSandbox("hive-example", sandboxConfig);
+const sandbox = await hiver.getOrCreateSandbox(
+  "hiver-quickstart",
+  sandboxConfig,
+);
 
 let ping: ReturnType<typeof setInterval>;
 const { ac, shutdown } = createShutdown(sandbox, {

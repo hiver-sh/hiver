@@ -8,20 +8,13 @@
 //
 // Run with: npx tsx examples/terminal-attach.ts
 import process from "node:process";
-import * as hive from "../src";
-import { createShutdown } from "./shutdown.js";
+import { createShutdown } from "./utils/index.js";
 
-const sandbox = await hive.getOrCreateSandbox("hive-terminal-attach", {
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("hiver-terminal-attach", {
   image: "hiversh/node:alpine",
-  isolation: "microvm",
   entrypoint: "tail -f /dev/null",
-  fs: [
-    {
-      backend: "local",
-      mount: "/workspace",
-      acls: [{ path: "/workspace/**", access: "rw" }],
-    },
-  ],
   ttl: 0,
 });
 
