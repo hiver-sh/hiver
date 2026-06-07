@@ -1,39 +1,48 @@
-# Hive TypeScript Client
+# Hiver TypeScript Client
 
-TypeScript client for Hive sandboxes. Works in Node.js (≥18) and Bun.
+TypeScript client for Hiver runtime. Works in Node.js (≥18) and Bun.
 
 ## Contents
 
 - [📦 Installation](#-installation)
 - [⚡ Quick start](#-quick-start)
 - [📖 API](#-api)
-  - [`getOrCreateSandbox`](#getorCreatesandboxid-config-opts)
-  - [`shutdown`](#shutdownsandbox)
+  - [`getOrCreateSandbox`](#getorcreatesandboxkey-config-opts)
+  - [`listSandboxes`](#listsandboxesopts)
+  - [`shutdown`](#shutdownsandbox-opts)
+  - [`watchSandboxEvents`](#watchsandboxeventsopts-signal)
   - [`Sandbox`](#sandbox)
     - [`sandbox.ping()`](#sandboxping)
+    - [`sandbox.getPorts()`](#sandboxgetports)
+    - [`sandbox.proxyUrl()`](#sandboxproxyurlport)
     - [`sandbox.getConfig()`](#sandboxgetconfig)
     - [`sandbox.applyConfig()`](#sandboxapplyconfigconfig)
-    - [`sandbox.getEventsStream()`](#sandboxgeteventsstreamopts-)
+    - [`sandbox.exec()`](#sandboxexeccommand-opts)
+    - [`sandbox.execStream()`](#sandboxexecstreamcommand-opts)
+    - [`sandbox.getEventsStream()`](#sandboxgeteventsstreamopts)
+    - [`sandbox.listDirectory()`](#sandboxlistdirectorypath)
     - [`sandbox.uploadFile()`](#sandboxuploadfiledestination-filename-content)
     - [`sandbox.downloadFile()`](#sandboxdownloadfilepath)
-  - [Egress overrides](#egress-overrides)
+  - [Sandbox config](#sandbox-config)
+  - [Egress rules & overrides](#egress-rules--overrides)
   - [Filesystems](#filesystems)
+  - [Snapshots](#snapshots)
   - [Utils](#utils)
 - [🧪 Examples](#-examples)
 
 ## 📦 Installation
 
 ```sh
-npm install hive
+npm install --save @hiver.sh/client
 ```
 
 ## ⚡ Quick start
 
 ```ts
-import * as hive from "hive";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  image: "mcp-server",
+const sandbox = await hiver.getOrCreateSandbox("my-sandbox", {
+  image: "hiversh/node:alpine",
   ttl: 1800,
   fs: [
     {
@@ -42,12 +51,21 @@ const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
       acls: [{ path: "/workspace/**", access: "rw" }],
     },
   ],
-  egress: {
-    allow: [{ host: "api.github.com", methods: ["GET"], paths: ["/repos/*"] }],
-  },
+  egress: [
+    {
+      access: "allow",
+      host: "api.github.com",
+      methods: ["GET"],
+      paths: ["/repos/*"],
+    },
+  ],
 });
 
-console.log("sandbox endpoint:", sandbox.exposedEndpoint);
+console.log("sandbox id:", sandbox.id);
+
+// Run a command and read back the result.
+const result = await sandbox.exec("echo hello from the sandbox");
+console.log(result.stdout, result.exit_code);
 
 // Keep the sandbox alive.
 const ping = setInterval(sandbox.ping, 10_000);
@@ -59,66 +77,123 @@ for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
 }
 
 clearInterval(ping);
-await hive.shutdown(sandbox);
+await hiver.shutdown(sandbox);
 ```
 
 ## 📖 API
 
-### `getOrCreateSandbox(id, config, opts?)`
+### `getOrCreateSandbox(key, config?, opts?)`
 
-Provisions a sandbox idempotently. If a sandbox with `id` already exists it is returned unchanged and `config` is ignored; otherwise a new sandbox is created from `config`.
+Provisions a sandbox idempotently. If a sandbox with `key` already exists it is
+returned unchanged and `config` is ignored; otherwise a new sandbox is created
+from `config`. `config` is validated against the `SandboxConfig` schema before
+the request is sent, so a bad config fails fast on the caller side.
 
-`id` must match `[A-Za-z0-9_-]{1,64}`.
+`key` must match `[A-Za-z0-9_-]{1,64}`. `config` is optional — when omitted (or
+when `fs`/`egress` are omitted) the sandbox defaults to a single read-write
+`/workspace` local mount and an allow-all egress policy.
 
 Returns a `Sandbox` handle once the sandbox is ready to accept requests.
 
 ```ts
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", config, {
-  gatwayUrl: "http://localhost:9000", // default
-  readinessTimeoutMs: 30_000, // default; pass 0 to skip readiness wait
+const sandbox = await hiver.getOrCreateSandbox("my-sandbox", config, {
+  gatewayUrl: "http://localhost:10000", // default
+  timeoutMs: 30_000, // default; pass 0 to skip the readiness wait
 });
 ```
 
 **`GatewayOptions`**
 
-| Field                | Type           | Default                 | Description                                                                          |
-| -------------------- | -------------- | ----------------------- | ------------------------------------------------------------------------------------ |
-| `gatwayUrl`          | `string`       | `http://localhost:10000`| URL of the gateway                                                           |
-| `fetch`              | `typeof fetch` | global `fetch`          | Override for testing or custom transports                                            |
-| `readinessTimeoutMs` | `number`       | `30000`                 | How long to wait for the sandbox to become ready, in milliseconds. Pass `0` to skip. |
+| Field        | Type           | Default                  | Description                                                                                             |
+| ------------ | -------------- | ------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `gatewayUrl` | `string`       | `http://localhost:10000` | Base URL of the gateway. Also exported as `DEFAULT_GATEWAY_URL`.                                        |
+| `fetch`      | `typeof fetch` | global `fetch`           | Override for testing or custom transports.                                                              |
+| `timeoutMs`  | `number`       | `30000`                  | Timeout applied to each controller fetch and to the readiness poll. Pass `0` to disable and skip waits. |
 
 ---
 
-### `shutdown(sandbox)`
+### `listSandboxes(opts?)`
+
+Lists all currently running sandboxes, returning a `Sandbox` handle for each.
+
+```ts
+const sandboxes = await hiver.listSandboxes();
+for (const sandbox of sandboxes) {
+  console.log(sandbox.key, sandbox.id);
+}
+```
+
+---
+
+### `shutdown(sandbox, opts?)`
 
 Stops the sandbox container and removes it.
 
 ```ts
-await hive.shutdown(sandbox);
+await hiver.shutdown(sandbox);
 ```
+
+---
+
+### `watchSandboxEvents(opts?, signal?)`
+
+Async iterator over sandbox **lifecycle** events across the whole gateway
+(`start`, `stop`, `die`, `destroy`). Distinct from
+[`sandbox.getEventsStream()`](#sandboxgeteventsstreamopts), which streams the
+runtime events of a single sandbox.
+
+```ts
+const ac = new AbortController();
+for await (const event of hiver.watchSandboxEvents({}, ac.signal)) {
+  console.log(event.status, event.key, event.id);
+}
+```
+
+Each `SandboxLifecycleEvent` carries `{ id, key, status }`.
 
 ---
 
 ### `Sandbox`
 
-Returned by `getOrCreateSandbox`. Not constructed directly.
+Returned by `getOrCreateSandbox` / `listSandboxes`. Not constructed directly.
 
 #### Properties
 
-| Property        | Type     | Description                                                             |
-| --------------- | -------- | ----------------------------------------------------------------------- |
-| `id`            | `string` | Sandbox identifier                                                      |
-| `url`           | `string` | URL of the HTTP service the sandbox image exposes (first `EXPOSE` port) |
-| `gatwayUrl` | `string` | URL of the controller that created this sandbox                         |
+| Property       | Type                                 | Description                                                            |
+| -------------- | ------------------------------------ | ---------------------------------------------------------------------- |
+| `id`           | `string`                             | Server-assigned unique identifier (uuid).                              |
+| `key`          | `string`                             | Caller-chosen key the sandbox was provisioned under; used for routing. |
+| `apiServerUrl` | `string`                             | Base URL of the per-sandbox API server.                                |
+| `proxyUrl`     | `(port: number \| string) => string` | Builds the base proxy URL for a port exposed inside the sandbox.       |
+| `fetchImpl`    | `typeof fetch`                       | The `fetch` implementation this handle uses.                           |
 
 #### `sandbox.ping()`
 
-Resets the sandbox TTL countdown. Bound as an arrow function so `setInterval(sandbox.ping, 10_000)` works without `.bind`.
+Resets the sandbox TTL countdown. Bound as an arrow function so
+`setInterval(sandbox.ping, 10_000)` works without `.bind`.
 
 ```ts
 await sandbox.ping();
 // or
 const interval = setInterval(sandbox.ping, 10_000);
+```
+
+#### `sandbox.getPorts()`
+
+Lists the TCP ports the sandbox exposes (the image's `EXPOSE` directives). Each
+is reachable via [`proxyUrl`](#sandboxproxyurlport).
+
+```ts
+const ports = await sandbox.getPorts(); // e.g. [8080, 9000]
+```
+
+#### `sandbox.proxyUrl(port)`
+
+Returns the base proxy URL for a port inside the sandbox. Append a path to get a
+full URL.
+
+```ts
+const res = await fetch(`${sandbox.proxyUrl(8080)}/health`);
 ```
 
 #### `sandbox.getConfig()`
@@ -131,18 +206,25 @@ const config = await sandbox.getConfig();
 
 #### `sandbox.applyConfig(config)`
 
-Applies a desired `SandboxConfig`. The server diffs it against the running state; returns an `ApplyResult` whose `applied` field indicates whether the change was committed or rolled back.
+Applies a desired `SandboxConfig`. The server diffs it against the running
+state; returns an `ApplyResult` whose `applied` field indicates whether the
+change was committed or rolled back. Some fields (e.g. `image`, `cpu`, `memory`,
+`env`) cannot be changed after the sandbox is initialized — these are preserved
+and reported in `changes.warnings`.
 
 ```ts
 const current = await sandbox.getConfig();
 const result = await sandbox.applyConfig({
   ...current,
-  egress: {
-    allow: [
-      ...(current.egress?.allow ?? []),
-      { host: "api.github.com", methods: ["GET"], paths: ["/repos/*"] },
-    ],
-  },
+  egress: [
+    {
+      access: "allow",
+      host: "api.github.com",
+      methods: ["GET"],
+      paths: ["/repos/*"],
+    },
+    ...(current.egress ?? []),
+  ],
 });
 
 if (!result.applied) {
@@ -152,9 +234,51 @@ if (!result.applied) {
 }
 ```
 
+#### `sandbox.exec(command, opts?)`
+
+Runs `command` inside the sandbox and resolves once it finishes, returning
+buffered `{ stdout, stderr, exit_code }`.
+
+```ts
+const result = await sandbox.exec('node -e "console.log(6 * 7)"', {
+  cwd: "/workspace",
+  env: { NODE_ENV: "production" }, // merged on top of the config's env
+});
+console.log(result.stdout.trim(), result.exit_code);
+```
+
+**`ExecOptions`**: `cwd`, `env`, `signal`, `timeoutMs`.
+
+#### `sandbox.execStream(command, opts?)`
+
+Runs `command` and returns an `ExecProcess` handle for streaming. Iterate
+`exec.pipes` for incremental stdout/stderr, write to stdin via
+`exec.writeStdin()`, and await the exit code via `exec.exitCode`. The returned
+promise resolves once the server has registered the process, so `writeStdin` is
+safe to call immediately. Pass `tty: true` for an interactive PTY (stderr is
+merged into stdout, and a `CSI 8` sequence written to stdin resizes the PTY).
+
+```ts
+const exec = await sandbox.execStream("node", { cwd: "/workspace", tty: true });
+
+await exec.writeStdin("console.log('the answer is', 6 * 7)\r");
+await exec.writeStdin(".exit\r");
+
+for await (const pipe of exec.pipes) {
+  if (pipe.stdout) process.stdout.write(pipe.stdout);
+  if (pipe.stderr) process.stderr.write(pipe.stderr);
+}
+
+console.log("exit code:", await exec.exitCode);
+```
+
+**`ExecStreamOptions`**: `cwd`, `env`, `tty`, `signal`, `timeoutMs`.
+
 #### `sandbox.getEventsStream(opts?)`
 
-Long-lived async iterator over `SandboxEvent`s. Auto-resumes across disconnects — if the SSE connection drops the iterator silently reconnects with the last observed id, so no events are missed.
+Long-lived async iterator over `SandboxEvent`s for this sandbox. Auto-resumes
+across disconnects — if the SSE connection drops the iterator silently
+reconnects with the last observed id, so no events are missed.
 
 ```ts
 const ac = new AbortController();
@@ -174,9 +298,28 @@ for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
 | `lastEventId` | `number`      | —       | Skip past this id on the first connect            |
 | `maxRetries`  | `number`      | `3`     | Max reconnect attempts after a dropped connection |
 
+Event types include `stdio`, `exec.request` / `exec.response`,
+`egress.request` / `egress.response` / `egress.chunk`,
+`fs.request` / `fs.response`, `ingress.request` / `ingress.response`,
+`config.apply`, and `resource.usage`.
+
+#### `sandbox.listDirectory(path)`
+
+Lists the immediate children of a directory under a sandbox mount. `path` is the
+agent-visible absolute path. Returns one entry per child with `name`, `path`,
+`is_dir`, and `size`. Like the other file calls, it bypasses per-mount ACLs.
+
+```ts
+const entries = await sandbox.listDirectory("/workspace");
+for (const e of entries) {
+  console.log(e.is_dir ? "dir " : "file", e.size, e.path);
+}
+```
+
 #### `sandbox.uploadFile(destination, filename, content)`
 
-Uploads a file to a sandbox mount. `destination` must match a configured `fs[].mount`. Returns `{ path, bytes }`.
+Uploads a file to a sandbox mount. `destination` must match a configured
+`fs[].mount`. Returns `{ path, bytes }`.
 
 ```ts
 const { path, bytes } = await sandbox.uploadFile(
@@ -189,77 +332,89 @@ console.log(`uploaded ${bytes} bytes → ${path}`);
 
 #### `sandbox.downloadFile(path)`
 
-Downloads a file from a sandbox mount by its agent-visible absolute path. Returns `Uint8Array`.
+Downloads a file from a sandbox mount by its agent-visible absolute path.
+Returns `Uint8Array`.
 
 ```ts
 const bytes = await sandbox.downloadFile("/workspace/output.json");
 const text = new TextDecoder().decode(bytes);
 ```
 
-### Egress overrides
+---
 
-The `override` field on an egress rule injects values into every outbound request that matches the rule — before the request leaves the sandbox. This is the recommended way to keep API keys out of agent-visible environment variables or command output.
+### Sandbox config
 
-#### Inject a token as a request header
+`SandboxConfig` describes the desired state of a sandbox. All fields are
+optional.
+
+| Field        | Type                       | Default            | Notes                                                            |
+| ------------ | -------------------------- | ------------------ | ---------------------------------------------------------------- |
+| `image`      | `string`                   | —                  | Agent image to launch. Immutable after init.                     |
+| `isolation`  | `"container" \| "microvm"` | `container`        | Isolation mechanism. Immutable after init.                       |
+| `cpu`        | `number`                   | `1`                | Virtual CPUs. Immutable after init.                              |
+| `memory`     | `number`                   | `512`              | Memory in MiB. Immutable after init.                             |
+| `entrypoint` | `string`                   | image default      | Override the container entrypoint.                               |
+| `env`        | `Record<string, string>`   | —                  | Extra environment variables. Immutable after init.               |
+| `ttl`        | `number`                   | `1800`             | Idle TTL in seconds. Reset with `ping()`. `0` disables shutdown. |
+| `fs`         | `FileSystem[]`             | local `/workspace` | See [Filesystems](#filesystems).                                 |
+| `egress`     | `EgressRule[]`             | allow-all          | Ordered rules; see [Egress](#egress-rules--overrides).           |
+| `snapshot`   | `Snapshot`                 | —                  | See [Snapshots](#snapshots).                                     |
+
+---
+
+### Egress rules & overrides
+
+`egress` is an **ordered list** of rules. The first rule that matches a request
+decides the outcome; requests that match no rule are denied. Each rule sets
+`access: "allow" | "deny"` plus matchers (`host`, `ports`, `methods`, `paths`).
 
 ```ts
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  egress: {
-    allow: [
-      {
-        host: "api.example.com",
-        paths: ["/v1/*"],
-        override: {
-          headers: {
-            Authorization: "Bearer sk-live-abc123",
-          },
-        },
-      },
-    ],
+egress: [
+  {
+    access: "allow",
+    host: "api.github.com",
+    methods: ["GET"],
+    paths: ["/repos/*"],
   },
+  { access: "deny", host: "*" }, // catch-all
+];
+```
+
+#### Overrides — inject secrets the agent never sees
+
+The `override` field on an `allow` rule injects values into every matching
+outbound request before it leaves the sandbox. This is the recommended way to
+keep API keys out of agent-visible environment variables or command output. If
+the agent already set the same header/query parameter, the proxy overwrites it;
+the agent cannot read the injected values back.
+
+```ts
+const sandbox = await hiver.getOrCreateSandbox("my-sandbox", {
+  egress: [
+    {
+      access: "allow",
+      host: "api.example.com",
+      paths: ["/v1/*"],
+      override: {
+        headers: { Authorization: "Bearer sk-live-abc123" },
+        query: { api_key: "sk-live-abc123" },
+      },
+    },
+  ],
 });
 ```
 
-The agent can call `curl https://api.example.com/v1/data` with no credentials — Hive appends the `Authorization` header transparently.
-
-#### Inject a token as a query parameter
-
-```ts
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  egress: {
-    allow: [
-      {
-        host: "api.example.com",
-        paths: ["/v1/*"],
-        override: {
-          query: {
-            api_key: "sk-live-abc123",
-          },
-        },
-      },
-    ],
-  },
-});
-```
-
-The agent calls `curl https://api.example.com/v1/data` and Hive appends `?api_key=sk-live-abc123` automatically.
-
-#### Both at once
-
-`headers` and `query` can be combined in a single rule:
-
-```ts
-override: {
-  headers: { "X-App-Id": "my-app" },
-  query:   { token: "sk-live-abc123" },
-}
-```
+The agent can call `curl https://api.example.com/v1/data` with no credentials —
+Hiver appends the `Authorization` header and `?api_key=…` transparently.
+`headers` and `query` may be used independently or together.
 
 ---
 
 ### Filesystems
 
-The `fs` array configures one or more mounts visible inside the sandbox.
+The `fs` array configures one or more mounts visible inside the sandbox. Mount
+paths must be unique and non-overlapping. Access is governed by `acls`,
+evaluated longest-prefix-first with deny as the default.
 
 #### Local
 
@@ -269,15 +424,20 @@ fs: [
     backend: "local",
     mount: "/workspace",
     acls: [{ path: "/workspace/**", access: "rw" }],
+    origin: "./local-dir", // optional; Docker runtime only — see below
   },
 ];
 ```
 
-Files live only for the lifetime of the sandbox.
+Files live only for the lifetime of the sandbox (unless captured via a
+[snapshot](#snapshots)). The optional `origin` mounts a host directory into the
+sandbox — handy in local development, e.g. mounting an agent's skills directory
+so edits show up live. Local origins are only supported with the Docker runtime.
 
 #### Google Drive
 
-Mount a Google Drive folder as `/workspace` so every file the agent writes is persisted to Drive and survives sandbox restarts.
+Mount a Google Drive folder so every file the agent writes is persisted to Drive
+and survives sandbox restarts.
 
 ```ts
 fs: [
@@ -294,13 +454,19 @@ fs: [
 ];
 ```
 
-**OAuth tokens** — obtain via the [Google OAuth 2.0 flow](https://developers.google.com/identity/protocols/oauth2) with the `https://www.googleapis.com/auth/drive` scope. `gdrive_refresh_token` is used to renew the access token automatically.
+**OAuth tokens** — obtain via the [Google OAuth 2.0 flow](https://developers.google.com/identity/protocols/oauth2)
+with the `https://www.googleapis.com/auth/drive` scope. `gdrive_refresh_token`
+is used to renew the access token automatically. Alternatively, supply
+`gdrive_service_account_json` instead of the OAuth fields.
 
-**`gdrive_folder_id`** — the ID of the Drive folder to expose as the mount root. Find it in the folder's URL: `https://drive.google.com/drive/folders/<folder-id>`.
+**`gdrive_folder_id`** — the ID of the Drive folder to expose as the mount root.
+Find it in the folder's URL: `https://drive.google.com/drive/folders/<folder-id>`.
+When omitted, the account root is used.
 
 #### Google Cloud Storage
 
-Mount a GCS bucket (or a prefix within one) as `/workspace` so files persist beyond sandbox lifetime.
+Mount a GCS bucket (or a prefix within one) so files persist beyond sandbox
+lifetime.
 
 ```ts
 fs: [
@@ -315,11 +481,35 @@ fs: [
 ];
 ```
 
-**`gcs_bucket`** — the GCS bucket name (required). Can also be set via `HIVE_GCS_BUCKET`.
+**`gcs_bucket`** — the GCS bucket name (required).
 
-**`gcs_prefix`** — an optional key prefix that scopes the mount to a sub-path within the bucket. Can also be set via `HIVE_GCS_PREFIX`.
+**`gcs_prefix`** — an optional key prefix that scopes the mount to a sub-path
+within the bucket.
 
-**`gcs_service_account_json`** — service account credential JSON. When omitted, [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials) are used (`GOOGLE_APPLICATION_CREDENTIALS`, gcloud user credentials, or the GCE/GKE metadata server). Can also be set via `HIVE_GCS_SERVICE_ACCOUNT_JSON`.
+**`gcs_service_account_json`** — service account credential JSON.
+
+---
+
+### Snapshots
+
+A snapshot captures part of the sandbox's filesystem automatically before
+shutdown and restores it before the next start — even for paths outside a
+host-backed mount. Configure it with `snapshot`:
+
+```ts
+const config: hiver.SandboxConfig = {
+  image: "hiversh/node:alpine",
+  isolation: "microvm",
+  snapshot: {
+    restore_key: "session-42", // restored on start
+    write_key: "session-42", // saved on shutdown; defaults to restore_key
+    include: ["/root/**"], // glob paths to capture
+  },
+};
+```
+
+Boot the sandbox under the same `restore_key` later to bring the captured files
+back.
 
 ---
 
@@ -327,102 +517,83 @@ fs: [
 
 #### `allowedPythonPackages`
 
-A helper that generates the egress rules needed to let the sandbox install specific Python packages via pip.
+Generates the egress rules needed to let the sandbox install specific Python
+packages via pip.
 
 ```ts
-import * as hive from "hive";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  egress: {
-    allow: [...hive.allowedPythonPackages("numpy", "pandas", "matplotlib")],
-  },
+const sandbox = await hiver.getOrCreateSandbox("my-sandbox", {
+  egress: [...hiver.allowedPythonPackages("numpy", "pandas", "matplotlib")],
 });
 ```
 
-Only the packages you name are allowed through — any `pip install` for an unlisted package will be blocked by the egress policy.
+Only the packages you name are allowed through — any `pip install` for an
+unlisted package is blocked by the egress policy.
 
 #### `allowedNpmPackages`
 
-A helper that generates the egress rules needed to let the sandbox install specific NPM packages.
+Generates the egress rules needed to let the sandbox install specific NPM
+packages.
 
 ```ts
-import * as hive from "hive";
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("my-sandbox", {
-  egress: {
-    allow: [...hive.allowedNpmPackages("lodash")],
-  },
+const sandbox = await hiver.getOrCreateSandbox("my-sandbox", {
+  egress: [...hiver.allowedNpmPackages("lodash")],
 });
 ```
 
-Only the packages you name are allowed through — any `npm install` for an unlisted package will be blocked by the egress policy.
+Only the packages you name are allowed through — any `npm install` for an
+unlisted package is blocked by the egress policy.
 
 ---
 
 ## 🧪 Examples
 
-### Quickstart
+Run any example with `npx tsx examples/<name>`.
 
-Provision a sandbox, stream its events, and keep it alive with periodic pings.
+| Example                                         | What it shows                                                        |
+| ----------------------------------------------- | -------------------------------------------------------------------- |
+| `quickstart.ts`                                 | Provision a sandbox, stream events, keep it alive with pings.        |
+| `apply-config.ts`                               | Read the config, add an egress rule, apply the update.               |
+| `files.ts`                                      | Upload a file into a mount and read it back out.                     |
+| `list-directory.ts`                             | List the contents of a sandbox mount.                                |
+| `node-exec.ts` / `python-exec.ts`               | Run a command and read the buffered result.                          |
+| `node-exec-stream.ts` / `python-exec-stream.ts` | Stream command output over SSE.                                      |
+| `node-exec-tty.ts` / `python-exec-tty.ts`       | Drive an interactive REPL over a TTY exec stream.                    |
+| `terminal-attach.ts`                            | Attach your local terminal to an interactive shell in the sandbox.   |
+| `node-internal-service.ts`                      | Start deny-all, then `applyConfig` to allow an internal host.        |
+| `http-server`                                   | Proxy HTTP requests to a service running inside the sandbox.         |
+| `snapshot.ts`                                   | Persist a sandbox's filesystem across a full shutdown via snapshots. |
+| `custom-image`                                  | Build a Docker image, provision from it, consume events until exit.  |
+| `local-filesystem-mount`                        | Mount a local directory into the sandbox during development.         |
+| `mcp-server`                                    | Run an MCP server inside the sandbox.                                |
+| `gdrive-filesystem.ts`                          | Persist files to a Google Drive mount.                               |
+| `claude-agent.ts`                               | A Claude agent that uses the sandbox to fetch data and run code.     |
 
-```sh
-npx tsx examples/quickstart.ts
-```
+### Claude agent with a Google Drive filesystem
 
-### Config management
+The agent uses a Swagger spec to discover endpoints, then the sandbox uses cURL
+to fetch data, Python to build financial models, and Google Drive to persist
+files over a FUSE mount.
 
-Read the current config, add an egress rule, and apply the update.
-
-```sh
-npx tsx examples/apply-config.ts
-```
-
-### File transfers
-
-Upload a file into a sandbox mount and read it back out.
-
-```sh
-npx tsx examples/files.ts
-```
-
-### Custom Docker image
-
-Build a Docker image, provision a sandbox from it, and consume all events until the container exits.
-
-```sh
-npx tsx examples/custom-image
-```
-
-### Claude Agent
-
-The agent uses a Swagger spec to discover endpoints, then the sandbox uses CURL to fetch data, Python to build financial models, and Google drive to persist files over a fuse mount.
-
-The Hive Sandbox keeps the API tokens secure and generated files persisted to Google drive all while using basic Bash commands.
-The next time this agent runs, all the files are available, so they can be re-used to save tokens and increase learnings.
-
-For example, the agent can store markdown, json files and use them next time this agent runs.
+Hiver keeps the API tokens secure and the generated files persisted to Google
+Drive — all while the agent only uses basic Bash commands. The next time the
+agent runs, the files are already there to be reused, saving tokens.
 
 ```sh
 ANTHROPIC_API_KEY='<token>' \
 FINNHUB_API_KEY='<token>' \
 GOOGLE_CLIENT_ID='<client-id>' \
 GOOGLE_CLIENT_SECRET='<client-secret>' \
-npx tsx client/typescript/examples/claude-agent-gdrive-filesystem.ts
+npx tsx examples/claude-agent-gdrive-filesystem.ts
 ```
 
-There's also a version of this agent with a local file system:
+There's also a version of this agent backed by a local filesystem:
 
 ```sh
 ANTHROPIC_API_KEY='<token>' \
 FINNHUB_API_KEY='<token>' \
-npx tsx client/typescript/examples/claude-agent-gdrive-filesystem.ts
-```
-
-### Local directory mount
-
-During local development, it can be helpful to mount a local directory into the sandbox.
-For example, an agent skills directory. This way, it's seamless to make changes to the skills.
-
-```sh
-npx tsx examples/local-filesystem-mount
+npx tsx examples/claude-agent.ts
 ```

@@ -179,7 +179,6 @@ export class Sandbox {
       } catch (err) {
         if (opts.signal?.aborted) return;
         if (isAbortError(err)) return;
-
       }
 
       await sleep(backoffMs, opts.signal).catch(() => {});
