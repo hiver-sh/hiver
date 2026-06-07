@@ -8,7 +8,7 @@ import * as hive from "../src";
 import { createShutdown } from "./shutdown.js";
 
 const sandbox = await hive.getOrCreateSandbox("hive-list-directory-example", {
-  image: "hive-node-sandbox",
+  image: "hiversh/node:alpine",
   isolation: "microvm",
 });
 

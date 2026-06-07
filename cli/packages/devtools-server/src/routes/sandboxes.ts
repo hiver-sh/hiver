@@ -6,7 +6,7 @@ import {
   shutdown,
   watchSandboxEvents,
 } from "@hiver.sh/client";
-import { gatewayUrl } from "../lib/controllerUrl.js";
+import { gatewayUrl } from "../lib/gatewayUrl.js";
 
 const router = Router();
 

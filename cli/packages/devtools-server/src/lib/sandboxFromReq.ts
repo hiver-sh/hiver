@@ -1,6 +1,6 @@
 import { Sandbox } from "@hiver.sh/client";
 import type { Request } from "express";
-import { gatewayUrl } from "./controllerUrl.js";
+import { gatewayUrl } from "./gatewayUrl.js";
 
 export function sandboxFromReq(req: Request): Sandbox {
   // Per-sandbox routes only ever carry the key in the path; the uuid is

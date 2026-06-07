@@ -48,7 +48,9 @@ export const accent = tone([129, 140, 248]);
 
 export const bold = pc.bold;
 export const dim = pc.dim;
+export const gray = pc.gray;
 export const red = pc.red;
+export const white = pc.white;
 
 /** `[label]` tag in the given tone, e.g. `tag("server", brand)`. */
 export function tag(label: string, tone: (s: string) => string): string {

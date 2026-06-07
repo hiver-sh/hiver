@@ -45,7 +45,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: "inspect",
-    summary: "Launch the Hiver DevTools.",
+    summary: "Launch the DevTools.",
     entry: "inspect/index.ts",
     usage: [
       "hiver inspect",

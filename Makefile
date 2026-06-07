@@ -12,11 +12,25 @@ build: $(CMDS) ## Build all cmd binaries into bin/
 
 build-images: ## Build docker images
 	docker compose -f docker/compose.yaml --profile build build controller core gateway agent-cli-standalone
-	./scripts/bundle-images.sh hiversh/agent-cli-standalone hiversh/agent-cli
 
-publish-images: build-images ## Build and push images to the registry (override tag with TAG=...)
+bundle-sandbox-images: ## Bundle the default sandbox images
+	hiver bundle hiversh/agent-cli-standalone --tag hiversh/agent-cli
+	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine
+	hiver bundle node:alpine --tag hiversh/node:alpine
+
+publish-images: ## Push images to the registry
 	docker compose -f docker/compose.yaml push controller core gateway
+
+publish-sandbox-images: build-images ## Push sandbox images to the registry
 	docker push hiversh/agent-cli:latest
+	docker push hiversh/python:3.13-alpine
+	docker push hiversh/node:alpine
+
+link-cli: ## Builds the local CLI and makes it available as hiver in the PATH
+	cd cli && npm run build && npm link
+
+unlink-cli: ## Unlinks the local CLI
+	npm unlink -g @hiver.sh/cli
 
 up: ## Start services
 	docker compose -f docker/compose.yaml up -d

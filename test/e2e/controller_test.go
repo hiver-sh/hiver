@@ -17,7 +17,7 @@ import (
 
 const (
 	composeFile      = "../../docker/compose.yaml"
-	controllerURL    = "http://127.0.0.1:9000"
+	gatwayUrl        = "http://127.0.0.1:9000"
 	sandboxImage     = "hive-sandbox-bundler"
 	composeProjectID = "hive"
 )
@@ -54,7 +54,7 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 		dockerCompose(t, "down", "-v", "--remove-orphans")
 	})
 
-	waitForController(t, controllerURL)
+	waitForController(t, gatwayUrl)
 
 	id := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
 	body := fmt.Appendf(nil, `{
@@ -70,7 +70,7 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 	}`, sandboxImage)
 
 	// First PUT → 201 Created with the new record.
-	created, status := putSandbox(t, controllerURL, id, body)
+	created, status := putSandbox(t, gatwayUrl, id, body)
 	if status != http.StatusCreated {
 		t.Fatalf("first PUT: status %d, want 201", status)
 	}
@@ -91,7 +91,7 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 	// gateway at /sandbox/{id}/. Round-trip GET /v1/config and assert
 	// the response carries the workspace mount we passed in — that
 	// proves both that sandboxd booted and that it loaded the spec.
-	sandboxBase := controllerURL + "/sandbox/" + id
+	sandboxBase := gatwayUrl + "/sandbox/" + id
 	cfg := sandboxGetConfig(t, sandboxBase, 60*time.Second)
 	if !strings.Contains(cfg, `"mount":"/workspace"`) {
 		t.Errorf("sandbox /v1/config: missing /workspace mount; got %s", cfg)
@@ -99,7 +99,7 @@ func TestControllerGetOrCreateSandboxE2E(t *testing.T) {
 
 	// A second id with a malformed body (missing required `fs`) is
 	// rejected by the OpenAPI validator before the handler runs.
-	_, badStatus := putSandboxRaw(t, controllerURL, "e2e-bad-"+id, []byte(`{"image":"x"}`))
+	_, badStatus := putSandboxRaw(t, gatwayUrl, "e2e-bad-"+id, []byte(`{"image":"x"}`))
 	if badStatus != http.StatusBadRequest {
 		t.Errorf("malformed body: status %d, want 400", badStatus)
 	}

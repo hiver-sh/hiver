@@ -5,7 +5,7 @@ import type { SandboxEvent } from "@/types";
 import { humanDuration } from "@/lib/utils";
 import { LLM_PROVIDERS } from "@/lib/llmProviders";
 import { RowDetailPanel } from "./TimelineDetail";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 export interface TimelineBar {
   id: number;
@@ -2048,6 +2048,7 @@ export function TimelineView({
       {selectedBar && (
         <Dialog open={detailExpanded} onOpenChange={setDetailExpanded}>
           <DialogContent className="max-w-5xl p-0 flex flex-col overflow-hidden h-[80vh]">
+            <DialogTitle className="sr-only">Event detail</DialogTitle>
             <RowDetailPanel
               key={selectedBar.id}
               bar={selectedBar}

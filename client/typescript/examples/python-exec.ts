@@ -4,8 +4,7 @@
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-python-exec", {
-  // Built with: ./scripts/bundle-images.sh python:3.13-alpine hive-python-sandbox
-  image: "hive-python-sandbox",
+  image: "hiversh/python:3.13-alpine",
   entrypoint: "tail -f /dev/null",
   fs: [
     {

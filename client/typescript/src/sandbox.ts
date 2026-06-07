@@ -180,7 +180,6 @@ export class Sandbox {
         if (opts.signal?.aborted) return;
         if (isAbortError(err)) return;
 
-        console.log("err", err);
       }
 
       await sleep(backoffMs, opts.signal).catch(() => {});

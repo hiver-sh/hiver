@@ -18,8 +18,7 @@ async def main() -> None:
     sandbox = await hive.get_or_create_sandbox(
         "hive-python-exec-tty",
         hive.SandboxConfig(
-            # Built with: ./scripts/bundle-images.sh python:3.13-alpine hive-python-sandbox
-            image="hive-python-sandbox",
+            image="hiversh/python:3.13-alpine",
             entrypoint="tail -f /dev/null",
             fs=[
                 hive.LocalFileSystem(

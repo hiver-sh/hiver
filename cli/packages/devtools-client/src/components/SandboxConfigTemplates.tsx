@@ -85,7 +85,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "nodejs",
         command: "node",
         apply: () => ({
-          image: "hive-node-sandbox",
+          image: "hiversh/node:alpine",
           entrypoint: "tail -f /dev/null",
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],
@@ -97,7 +97,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "python",
         command: "python",
         apply: () => ({
-          image: "hive-python-sandbox",
+          image: "hiversh/python:3.13-alpine",
           entrypoint: "tail -f /dev/null",
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],

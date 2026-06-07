@@ -74,16 +74,16 @@ Returns a `Sandbox` handle once the sandbox is ready to accept requests.
 
 ```ts
 const sandbox = await hive.getOrCreateSandbox("my-sandbox", config, {
-  controllerUrl: "http://localhost:9000", // default
+  gatwayUrl: "http://localhost:9000", // default
   readinessTimeoutMs: 30_000, // default; pass 0 to skip readiness wait
 });
 ```
 
-**`ControllerOptions`**
+**`GatewayOptions`**
 
 | Field                | Type           | Default                 | Description                                                                          |
 | -------------------- | -------------- | ----------------------- | ------------------------------------------------------------------------------------ |
-| `controllerUrl`      | `string`       | `http://localhost:9000` | URL of the Hive controller                                                           |
+| `gatwayUrl`          | `string`       | `http://localhost:10000`| URL of the gateway                                                           |
 | `fetch`              | `typeof fetch` | global `fetch`          | Override for testing or custom transports                                            |
 | `readinessTimeoutMs` | `number`       | `30000`                 | How long to wait for the sandbox to become ready, in milliseconds. Pass `0` to skip. |
 
@@ -109,7 +109,7 @@ Returned by `getOrCreateSandbox`. Not constructed directly.
 | --------------- | -------- | ----------------------------------------------------------------------- |
 | `id`            | `string` | Sandbox identifier                                                      |
 | `url`           | `string` | URL of the HTTP service the sandbox image exposes (first `EXPOSE` port) |
-| `controllerUrl` | `string` | URL of the controller that created this sandbox                         |
+| `gatwayUrl` | `string` | URL of the controller that created this sandbox                         |
 
 #### `sandbox.ping()`
 

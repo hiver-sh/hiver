@@ -1,8 +1,13 @@
+
 import { listSandboxes } from "@hiver.sh/client";
 import { brand, accent, bold, dim, red } from "../theme.js";
-import { resolveGatewayUrl } from "../args.js";
+import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
 
-const gatewayUrl = resolveGatewayUrl();
+const cmd = withGateway(
+  subcommand("list", "List the sandboxes currently running on the gateway."),
+);
+run(cmd);
+const gatewayUrl = resolveGatewayUrl(cmd.opts().gatewayUrl);
 
 console.log(`\n${bold(brand("Sandboxes"))} ${dim(gatewayUrl)}\n`);
 
@@ -25,3 +30,4 @@ try {
   );
   process.exit(1);
 }
+

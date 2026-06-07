@@ -11,7 +11,7 @@ import portRoutes from "./routes/ports.js";
 import eventsRoutes from "./routes/events.js";
 import terminalRoutes from "./routes/terminal.js";
 import traceRoutes from "./routes/trace.js";
-import { DEFAULT_URL } from "./lib/controllerUrl.js";
+import { DEFAULT_URL } from "./lib/gatewayUrl.js";
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;

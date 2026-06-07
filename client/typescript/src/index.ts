@@ -42,7 +42,7 @@ export {
   listSandboxes,
   shutdown,
   watchSandboxEvents,
-  type ControllerOptions,
+  type GatewayOptions,
   type SandboxLifecycleEvent,
   type SandboxLifecycleStatus,
 } from "./controller";

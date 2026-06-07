@@ -6,7 +6,7 @@
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-node-internal-service", {
-  image: "hive-node-sandbox",
+  image: "hiversh/node:alpine",
   entrypoint: "tail -f /dev/null",
   egress: [{ access: "deny", host: "*" }],
 });

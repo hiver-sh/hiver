@@ -14,7 +14,7 @@ const KEY = "snapshot-example";
 // Snapshot config shared by both boots: capture /root on shutdown, restore it on start.
 const snapshot = { restore_key: KEY, write_key: KEY, include: ["/root/**"] };
 const config: hive.SandboxConfig = {
-  image: "hive-node-sandbox",
+  image: "hiversh/node:alpine",
   isolation: "microvm",
   fs: [
     {

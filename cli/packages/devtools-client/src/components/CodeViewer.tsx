@@ -8,7 +8,7 @@ import {
   MONACO_LIGHT_THEME,
   useMonacoTheme,
 } from "@/lib/useMonacoTheme";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 loader.config({ monaco });
 
@@ -214,6 +214,7 @@ export function CodeViewer({
           <DialogContent
             className={`${CODE_DIALOG_CLASS} p-0 flex flex-col overflow-hidden h-[55vh]`}
           >
+            <DialogTitle className="sr-only">Code viewer</DialogTitle>
             <div className="flex-1 min-h-0 relative">
               <MonacoEditor
                 height="100%"

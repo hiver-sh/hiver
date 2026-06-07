@@ -179,10 +179,9 @@ export function Terminal({
         return true;
       });
 
-      const sessionId = crypto.randomUUID();
       let abortCtrl: AbortController | null = null;
       let retryTimer: ReturnType<typeof setTimeout> | null = null;
-      let everConnected = false;
+      let shellExited = false;
       let connected = false;
 
       const ro = new ResizeObserver(() => {
@@ -205,7 +204,6 @@ export function Terminal({
           `/api/sandboxes/${encodeURIComponent(sandboxKey)}/terminal/input`,
           serverUrl,
         );
-        url.searchParams.set("sessionId", sessionId);
         transport
           .fetch(url.toString(), {
             method: "POST",
@@ -227,7 +225,6 @@ export function Terminal({
         );
         url.searchParams.set("cols", String(term.cols));
         url.searchParams.set("rows", String(term.rows));
-        url.searchParams.set("sessionId", sessionId);
         if (exposedEndpoint)
           url.searchParams.set("exposedBackend", exposedEndpoint);
         if (initCommand) url.searchParams.set("initCommand", initCommand);
@@ -274,7 +271,6 @@ export function Terminal({
             }
 
             if (eventName === "connected") {
-              everConnected = true;
               connected = true;
               // Push the current size immediately: the PTY starts at a default
               // geometry and the ResizeObserver's initial fire was dropped while
@@ -285,6 +281,7 @@ export function Terminal({
               term.focus();
             } else if (eventName === "close") {
               connected = false;
+              shellExited = true;
               break outer;
             } else if (eventName === "message" && dataLine) {
               term.write(
@@ -294,7 +291,7 @@ export function Terminal({
           }
         }
 
-        if (!disposed && !everConnected) {
+        if (!disposed && !shellExited) {
           retryTimer = setTimeout(connect, 2000);
         }
       }

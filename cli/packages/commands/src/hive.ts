@@ -1,4 +1,11 @@
+import { writeSync } from "node:fs";
 import { color, shade, fg, brand, bright, bold, dim, red } from "./theme.js";
+
+// Restore the cursor unconditionally on any exit — writeSync bypasses the
+// stream layer so it works even as stdout is being torn down.
+process.on("exit", () => {
+  if (process.stdout.isTTY) writeSync(1, "\x1b[?25h");
+});
 
 /**
  * The hive `⬢` animation, as a reusable component.
@@ -51,6 +58,8 @@ export function createLoader(label: string): Loader {
   let timer: ReturnType<typeof setInterval> | undefined;
   const interactive = color && Boolean(process.stdout.isTTY);
 
+  const onSigint = () => { process.stdout.write("\x1b[?25h"); process.exit(130); };
+
   function comb(): string {
     const { glyph, level } = SPIN[frame % SPIN.length];
     return fg(shade(level), glyph);
@@ -73,6 +82,7 @@ export function createLoader(label: string): Loader {
         return this;
       }
       process.stdout.write("\x1b[?25l"); // hide cursor
+      process.once("SIGINT", onSigint);
       render();
       timer = setInterval(render, 120);
       return this;
@@ -83,7 +93,10 @@ export function createLoader(label: string): Loader {
     stop() {
       if (timer) clearInterval(timer);
       timer = undefined;
-      if (interactive) process.stdout.write("\x1b[2K\r\x1b[?25h");
+      if (interactive) {
+        process.stdout.write("\x1b[2K\r\x1b[?25h");
+        process.off("SIGINT", onSigint);
+      }
     },
     succeed(msg) {
       this.stop();

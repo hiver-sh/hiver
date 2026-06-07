@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { COMMANDS } from "./commands.js";
-import { brand, bold, dim, red } from "./theme.js";
+import { bold, dim, red, white } from "./theme.js";
 import { playIntro, staticLogo, type HiveLogo } from "./hive.js";
 
 /**
@@ -32,7 +34,7 @@ function printCommands(unknown: string | undefined) {
 
   const pad = Math.max(...COMMANDS.map((c) => c.name.length));
   for (const cmd of COMMANDS) {
-    console.log(`    ${brand(cmd.name.padEnd(pad))}  ${dim(cmd.summary)}`);
+    console.log(`    ${white(cmd.name.padEnd(pad))}  ${dim(cmd.summary)}`);
   }
 
   console.log();
@@ -43,9 +45,15 @@ function printCommands(unknown: string | undefined) {
 }
 
 const unknown = process.argv[2];
+// `--intro`, or a first run (no ~/.hive yet), plays the intro and launches the
+// inspector.
+const introFlag = process.argv.slice(2).includes("--intro");
+const firstRun = !existsSync(join(homedir(), ".hive"));
+const intro = introFlag || firstRun;
 const interactive =
   Boolean(process.stdout.isTTY) && !process.env.CI && !process.env.NO_COLOR;
 
+console.log();
 if (interactive) {
   // Restore the cursor if interrupted mid-animation.
   const restore = () => {
@@ -60,6 +68,11 @@ if (interactive) {
 
 printCommands(unknown);
 
-// Non-zero exit when the user typed something we don't recognize, so the help
-// screen doubles as an error path for scripts.
-process.exit(unknown && !unknown.startsWith("-") ? 1 : 0);
+// `--intro` plays the logo, shows the help, then launches the inspector.
+if (intro) {
+  await import("./inspect/index.js");
+} else {
+  // Non-zero exit when the user typed something we don't recognize, so the help
+  // screen doubles as an error path for scripts.
+  process.exit(unknown && !unknown.startsWith("-") ? 1 : 0);
+}

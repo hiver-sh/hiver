@@ -10,18 +10,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as hive from "../../src";
 import { createShutdown } from "../shutdown.js";
-
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(here, "../../../..");
-const sourceImage = "hive-node-example-image";
 const imageTag = "node-example-image-bundle";
-const scriptPath = join(repoRoot, "scripts/bundle-images.sh");
-
-console.log(`> Building image ${sourceImage}`);
-await buildImage(sourceImage, join(here, "image"));
 
 console.log(`> Building sandbox bundle ${imageTag}`);
-await buildBundle(scriptPath, sourceImage, imageTag);
+await buildBundle(join(here, "image"), imageTag);
 
 console.log("> Starting sandbox");
 const sandbox = await hive.getOrCreateSandbox("hive-example", {
@@ -55,21 +48,13 @@ for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
 
 await shutdown();
 
-function buildImage(tag: string, contextDir: string): Promise<void> {
-  return spawnOk("docker", ["build", "-t", tag, contextDir]);
+function buildBundle(sandboxImage: string, bundleTag: string): Promise<void> {
+  return spawnOk("hiver", ["bundle", sandboxImage, "--tag", bundleTag]);
 }
 
-function buildBundle(
-  scriptPath: string,
-  sandboxImage: string,
-  bundleTag: string,
-): Promise<void> {
-  return spawnOk("bash", [scriptPath, sandboxImage, bundleTag], repoRoot);
-}
-
-function spawnOk(cmd: string, args: string[], cwd?: string): Promise<void> {
+function spawnOk(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: "inherit", cwd });
+    const child = spawn(cmd, args, { stdio: "inherit" });
     child.once("error", reject);
     child.once("exit", (code: number | null) =>
       code === 0

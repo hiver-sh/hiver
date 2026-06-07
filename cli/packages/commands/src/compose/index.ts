@@ -1,3 +1,4 @@
+
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -6,11 +7,22 @@ import { createLoader } from "../hive.js";
 import { requireDocker } from "../docker.js";
 import { dim, bright } from "../theme.js";
 import { writeConfig } from "../config.js";
-import { parseArgs } from "../args.js";
+import { subcommand, run } from "../args.js";
 import { missingImages, pullImage } from "./images.js";
 import { findAvailablePort } from "./port.js";
 import { runningContainers, publishedPort } from "./stack.js";
 
+// Shared by `up` and `down`; the command name selects the action. Unknown args
+// (e.g. `hiver up --build`) are forwarded to docker compose.
+const action = process.argv[2] === "down" ? "down" : "up";
+const cli = subcommand(action, action === "up" ? "Start the stack." : "Stop the stack.")
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .addHelpText("after", "\nAny extra arguments are forwarded to docker compose.");
+run(cli); // exits here on --help
+const extra = process.argv.slice(3);
+
+// Parsed (so `--help` works without Docker) — now require Docker.
 await requireDocker();
 
 // An optimized compose lives next to this module (copied into dist/ at build
@@ -27,11 +39,6 @@ const gatewayUrl = (port: number) => {
   return u.origin;
 };
 
-// Shared by `up` and `down`; the command name selects the action. Unknown args
-// (e.g. `hiver up --build`) land in `_` and are forwarded to docker compose.
-const action = process.argv[2] === "down" ? "down" : "up";
-const extra = parseArgs({})._;
-
 const env: NodeJS.ProcessEnv = { ...process.env };
 let gatewayPort = DEFAULT_PORT;
 
@@ -40,8 +47,8 @@ if (action === "up") {
   if (runningContainers(composeFile).length > 0) {
     const port = publishedPort(composeFile, "gateway", DEFAULT_PORT) ?? DEFAULT_PORT;
     writeConfig({ gatewayUrl: gatewayUrl(port) });
-    console.log(`${bright("✔")} Local stack already running`);
-    console.log(`  ${dim("gateway")} → ${bright(gatewayUrl(port))}`);
+    console.log(`\n${bright("✔")} Local stack already running`);
+    console.log(`  ${dim("gateway")} → ${bright(gatewayUrl(port))}\n`);
     process.exit(0);
   }
 
@@ -69,6 +76,7 @@ const composeArgs =
 
 // The hive loader runs while docker works; its output is captured and only
 // surfaced if the command fails.
+console.log();
 const loader = createLoader(action === "up" ? "Starting the stack" : "Stopping the stack").start();
 
 let output = "";
@@ -94,7 +102,7 @@ child.on("exit", (code) => {
     loader.succeed(`Local stack ${action === "up" ? "up" : "down"}`);
     if (action === "up") {
       writeConfig({ gatewayUrl: gatewayUrl(gatewayPort) });
-      console.log(`  ${dim("gateway")} → ${bright(gatewayUrl(gatewayPort))}`);
+      console.log(`  ${dim("gateway")} → ${bright(gatewayUrl(gatewayPort))}\n`);
     }
   } else {
     loader.fail(`docker compose ${action} failed (exit ${code})`);
@@ -102,3 +110,4 @@ child.on("exit", (code) => {
   }
   process.exit(code ?? 0);
 });
+

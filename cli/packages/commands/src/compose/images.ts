@@ -18,7 +18,7 @@ export function imagesFromCompose(composeFile: string): string[] {
 }
 
 /** Whether an image exists in the local docker image store. */
-function imageExistsLocally(image: string): boolean {
+export function imageExistsLocally(image: string): boolean {
   return (
     spawnSync("docker", ["image", "inspect", image], { stdio: "ignore" })
       .status === 0

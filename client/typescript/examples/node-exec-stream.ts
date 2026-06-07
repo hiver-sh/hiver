@@ -4,8 +4,7 @@
 import * as hive from "../src";
 
 const sandbox = await hive.getOrCreateSandbox("hive-node-exec-stream", {
-  // Built with: ./scripts/bundle-images.sh node:alpine hive-node-sandbox
-  image: "hive-node-sandbox",
+  image: "hiversh/node:alpine",
   entrypoint: "tail -f /dev/null",
   fs: [
     {

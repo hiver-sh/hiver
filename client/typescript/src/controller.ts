@@ -6,7 +6,7 @@ export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
 
 const SANDBOX_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-export interface ControllerOptions {
+export interface GatewayOptions {
   /** Base URL of the gateway. Defaults to `http://localhost:10000`. */
   gatewayUrl?: string;
   /** Override the global fetch (e.g. for testing or custom transports). */
@@ -35,7 +35,7 @@ const READINESS_POLL_INTERVAL_MS = 200;
 export async function getOrCreateSandbox(
   key: string,
   config: SandboxConfig = {},
-  opts: ControllerOptions = {},
+  opts: GatewayOptions = {},
 ): Promise<Sandbox> {
   if (!SANDBOX_KEY_PATTERN.test(key)) {
     throw new Error(
@@ -145,7 +145,7 @@ async function waitUntilReachable(
  * List all currently running sandboxes.
  */
 export async function listSandboxes(
-  opts: ControllerOptions = {},
+  opts: GatewayOptions = {},
 ): Promise<Sandbox[]> {
   const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
@@ -182,7 +182,7 @@ export async function listSandboxes(
  */
 export async function shutdown(
   sandbox: Sandbox,
-  opts: ControllerOptions = {},
+  opts: GatewayOptions = {},
 ): Promise<void> {
   const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
@@ -222,7 +222,7 @@ export interface SandboxLifecycleEvent {
  * Yields events until the signal is aborted or the server closes the stream.
  */
 export async function* watchSandboxEvents(
-  opts: ControllerOptions = {},
+  opts: GatewayOptions = {},
   signal?: AbortSignal,
 ): AsyncGenerator<SandboxLifecycleEvent, void, void> {
   const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");

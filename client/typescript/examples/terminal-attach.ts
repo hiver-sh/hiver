@@ -12,7 +12,7 @@ import * as hive from "../src";
 import { createShutdown } from "./shutdown.js";
 
 const sandbox = await hive.getOrCreateSandbox("hive-terminal-attach", {
-  image: "hive-node-sandbox",
+  image: "hiversh/node:alpine",
   isolation: "microvm",
   entrypoint: "tail -f /dev/null",
   fs: [

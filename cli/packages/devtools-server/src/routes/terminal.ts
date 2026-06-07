@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { Sandbox } from "@hiver.sh/client";
-import { gatewayUrl } from "../lib/controllerUrl.js";
+import { gatewayUrl } from "../lib/gatewayUrl.js";
 
 const router = Router();
 
@@ -9,11 +9,24 @@ interface TermSession {
   resize(cols: number, rows: number): void;
   close(): void;
 }
+
 type TermInput =
   | { type: "input"; data: string }
   | { type: "resize"; cols: number; rows: number };
 
-const termSessions = new Map<string, TermSession>();
+interface ClientHandle {
+  sendData: (buf: Buffer) => void;
+  sendCtrl: (ev: string, d: object) => void;
+  end: () => void;
+}
+
+interface PersistentSession {
+  tty: TermSession;
+  scrollback: Buffer;
+  clients: Set<ClientHandle>;
+}
+
+const sessions = new Map<string, PersistentSession>();
 const termPending = new Map<string, TermInput[]>();
 
 async function openExecStreamSession(
@@ -59,94 +72,107 @@ async function openExecStreamSession(
 }
 
 router.get("/:key/terminal/stream", async (req: Request, res: Response) => {
-  const sessionId = req.query.sessionId as string | undefined;
-  if (!sessionId) {
-    res.status(400).json({ error: "missing sessionId" });
-    return;
-  }
-
-  // Close any existing session with this id before opening a new one
-  termSessions.get(sessionId)?.close();
-  termSessions.delete(sessionId);
+  const key = req.params.key;
+  const initCommand = req.query.initCommand as string | undefined;
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  const sendBytes = (buf: Buffer) =>
-    res.write(`data: ${buf.toString("base64")}\n\n`);
-  const sendCtrl = (ev: string, d: object) =>
-    res.write(`event: ${ev}\ndata: ${JSON.stringify(d)}\n\n`);
-
-  let ended = false;
-  const onExit = () => {
-    if (ended) return;
-    ended = true;
-    termSessions.delete(sessionId);
-    sendCtrl("close", {});
-    res.end();
+  const sendData = (buf: Buffer) => {
+    if (!res.writableEnded) res.write(`data: ${buf.toString("base64")}\n\n`);
+  };
+  const sendCtrl = (ev: string, d: object) => {
+    if (!res.writableEnded)
+      res.write(`event: ${ev}\ndata: ${JSON.stringify(d)}\n\n`);
   };
 
+  const handle: ClientHandle = { sendData, sendCtrl, end: () => res.end() };
+
+  const existing = sessions.get(key);
+
+  if (existing) {
+    existing.clients.add(handle);
+    sendCtrl("connected", {});
+    // Clear display then replay all buffered output to restore terminal state.
+    sendData(Buffer.from("\x1b[H\x1b[2J"));
+    if (existing.scrollback.length > 0) sendData(existing.scrollback);
+  } else {
+    const ps: PersistentSession = {
+      tty: null as unknown as TermSession,
+      scrollback: Buffer.alloc(0),
+      clients: new Set([handle]),
+    };
+
+    const onData = (buf: Buffer) => {
+      ps.scrollback = Buffer.concat([ps.scrollback, buf]);
+      for (const c of ps.clients) c.sendData(buf);
+    };
+
+    const onExit = () => {
+      sessions.delete(key);
+      for (const c of ps.clients) {
+        c.sendCtrl("close", {});
+        c.end();
+      }
+      ps.clients.clear();
+    };
+
+    let tty: TermSession;
+    try {
+      tty = await openExecStreamSession(
+        gatewayUrl(req),
+        key,
+        onData,
+        onExit,
+        initCommand,
+      );
+    } catch {
+      sendCtrl("error", { message: "no terminal available" });
+      res.end();
+      return;
+    }
+
+    ps.tty = tty;
+    sessions.set(key, ps);
+    sendCtrl("connected", {});
+    sendData(Buffer.from("\x1b[H\x1b[2J"));
+
+    const pending = termPending.get(key);
+    if (pending) {
+      termPending.delete(key);
+      for (const msg of pending) {
+        if (msg.type === "resize") tty.resize(msg.cols, msg.rows);
+        else tty.write(msg.data);
+      }
+    }
+  }
+
   req.on("close", () => {
-    if (!ended) {
-      ended = true;
-      termSessions.get(sessionId)?.close();
-      termSessions.delete(sessionId);
+    const ps = sessions.get(key);
+    if (ps) {
+      ps.clients.delete(handle);
+      // Keep the TTY alive — the next connection will replay scrollback and resume.
     }
   });
-
-  const initCommand = req.query.initCommand as string | undefined;
-
-  let session: TermSession;
-  try {
-    session = await openExecStreamSession(
-      gatewayUrl(req),
-      req.params.key,
-      sendBytes,
-      onExit,
-      initCommand,
-    );
-  } catch {
-    sendCtrl("error", { message: "no terminal available" });
-    res.end();
-    return;
-  }
-
-  termSessions.set(sessionId, session);
-  sendCtrl("connected", {});
-  sendBytes(Buffer.from("\x1b[H\x1b[2J"));
-
-  const pending = termPending.get(sessionId);
-  if (pending) {
-    termPending.delete(sessionId);
-    for (const msg of pending) {
-      if (msg.type === "resize") session.resize(msg.cols, msg.rows);
-      else session.write(msg.data);
-    }
-  }
 });
 
 router.post("/:key/terminal/input", (req: Request, res: Response) => {
-  const sessionId = req.query.sessionId as string | undefined;
-  if (!sessionId) {
-    res.status(400).json({ error: "missing sessionId" });
-    return;
-  }
-
+  const key = req.params.key;
   const msg = req.body as TermInput;
-  const session = termSessions.get(sessionId);
+  const ps = sessions.get(key);
 
-  if (!session) {
-    const q = termPending.get(sessionId) ?? [];
+  if (!ps) {
+    const q = termPending.get(key) ?? [];
     q.push(msg);
-    termPending.set(sessionId, q);
+    termPending.set(key, q);
     res.status(202).send();
     return;
   }
 
-  if (msg.type === "resize") session.resize(msg.cols, msg.rows);
-  else session.write(msg.data);
+  if (msg.type === "resize") ps.tty.resize(msg.cols, msg.rows);
+  else ps.tty.write(msg.data);
   res.status(204).send();
 });
 
