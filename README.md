@@ -15,9 +15,13 @@ Run agents autonomously with controlled network access, auditable file operation
 ## 🚀 Getting Started
 
 ```sh
-curl -fsSL https://hiver.sh/install.sh | sh
+npm install --global @hiver.sh/cli
 
-hiver up
+# Or just use:
+npx @hiver.sh/cli
+
+# If you don't have NPM:
+curl -fsSL https://hiver.sh/install.sh | sh
 ```
 
 ### Launch first agent
@@ -56,29 +60,26 @@ fmt.Println(result.Stdout)
 
 ### Hiver CLI
 
-#### Start stack
+```sh
+$ hiver
 
-`hiver up`
+⬢ Hiver · Agent Runtime v0.1.3
 
-#### Stop stack
+  Usage: hiver <command> [options]
 
-`hiver down`
+  Commands
+    up       Bring up the stack
+    down     Bring down the stack
+    start    Start a sandbox
+    stop     Stop a sandbox
+    list     List the sandboxes
+    events   Stream a sandbox's events live as they happen
+    inspect  Launch the DevTools
+    bundle   Bundle a Docker image into a Hiver runtime image
 
-#### Bundle a custom Docker image
+  Run hiver <command> --help for command details.
+```
 
-`hiver bundle ./custom-agent custom-agent:latest`
-
-#### Launch DevTools
-
-`hiver devtools`
-
-#### List sandboxes
-
-`hiver list`
-
-#### Sandbox events
-
-`hiver events --sandbox agent-1 --follow`
 
 ## Documentation
 

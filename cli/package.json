@@ -1,6 +1,6 @@
 {
   "name": "@hiver.sh/cli",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "type": "module",
   "homepage": "https://hiver.sh/docs",
   "repository": {
@@ -31,15 +31,15 @@
     "build:server": "tsc -p packages/devtools-server/tsconfig.build.json",
     "build:commands": "tsc -p packages/commands/tsconfig.build.json && cp packages/commands/src/compose/compose.yaml packages/commands/dist/compose/compose.yaml",
     "cli": "DEV=1 ./packages/commands/bin.js",
+    "link:client": "(cd ../client/typescript && npm link) && npm link @hiver.sh/client",
     "dev": "tsx watch packages/devtools-server/src/index.ts & (cd packages/devtools-client && vite) & wait",
     "start": "PORT=5173 node packages/devtools-server/dist/index.js",
-    "prepack": "npm run build && tsx scripts/client-dep.ts ^0.1.0",
-    "postpack": "tsx scripts/client-dep.ts file:../client/typescript",
+    "prepack": "npm run build",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,css}\"",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\""
   },
   "dependencies": {
-    "@hiver.sh/client": "file:../client/typescript",
+    "@hiver.sh/client": "^0.1.0",
     "commander": "^12.1.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",

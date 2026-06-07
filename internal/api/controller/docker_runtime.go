@@ -18,13 +18,13 @@ import (
 )
 
 const (
-	composeProject      = "hive"
+	composeProject      = "hiver"
 	defaultSandboxImage = "hiversh/agent-cli:latest"
 	// labelSandboxKey holds the caller-chosen key; labelSandboxID holds the
 	// server-assigned uuid. The container name is derived from the key, so
 	// idempotent lookups resolve by key while the uuid travels as a label.
-	labelSandboxKey = "hive.sandbox.key"
-	labelSandboxID  = "hive.sandbox.id"
+	labelSandboxKey = "hiver.sandbox.key"
+	labelSandboxID  = "hiver.sandbox.id"
 )
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.

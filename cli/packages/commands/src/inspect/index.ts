@@ -5,9 +5,9 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { listSandboxes } from "@hiver.sh/client";
-import { brand, accent, bright, bold, dim, red } from "../theme.js";
+import { brand, bright, bold, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
-import { createLoader } from "../hive.js";
+import { createLoader, hex } from "../hive.js";
 import { confirm } from "../prompt.js";
 import { EventRecorder } from "./recorder.js";
 
@@ -108,12 +108,13 @@ function runUp(): Promise<boolean> {
   }
 }
 
-// Gateway is ready — now show the banner.
-console.log(
-  `\n${bold(brand("DevTools"))}${recording ? " " + accent("[recording]") : ""}\n`,
-);
-console.log(`${dim("  inspector")} → ${serverUrl}`);
-if (recording) console.log(`${dim("  trace")}     → ${tracePath}`);
+// Gateway is ready — now show where things are.
+console.log();
+console.log(`${hex(0.82)} ${brand("Hiver")} ${dim("Inspector")} → ${serverUrl}`);
+if (recording)
+  console.log(
+    `${hex(0.82)} ${brand("Hiver")} ${dim("trace")}     → ${tracePath}`,
+  );
 console.log();
 
 // Now that the gateway URL is settled, create the recorder if requested.

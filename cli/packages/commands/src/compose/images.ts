@@ -25,6 +25,33 @@ export function imageExistsLocally(image: string): boolean {
   );
 }
 
+// hiversh/core's entrypoint — every bundle is `FROM hiversh/core` and inherits
+// it, so it doubles as a bundle signal for images predating the label.
+const SANDBOXD_ENTRYPOINT = "/usr/local/bin/sandboxd";
+
+/**
+ * Whether a (locally present) image is a Hiver bundle. Detected by the
+ * `hiver.bundle` label stamped by `hiver bundle`, falling back to the inherited
+ * `sandboxd` entrypoint so bundles built before the label still register. Both
+ * are read in one `docker inspect`; returns `false` if the image isn't present.
+ */
+export function isHiverBundle(image: string): boolean {
+  const res = spawnSync(
+    "docker",
+    [
+      "image",
+      "inspect",
+      "-f",
+      '{{index .Config.Labels "hiver.bundle"}}|{{json .Config.Entrypoint}}',
+      image,
+    ],
+    { encoding: "utf8" },
+  );
+  if (res.status !== 0) return false;
+  const [label, entrypoint = ""] = res.stdout.trim().split("|");
+  return label === "1" || entrypoint.includes(SANDBOXD_ENTRYPOINT);
+}
+
 /**
  * Verify the stack's images are present locally. Returns the subset that is
  * missing (empty array ⇒ all available).

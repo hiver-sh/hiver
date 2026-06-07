@@ -9,7 +9,11 @@ import { writeConfig } from "../config.js";
 import { subcommand, run } from "../args.js";
 import { missingImages, pullImage } from "./images.js";
 import { findAvailablePort } from "./port.js";
-import { runningContainers, publishedPort } from "./stack.js";
+import {
+  runningContainers,
+  publishedPort,
+  removeNamespaceContainers,
+} from "./stack.js";
 
 // Shared by `up` and `down`; the command name selects the action. Unknown args
 // (e.g. `hiver up --build`) are forwarded to docker compose.
@@ -75,6 +79,11 @@ if (action === "up") {
   }
 }
 
+// Controller-spawned sandbox containers carry the `hiver` project label but
+// aren't compose services, so `down` must force-remove them itself — otherwise
+// they linger and keep the stack network from being torn down.
+const removedSandboxes = action === "down" ? removeNamespaceContainers() : 0;
+
 const composeArgs =
   action === "up"
     ? ["compose", "-f", composeFile, "up", "-d", ...extra]
@@ -107,10 +116,16 @@ child.on("error", (err) => {
 });
 child.on("exit", (code) => {
   if (code === 0) {
-    loader.succeed(`Local stack ${action === "up" ? "up" : "down"}`);
     if (action === "up") {
+      loader.succeed("Local stack up");
       writeConfig({ gatewayUrl: gatewayUrl(gatewayPort) });
       console.log(`  ${dim("gateway")} → ${bright(gatewayUrl(gatewayPort))}\n`);
+    } else {
+      loader.succeed(
+        removedSandboxes > 0
+          ? `Local stack down ${dim(`(removed ${removedSandboxes} sandbox container${removedSandboxes === 1 ? "" : "s"})`)}\n`
+          : `Local stack down\n`,
+      );
     }
   } else {
     loader.fail(`docker compose ${action} failed (exit ${code})`);

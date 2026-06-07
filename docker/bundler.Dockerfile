@@ -14,6 +14,10 @@ RUN mkdir -p /mnt/rootfs \
 
 # ── extend sandbox-runtime with the pre-bundled agent tar ─────────────────────
 FROM hiversh/core
+# Marks the image as a Hiver bundle so tooling can tell a bundled runtime image
+# apart from a raw agent image via `docker image inspect` (no need to crack open
+# the rootfs).
+LABEL hiver.bundle=1
 RUN mkdir -p /mnt
 COPY --from=tar-builder /mnt /mnt
 

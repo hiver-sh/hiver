@@ -4,7 +4,7 @@
 # carries no `build:` sections and none of the build-only services (core,
 # bundler, agent-cli-standalone). Only the runtime stack — controller and
 # gateway — is defined here.
-name: hive
+name: hiver
 
 services:
   controller:

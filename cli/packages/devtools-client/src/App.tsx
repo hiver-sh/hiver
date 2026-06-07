@@ -356,7 +356,7 @@ function AppContent() {
                   alt=""
                   className="h-4 w-4 invert dark:invert-0"
                 />
-                DevTools
+                Inspector
               </button>
               <button
                 onClick={() => setSidebarCollapsed(true)}

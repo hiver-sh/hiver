@@ -46,29 +46,6 @@ export function GettingStarted({ gatewayUrl }: { gatewayUrl: string }) {
         <CodeTabs
           examples={{ ts: TS_EXAMPLE, py: PY_EXAMPLE, go: GO_EXAMPLE }}
         />
-
-        <div className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium">Gateway URL</h2>
-          <p className="text-sm text-muted-foreground">
-            Set this environment variable so the SDK can reach the controller.
-          </p>
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-            <code className="flex-1 font-mono text-xs text-foreground select-all">
-              HIVE_GATEWAY_URL={gatewayUrl}
-            </code>
-            <button
-              onClick={handleCopy}
-              className="shrink-0 p-1 rounded text-muted-foreground hover:text-foreground transition-colors"
-              title="Copy"
-            >
-              {copied ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                <Clipboard className="h-3.5 w-3.5" />
-              )}
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

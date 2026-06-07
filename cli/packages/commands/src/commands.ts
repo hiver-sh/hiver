@@ -18,25 +18,41 @@ export interface CommandSpec {
 export const COMMANDS: CommandSpec[] = [
   {
     name: "up",
-    summary: "Start the stack.",
+    summary: "Bring up the stack",
     entry: "compose/index.ts",
     usage: ["hiver up"],
   },
   {
     name: "down",
-    summary: "Stop the stack.",
+    summary: "Bring down the stack",
     entry: "compose/index.ts",
     usage: ["hiver down"],
   },
   {
+    name: "start",
+    summary: "Start a sandbox",
+    entry: "start/index.ts",
+    usage: [
+      "hiver start",
+      "hiver start <sandbox-key>",
+      "hiver start --image <image> --entrypoint <cmd> --ttl <seconds>",
+    ],
+  },
+  {
+    name: "stop",
+    summary: "Stop a sandbox",
+    entry: "stop/index.ts",
+    usage: ["hiver stop <sandbox-key>"],
+  },
+  {
     name: "list",
-    summary: "List the sandboxes currently running on the gateway.",
+    summary: "List the sandboxes",
     entry: "list/index.ts",
     usage: ["hiver list", "hiver list --gateway-url <url>"],
   },
   {
     name: "events",
-    summary: "Stream a sandbox's events live as they happen.",
+    summary: "Stream a sandbox's events live as they happen",
     entry: "events/index.ts",
     usage: [
       "hiver events <sandbox-key>",
@@ -45,7 +61,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: "inspect",
-    summary: "Launch the DevTools.",
+    summary: "Launch the DevTools",
     entry: "inspect/index.ts",
     usage: [
       "hiver inspect",
@@ -55,7 +71,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: "bundle",
-    summary: "Bundle a Docker image into a Hiver runtime image.",
+    summary: "Bundle a Docker image into a Hiver runtime image",
     entry: "bundle/index.ts",
     usage: ["hiver bundle <image>", "hiver bundle <image> --tag <runtime-tag>"],
   },
