@@ -30,7 +30,12 @@ export class EventRecorder {
     payload: string,
     headers: Record<string, string>,
   ): void {
-    const line = JSON.stringify({ endpoint, time: this.elapsed(), payload, headers });
+    const line = JSON.stringify({
+      endpoint,
+      time: this.elapsed(),
+      payload,
+      headers,
+    });
     appendFileSync(this.outputPath, line + "\n");
   }
 

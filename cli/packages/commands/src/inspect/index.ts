@@ -1,4 +1,3 @@
-
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdirSync, existsSync } from "node:fs";
@@ -15,7 +14,10 @@ import { EventRecorder } from "./recorder.js";
 // packages/commands/{src,dist}/inspect → packages/devtools-server/dist/index.js.
 // The built server also serves the built web client, so one process is enough.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SERVER_ENTRY = resolve(__dirname, "../../../devtools-server/dist/index.js");
+const SERVER_ENTRY = resolve(
+  __dirname,
+  "../../../devtools-server/dist/index.js",
+);
 const BIN = resolve(__dirname, "../../bin.js"); // the `hiver` entry, for `up`
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -74,7 +76,11 @@ function runUp(): Promise<boolean> {
   } else {
     ping.fail(`gateway not reachable at ${gatewayUrl}`);
 
-    if (!(await confirm(`  Start the local stack now with ${bright("hiver up")}?`))) {
+    if (
+      !(await confirm(
+        `  Start the local stack now with ${bright("hiver up")}?`,
+      ))
+    ) {
       console.error(`  ${dim("start it with")} ${bold("hiver up")}\n`);
       process.exit(1);
     }
@@ -176,7 +182,8 @@ if (await serverReachable()) {
         spinning = false;
       }
       process.stderr.write(`server exited with code ${code}\n`);
-      if (serverOutput.trim()) process.stderr.write("\n" + serverOutput.trimEnd() + "\n");
+      if (serverOutput.trim())
+        process.stderr.write("\n" + serverOutput.trimEnd() + "\n");
     }
   });
 }
@@ -192,4 +199,3 @@ function shutdown() {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
-

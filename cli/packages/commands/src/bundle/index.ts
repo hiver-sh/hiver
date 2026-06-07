@@ -1,4 +1,3 @@
-
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +12,10 @@ import { subcommand, run as parseCli } from "../args.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DOCKERFILE = resolve(__dirname, "bundler.Dockerfile");
 
-const cli = subcommand("bundle", "Bundle a Docker image into a Hiver runtime image.")
+const cli = subcommand(
+  "bundle",
+  "Bundle a Docker image into a Hiver runtime image.",
+)
   .argument("<image>", "Docker image or directory with a Dockerfile to bundle")
   .option("--tag <tag>", "runtime image tag (default: <image>-bundled)")
   .option("--microvm", "microvm isolation");
@@ -30,7 +32,9 @@ if (isDir && !existsSync(join(resolvedArg, "Dockerfile"))) {
   process.exit(1);
 }
 const image = isDir
-  ? basename(resolvedArg).toLowerCase().replace(/[^a-z0-9-]/g, "-")
+  ? basename(resolvedArg)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
   : arg;
 
 const tag = opts.tag ?? `${image.split(":")[0]}-bundled`;
@@ -40,7 +44,9 @@ const microvm: boolean = Boolean(opts.microvm);
 await requireDocker();
 
 if (isDir) {
-  console.log(`\n${bold(brand("Build"))} ${accent(resolvedArg)} ${dim("→")} ${bright(image)}\n`);
+  console.log(
+    `\n${bold(brand("Build"))} ${accent(resolvedArg)} ${dim("→")} ${bright(image)}\n`,
+  );
   await run("docker", ["build", "-t", image, resolvedArg], "inherit");
   console.log();
 } else if (!imageExistsLocally(image)) {
@@ -88,7 +94,11 @@ console.log(
 const ctx = mkdtempSync(join(tmpdir(), "hiver-bundle-"));
 try {
   const loader = createLoader(`saving ${image}`).start();
-  await run("docker", ["save", "-o", join(ctx, "sandbox.tar"), image], "ignore");
+  await run(
+    "docker",
+    ["save", "-o", join(ctx, "sandbox.tar"), image],
+    "ignore",
+  );
   loader.succeed(`saved ${image}`);
 
   console.log();
@@ -118,4 +128,3 @@ try {
 } finally {
   rmSync(ctx, { recursive: true, force: true });
 }
-

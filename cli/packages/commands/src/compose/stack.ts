@@ -6,7 +6,10 @@ export function runningContainers(composeFile: string): string[] {
     encoding: "utf8",
   });
   if (res.status !== 0) return [];
-  return res.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  return res.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /** The host port a running service publishes for `containerPort`, if any. */

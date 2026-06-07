@@ -58,7 +58,10 @@ export function createLoader(label: string): Loader {
   let timer: ReturnType<typeof setInterval> | undefined;
   const interactive = color && Boolean(process.stdout.isTTY);
 
-  const onSigint = () => { process.stdout.write("\x1b[?25h"); process.exit(130); };
+  const onSigint = () => {
+    process.stdout.write("\x1b[?25h");
+    process.exit(130);
+  };
 
   function comb(): string {
     const { glyph, level } = SPIN[frame % SPIN.length];
@@ -123,11 +126,19 @@ export interface HiveLogo {
 function wordmark(meta: HiveLogo, n: number): string {
   const full = `${meta.name} · ${meta.tagline}`;
   const visible = full.slice(0, n);
-  return bold(brand(visible.slice(0, meta.name.length))) + dim(visible.slice(meta.name.length));
+  return (
+    bold(brand(visible.slice(0, meta.name.length))) +
+    dim(visible.slice(meta.name.length))
+  );
 }
 
 // Logo as a single line: hex + wordmark + version.
-function logo(meta: HiveLogo, hexPart: string, chars: number, showVersion: boolean): string {
+function logo(
+  meta: HiveLogo,
+  hexPart: string,
+  chars: number,
+  showVersion: boolean,
+): string {
   const word = chars > 0 ? " " + wordmark(meta, chars) : "";
   const ver = showVersion ? " " + dim(`v${meta.version}`) : "";
   return hexPart + word + ver;
@@ -152,7 +163,10 @@ export async function playIntro(meta: HiveLogo) {
 
   // 1 — build up three hexagons, one at a time.
   for (let n = 1; n <= 3; n++) {
-    await show(logo(meta, Array.from({ length: n }, () => hex(0.9)).join(" "), 0, false), 140);
+    await show(
+      logo(meta, Array.from({ length: n }, () => hex(0.9)).join(" "), 0, false),
+      140,
+    );
   }
 
   // 2 — pulse them through the violet ramp.

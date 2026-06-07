@@ -33,7 +33,10 @@ if (existsSync(clientDist)) {
   app.use(express.static(clientDist, { index: false }));
   // Inject the configured gateway URL so the web client defaults to it instead
   // of its own hard-coded default.
-  const indexHtml = readFileSync(join(clientDist, "index.html"), "utf8").replace(
+  const indexHtml = readFileSync(
+    join(clientDist, "index.html"),
+    "utf8",
+  ).replace(
     "</head>",
     `<script>window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}</script></head>`,
   );

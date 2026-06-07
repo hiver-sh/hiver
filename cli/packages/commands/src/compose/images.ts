@@ -30,14 +30,18 @@ export function imageExistsLocally(image: string): boolean {
  * missing (empty array ⇒ all available).
  */
 export function missingImages(composeFile: string): string[] {
-  return imagesFromCompose(composeFile).filter((image) => !imageExistsLocally(image));
+  return imagesFromCompose(composeFile).filter(
+    (image) => !imageExistsLocally(image),
+  );
 }
 
 /**
  * Pull an image with `docker pull`. Resolves with whether it succeeded and the
  * captured output (shown by the caller on failure).
  */
-export function pullImage(image: string): Promise<{ ok: boolean; output: string }> {
+export function pullImage(
+  image: string,
+): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     let output = "";
     const child = spawn("docker", ["pull", image], {
@@ -45,7 +49,9 @@ export function pullImage(image: string): Promise<{ ok: boolean; output: string 
     });
     child.stdout?.on("data", (d: Buffer) => (output += d));
     child.stderr?.on("data", (d: Buffer) => (output += d));
-    child.on("error", (err) => resolve({ ok: false, output: output + err.message }));
+    child.on("error", (err) =>
+      resolve({ ok: false, output: output + err.message }),
+    );
     child.on("exit", (code) => resolve({ ok: code === 0, output }));
   });
 }

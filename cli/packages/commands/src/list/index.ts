@@ -1,4 +1,3 @@
-
 import { listSandboxes } from "@hiver.sh/client";
 import { brand, accent, bold, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
@@ -30,4 +29,3 @@ try {
   );
   process.exit(1);
 }
-

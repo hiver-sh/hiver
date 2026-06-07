@@ -1,7 +1,14 @@
 {
   "name": "@hiver.sh/cli",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "type": "module",
+  "homepage": "https://hiver.sh/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hiver-sh/hiver.git",
+    "directory": "cli"
+  },
+  "bugs": "https://github.com/hiver-sh/hiver/issues",
   "bin": {
     "hiver": "./packages/commands/bin.js"
   },
@@ -12,10 +19,13 @@
     "packages/commands/bin.js",
     "packages/commands/dist",
     "packages/devtools-server/dist",
-    "packages/devtools-client/dist"
+    "packages/devtools-client/dist",
+    "docs",
+    "README.md"
   ],
   "scripts": {
     "build": "npm run build:client && npm run build:server && npm run build:commands",
+    "clean": "rm -rf packages/commands/dist packages/devtools-server/dist packages/devtools-client/dist",
     "build:inspector-client": "cd packages/devtools-client && vite build --config vite.lib.config.ts",
     "build:client": "cd packages/devtools-client && vite build",
     "build:server": "tsc -p packages/devtools-server/tsconfig.build.json",

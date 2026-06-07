@@ -20,7 +20,11 @@ interface Installer {
 function installerFor(platform: NodeJS.Platform): Installer | undefined {
   switch (platform) {
     case "darwin":
-      return { label: "brew install --cask docker", cmd: "brew", args: ["install", "--cask", "docker"] };
+      return {
+        label: "brew install --cask docker",
+        cmd: "brew",
+        args: ["install", "--cask", "docker"],
+      };
     case "linux":
       return {
         label: "curl -fsSL https://get.docker.com | sh",
@@ -32,8 +36,12 @@ function installerFor(platform: NodeJS.Platform): Installer | undefined {
         label: "winget install Docker.DockerDesktop",
         cmd: "winget",
         args: [
-          "install", "-e", "--id", "Docker.DockerDesktop",
-          "--accept-package-agreements", "--accept-source-agreements",
+          "install",
+          "-e",
+          "--id",
+          "Docker.DockerDesktop",
+          "--accept-package-agreements",
+          "--accept-source-agreements",
         ],
       };
     default:
@@ -78,7 +86,9 @@ export async function requireDocker(): Promise<void> {
   // Can't prompt without a TTY (CI, pipes) — point to the docs instead.
   if (!process.stdin.isTTY) bail(`Install Docker and retry: ${DOCS}`);
 
-  const accepted = await confirm(`  Install it now with ${bright(inst.label)}?`);
+  const accepted = await confirm(
+    `  Install it now with ${bright(inst.label)}?`,
+  );
   if (!accepted) bail(`No problem — install Docker manually: ${DOCS}`);
 
   console.log(`\n  ${brand("Installing Docker")} ${dim(inst.label)}\n`);

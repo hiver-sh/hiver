@@ -1,4 +1,3 @@
-
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
