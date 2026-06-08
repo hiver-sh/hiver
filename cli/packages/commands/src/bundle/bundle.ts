@@ -1,21 +1,130 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, resolve, join } from "node:path";
 import { brand, accent, bright, bold, dim } from "../theme.js";
 import { createLoader } from "../hive.js";
-import { imageExistsLocally, pullImage, isHiverBundle } from "../compose/images.js";
+import {
+  imageExistsLocally,
+  pullImage,
+  isHiverBundle,
+  SANDBOXD_ENTRYPOINT,
+} from "../compose/images.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DOCKERFILE = resolve(__dirname, "bundler.Dockerfile");
 const BASE_IMAGE = "hiversh/core";
+
+// Multi-arch builds need a docker-container driver builder; the default `docker`
+// driver can't build for a foreign arch and push a manifest list. We create one
+// on demand and reuse it across runs.
+const MULTIARCH_BUILDER = "hiver-multiarch";
 
 export interface BundleOptions {
   /** Resulting image tag. Defaults to `<image>-bundled`. */
   tag?: string;
   /** Bundle for the microvm backend (pre-builds the guest rootfs.ext4). */
   microvm?: boolean;
+  /**
+   * Target platforms (e.g. `["linux/amd64", "linux/arm64"]`). When set, the
+   * bundle is built per-platform and pushed as a manifest list — implies
+   * `push`, since a multi-arch image can't be loaded into the local store.
+   */
+  platforms?: string[];
+  /** Push the result to the registry instead of loading it locally. */
+  push?: boolean;
+}
+
+/**
+ * Whether a `docker save`/`type=docker` tar at `tarPath` is a Hiver bundle.
+ * Reads the image config's labels and entrypoint from inside the tar (the same
+ * signals as `isHiverBundle`, which can't be used here because the multi-arch
+ * path never loads the image into the local docker store). Returns `false` on
+ * any read/parse failure.
+ */
+function isHiverBundleTar(tarPath: string): boolean {
+  const manifest = spawnSync("tar", ["-xOf", tarPath, "manifest.json"], {
+    encoding: "utf8",
+  });
+  if (manifest.status !== 0) return false;
+  let configPath: string | undefined;
+  try {
+    configPath = (JSON.parse(manifest.stdout) as { Config?: string }[])[0]
+      ?.Config;
+  } catch {
+    return false;
+  }
+  if (!configPath) return false;
+  const config = spawnSync("tar", ["-xOf", tarPath, configPath], {
+    encoding: "utf8",
+  });
+  if (config.status !== 0) return false;
+  try {
+    const cfg = (
+      JSON.parse(config.stdout) as {
+        config?: { Labels?: Record<string, string>; Entrypoint?: string[] };
+      }
+    ).config;
+    if (cfg?.Labels?.["hiver.bundle"] === "1") return true;
+    return (cfg?.Entrypoint ?? []).some((e) => e.includes(SANDBOXD_ENTRYPOINT));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The repository part of an image reference, dropping a trailing `:tag`. The
+ * tag separator must come after the last `/`, so a registry host:port (e.g.
+ * `localhost:5000/foo`) isn't mistaken for a tag. The registry prefix — and
+ * thus a custom registry — is preserved.
+ */
+function repoOf(ref: string): string {
+  const colon = ref.lastIndexOf(":");
+  return colon > ref.lastIndexOf("/") ? ref.slice(0, colon) : ref;
+}
+
+/** The host's docker platform, e.g. `linux/arm64`. */
+function hostPlatform(): string {
+  const res = spawnSync(
+    "docker",
+    ["version", "-f", "{{.Server.Os}}/{{.Server.Arch}}"],
+    { encoding: "utf8" },
+  );
+  const out = res.status === 0 ? res.stdout.trim() : "";
+  return out || "linux/amd64";
+}
+
+/** Ensure a docker-container builder exists for multi-arch builds. */
+function ensureMultiarchBuilder(): void {
+  const exists =
+    spawnSync("docker", ["buildx", "inspect", MULTIARCH_BUILDER], {
+      stdio: "ignore",
+    }).status === 0;
+  if (exists) return;
+  const res = spawnSync(
+    "docker",
+    [
+      "buildx",
+      "create",
+      "--name",
+      MULTIARCH_BUILDER,
+      "--driver",
+      "docker-container",
+      "--bootstrap",
+    ],
+    { stdio: "inherit" },
+  );
+  if (res.status !== 0) {
+    throw new Error(`failed to create buildx builder "${MULTIARCH_BUILDER}"`);
+  }
 }
 
 /** Whether `arg` points at a local directory (i.e. a Dockerfile context). */
@@ -65,6 +174,24 @@ export async function bundleImage(
 
   const tag = opts.tag ?? `${image.split(":")[0]}-bundled`;
   const microvm = Boolean(opts.microvm);
+  const target = microvm ? "microvm" : "bundle";
+
+  // Multi-arch or any pushed bundle goes through buildx + a manifest list; a
+  // multi-arch image can't be loaded into the local docker store, so it must be
+  // pushed. The local single-arch path below is unchanged for `hiver start`.
+  if (opts.push || opts.platforms?.length) {
+    const platforms = opts.platforms?.length
+      ? opts.platforms
+      : [hostPlatform()];
+    return bundleMultiArch({
+      image,
+      isDir,
+      resolvedArg,
+      tag,
+      target,
+      platforms,
+    });
+  }
 
   // If the argument is a directory, build a Docker image from it first.
   if (isDir) {
@@ -125,7 +252,7 @@ export async function bundleImage(
         "--build-context",
         `sandbox-tar=${ctx}`,
         "--target",
-        microvm ? "microvm" : "bundle",
+        target,
         "-t",
         tag,
         __dirname,
@@ -138,4 +265,136 @@ export async function bundleImage(
   } finally {
     rmSync(ctx, { recursive: true, force: true });
   }
+}
+
+interface MultiArchArgs {
+  image: string;
+  isDir: boolean;
+  resolvedArg: string;
+  tag: string;
+  target: string;
+  platforms: string[];
+}
+
+/**
+ * Build the bundle once per platform and stitch the results into a single
+ * manifest list pushed as `tag`.
+ *
+ * Each platform is handled independently because the bundle bakes in a tar of
+ * the input image, which is platform-specific — so there's no single buildx
+ * invocation that can produce all arches. For each platform we export the input
+ * for that arch as a `type=docker` tar (the exact layout bundler.Dockerfile
+ * unpacks) straight from the buildx builder, build the bundler for that arch
+ * (pushing by digest, no tag), then `imagetools create` combines the per-arch
+ * digests under `tag`.
+ *
+ * The export sources layers from the builder's cache rather than a `docker
+ * pull` + `docker save` round-trip, so an input that was just built by
+ * `make publish-images` isn't re-downloaded. `hiversh/core` (the `FROM` base)
+ * and any image input must still be published multi-arch so the missing arches
+ * resolve.
+ */
+async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
+  const { image, isDir, resolvedArg, tag, target, platforms } = args;
+  ensureMultiarchBuilder();
+  const repo = repoOf(tag);
+
+  console.log(
+    `\n${bold(brand("Bundle"))} ${accent(image)} ${dim("→")} ${bright(tag)} ${dim(`(${platforms.join(", ")})`)}\n`,
+  );
+
+  const sources: string[] = [];
+  for (const [i, platform] of platforms.entries()) {
+    const ctx = mkdtempSync(join(tmpdir(), "hiver-bundle-"));
+    try {
+      // Export the input for this platform as a docker-format tar. type=docker
+      // emits exactly the layout bundler.Dockerfile unpacks (manifest.json
+      // .Layers + blobs/), and buildkit sources the layers from the builder
+      // cache instead of a fresh pull. A directory builds its own Dockerfile;
+      // an image ref exports via a one-line `FROM`.
+      const tarPath = join(ctx, "sandbox.tar");
+      const prepArgs = [
+        "buildx",
+        "build",
+        "--builder",
+        MULTIARCH_BUILDER,
+        "--platform",
+        platform,
+        "-o",
+        `type=docker,dest=${tarPath}`,
+      ];
+      if (isDir) {
+        prepArgs.push(resolvedArg);
+      } else {
+        const fromFile = join(ctx, "from.Dockerfile");
+        writeFileSync(fromFile, `FROM ${image}\n`);
+        prepArgs.push("-f", fromFile, ctx);
+      }
+      console.log(`${dim("→")} preparing ${accent(`${image} (${platform})`)}`);
+      await run("docker", prepArgs, "inherit");
+
+      // The re-bundle guard reads the markers from the tar (the image is never
+      // loaded into the local store); only need to check once.
+      if (i === 0 && isHiverBundleTar(tarPath)) {
+        throw new Error(`${image} is already a Hiver bundle`);
+      }
+
+      const metaFile = join(ctx, "meta.json");
+      await run(
+        "docker",
+        [
+          "buildx",
+          "build",
+          "-f",
+          DOCKERFILE,
+          "--build-context",
+          `sandbox-tar=${ctx}`,
+          "--target",
+          target,
+          "--platform",
+          platform,
+          "--builder",
+          MULTIARCH_BUILDER,
+          // Push the per-arch image without a tag; we tag the manifest list
+          // below. `push=true` is required — `push-by-digest` only controls how
+          // it's pushed, not whether, so without it the digest never reaches the
+          // registry and `imagetools create` can't find it.
+          "--output",
+          `type=image,name=${repo},push=true,push-by-digest=true,name-canonical=true`,
+          "--metadata-file",
+          metaFile,
+          __dirname,
+        ],
+        "inherit",
+      );
+
+      const meta = JSON.parse(readFileSync(metaFile, "utf8")) as Record<
+        string,
+        string
+      >;
+      const digest = meta["containerimage.digest"];
+      if (!digest) {
+        throw new Error(`no image digest reported for ${platform}`);
+      }
+      sources.push(`${repo}@${digest}`);
+    } finally {
+      rmSync(ctx, { recursive: true, force: true });
+    }
+  }
+
+  const loader = createLoader(`pushing ${tag}`).start();
+  try {
+    await run(
+      "docker",
+      ["buildx", "imagetools", "create", "-t", tag, ...sources],
+      "inherit",
+    );
+  } catch (err) {
+    loader.fail(`could not push ${tag}`);
+    throw err;
+  }
+  loader.succeed(`pushed ${tag}`);
+
+  console.log(`\n  ${bright("✔")} bundled ${accent(tag)}\n`);
+  return tag;
 }

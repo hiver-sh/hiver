@@ -39,11 +39,20 @@ export function fg([r, g, b]: Rgb, s: string): string {
 
 const tone = (rgb: Rgb) => (s: string) => fg(rgb, s);
 
-/** Mid brand violet (#8b5cf6) — headings, command names. */
+// Violet roles — keep usage consistent across commands:
+//   brand   → command names & `hiver …` literals, section headings, wordmark
+//   bright  → success: the ✔ mark and the headline value it confirms
+//   accent  → resource identifiers (sandbox keys, ids)
+//   dim     → muted secondary text   red → errors & the ✖ mark
+// Reach for these before `bold`/`white`; reserve `bold` for emphasising
+// arbitrary user-supplied values (a bad --ttl, an unknown command) that aren't
+// part of the brand vocabulary.
+
+/** Mid brand violet (#8b5cf6) — command names, headings, the wordmark. */
 export const brand = tone([139, 92, 246]);
-/** Bright lavender (#c4b5fd) — success / highlights. */
+/** Bright lavender (#c4b5fd) — success: the ✔ mark and the value it confirms. */
 export const bright = tone([196, 181, 253]);
-/** Indigo accent (#818cf8) — secondary stream, distinct from `brand`. */
+/** Indigo accent (#818cf8) — resource identifiers (sandbox keys, ids). */
 export const accent = tone([129, 140, 248]);
 
 export const bold = pc.bold;

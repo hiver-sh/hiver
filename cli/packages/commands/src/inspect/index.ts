@@ -1,14 +1,13 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdirSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { listSandboxes } from "@hiver.sh/client";
-import { brand, bright, bold, dim, red } from "../theme.js";
+import { HIVER_DIR } from "../config.js";
+import { brand, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
 import { createLoader, hex } from "../hive.js";
-import { confirm } from "../prompt.js";
+import { ensureGateway } from "../gateway.js";
 import { EventRecorder } from "./recorder.js";
 
 // packages/commands/{src,dist}/inspect → packages/devtools-server/dist/index.js.
@@ -18,11 +17,9 @@ const SERVER_ENTRY = resolve(
   __dirname,
   "../../../devtools-server/dist/index.js",
 );
-const BIN = resolve(__dirname, "../../bin.js"); // the `hiver` entry, for `up`
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const cli = withGateway(subcommand("inspect", "Launch the Hiver DevTools."))
-  .option("--record", "record a trace to ~/.hive/traces")
+  .option("--record", "record a trace to ~/.hiver/traces")
   .option("--port <port>", "inspector server port", "5173");
 run(cli);
 const opts = cli.opts();
@@ -38,79 +35,24 @@ if (!existsSync(SERVER_ENTRY)) {
   process.exit(1);
 }
 
-// With --record, a trace is written to ~/.hive/traces; the recorder itself is
+// With --record, a trace is written to ~/.hiver/traces; the recorder itself is
 // created once the (possibly newly-started) gateway URL is settled.
 let tracePath: string | undefined;
 if (recording) {
-  const tracesDir = join(homedir(), ".hive", "traces");
+  const tracesDir = join(HIVER_DIR, "traces");
   mkdirSync(tracesDir, { recursive: true });
   tracePath = join(tracesDir, `recording-${Date.now()}.jsonl`);
 }
 
-// The devtools UI is useless without the gateway, so check it's up first and
-// point the user at `hiver up` if it isn't.
-async function gatewayReachable(url: string): Promise<boolean> {
-  try {
-    await listSandboxes({ gatewayUrl: url, timeoutMs: 500 });
-    return true;
-  } catch {
-    return false; // connection refused / timed out
-  }
-}
-
-// Run `hiver up` (the CLI's own entry), inheriting stdio so its output shows.
-function runUp(): Promise<boolean> {
-  return new Promise((res) => {
-    const child = spawn(process.execPath, [BIN, "up"], { stdio: "inherit" });
-    child.on("error", () => res(false));
-    child.on("exit", (code) => res(code === 0));
-  });
-}
-
-// Ensure the gateway is up; if not, offer to start the stack (like the
-// install-docker dialog), then wait for it to come online.
-{
-  const ping = createLoader(`checking gateway ${gatewayUrl}`).start();
-  if (await gatewayReachable(gatewayUrl)) {
-    ping.stop();
-  } else {
-    ping.fail(`gateway not reachable at ${gatewayUrl}`);
-
-    if (
-      !(await confirm(
-        `  Start the local stack now with ${bright("hiver up")}?`,
-      ))
-    ) {
-      console.error(`  ${dim("start it with")} ${bold("hiver up")}\n`);
-      process.exit(1);
-    }
-
-    console.log();
-    if (!(await runUp())) {
-      console.error(`\n  ${red("✖")} could not start the stack\n`);
-      process.exit(1);
-    }
-
-    // `up` may have published the gateway on a different port; re-resolve and
-    // wait for it to answer (it already printed the URL, so this stays quiet).
-    gatewayUrl = resolveGatewayUrl();
-    const wait = createLoader("waiting for gateway").start();
-    let ready = false;
-    for (let i = 0; i < 20 && !ready; i++) {
-      ready = await gatewayReachable(gatewayUrl);
-      if (!ready) await sleep(500);
-    }
-    if (!ready) {
-      wait.fail(`gateway still not reachable at ${gatewayUrl}`);
-      process.exit(1);
-    }
-    wait.stop();
-  }
-}
+// The devtools UI is useless without the gateway, so make sure the stack is up
+// first (offering to start it), and pick up any re-resolved URL.
+gatewayUrl = await ensureGateway(gatewayUrl);
 
 // Gateway is ready — now show where things are.
 console.log();
-console.log(`${hex(0.82)} ${brand("Hiver")} ${dim("Inspector")} → ${serverUrl}`);
+console.log(
+  `${hex(0.82)} ${brand("Hiver")} ${dim("Inspector")} → ${serverUrl}`,
+);
 if (recording)
   console.log(
     `${hex(0.82)} ${brand("Hiver")} ${dim("trace")}     → ${tracePath}`,
@@ -130,7 +72,12 @@ function openBrowser(url: string) {
       : process.platform === "win32"
         ? "start"
         : "xdg-open";
-  spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+  // Best-effort: on headless/Linux hosts the opener (e.g. xdg-open) may be
+  // missing. Swallow the spawn 'error' so a failed auto-open doesn't crash the
+  // process via an unhandled 'error' event — the URL is already printed.
+  const child = spawn(cmd, [url], { detached: true, stdio: "ignore" });
+  child.on("error", () => {});
+  child.unref();
 }
 
 async function serverReachable(): Promise<boolean> {
@@ -151,7 +98,11 @@ if (await serverReachable()) {
   const loader = createLoader("starting devtools server…").start();
   spinning = true;
 
+  // detached: own process group, so we can kill the server *and* anything it
+  // ever spawns as one unit, and so the terminal's SIGINT goes only to us
+  // (we forward the teardown deliberately in shutdown).
   server = spawn(process.execPath, [SERVER_ENTRY], {
+    detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PORT: port, GATEWAY_URL: gatewayUrl },
   });
@@ -192,11 +143,48 @@ if (await serverReachable()) {
 // The recorder retries until the server answers, so it's safe to start now.
 recorder?.start();
 
+// Kill the server's whole process group (negative pid) so neither it nor any
+// descendant is left listening on the port. Falls back to the bare child if
+// the group is already gone, and is safe to call repeatedly.
+function killServer(signal: NodeJS.Signals) {
+  if (!server?.pid) return;
+  try {
+    process.kill(-server.pid, signal);
+  } catch {
+    try {
+      server.kill(signal);
+    } catch {
+      /* already dead */
+    }
+  }
+}
+
+let shuttingDown = false;
 function shutdown() {
+  if (shuttingDown) return; // idempotent — signals can fire more than once
+  shuttingDown = true;
+  // Restore the cursor right away — don't make it wait out the server-kill
+  // grace period below (it's hidden while the startup spinner is mid-flight).
+  if (process.stdout.isTTY) process.stdout.write("\x1b[?25h");
   if (spinning) spinning = false;
   recorder?.stop(); // writes the trace to disk
-  server?.kill();
-  process.exit(0);
+  killServer("SIGTERM"); // ask nicely…
+  // …then force it and quit. The short grace lets the server release the port
+  // cleanly; SIGKILL guarantees it can't outlive us if it ignores SIGTERM.
+  setTimeout(() => {
+    killServer("SIGKILL");
+    process.exit(0);
+  }, 300).unref();
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown); // Ctrl+C
+process.on("SIGTERM", shutdown); // kill
+process.on("SIGHUP", shutdown); // terminal closed (common on Linux/SSH)
+// Backstop: force-kill synchronously on any exit path we didn't catch above
+// (normal exit, uncaught error) so the inspector never outlives us.
+process.on("exit", () => killServer("SIGKILL"));
+
+// Stay in the foreground until interrupted. The detached child no longer keeps
+// our event loop alive on its own, and when the server was already running we
+// never spawned one — without this the process would exit immediately.
+const keepAlive = setInterval(() => {}, 1 << 30);
+process.on("exit", () => clearInterval(keepAlive));

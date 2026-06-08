@@ -3,7 +3,7 @@ CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 # JS/TS subprojects with their own format/lint npm scripts
 JS_DIRS := cli client/typescript
 
-.PHONY: help build build-images publish-images up down test test-e2e test-unit gen fmt format lint $(CMDS)
+.PHONY: help build build-images bundle-sandbox-images publish-images publish-sandbox-images buildx-builder up down test test-e2e test-unit gen fmt format lint $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -13,18 +13,39 @@ build: $(CMDS) ## Build all cmd binaries into bin/
 build-images: ## Build docker images
 	docker compose -f docker/compose.yaml --profile build build controller core gateway agent-cli-standalone
 
-bundle-sandbox-images: ## Bundle the default sandbox images
-	hiver bundle hiversh/agent-cli-standalone --tag hiversh/agent-cli
-	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine
-	hiver bundle node:alpine --tag hiversh/node:alpine
+# Build and push the default sandbox images as multi-arch manifest lists.
+# `hiver bundle --platform` pushes directly, so there's no separate push step.
+# The inputs (hiversh/core, hiversh/agent-cli-standalone) are pulled per-arch
+# from the registry, so run `make publish-images` first.
+bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
+	hiver bundle hiversh/agent-cli-standalone --tag hiversh/agent-cli --platform $(PLATFORMS)
+	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine --platform $(PLATFORMS)
+	hiver bundle node:alpine --tag hiversh/node:alpine --platform $(PLATFORMS)
 
-publish-images: ## Push images to the registry
-	docker compose -f docker/compose.yaml push controller core gateway
+# Platforms to build multi-arch images for. The deployment servers are amd64,
+# so amd64 must be included or `docker pull` fails with "no matching manifest".
+PLATFORMS ?= linux/amd64,linux/arm64
 
-publish-sandbox-images: build-images ## Push sandbox images to the registry
-	docker push hiversh/agent-cli:latest
-	docker push hiversh/python:3.13-alpine
-	docker push hiversh/node:alpine
+# Multi-arch builds need a docker-container driver builder; the default `docker`
+# driver can't build+push a manifest list. Create one if it's missing.
+buildx-builder:
+	@docker buildx inspect hiver-multiarch >/dev/null 2>&1 || \
+		docker buildx create --name hiver-multiarch --driver docker-container --bootstrap
+
+# agent-cli-standalone is included so `bundle-sandbox-images` can pull it per-arch.
+# Run from docker/ so bake resolves the compose file's relative build contexts
+# (e.g. `gateway`, `..`) against that dir rather than the repo root.
+publish-images: buildx-builder ## Build and push multi-arch images to the registry
+	cd docker && docker buildx bake -f compose.yaml \
+		--builder hiver-multiarch \
+		--set "*.platform=$(PLATFORMS)" \
+		--push \
+		controller core gateway agent-cli-standalone
+
+# `bundle-sandbox-images` already builds and pushes multi-arch manifests; a plain
+# `docker push` here would clobber them with a single-arch image, so this is just
+# an alias kept for the old name.
+publish-sandbox-images: bundle-sandbox-images ## Build and push sandbox images (multi-arch)
 
 link-cli: ## Builds the local CLI and makes it available as hiver in the PATH
 	cd cli && npm run build && npm link

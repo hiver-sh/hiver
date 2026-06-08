@@ -2,8 +2,11 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+/** Root directory for all user-writable CLI state (config, traces, …). */
+export const HIVER_DIR = join(homedir(), ".hiver");
+
 /** Persistent CLI config, in a user-writable location. */
-export const CONFIG_PATH = join(homedir(), ".hive", "config.json");
+export const CONFIG_PATH = join(HIVER_DIR, "config.json");
 
 export interface HiveConfig {
   gatewayUrl?: string;

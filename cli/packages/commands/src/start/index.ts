@@ -1,11 +1,16 @@
 import { randomBytes } from "node:crypto";
 import { getOrCreateSandbox, SandboxConfig } from "@hiver.sh/client";
-import { accent, bold, dim, red } from "../theme.js";
+import { white, bold, dim, red } from "../theme.js";
 import { createLoader } from "../hive.js";
 import { requireDocker } from "../docker.js";
-import { imageExistsLocally, pullImage, isHiverBundle } from "../compose/images.js";
+import {
+  imageExistsLocally,
+  pullImage,
+  isHiverBundle,
+} from "../compose/images.js";
 import { bundleImage, isDirectory } from "../bundle/bundle.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
+import { ensureGateway } from "../gateway.js";
 
 const DEFAULT_IMAGE = "hiversh/agent-cli";
 
@@ -19,13 +24,8 @@ const cmd = withGateway(subcommand("start", "Start a sandbox on the gateway."))
   .option("--ttl <seconds>", "idle seconds before SIGTERM (0 disables)");
 run(cmd);
 
-const {
-  gatewayUrl: gatewayFlag,
-  image,
-  entrypoint,
-  ttl: ttlFlag,
-} = cmd.opts();
-const gatewayUrl = resolveGatewayUrl(gatewayFlag);
+const { gatewayUrl: gatewayFlag, image, entrypoint, ttl: ttlFlag } = cmd.opts();
+let gatewayUrl = resolveGatewayUrl(gatewayFlag);
 const key = cmd.args[0] ?? `agent-${randomBytes(2).toString("hex")}`;
 
 // Validate `--ttl` up front (cheap, no Docker/network) so a bad value fails
@@ -44,6 +44,10 @@ if (ttlFlag !== undefined) {
 const imageArg = image ?? DEFAULT_IMAGE;
 
 console.log();
+
+// Make sure the stack is up before doing any (slow) image work, so a down
+// gateway fails fast with the offer to start it rather than after bundling.
+gatewayUrl = await ensureGateway(gatewayUrl);
 
 // A sandbox runtime image must be a Hiver bundle (it boots `sandboxd`, which
 // reads the unpacked agent tar under /mnt). Resolve the requested image to one:
@@ -93,7 +97,13 @@ try {
     gatewayUrl,
     timeoutMs: START_TIMEOUT_MS,
   });
-  loader.succeed(`${accent(sandbox.key)}  ${dim(sandbox.id)}\n`);
+  // Show the exposed ports (like `hiver list`) rather than the opaque id;
+  // tolerate a slow/failed lookup so a started sandbox still reports success.
+  const ports = await sandbox.getPorts({ timeoutMs: 5_000 }).catch(() => []);
+  const exposed = ports.length
+    ? `  ${dim(ports.map((p) => `:${p}`).join(", "))}`
+    : "";
+  loader.succeed(`${white(sandbox.key)}${exposed}\n`);
 } catch (err) {
   loader.fail(`could not start sandbox: ${dim(String(err))}`);
   // A common cause is an image whose entrypoint runs to completion: the

@@ -1,10 +1,20 @@
 import { writeSync } from "node:fs";
 import { color, shade, fg, brand, bright, bold, dim, red } from "./theme.js";
 
-// Restore the cursor unconditionally on any exit — writeSync bypasses the
-// stream layer so it works even as stdout is being torn down.
+// Restore the terminal unconditionally on any exit. writeSync bypasses the
+// stream layer so the cursor reset works even as stdout is being torn down.
+// We also drop stdin out of raw mode: a readline prompt (e.g. confirm())
+// flips stdin to raw, and a Ctrl+C that terminates before the prompt closes
+// would otherwise leave the shell in raw mode (arrow keys echo as `^[[A`).
 process.on("exit", () => {
   if (process.stdout.isTTY) writeSync(1, "\x1b[?25h");
+  if (process.stdin.isTTY && process.stdin.isRaw) {
+    try {
+      process.stdin.setRawMode(false);
+    } catch {
+      /* stdin already torn down */
+    }
+  }
 });
 
 /**
@@ -75,7 +85,9 @@ export function createLoader(label: string): Loader {
 
   function finalize(ok: boolean, msg: string) {
     const mark = ok ? bright("✔") : red("✖");
-    process.stdout.write(`${mark} ${msg}\n`);
+    // Always close with a single trailing blank line so output after the loader
+    // is separated; strip any newline the caller added so it never doubles up.
+    process.stdout.write(`${mark} ${msg.replace(/\n+$/, "")}\n\n`);
   }
 
   return {

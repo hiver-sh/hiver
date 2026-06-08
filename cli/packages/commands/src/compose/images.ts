@@ -27,7 +27,7 @@ export function imageExistsLocally(image: string): boolean {
 
 // hiversh/core's entrypoint — every bundle is `FROM hiversh/core` and inherits
 // it, so it doubles as a bundle signal for images predating the label.
-const SANDBOXD_ENTRYPOINT = "/usr/local/bin/sandboxd";
+export const SANDBOXD_ENTRYPOINT = "/usr/local/bin/sandboxd";
 
 /**
  * Whether a (locally present) image is a Hiver bundle. Detected by the
@@ -64,14 +64,17 @@ export function missingImages(composeFile: string): string[] {
 
 /**
  * Pull an image with `docker pull`. Resolves with whether it succeeded and the
- * captured output (shown by the caller on failure).
+ * captured output (shown by the caller on failure). Pass `platform` (e.g.
+ * `linux/amd64`) to fetch a specific arch variant instead of the host's.
  */
 export function pullImage(
   image: string,
+  platform?: string,
 ): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     let output = "";
-    const child = spawn("docker", ["pull", image], {
+    const args = ["pull", ...(platform ? ["--platform", platform] : []), image];
+    const child = spawn("docker", args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stdout?.on("data", (d: Buffer) => (output += d));

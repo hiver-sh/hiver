@@ -1,12 +1,14 @@
 import { listSandboxes } from "@hiver.sh/client";
-import { accent, dim, red } from "../theme.js";
+import { white, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
+import { ensureGateway } from "../gateway.js";
 
 const cmd = withGateway(
   subcommand("list", "List the sandboxes currently running on the gateway."),
 );
 run(cmd);
-const gatewayUrl = resolveGatewayUrl(cmd.opts().gatewayUrl);
+let gatewayUrl = resolveGatewayUrl(cmd.opts().gatewayUrl);
+gatewayUrl = await ensureGateway(gatewayUrl);
 
 console.log();
 
@@ -25,9 +27,9 @@ try {
     const pad = Math.max(...sandboxes.map((s) => s.key.length));
     sandboxes.forEach((s, i) => {
       const exposed = ports[i].length
-        ? ports[i].map((p) => `:${p}`).join(", ")
-        : "no ports";
-      console.log(`${accent(s.key.padEnd(pad))}  ${dim(exposed)}`);
+        ? `  ${dim(ports[i].map((p) => `:${p}`).join(", "))}`
+        : "";
+      console.log(`${white(s.key.padEnd(pad))}${exposed}`);
     });
     console.log(
       `\n${dim(`${sandboxes.length} sandbox${sandboxes.length === 1 ? "" : "es"}`)}\n`,

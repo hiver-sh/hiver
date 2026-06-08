@@ -61,7 +61,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: "inspect",
-    summary: "Launch the DevTools",
+    summary: "Launch the inspector",
     entry: "inspect/index.ts",
     usage: [
       "hiver inspect",
@@ -73,7 +73,11 @@ export const COMMANDS: CommandSpec[] = [
     name: "bundle",
     summary: "Bundle a Docker image into a Hiver runtime image",
     entry: "bundle/index.ts",
-    usage: ["hiver bundle <image>", "hiver bundle <image> --tag <runtime-tag>"],
+    usage: [
+      "hiver bundle <image>",
+      "hiver bundle <image> --tag <runtime-tag>",
+      "hiver bundle <image> --tag <runtime-tag> --platform linux/amd64,linux/arm64",
+    ],
   },
 ];
 

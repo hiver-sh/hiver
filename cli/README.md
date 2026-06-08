@@ -11,15 +11,33 @@ stack, bundle agent images, inspect live sandbox traffic, and stream events.
 npm install --global @hiver.sh/cli
 
 # Or just use:
-npx @hiver.sh/cli
+npx -y @hiver.sh/cli
 ```
 
-### Chrome DevTools for Agents
+### Commands
+```sh
+⬢ Hiver · Agent Runtime v0.1.9
+
+  Usage: hiver <command> [options]
+
+  Commands
+    up       Bring up the stack
+    down     Bring down the stack
+    start    Start a sandbox
+    stop     Stop a sandbox
+    list     List the sandboxes
+    events   Stream a sandbox's events live as they happen
+    inspect  Launch the inspector
+    bundle   Bundle a Docker image into a Hiver runtime image
+
+  Run hiver <command> --help for command details.
+```
+
+### Hiver Inspector: Chrome DevTools for Agents
 
 Run `hiver inspect` to launch the inspector:
 
 ![Hiver DevTools](https://cdn.jsdelivr.net/npm/@hiver.sh/cli/docs/devtools.png)
-
 
 ## Requirements
 

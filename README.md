@@ -18,7 +18,7 @@ Run agents autonomously with controlled network access, auditable file operation
 npm install --global @hiver.sh/cli
 
 # Or just use:
-npx @hiver.sh/cli
+npx -y @hiver.sh/cli
 
 # If you don't have NPM:
 curl -fsSL https://hiver.sh/install.sh | sh
@@ -60,6 +60,9 @@ fmt.Println(result.Stdout)
 
 ### Hiver CLI
 
+Command-line tool for the [Hiver](https://hiver.sh) agent runtime — run a local
+stack, bundle agent images, inspect live sandbox traffic, and stream events.
+
 ```sh
 $ hiver
 
@@ -74,7 +77,7 @@ $ hiver
     stop     Stop a sandbox
     list     List the sandboxes
     events   Stream a sandbox's events live as they happen
-    inspect  Launch the DevTools
+    inspect  Launch the inspector
     bundle   Bundle a Docker image into a Hiver runtime image
 
   Run hiver <command> --help for command details.
@@ -97,12 +100,6 @@ Local, Google Drive, Google Cloud Storage, Microsoft OneDrive, Amazon S3,Azure B
 
 ### Container Orchestration
 Docker, k8s.
-
-## Why
-
-Give an agent APIs and a persistent workspace, and it can write code, analyze data, generate reports, and accumulate artifacts across runs. Public and private data sources can be combined seamlessly within the same environment.
-
-The filesystem doubles as durable state and a checkpoint store, allowing agents to resume work without rebuilding context each session. By persisting intermediate artifacts, caches, and outputs, Hive reduces redundant computation and token usage while enforcing auditable filesystem and network boundaries.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "@hiver.sh/cli",
-  "version": "0.1.5",
+  "version": "0.1.13",
   "type": "module",
   "homepage": "https://hiver.sh/docs",
   "repository": {
@@ -29,7 +29,7 @@
     "build:inspector-client": "cd packages/devtools-client && vite build --config vite.lib.config.ts",
     "build:client": "cd packages/devtools-client && vite build",
     "build:server": "tsc -p packages/devtools-server/tsconfig.build.json",
-    "build:commands": "tsc -p packages/commands/tsconfig.build.json && cp packages/commands/src/compose/compose.yaml packages/commands/dist/compose/compose.yaml",
+    "build:commands": "tsc -p packages/commands/tsconfig.build.json && cp packages/commands/src/compose/compose.yaml packages/commands/dist/compose/compose.yaml && cp packages/commands/src/bundle/bundler.Dockerfile packages/commands/dist/bundle/bundler.Dockerfile",
     "cli": "DEV=1 ./packages/commands/bin.js",
     "link:client": "(cd ../client/typescript && npm link) && npm link @hiver.sh/client",
     "dev": "tsx watch packages/devtools-server/src/index.ts & (cd packages/devtools-client && vite) & wait",

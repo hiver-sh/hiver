@@ -1,6 +1,7 @@
 import { listSandboxes } from "@hiver.sh/client";
-import { bold, dim, red } from "../theme.js";
+import { white, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
+import { ensureGateway } from "../gateway.js";
 
 const cmd = withGateway(
   subcommand("events", "Stream a sandbox's events live as they happen."),
@@ -11,14 +12,15 @@ const cmd = withGateway(
 run(cmd);
 const key = cmd.args[0];
 const { gatewayUrl: gatewayFlag, startEventId, follow } = cmd.opts();
-const gatewayUrl = resolveGatewayUrl(gatewayFlag);
+let gatewayUrl = resolveGatewayUrl(gatewayFlag);
+gatewayUrl = await ensureGateway(gatewayUrl);
 
 const sandbox = (await listSandboxes({ gatewayUrl })).find(
   (s) => s.key === key,
 );
 if (!sandbox) {
   console.error(
-    `\n  ${red("✖")} no sandbox with key ${bold(key)} on ${dim(gatewayUrl)}\n`,
+    `\n  ${red("✖")} no sandbox with key ${white(key)} on ${dim(gatewayUrl)}\n`,
   );
   process.exit(1);
 }

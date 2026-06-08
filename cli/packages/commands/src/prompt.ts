@@ -5,6 +5,13 @@ import { dim } from "./theme.js";
 export async function confirm(question: string): Promise<boolean> {
   if (!process.stdin.isTTY) return false;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Ctrl+C at the prompt: close the readline (which restores stdin out of raw
+  // mode) before exiting, so the shell isn't left echoing `^[[A` for arrows.
+  rl.on("SIGINT", () => {
+    rl.close();
+    process.stdout.write("\n");
+    process.exit(130);
+  });
   try {
     const answer = await rl.question(`${question} ${dim("(y/N)")} `);
     return /^y(es)?$/i.test(answer.trim());

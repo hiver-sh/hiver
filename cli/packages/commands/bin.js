@@ -30,4 +30,33 @@ if (process.env.DEV) {
 }
 
 const child = spawn(cmd, cmdArgs, { stdio: "inherit" });
-child.on("exit", (code) => process.exit(code ?? 0));
+
+// The child shares our process group, so the terminal delivers Ctrl+C (and
+// friends) to it directly. We must NOT die on those signals ourselves: long-
+// running commands like `inspect` tear down asynchronously (restoring the
+// cursor, killing the detached devtools server) and the shell only redraws its
+// prompt once *we* exit. If the default signal action killed us first, the
+// shell would reclaim the terminal mid-teardown — leaving the cursor hidden
+// and arrow keys echoing as `^[[A`. Forward the signal and wait for the child
+// to finish, then mirror how it exited.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    try {
+      child.kill(sig);
+    } catch {
+      /* child already gone */
+    }
+  });
+}
+child.on("exit", (code, signal) => {
+  if (signal) {
+    // The child was killed by a signal — re-raise it so our exit status
+    // reflects that (the child already restored the cursor before dying).
+    // Drop our own handler first so the default action actually terminates us
+    // instead of looping back into the forwarder.
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 0);
+});
