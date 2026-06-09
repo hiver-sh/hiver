@@ -62,10 +62,22 @@ func TestCommand(t *testing.T) {
 
 func TestDefaultBootArgs(t *testing.T) {
 	got := DefaultBootArgs("172.16.0.2", "172.16.0.1")
-	for _, want := range []string{"console=ttyS0", "ip=172.16.0.2::172.16.0.1:", "init=/usr/bin/sbxguest"} {
+	// console=ttyS0 is omitted by default to avoid serial I/O VM-exits on boot.
+	if strings.Contains(got, "console=ttyS0") {
+		t.Errorf("boot args %q should not contain console=ttyS0 by default", got)
+	}
+	for _, want := range []string{"ip=172.16.0.2::172.16.0.1:", "init=/usr/bin/sbxguest"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("boot args %q missing %q", got, want)
 		}
+	}
+}
+
+func TestDefaultBootArgsDebugConsole(t *testing.T) {
+	t.Setenv("FIRECRACKER_DEBUG_CONSOLE", "1")
+	got := DefaultBootArgs("172.16.0.2", "172.16.0.1")
+	if !strings.Contains(got, "console=ttyS0") {
+		t.Errorf("boot args %q missing console=ttyS0 when FIRECRACKER_DEBUG_CONSOLE=1", got)
 	}
 }
 
