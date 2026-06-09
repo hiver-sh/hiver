@@ -10,12 +10,12 @@ import { createLoader, hex } from "../hive.js";
 import { ensureGateway } from "../gateway.js";
 import { EventRecorder } from "./recorder.js";
 
-// packages/commands/{src,dist}/inspect → packages/devtools-server/dist/index.js.
+// packages/commands/{src,dist}/inspect → packages/inspector-server/dist/index.js.
 // The built server also serves the built web client, so one process is enough.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_ENTRY = resolve(
   __dirname,
-  "../../../devtools-server/dist/index.js",
+  "../../../inspector-server/dist/index.js",
 );
 
 const cli = withGateway(subcommand("inspect", "Launch the Hiver DevTools."))

@@ -28,7 +28,7 @@ app.use("/api/sandboxes", terminalRoutes);
 app.use("/api/trace", traceRoutes);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const clientDist = join(__dirname, "../../devtools-client/dist");
+const clientDist = join(__dirname, "../../inspector-client/dist");
 if (existsSync(clientDist)) {
   // Hashed assets (index-<hash>.js/.css) are immutable — their name changes on
   // every rebuild — so they're safe to cache forever.

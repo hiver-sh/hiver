@@ -7,5 +7,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["scripts", "packages/commands/src", "packages/devtools-server/src"]
+  "include": ["scripts", "packages/commands/src", "packages/inspector-server/src"]
 }

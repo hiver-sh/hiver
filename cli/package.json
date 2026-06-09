@@ -1,6 +1,7 @@
 {
   "name": "@hiver.sh/cli",
-  "version": "0.1.13",
+  "version": "0.1.14",
+  "description": "Command-line tool for the [Hiver](https://hiver.sh) agent runtime.",
   "type": "module",
   "homepage": "https://hiver.sh/docs",
   "repository": {
@@ -18,22 +19,22 @@
   "files": [
     "packages/commands/bin.js",
     "packages/commands/dist",
-    "packages/devtools-server/dist",
-    "packages/devtools-client/dist",
+    "packages/inspector-server/dist",
+    "packages/inspector-client/dist",
     "docs",
     "README.md"
   ],
   "scripts": {
     "build": "npm run build:client && npm run build:server && npm run build:commands",
-    "clean": "rm -rf packages/commands/dist packages/devtools-server/dist packages/devtools-client/dist",
-    "build:inspector-client": "cd packages/devtools-client && vite build --config vite.lib.config.ts",
-    "build:client": "cd packages/devtools-client && vite build",
-    "build:server": "tsc -p packages/devtools-server/tsconfig.build.json",
+    "clean": "rm -rf packages/commands/dist packages/inspector-server/dist packages/inspector-client/dist",
+    "build:inspector-client": "cd packages/inspector-client && vite build --config vite.lib.config.ts",
+    "build:client": "cd packages/inspector-client && vite build",
+    "build:server": "tsc -p packages/inspector-server/tsconfig.build.json",
     "build:commands": "tsc -p packages/commands/tsconfig.build.json && cp packages/commands/src/compose/compose.yaml packages/commands/dist/compose/compose.yaml && cp packages/commands/src/bundle/bundler.Dockerfile packages/commands/dist/bundle/bundler.Dockerfile",
     "cli": "DEV=1 ./packages/commands/bin.js",
     "link:client": "(cd ../client/typescript && npm link) && npm link @hiver.sh/client",
-    "dev": "tsx watch packages/devtools-server/src/index.ts & (cd packages/devtools-client && vite) & wait",
-    "start": "PORT=5173 node packages/devtools-server/dist/index.js",
+    "dev": "tsx watch packages/inspector-server/src/index.ts & (cd packages/inspector-client && vite) & wait",
+    "start": "PORT=5173 node packages/inspector-server/dist/index.js",
     "prepack": "npm run build",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,css}\"",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\""

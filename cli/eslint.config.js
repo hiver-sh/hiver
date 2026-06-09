@@ -8,7 +8,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["packages/devtools-client/src/**/*.{ts,tsx}"],
+    files: ["packages/inspector-client/src/**/*.{ts,tsx}"],
     plugins: {
       "react-hooks": reactHooks,
       "react-refresh": reactRefresh,
@@ -20,8 +20,8 @@ export default tseslint.config(
   },
   {
     files: [
-      "packages/devtools-client/src/components/ui/**",
-      "packages/devtools-client/src/components/TimelineView.tsx",
+      "packages/inspector-client/src/components/ui/**",
+      "packages/inspector-client/src/components/TimelineView.tsx",
     ],
     rules: {
       "react-refresh/only-export-components": "off",
