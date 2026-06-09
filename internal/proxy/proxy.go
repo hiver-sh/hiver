@@ -396,12 +396,12 @@ func (p *Proxy) chunkForward(src io.Reader, dst io.Writer, flush func(), ac *aud
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
+			if logBody {
+				ac.streamChunk(string(buf[:n]), "")
+			}
 			_, _ = dst.Write(buf[:n])
 			if flush != nil {
 				flush()
-			}
-			if logBody {
-				ac.streamChunk(string(buf[:n]), "")
 			}
 		}
 		if err != nil {
