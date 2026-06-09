@@ -39,7 +39,7 @@ import (
 	"github.com/blasten/hive/internal/sandboxd"
 	"github.com/blasten/hive/internal/snapshot"
 	"github.com/blasten/hive/internal/spec"
-	"github.com/blasten/hive/internal/tty"
+	"github.com/blasten/hive/internal/pty"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
@@ -433,7 +433,7 @@ func main() {
 	var (
 		agentCmd       *exec.Cmd
 		agentStdioDone <-chan struct{}
-		entrypointTTY  *tty.Session
+		entrypointTTY  *pty.Session
 	)
 	if ttyEnabled {
 		cmd, sess, ttyErr := startAgentTTY(agentCtx, agentBin, agentArgs)
@@ -637,15 +637,15 @@ func startChild(ctx context.Context,
 //
 // The Session's Done channel stands in for startChild's stdioDone: it closes
 // once the master reaches EOF (the agent's output is finished).
-func startAgentTTY(ctx context.Context, bin string, args []string) (*exec.Cmd, *tty.Session, error) {
+func startAgentTTY(ctx context.Context, bin string, args []string) (*exec.Cmd, *pty.Session, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 10 * time.Second
-	master, err := tty.Start(cmd)
+	master, err := pty.Start(cmd)
 	if err != nil {
 		return nil, nil, err
 	}
-	return cmd, tty.NewSession(master, nil), nil
+	return cmd, pty.NewSession(master, nil), nil
 }
 
 func streamPrefixed(prefix string, r io.Reader, onLine func(string)) {

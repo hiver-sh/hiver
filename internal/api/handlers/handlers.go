@@ -13,7 +13,7 @@ import (
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/events"
 	"github.com/blasten/hive/internal/isolation"
-	"github.com/blasten/hive/internal/tty"
+	"github.com/blasten/hive/internal/pty"
 )
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still
@@ -34,16 +34,16 @@ type SandboxHandlers struct {
 	store     configStore
 	lifetime  lifetime
 	iso       isolation.Isolation // runtime boundary: exec + filesystem access
-	processes sync.Map            // id → io.Writer (stdin of a running exec-stream process) or *tty.Session
+	processes sync.Map            // id → io.Writer (stdin of a running exec-stream process) or *pty.Session
 	netMark   int                 // SO_MARK for the reverse proxy dialer, bypasses iptables REDIRECT
 
 	// entrypointTTY is the pty wrapping the sandbox entrypoint when the config
 	// sets tty: true; nil otherwise. An exec-stream request with an empty
 	// command attaches to it (see execStreamAttach).
-	entrypointTTY *tty.Session
+	entrypointTTY *pty.Session
 }
 
-func NewSandboxHandlers(broker *events.Broker, store configStore, lifetime lifetime, iso isolation.Isolation, netMark int, entrypointTTY *tty.Session) *SandboxHandlers {
+func NewSandboxHandlers(broker *events.Broker, store configStore, lifetime lifetime, iso isolation.Isolation, netMark int, entrypointTTY *pty.Session) *SandboxHandlers {
 	return &SandboxHandlers{
 		broker:        broker,
 		store:         store,

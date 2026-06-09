@@ -14,7 +14,7 @@ import (
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/blasten/hive/internal/isolation"
-	"github.com/blasten/hive/internal/tty"
+	"github.com/blasten/hive/internal/pty"
 	"github.com/gin-gonic/gin"
 )
 
@@ -108,13 +108,13 @@ func (h *SandboxHandlers) execStreamTTY(c *gin.Context, id, command string, req 
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
-	master, err := tty.Start(cmd)
+	master, err := pty.Start(cmd)
 	if err != nil {
 		cleanup()
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
-	sess := tty.NewSession(master, nil)
+	sess := pty.NewSession(master, nil)
 	h.processes.Store(id, sess)
 	defer func() {
 		h.processes.Delete(id)

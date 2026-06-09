@@ -1,4 +1,4 @@
-// Package tty wraps a process in a pseudo-terminal and fans its output out to
+// Package pty wraps a process in a pseudo-terminal and fans its output out to
 // any number of attached subscribers.
 //
 // The same machinery backs two callers:
@@ -14,7 +14,7 @@
 // Keeping the pty wiring (Start) and the fan-out (Session) here lets both
 // paths share one implementation rather than each re-deriving the runc/pty
 // controlling-terminal dance.
-package tty
+package pty
 
 import (
 	"fmt"
@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
+	cpty "github.com/creack/pty"
 	"golang.org/x/term"
 )
 
@@ -54,7 +54,7 @@ const subBuffer = 1024
 // make the slave the process's controlling terminal so resizing the master
 // (TIOCSWINSZ) delivers SIGWINCH to the program.
 func Start(cmd *exec.Cmd) (*os.File, error) {
-	master, slave, err := pty.Open()
+	master, slave, err := cpty.Open()
 	if err != nil {
 		return nil, fmt.Errorf("open pty: %w", err)
 	}
@@ -235,15 +235,15 @@ func (s *Session) Write(p []byte) (int, error) { return s.stdin.Write(p) }
 // fix that we wiggle the size (set it off by one column, then restore it) which
 // forces a SIGWINCH and a full repaint at the correct final size.
 func (s *Session) Resize(rows, cols uint16) error {
-	if cur, err := pty.GetsizeFull(s.master); err == nil &&
+	if cur, err := cpty.GetsizeFull(s.master); err == nil &&
 		cur.Rows == rows && cur.Cols == cols {
 		nudge := cols + 1
 		if cols > 1 {
 			nudge = cols - 1
 		}
-		_ = pty.Setsize(s.master, &pty.Winsize{Rows: rows, Cols: nudge})
+		_ = cpty.Setsize(s.master, &cpty.Winsize{Rows: rows, Cols: nudge})
 	}
-	return pty.Setsize(s.master, &pty.Winsize{Rows: rows, Cols: cols})
+	return cpty.Setsize(s.master, &cpty.Winsize{Rows: rows, Cols: cols})
 }
 
 // Done is closed when the session ends (the wrapped process exited).

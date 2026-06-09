@@ -88,8 +88,6 @@ $ hiver
 
 * [Docs](https://hiver.sh/docs)
 
-* [Self-improving loop](https://hiver.sh/docs/self-improving)
-
 * [Examples](https://hiver.sh/docs/examples)
 
 ### Isolation Modes
@@ -100,6 +98,18 @@ Local, Google Drive, Google Cloud Storage, Microsoft OneDrive, Amazon S3,Azure B
 
 ### Container Orchestration
 Docker, k8s.
+
+
+### Architecture
+
+The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together — serving the client API, reconciling sidecar policy, and streaming telemetry events. 
+
+The root filesystem is assembled with overlayfs, layering the agent's writes over the read-only base image for efficient snapshotting.
+
+A typical deployment also includes a controller for sandbox lifecycle management and an Envoy gateway for external network access. All components ship out of the box but can be swapped for custom implementations.
+
+Hiver is unopinionated about orchestration: the agent CLI or SDK can run entirely inside the sandbox or in a separate deployment. Because everything inside the sandbox is treated as untrusted, agents can call private APIs and access files without ever seeing auth tokens or secrets.
+
 
 ## License
 

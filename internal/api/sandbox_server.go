@@ -10,7 +10,7 @@ import (
 	"github.com/blasten/hive/internal/api/handlers"
 	"github.com/blasten/hive/internal/events"
 	"github.com/blasten/hive/internal/isolation"
-	"github.com/blasten/hive/internal/tty"
+	"github.com/blasten/hive/internal/pty"
 	"github.com/gin-gonic/gin"
 	middleware "github.com/oapi-codegen/gin-middleware"
 )
@@ -18,7 +18,7 @@ import (
 // NewSandboxServer builds the per-sandbox HTTP API. entrypointTTY is the pty
 // wrapping the entrypoint when the config sets tty: true (nil otherwise);
 // it backs `/v1/exec-stream` attach requests with an empty command.
-func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, lifetime *Lifetime, iso isolation.Isolation, netMark int, entrypointTTY *tty.Session) *http.Server {
+func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, lifetime *Lifetime, iso isolation.Isolation, netMark int, entrypointTTY *pty.Session) *http.Server {
 	swagger, err := gen.GetSpec()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading swagger spec: %s", err)
