@@ -10,8 +10,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/blasten/hive/internal/firecracker"
-	"github.com/blasten/hive/internal/vsockfile"
+	"github.com/hiver-sh/hiver/internal/firecracker"
+	"github.com/hiver-sh/hiver/internal/vsockfile"
 )
 
 // Files serves the management file API by proxying every operation to the

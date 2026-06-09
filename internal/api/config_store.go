@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
-	"github.com/blasten/hive/internal/api/handlers"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/api/handlers"
 )
 
 // ConfigStore persists the active SandboxConfig as a JSON document on

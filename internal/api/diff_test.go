@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 func localFS(mount string, acls *[]gen.ACLRule) gen.FileSystem {

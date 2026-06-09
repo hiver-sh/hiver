@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
-	"github.com/blasten/hive/internal/events"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/events"
 )
 
 const resourcePollInterval = 5 * time.Second

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 // statCache memoizes remotefs.FileInfo for a short window so an

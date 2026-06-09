@@ -25,10 +25,10 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/blasten/hive/internal/firecracker"
-	"github.com/blasten/hive/internal/vsockexec"
-	"github.com/blasten/hive/internal/vsockfile"
 	"github.com/creack/pty"
+	"github.com/hiver-sh/hiver/internal/firecracker"
+	"github.com/hiver-sh/hiver/internal/vsockexec"
+	"github.com/hiver-sh/hiver/internal/vsockfile"
 	"golang.org/x/sys/unix"
 )
 

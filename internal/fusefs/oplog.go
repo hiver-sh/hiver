@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 // OpType names the kind of mutation an [OplogEntry] encodes.

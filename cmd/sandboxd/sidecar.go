@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blasten/hive/internal/events"
+	"github.com/hiver-sh/hiver/internal/events"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 // newEventsPair makes a connected socketpair for streaming JSON-line

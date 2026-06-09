@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	gen "github.com/blasten/hive/internal/api/gen/controller"
-	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/google/uuid"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
+	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

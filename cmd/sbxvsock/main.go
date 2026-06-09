@@ -21,9 +21,9 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/blasten/hive/internal/firecracker"
-	"github.com/blasten/hive/internal/vsockexec"
 	"github.com/creack/pty"
+	"github.com/hiver-sh/hiver/internal/firecracker"
+	"github.com/hiver-sh/hiver/internal/vsockexec"
 )
 
 type envFlag []string

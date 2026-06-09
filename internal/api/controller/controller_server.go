@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"os"
 
-	gen "github.com/blasten/hive/internal/api/gen/controller"
 	"github.com/gin-gonic/gin"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
 	middleware "github.com/oapi-codegen/gin-middleware"
 )
 

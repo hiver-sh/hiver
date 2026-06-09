@@ -29,7 +29,7 @@ const sandbox = await hiver.getOrCreateSandbox("hive-example", {
     {
       access: "allow",
       host: "github.com",
-      paths: ["/blasten/hive"],
+      paths: ["/hiver-sh/hiver"],
     },
     {
       access: "allow",

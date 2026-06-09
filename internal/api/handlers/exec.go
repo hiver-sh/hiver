@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
-	"github.com/blasten/hive/internal/isolation"
-	"github.com/blasten/hive/internal/pty"
 	"github.com/gin-gonic/gin"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/isolation"
+	"github.com/hiver-sh/hiver/internal/pty"
 )
 
 // ttyStdin is the control surface a TTY-backed exec stream registers in

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/internal/api"
+	"github.com/hiver-sh/hiver/internal/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 // TestConfigE2E exercises `GET /v1/config` and `PUT /v1/config`

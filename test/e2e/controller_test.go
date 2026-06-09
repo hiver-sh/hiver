@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	controllergen "github.com/blasten/hive/internal/api/gen/controller"
-	"github.com/blasten/hive/test/e2e/setup"
+	controllergen "github.com/hiver-sh/hiver/internal/api/gen/controller"
+	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
 const (

@@ -13,9 +13,9 @@ import (
 	"path"
 	"strings"
 
-	externalRef0 "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gin-gonic/gin"
+	externalRef0 "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )

@@ -19,8 +19,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/blasten/hive/internal/fusefs"
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/fusefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 func main() {

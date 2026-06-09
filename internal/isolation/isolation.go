@@ -24,7 +24,7 @@ import (
 	"io"
 	"os/exec"
 
-	"github.com/blasten/hive/internal/runc"
+	"github.com/hiver-sh/hiver/internal/runc"
 )
 
 // NodeCACertPath is where each backend installs a standalone copy of the

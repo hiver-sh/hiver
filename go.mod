@@ -1,4 +1,4 @@
-module github.com/blasten/hive
+module github.com/hiver-sh/hiver
 
 go 1.26.0
 

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/internal/fusefs"
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/fusefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 // TestOplogReplaysFsMutations writes / renames / removes through a

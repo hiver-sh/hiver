@@ -9,11 +9,11 @@ import (
 	"os"
 	"sync"
 
-	"github.com/blasten/hive/internal/api"
-	gen "github.com/blasten/hive/internal/api/gen/controller"
-	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
+	"github.com/hiver-sh/hiver/internal/api"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
+	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 type ControllerHandlers struct {

@@ -22,7 +22,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/blasten/hive/internal/proxy"
+	"github.com/hiver-sh/hiver/internal/proxy"
 )
 
 func main() {

@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
-	"github.com/blasten/hive/internal/events"
 	"github.com/gin-gonic/gin"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/events"
 )
 
 // GetEvents implements the long-lived SSE stream at GET /v1/events.

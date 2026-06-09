@@ -3,8 +3,8 @@ package e2e_test
 import (
 	"testing"
 
-	"github.com/blasten/hive/internal/spec"
-	"github.com/blasten/hive/test/e2e/setup"
+	"github.com/hiver-sh/hiver/internal/spec"
+	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
 func TestPythonSandboxE2E(t *testing.T) {

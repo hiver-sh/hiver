@@ -3,7 +3,7 @@ package e2e_test
 import (
 	"testing"
 
-	"github.com/blasten/hive/test/e2e/setup"
+	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
 // TestWebSocketE2E verifies that the transparent egress proxy correctly

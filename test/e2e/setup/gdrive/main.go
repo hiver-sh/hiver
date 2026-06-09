@@ -39,7 +39,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/blasten/hive/test/e2e/setup"
+	"github.com/hiver-sh/hiver/test/e2e/setup"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/drive/v3"

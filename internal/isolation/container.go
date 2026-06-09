@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blasten/hive/internal/runc"
-	"github.com/blasten/hive/internal/snapshot"
-	"github.com/blasten/hive/internal/spec"
+	"github.com/hiver-sh/hiver/internal/runc"
+	"github.com/hiver-sh/hiver/internal/snapshot"
+	"github.com/hiver-sh/hiver/internal/spec"
 )
 
 // container is the runc-backed Isolation. All primitives are host-level

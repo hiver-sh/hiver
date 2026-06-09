@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 
-	"github.com/blasten/hive/internal/api/controller"
+	"github.com/hiver-sh/hiver/internal/api/controller"
 )
 
 func main() {

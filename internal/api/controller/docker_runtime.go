@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	gen "github.com/blasten/hive/internal/api/gen/controller"
-	sandboxgen "github.com/blasten/hive/internal/api/gen/sandbox"
-	"github.com/blasten/hive/internal/spec"
 	"github.com/google/uuid"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
+	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/spec"
 )
 
 const (

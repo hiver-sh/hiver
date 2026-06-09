@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/internal/spec"
-	"github.com/blasten/hive/test/e2e/setup"
+	"github.com/hiver-sh/hiver/internal/spec"
+	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
 // TestTTLE2E exercises the /v1/ping keepalive contract against the ttl

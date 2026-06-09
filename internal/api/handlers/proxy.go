@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/gin-gonic/gin"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 // maxBodyCapture is the per-direction body capture limit (512 KB).

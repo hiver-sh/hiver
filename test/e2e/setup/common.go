@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/internal/spec"
+	"github.com/hiver-sh/hiver/internal/spec"
 	"sigs.k8s.io/yaml"
 )
 

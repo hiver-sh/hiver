@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 // TestFileStoreRoundTrip exercises the full Store contract against the

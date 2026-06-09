@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 	"github.com/gin-gonic/gin"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 // mountPaths returns the configured FUSE mount paths, which the backend's

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/test/e2e/setup"
+	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
 // TestEventsLastEventIdE2E exercises `GET /v1/events` end-to-end and

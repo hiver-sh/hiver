@@ -3,8 +3,8 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/blasten/hive/internal/runc"
 	"github.com/gin-gonic/gin"
+	"github.com/hiver-sh/hiver/internal/runc"
 )
 
 // GetPorts lists the TCP ports the sandbox exposes — the image's EXPOSE

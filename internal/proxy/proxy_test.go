@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/internal/proxy"
+	"github.com/hiver-sh/hiver/internal/proxy"
 	"github.com/klauspost/compress/zstd"
 )
 

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 func TestStatCacheHitMissExpiry(t *testing.T) {

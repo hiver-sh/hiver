@@ -3,7 +3,7 @@ package fusefs_test
 import (
 	"testing"
 
-	"github.com/blasten/hive/internal/fusefs"
+	"github.com/hiver-sh/hiver/internal/fusefs"
 )
 
 func TestACLLongestPrefixWins(t *testing.T) {

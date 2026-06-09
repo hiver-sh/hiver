@@ -21,7 +21,7 @@ import (
 	"bazil.org/fuse"
 	bazilfs "bazil.org/fuse/fs"
 
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 // Config drives a [Server]. MountPoint is where the FUSE filesystem appears

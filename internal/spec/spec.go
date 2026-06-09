@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/blasten/hive/internal/fusefs"
-	"github.com/blasten/hive/internal/proxy"
+	"github.com/hiver-sh/hiver/internal/fusefs"
+	"github.com/hiver-sh/hiver/internal/proxy"
 )
 
 var snapshotKeyRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)

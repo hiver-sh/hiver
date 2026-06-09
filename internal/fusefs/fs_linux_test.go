@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blasten/hive/internal/fusefs"
+	"github.com/hiver-sh/hiver/internal/fusefs"
 )
 
 // requiresFUSE skips a test when /dev/fuse isn't available (CI without

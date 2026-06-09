@@ -10,10 +10,10 @@ import (
 	"strings"
 	"sync"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
-	"github.com/blasten/hive/internal/events"
-	"github.com/blasten/hive/internal/isolation"
-	"github.com/blasten/hive/internal/pty"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/events"
+	"github.com/hiver-sh/hiver/internal/isolation"
+	"github.com/hiver-sh/hiver/internal/pty"
 )
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still

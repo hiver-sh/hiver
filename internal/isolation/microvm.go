@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/blasten/hive/internal/firecracker"
-	"github.com/blasten/hive/internal/runc"
-	"github.com/blasten/hive/internal/snapshot"
+	"github.com/hiver-sh/hiver/internal/firecracker"
+	"github.com/hiver-sh/hiver/internal/runc"
+	"github.com/hiver-sh/hiver/internal/snapshot"
 )
 
 // Guest network: a /30 point-to-point link over the tap device. The host

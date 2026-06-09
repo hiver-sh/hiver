@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 // NormalizeConfig fills in default values for fields the server enforces

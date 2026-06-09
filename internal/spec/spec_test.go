@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blasten/hive/internal/spec"
+	"github.com/hiver-sh/hiver/internal/spec"
 )
 
 func writeSpec(t *testing.T, body string) string {

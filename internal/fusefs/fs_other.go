@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/blasten/hive/internal/remotefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 // Config drives a [Server]. See fs_linux.go for the real implementation.

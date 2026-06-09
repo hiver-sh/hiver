@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/blasten/hive/internal/proxy"
+	"github.com/hiver-sh/hiver/internal/proxy"
 )
 
 // Generate a per-pod CA. sbxproxy uses it to mint leaf certs for

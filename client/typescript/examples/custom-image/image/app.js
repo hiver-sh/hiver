@@ -81,7 +81,7 @@ function fsRead(path) {
   curlGet("https://github.com/blasten");
 
   // Allowed
-  curlGet("https://github.com/blasten/hive");
+  curlGet("https://github.com/hiver-sh/hiver");
 
   fsWrite("/workspace/hello.txt", "hello from node");
   fsRead("/workspace/hello.txt");

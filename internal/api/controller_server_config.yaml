@@ -8,4 +8,4 @@ output: ./gen/controller/server.gen.go
 output-options:
   skip-prune: true
 import-mapping:
-  ./config.yaml: "github.com/blasten/hive/internal/api/gen/sandbox"
+  ./config.yaml: "github.com/hiver-sh/hiver/internal/api/gen/sandbox"

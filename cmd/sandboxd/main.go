@@ -32,16 +32,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blasten/hive/internal/api"
-	"github.com/blasten/hive/internal/events"
-	"github.com/blasten/hive/internal/isolation"
-	"github.com/blasten/hive/internal/runc"
-	"github.com/blasten/hive/internal/sandboxd"
-	"github.com/blasten/hive/internal/snapshot"
-	"github.com/blasten/hive/internal/spec"
-	"github.com/blasten/hive/internal/pty"
+	"github.com/hiver-sh/hiver/internal/api"
+	"github.com/hiver-sh/hiver/internal/events"
+	"github.com/hiver-sh/hiver/internal/isolation"
+	"github.com/hiver-sh/hiver/internal/pty"
+	"github.com/hiver-sh/hiver/internal/runc"
+	"github.com/hiver-sh/hiver/internal/sandboxd"
+	"github.com/hiver-sh/hiver/internal/snapshot"
+	"github.com/hiver-sh/hiver/internal/spec"
 
-	gen "github.com/blasten/hive/internal/api/gen/sandbox"
+	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 const (
