@@ -26,6 +26,8 @@ type Spec struct {
 	CPU        *int               `json:"cpu,omitempty"`
 	Memory     *int               `json:"memory,omitempty"`
 	Entrypoint string             `json:"entrypoint,omitempty"`
+	Cwd        string             `json:"cwd,omitempty"`
+	Tty        *bool              `json:"tty,omitempty"`
 	Ttl        *int               `json:"ttl,omitempty"`
 	Env        map[string]string  `json:"env,omitempty"`
 	FS         []FS               `json:"fs"`

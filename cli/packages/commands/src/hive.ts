@@ -79,7 +79,12 @@ export function createLoader(label: string): Loader {
   }
 
   function render() {
-    process.stdout.write(`\x1b[2K\r${comb()}  ${dim(text)}`);
+    // Draw the spinner line, then leave a cleared blank line beneath it so the
+    // indicator always has breathing room. Move the cursor back up to the
+    // spinner line so the next frame repaints in place.
+    process.stdout.write(
+      `\x1b[2K\r${comb()}  ${dim(text)}\n\x1b[2K\x1b[1A`,
+    );
     frame++;
   }
 
@@ -93,7 +98,7 @@ export function createLoader(label: string): Loader {
   return {
     start() {
       if (!interactive) {
-        process.stdout.write(`${dim(text + "…")}\n`);
+        process.stdout.write(`${dim(text + "…")}\n\n`);
         return this;
       }
       process.stdout.write("\x1b[?25l"); // hide cursor

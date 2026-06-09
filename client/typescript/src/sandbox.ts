@@ -239,18 +239,25 @@ export class Sandbox {
    * Stream output via `exec.pipes`, write to stdin via `exec.writeStdin()`,
    * and await the exit code via `exec.exitCode`.
    *
+   * Pass an empty (or omitted) `command` to attach to the sandbox
+   * entrypoint's TTY instead of running a new command — this requires the
+   * sandbox to have been created with `tty: true`. Output frames carry the
+   * entrypoint terminal's bytes, `writeStdin` writes to it, and the stream
+   * stays open until the client disconnects or the entrypoint exits.
+   *
    * The returned promise resolves once the server has accepted the connection
    * and registered the process — at that point `writeStdin` is safe to call.
    */
   async execStream(
-    command: string,
+    command?: string,
     opts?: ExecStreamOptions,
   ): Promise<ExecProcess> {
     const id = crypto.randomUUID();
     const streamUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}`;
     const stdinUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}/stdin`;
 
-    const body: Record<string, unknown> = { command };
+    const body: Record<string, unknown> = {};
+    if (command) body.command = command;
     if (opts?.cwd !== undefined) body.cwd = opts.cwd;
     if (opts?.env !== undefined) body.env = opts.env;
     if (opts?.tty !== undefined) body.tty = opts.tty;

@@ -11,6 +11,11 @@ import { useUserPreferences } from "@/lib/userPreferences";
  * state and stored events are dropped immediately (the periodic purge in
  * usePurgeOrphanEvents is the backstop for sandboxes destroyed while the
  * inspector wasn't watching).
+ *
+ * This is one long-lived SSE per tab; affordable now that the per-sandbox
+ * event feed and terminal share a single connection (see SandboxDetail's
+ * `/stream`), so an open sandbox view holds 2 connections (lifecycle + stream)
+ * rather than 3 — comfortably under the browser's ~6-per-origin HTTP/1.1 cap.
  */
 export function useSandboxLifecycleEvents(
   serverUrl: string,

@@ -211,10 +211,9 @@ export class EventRecorder {
 
     this.pollEndpoint(configUrl);
     this.pollEndpoint(this.buildUrl(`/api/sandboxes/${sandboxKey}/ports`));
-    this.streamEndpoint(this.buildUrl(`/api/sandboxes/${sandboxKey}/events`));
-    this.streamEndpoint(
-      this.buildUrl(`/api/sandboxes/${sandboxKey}/terminal/stream`),
-    );
+    // The event feed and terminal output are multiplexed onto one SSE stream
+    // (`feed` / `term` frames); recording it captures both at once.
+    this.streamEndpoint(this.buildUrl(`/api/sandboxes/${sandboxKey}/stream`));
   }
 
   stop(): void {

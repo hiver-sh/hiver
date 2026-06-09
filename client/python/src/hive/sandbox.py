@@ -173,7 +173,7 @@ class Sandbox:
 
     async def exec_stream(
         self,
-        command: str,
+        command: str = "",
         cwd: Optional[str] = None,
         tty: bool = False,
         env: Optional[dict[str, str]] = None,
@@ -182,6 +182,12 @@ class Sandbox:
         Run `command` inside the sandbox and return an ExecProcess handle.
         Stream output via `exec.pipes`, write to stdin via `exec.write_stdin()`,
         and await the exit code via `exec.exit_code`.
+
+        Pass an empty `command` to attach to the sandbox entrypoint's TTY
+        instead of running a new command — this requires the sandbox to have
+        been created with `tty=True`. Output frames carry the entrypoint
+        terminal's bytes, `write_stdin` writes to it, and the stream stays open
+        until the client disconnects or the entrypoint exits.
 
         `env` is merged on top of the sandbox config's environment, overriding
         entries with the same name. When omitted, the sandbox config
@@ -195,7 +201,9 @@ class Sandbox:
         stream_url = f"{self.api_server_url}/v1/exec-stream/{exec_id}"
         stdin_url = f"{self.api_server_url}/v1/exec-stream/{exec_id}/stdin"
 
-        body: dict[str, object] = {"command": command}
+        body: dict[str, object] = {}
+        if command:
+            body["command"] = command
         if cwd is not None:
             body["cwd"] = cwd
         if env is not None:

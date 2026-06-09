@@ -1,7 +1,6 @@
 import { Loader2, Plus } from "lucide-react";
 import { useState } from "react";
 import { useTransport } from "@/lib/transport";
-import { useSandboxCommand } from "@/lib/useSandboxCommand";
 import { CodeEditor } from "@/components/CodeEditor";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,7 +24,7 @@ const DEFAULT_CONFIG = {
 
 interface Props {
   serverUrl: string;
-  onCreated: (key: string, command: string) => void;
+  onCreated: (key: string) => void;
 }
 
 export function CreateSandboxDialog({
@@ -42,7 +41,6 @@ export function CreateSandboxDialog({
   const [configJson, setConfigJson] = useState(
     JSON.stringify(DEFAULT_CONFIG, null, 2),
   );
-  const [command, setCommand, persistCommand] = useSandboxCommand(key);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -76,9 +74,8 @@ export function CreateSandboxDialog({
         setError((body as { error?: string }).error ?? res.statusText);
         return;
       }
-      persistCommand();
       setOpen(false);
-      onCreated(key, command.trim());
+      onCreated(key);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -143,23 +140,12 @@ export function CreateSandboxDialog({
                   }
                 }}
                 onSuggestId={setKey}
-                onSuggestCommand={setCommand}
               />
             </div>
             <CodeEditor
               value={configJson}
               onChange={setConfigJson}
               className="min-h-[320px]"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="sb-command">Launch Command</Label>
-            <Input
-              id="sb-command"
-              placeholder="/bin/sh"
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              disabled={loading}
             />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}

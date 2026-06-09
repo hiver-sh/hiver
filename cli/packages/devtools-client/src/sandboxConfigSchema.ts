@@ -46,6 +46,19 @@ export const SANDBOX_CONFIG_SCHEMA = {
             'Override the entrypoint used when the container is run. When omitted, the image\'s default entrypoint is used. e.g. "tail -f /dev/null" blocks indefinitely with near-zero CPU.',
           examples: ["tail -f /dev/null"],
         },
+        cwd: {
+          type: "string",
+          description:
+            "Working directory for the entrypoint. When set, the entrypoint is launched with this as its current working directory, overriding the image's default working directory. When omitted, the image's working directory is used. Cannot be changed after the sandbox is initialized.",
+          examples: ["/workspace"],
+        },
+        tty: {
+          type: "boolean",
+          default: false,
+          description:
+            "When true, the entrypoint is launched attached to a pseudo-TTY. A client can then attach to that terminal via the exec-stream endpoint with an empty command. Only supported for the container isolation.",
+          examples: [false],
+        },
         env: {
           type: "object",
           additionalProperties: { type: "string" },

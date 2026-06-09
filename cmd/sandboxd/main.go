@@ -39,6 +39,7 @@ import (
 	"github.com/blasten/hive/internal/sandboxd"
 	"github.com/blasten/hive/internal/snapshot"
 	"github.com/blasten/hive/internal/spec"
+	"github.com/blasten/hive/internal/tty"
 
 	gen "github.com/blasten/hive/internal/api/gen/sandbox"
 )
@@ -312,6 +313,9 @@ func main() {
 		imgCfg.Entrypoint = strings.Fields(sp.Entrypoint)
 		imgCfg.Cmd = nil
 	}
+	if sp.Cwd != "" {
+		imgCfg.WorkingDir = sp.Cwd
+	}
 
 	// Seed each FUSE backend from the agent image's own rootfs: any content
 	// the image carries at the mount path (e.g. `COPY inputs/
@@ -378,6 +382,29 @@ func main() {
 		runc.BindMount{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
 	)
 
+	// tty: true wraps the entrypoint in a pseudo-terminal so clients can attach
+	// to it via /v1/exec-stream. Only the container backend supports it (the
+	// microvm runs the workload in a guest the host pty can't reach), so ignore
+	// it elsewhere rather than wrapping the wrong process.
+	ttyEnabled := sp.Tty != nil && *sp.Tty
+	if ttyEnabled && iso.Kind() != isolation.KindContainer {
+		log.Printf("sandboxd: tty: ignoring tty option (only supported for %q isolation, got %q)", isolation.KindContainer, iso.Kind())
+		ttyEnabled = false
+	}
+	if ttyEnabled {
+		// The entrypoint runs on a real terminal, so advertise one: without
+		// TERM, programs assume a dumb terminal and disable colour and cursor
+		// control. The interactive-exec path sets these per-session, but an
+		// attach inherits the entrypoint's own environment, so they must be set
+		// here at launch. User-supplied env wins.
+		if _, ok := agentEnv["TERM"]; !ok {
+			agentEnv["TERM"] = "xterm-256color"
+		}
+		if _, ok := agentEnv["COLORTERM"]; !ok {
+			agentEnv["COLORTERM"] = "truecolor"
+		}
+	}
+
 	// Hand the agent workload off to the isolation backend: it writes any
 	// runtime config it needs (the OCI bundle for runc) and returns the
 	// command that launches the workload, which we run through our own
@@ -387,6 +414,7 @@ func main() {
 		Env:         agentEnv,
 		Mounts:      mounts,
 		Hostname:    podHostname,
+		TTY:         ttyEnabled,
 	})
 	if err != nil {
 		log.Fatalf("prepare agent: %v", err)
@@ -398,11 +426,30 @@ func main() {
 	// is a no-op.
 	agentCtx, stopAgent := context.WithCancel(context.Background())
 	defer stopAgent()
-	agentCmd, agentStdioDone, err := startChild(agentCtx, &children, "sandbox", agentBin,
-		agentArgs, nil, nil,
-		publishAgentStdio(broker))
-	if err != nil {
-		log.Fatalf("start agent: %v", err)
+
+	// agentStdioDone closes once the agent's output is fully drained (both
+	// stdio pipes EOF, or the tty master EOFs). entrypointTTY is non-nil only
+	// on the tty path; it backs exec-stream attach requests.
+	var (
+		agentCmd       *exec.Cmd
+		agentStdioDone <-chan struct{}
+		entrypointTTY  *tty.Session
+	)
+	if ttyEnabled {
+		cmd, sess, ttyErr := startAgentTTY(agentCtx, agentBin, agentArgs)
+		if ttyErr != nil {
+			log.Fatalf("start agent (tty): %v", ttyErr)
+		}
+		agentCmd, entrypointTTY, agentStdioDone = cmd, sess, sess.Done()
+		log.Printf("sandboxd: entrypoint attached to tty")
+	} else {
+		cmd, done, startErr := startChild(agentCtx, &children, "sandbox", agentBin,
+			agentArgs, nil, nil,
+			publishAgentStdio(broker))
+		if startErr != nil {
+			log.Fatalf("start agent: %v", startErr)
+		}
+		agentCmd, agentStdioDone = cmd, done
 	}
 	children.Go(func() {
 		<-ctx.Done()
@@ -422,7 +469,8 @@ func main() {
 		store,
 		lifetime,
 		iso,
-		soMark)
+		soMark,
+		entrypointTTY)
 
 	// Start the TTL countdown from when the API is reachable, not from
 	// sandboxd startup. Image unpacking can take several seconds, which
@@ -570,6 +618,34 @@ func startChild(ctx context.Context,
 		close(done)
 	}()
 	return cmd, done, nil
+}
+
+// startAgentTTY launches the agent attached to a pseudo-terminal and returns
+// the command (for the caller to Wait on) and the pty Session clients attach
+// to via /v1/exec-stream. It mirrors startChild's process supervision (SIGTERM
+// on ctx cancel, then a kill grace via WaitDelay) but, because a tty merges
+// stdout and stderr into one stream, fans the terminal bytes out through the
+// Session instead of the two prefix-streamed pipes.
+//
+// Unlike the pipes path, the entrypoint's tty output is neither mirrored to
+// sandboxd's stdout nor published as StdioEvents: a terminal stream is raw
+// bytes (cursor moves, redraws, colour escapes), not line-oriented log output,
+// so logging it would spam the container logs and surfacing it in the event
+// feed would just be noise. Clients consume it by attaching to the Session
+// (this matches the interactive `exec-stream --tty` path, which also skips
+// stdio events for the same reason).
+//
+// The Session's Done channel stands in for startChild's stdioDone: it closes
+// once the master reaches EOF (the agent's output is finished).
+func startAgentTTY(ctx context.Context, bin string, args []string) (*exec.Cmd, *tty.Session, error) {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
+	master, err := tty.Start(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cmd, tty.NewSession(master, nil), nil
 }
 
 func streamPrefixed(prefix string, r io.Reader, onLine func(string)) {

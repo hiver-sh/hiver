@@ -391,6 +391,9 @@ type SandboxConfig struct {
 	// Cpu Number of virtual CPUs allocated to the sandbox. For the microvm isolation this is the guest vCPU count; for the container isolation it is enforced as a CPU quota. This cannot be changed after the sandbox is initialized.
 	Cpu *int `json:"cpu,omitempty"`
 
+	// Cwd Working directory for the entrypoint. When set, the entrypoint is launched with this as its current working directory, overriding the image's default working directory. When omitted, the image's working directory is used. This cannot be changed after the sandbox is initialized.
+	Cwd *string `json:"cwd,omitempty"`
+
 	// Egress Ordered list of egress rules. The first rule that matches a
 	// request decides the outcome; requests that match no rule
 	// are denied.
@@ -424,6 +427,9 @@ type SandboxConfig struct {
 	// The default is 30 min or 1800 seconds.
 	// Use `0` to disable shutdown.
 	Ttl *int `json:"ttl,omitempty"`
+
+	// Tty When true, the entrypoint is launched attached to a pseudo-TTY. A client can then attach to that terminal by calling `/v1/exec-stream` with an empty (or omitted) `command`. Useful for interactive entrypoints (e.g. a REPL or a shell). Only supported for the `container` isolation. This cannot be changed after the sandbox is initialized.
+	Tty *bool `json:"tty,omitempty"`
 }
 
 // SandboxConfigIsolation The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized.

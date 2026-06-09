@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
-import { dim } from "./theme.js";
+import { emitKeypressEvents } from "node:readline";
+import { brand, bright, dim } from "./theme.js";
 
 /** Yes/no prompt. Returns false (the default) without a TTY. */
 export async function confirm(question: string): Promise<boolean> {
@@ -27,4 +28,69 @@ export async function confirm(question: string): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+export interface SelectOption<T extends string> {
+  label: string;
+  value: T;
+}
+
+/**
+ * Arrow-key selection menu. Returns the selected value.
+ * Falls back to returning the first option when stdin is not a TTY.
+ */
+export async function select<T extends string>(
+  question: string,
+  options: SelectOption<T>[],
+): Promise<T> {
+  if (!process.stdin.isTTY) return options[0].value;
+
+  return new Promise((resolve) => {
+    let idx = 0;
+
+    const render = (first: boolean) => {
+      if (!first) process.stdout.write(`\x1b[${options.length + 1}A`);
+      process.stdout.write(`\x1b[2K${question}\n`);
+      for (let i = 0; i < options.length; i++) {
+        const active = i === idx;
+        const cursor = active ? brand("›") : " ";
+        const label = active ? bright(options[i].label) : dim(options[i].label);
+        process.stdout.write(`\x1b[2K  ${cursor} ${label}\n`);
+      }
+    };
+
+    render(true);
+
+    emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdout.write("\x1b[?25l");
+
+    const onKeypress = (
+      _: unknown,
+      key: { name: string; ctrl: boolean } | undefined,
+    ) => {
+      if (!key) return;
+      if (key.ctrl && key.name === "c") {
+        cleanup();
+        process.stdout.write("\n");
+        process.exit(130);
+      }
+      if (key.name === "up") idx = (idx - 1 + options.length) % options.length;
+      else if (key.name === "down") idx = (idx + 1) % options.length;
+      else if (key.name === "return") {
+        cleanup();
+        resolve(options[idx].value);
+        return;
+      }
+      render(false);
+    };
+
+    const cleanup = () => {
+      process.stdin.removeListener("keypress", onKeypress);
+      process.stdin.setRawMode(false);
+      process.stdout.write("\x1b[?25h");
+    };
+
+    process.stdin.on("keypress", onKeypress);
+  });
 }

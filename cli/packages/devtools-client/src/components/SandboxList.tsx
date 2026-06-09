@@ -10,7 +10,7 @@ interface Props {
   loading: boolean;
   onSelect: (key: string) => void;
   onRefresh: () => void;
-  onCreated: (key: string, command: string) => void;
+  onCreated: (key: string) => void;
   serverUrl: string;
 }
 

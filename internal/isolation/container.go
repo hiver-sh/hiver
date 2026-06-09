@@ -186,6 +186,7 @@ func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		CgroupsPath: c.cgroupPath,
 		VcpuCount:   c.vcpuCount,
 		MemoryMiB:   c.memSizeMib,
+		Terminal:    cfg.TTY,
 	}); err != nil {
 		return "", nil, fmt.Errorf("write bundle config: %w", err)
 	}

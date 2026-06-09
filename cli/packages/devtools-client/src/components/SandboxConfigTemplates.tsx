@@ -12,7 +12,6 @@ type FsEntry = Record<string, unknown>;
 type Template = {
   label: string;
   idPrefix?: string;
-  command?: string;
   apply: (cfg: AnyConfig) => AnyConfig;
 };
 
@@ -23,9 +22,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Claude Code",
         idPrefix: "claude-code",
-        command: "claude",
         apply: () => ({
           image: "hiversh/agent-cli:latest",
+          entrypoint: "claude",
+          cwd: "/workspace",
+          tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],
           snapshot: {
@@ -38,9 +39,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Codex",
         idPrefix: "codex",
-        command: "codex",
         apply: () => ({
           image: "hiversh/agent-cli:latest",
+          entrypoint: "codex",
+          cwd: "/workspace",
+          tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],
           snapshot: {
@@ -53,9 +56,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Gemini CLI",
         idPrefix: "gemini",
-        command: "gemini",
         apply: () => ({
           image: "hiversh/agent-cli:latest",
+          entrypoint: "gemini",
+          cwd: "/workspace",
+          tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],
           snapshot: {
@@ -68,9 +73,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "GitHub Copilot",
         idPrefix: "copilot",
-        command: "copilot",
         apply: () => ({
           image: "hiversh/agent-cli:latest",
+          entrypoint: "copilot",
+          cwd: "/workspace",
+          tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],
           snapshot: {
@@ -83,10 +90,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Node.js",
         idPrefix: "nodejs",
-        command: "node",
         apply: () => ({
           image: "hiversh/node:alpine",
-          entrypoint: "tail -f /dev/null",
+          entrypoint: "node",
+          cwd: "/workspace",
+          tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],
           ttl: 0,
@@ -95,10 +103,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
       {
         label: "Python 3.13",
         idPrefix: "python",
-        command: "python",
         apply: () => ({
           image: "hiversh/python:3.13-alpine",
-          entrypoint: "tail -f /dev/null",
+          entrypoint: "python",
+          cwd: "/workspace",
+          tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
           egress: [{ host: "*", access: "allow" }],
           ttl: 0,
@@ -240,7 +249,6 @@ interface Props {
   editMode?: boolean;
   onApply: (template: (cfg: AnyConfig) => AnyConfig) => void;
   onSuggestId?: (id: string) => void;
-  onSuggestCommand?: (command: string) => void;
 }
 
 export function SandboxConfigTemplates({
@@ -248,7 +256,6 @@ export function SandboxConfigTemplates({
   editMode,
   onApply,
   onSuggestId,
-  onSuggestCommand,
 }: Props) {
   const [open, setOpen] = useState(false);
   const groups = TEMPLATE_GROUPS;
@@ -287,9 +294,6 @@ export function SandboxConfigTemplates({
                       onSuggestId(
                         `${t.idPrefix}-${Math.random().toString(36).slice(2, 4)}`,
                       );
-                    }
-                    if (t.command && onSuggestCommand) {
-                      onSuggestCommand(t.command);
                     }
                     setOpen(false);
                   }}

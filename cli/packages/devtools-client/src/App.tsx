@@ -13,7 +13,6 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   Route,
   Routes,
-  useLocation,
   useMatch,
   useNavigate,
   useParams,
@@ -157,12 +156,6 @@ function SandboxDetailRoute({
 }: LayoutProps) {
   const { key } = useParams<{ key: string }>();
   const navigate = useNavigate();
-  const location = useLocation();
-  const initCommand =
-    (location.state as { initCommand?: string } | null)?.initCommand ??
-    (key
-      ? (localStorage.getItem(`sandbox.command.${key}`) ?? undefined)
-      : undefined);
   const sandbox = sandboxes.find((s) => s.key === key);
 
   if (!sandbox) {
@@ -178,7 +171,6 @@ function SandboxDetailRoute({
       key={sandbox.id}
       sandbox={sandbox}
       serverUrl={serverUrl}
-      initCommand={initCommand}
       onShutdown={() => {
         fetchSandboxes();
         navigate("/");
@@ -306,11 +298,9 @@ function AppContent() {
           <CreateSandboxDialog
             compact
             serverUrl={serverUrl}
-            onCreated={(key, command) => {
+            onCreated={(key) => {
               fetchSandboxes();
-              navigate(`/sandboxes/${key}`, {
-                state: { initCommand: command },
-              });
+              navigate(`/sandboxes/${key}`);
             }}
           />
           <div className="flex flex-col items-center gap-1 mt-1">
@@ -388,11 +378,9 @@ function AppContent() {
             loading={loading}
             onSelect={(key) => navigate(`/sandboxes/${key}`)}
             onRefresh={fetchSandboxes}
-            onCreated={(key, command) => {
+            onCreated={(key) => {
               fetchSandboxes();
-              navigate(`/sandboxes/${key}`, {
-                state: { initCommand: command },
-              });
+              navigate(`/sandboxes/${key}`);
             }}
             serverUrl={serverUrl}
           />

@@ -11,6 +11,10 @@ import {
 import { bundleImage, isDirectory } from "../bundle/bundle.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
 import { ensureGateway } from "../gateway.js";
+import {
+  selectAgentEntrypoint,
+  applyAgentCliDefaults,
+} from "./agent-cli.js";
 
 const DEFAULT_IMAGE = "hiversh/agent-cli";
 
@@ -21,10 +25,11 @@ const cmd = withGateway(subcommand("start", "Start a sandbox on the gateway."))
     `agent image or Dockerfile directory to launch (default: ${DEFAULT_IMAGE})`,
   )
   .option("--entrypoint <entrypoint>", "override the image entrypoint")
-  .option("--ttl <seconds>", "idle seconds before SIGTERM (0 disables)");
+  .option("--ttl <seconds>", "idle seconds before SIGTERM (0 disables)")
+  .option("--tty", "attach a pseudo-TTY to the entrypoint");
 run(cmd);
 
-const { gatewayUrl: gatewayFlag, image, entrypoint, ttl: ttlFlag } = cmd.opts();
+const { gatewayUrl: gatewayFlag, image, entrypoint, ttl: ttlFlag, tty } = cmd.opts();
 let gatewayUrl = resolveGatewayUrl(gatewayFlag);
 const key = cmd.args[0] ?? `agent-${randomBytes(2).toString("hex")}`;
 
@@ -42,6 +47,11 @@ if (ttlFlag !== undefined) {
 }
 
 const imageArg = image ?? DEFAULT_IMAGE;
+
+let resolvedEntrypoint: string | undefined = entrypoint;
+if (imageArg === DEFAULT_IMAGE && entrypoint === undefined) {
+  resolvedEntrypoint = await selectAgentEntrypoint();
+}
 
 console.log();
 
@@ -84,8 +94,10 @@ try {
 // Only forward flags the caller actually set, so the controller's defaults
 // apply otherwise.
 const config: SandboxConfig = { image: resolvedImage };
-if (entrypoint !== undefined) config.entrypoint = entrypoint;
+if (resolvedEntrypoint !== undefined) config.entrypoint = resolvedEntrypoint;
 if (ttl !== undefined) config.ttl = ttl;
+if (tty) config.tty = true;
+if (imageArg === DEFAULT_IMAGE) applyAgentCliDefaults(config);
 
 // Cap the provision + readiness wait so a sandbox that never comes up (e.g. an
 // image that exits on start) fails fast instead of hanging on the default 30s.
@@ -104,12 +116,13 @@ try {
     ? `  ${dim(ports.map((p) => `:${p}`).join(", "))}`
     : "";
   loader.succeed(`${white(sandbox.key)}${exposed}\n`);
+  process.exit(0);
 } catch (err) {
   loader.fail(`could not start sandbox: ${dim(String(err))}`);
   // A common cause is an image whose entrypoint runs to completion: the
   // container exits right after starting, so the sandbox never comes up. Only
   // worth suggesting when the caller hasn't already set an entrypoint.
-  if (entrypoint === undefined) {
+  if (resolvedEntrypoint === undefined) {
     console.error(
       `\n${dim("This may be because the container exited right after starting.")}` +
         `\n${dim("Workaround: keep it alive by passing")} ${bold(`--entrypoint="tail -f /dev/null"`)}\n`,

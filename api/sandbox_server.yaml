@@ -383,6 +383,13 @@ paths:
 
         The stream closes after the `exit` frame is written. Use
         `/v1/exec` instead when you only need the final buffered result.
+
+        When `command` is empty or omitted, the request attaches to the
+        sandbox entrypoint's TTY (which must have been started with the
+        sandbox's `tty: true` option) rather than running a new command:
+        output frames carry the entrypoint terminal's bytes, `stdin`
+        writes go to it, and the stream stays open until the client
+        disconnects or the entrypoint exits.
       parameters:
         - name: id
           in: path
@@ -574,12 +581,15 @@ components:
 
     ExecStreamRequest:
       type: object
-      required: [command]
       additionalProperties: false
       properties:
         command:
           type: string
-          description: Command to run, passed to a shell.
+          description: >
+            Command to run, passed to a shell. When empty or omitted, the
+            request attaches to the entrypoint's TTY instead of running a
+            new command — this requires the sandbox to have been configured
+            with `tty: true`, otherwise the request fails.
           example: python3 script.py
         cwd:
           type: string

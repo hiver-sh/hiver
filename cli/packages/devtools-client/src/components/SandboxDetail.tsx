@@ -25,7 +25,7 @@ import { useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
 import type { ConfigProposal } from "@/components/SandboxConfigDialog";
-import { Terminal } from "@/components/Terminal";
+import { Terminal, type TerminalSink } from "@/components/Terminal";
 import { PortUsageDialog } from "@/components/PortUsageDialog";
 import { FileExplorer } from "@/components/FileExplorer";
 import {
@@ -69,7 +69,6 @@ const DEFAULT_FILES_FRACTION = 0.2;
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
   serverUrl: string;
-  initCommand?: string;
   onShutdown: () => void;
   onConnectedChange?: (connected: boolean) => void;
 }
@@ -77,7 +76,6 @@ export interface SandboxDetailProps {
 export function SandboxDetail({
   sandbox,
   serverUrl,
-  initCommand,
   onShutdown,
   onConnectedChange,
 }: SandboxDetailProps) {
@@ -158,7 +156,13 @@ export function SandboxDetail({
   >();
   const contentRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const esRef = useRef<import("@/lib/transport").EventSourceLike | null>(null);
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  // Terminal channel of the shared per-sandbox stream: the currently-mounted
+  // Terminal's sink (if any) and whether the upstream terminal is attached.
+  const termSinkRef = useRef<TerminalSink | null>(null);
+  const termConnectedRef = useRef(false);
   const resumeFromIdRef = useRef<number | undefined>(undefined);
   const [filePreview, setFilePreview] = useState<{
     path: string;
@@ -261,43 +265,110 @@ export function SandboxDetail({
     [filteredRows],
   );
 
+  // A mounted Terminal registers here to receive output from the shared stream.
+  // If the upstream terminal is already attached when this Terminal mounts (the
+  // panel was opened after the stream connected), nudge it to repaint: onConnected
+  // makes the Terminal re-send its size, and the server forces a SIGWINCH, so a
+  // full-screen TUI redraws its current screen.
+  const subscribeTerminal = useCallback((sink: TerminalSink) => {
+    termSinkRef.current = sink;
+    if (termConnectedRef.current) sink.onConnected();
+    return () => {
+      if (termSinkRef.current === sink) termSinkRef.current = null;
+    };
+  }, []);
+
+  // The per-sandbox event feed AND terminal output share ONE SSE connection
+  // (`/stream`), so a tab holds a single long-lived connection instead of two —
+  // staying under the browser's ~6-per-origin HTTP/1.1 cap with several tabs
+  // open. Frames are namespaced: `feed` (a SandboxEvent), `term` (base64 pty
+  // bytes), `term:connected` / `term:close` (terminal lifecycle). On a dropped
+  // connection we reconnect and resume the feed from the last id; the server
+  // re-attaches the terminal and replays its scrollback.
   const startStream = useCallback(
     (lastEventId?: number) => {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
       setConnected(false);
+      let resumeId = lastEventId;
 
-      const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/events`,
-      );
+      const run = async () => {
+        if (ac.signal.aborted) return;
+        const url = new URL(
+          `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/stream`,
+        );
+        if (resumeId !== undefined)
+          url.searchParams.set("lastEventId", String(resumeId));
 
-      if (lastEventId !== undefined)
-        url.searchParams.set("lastEventId", String(lastEventId));
-
-      const es = transport.openEventSource(url);
-      esRef.current = es;
-      es.onopen = () => setConnected(true);
-      es.onmessage = (e) => {
+        let res: Response;
         try {
-          const event = JSON.parse(e.data) as SandboxEvent;
-          setEvents((prev) => [...prev, event]);
-          if (!player) void appendEvent(sandbox.id, event);
+          res = await transport.fetch(url.toString(), { signal: ac.signal });
         } catch {
-          // ignore malformed frames
+          if (!ac.signal.aborted && !player)
+            reconnectRef.current = setTimeout(run, 2000);
+          return;
         }
-      };
-      es.onerror = () => {
+        if (!res.ok || !res.body) {
+          if (!ac.signal.aborted && !player)
+            reconnectRef.current = setTimeout(run, 2000);
+          return;
+        }
+        setConnected(true);
+
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buf.indexOf("\n\n")) !== -1) {
+              const block = buf.slice(0, sep);
+              buf = buf.slice(sep + 2);
+              let eventName = "message";
+              let dataLine = "";
+              for (const line of block.split("\n")) {
+                if (line.startsWith("event: ")) eventName = line.slice(7);
+                else if (line.startsWith("data: ")) dataLine = line.slice(6);
+              }
+              if (eventName === "feed") {
+                try {
+                  const event = JSON.parse(dataLine) as SandboxEvent;
+                  resumeId = event.id;
+                  setEvents((prev) => [...prev, event]);
+                  if (!player) void appendEvent(sandbox.id, event);
+                } catch {
+                  // ignore malformed frame
+                }
+              } else if (eventName === "term") {
+                termSinkRef.current?.onData(dataLine);
+              } else if (eventName === "term:connected") {
+                termConnectedRef.current = true;
+                termSinkRef.current?.onConnected();
+              } else if (eventName === "term:close") {
+                termConnectedRef.current = false;
+                termSinkRef.current?.onClose();
+              }
+            }
+          }
+        } catch {
+          // read error — fall through to reconnect
+        }
         setConnected(false);
-        es.close();
+        if (!ac.signal.aborted && !player)
+          reconnectRef.current = setTimeout(run, 2000);
       };
 
       ac.signal.addEventListener("abort", () => {
-        es.close();
+        if (reconnectRef.current) clearTimeout(reconnectRef.current);
         setConnected(false);
       });
+      void run();
     },
-    [sandbox.key, sandbox.id, serverUrl, transport],
+    [sandbox.key, sandbox.id, serverUrl, transport, player],
   );
 
   useEffect(() => {
@@ -581,8 +652,7 @@ export function SandboxDetail({
                     } else {
                       resumeFromIdRef.current = events[events.length - 1]?.id;
                       setStreamingPaused(true);
-                      esRef.current?.close();
-                      esRef.current = null;
+                      abortRef.current?.abort();
                       setConnected(false);
                     }
                   }}
@@ -677,7 +747,7 @@ export function SandboxDetail({
               <Terminal
                 sandboxKey={sandbox.key}
                 serverUrl={serverUrl}
-                initCommand={initCommand}
+                subscribe={subscribeTerminal}
               />
             </div>
           </>

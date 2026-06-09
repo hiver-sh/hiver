@@ -30,17 +30,30 @@ app.use("/api/trace", traceRoutes);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const clientDist = join(__dirname, "../../devtools-client/dist");
 if (existsSync(clientDist)) {
-  app.use(express.static(clientDist, { index: false }));
-  // Inject the configured gateway URL so the web client defaults to it instead
-  // of its own hard-coded default.
-  const indexHtml = readFileSync(
-    join(clientDist, "index.html"),
-    "utf8",
-  ).replace(
-    "</head>",
-    `<script>window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}</script></head>`,
+  // Hashed assets (index-<hash>.js/.css) are immutable — their name changes on
+  // every rebuild — so they're safe to cache forever.
+  app.use(
+    express.static(clientDist, {
+      index: false,
+      setHeaders: (res) =>
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
+    }),
   );
-  app.get("*", (_req, res) => res.type("html").send(indexHtml));
+  // Read index.html per request so a rebuild is picked up without restarting
+  // the server, and inject the configured gateway URL so the web client
+  // defaults to it instead of its own hard-coded default.
+  const renderIndex = () =>
+    readFileSync(join(clientDist, "index.html"), "utf8").replace(
+      "</head>",
+      `<script>window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}</script></head>`,
+    );
+  app.get("*", (_req, res) => {
+    res.type("html");
+    // index.html points at the current hashed bundle, so it must never be
+    // cached — a stale copy keeps loading an old build even after a rebuild.
+    res.setHeader("Cache-Control", "no-store, must-revalidate");
+    res.send(renderIndex());
+  });
 }
 
 app.listen(PORT, () => {

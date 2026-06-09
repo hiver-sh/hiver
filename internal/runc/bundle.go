@@ -29,6 +29,11 @@ type BundleParams struct {
 	// hard cgroup limit in bytes.
 	VcpuCount int
 	MemoryMiB int
+	// Terminal sets the OCI process.terminal flag. When true, `runc run`
+	// allocates a pty for the entrypoint and proxies it through runc's own
+	// stdio (which the caller must supply as a pty slave), giving the
+	// entrypoint a controlling terminal. Used to back the sandbox's tty option.
+	Terminal bool
 }
 
 // cpuQuotaPeriodUs is the CFS scheduling period (microseconds) the CPU quota is
@@ -128,7 +133,7 @@ func WriteConfig(p BundleParams) error {
 	spec := map[string]any{
 		"ociVersion": "1.0.2-dev",
 		"process": map[string]any{
-			"terminal": false,
+			"terminal": p.Terminal,
 			"user":     map[string]any{"uid": 0, "gid": 0},
 			"args":     args,
 			"env":      env,

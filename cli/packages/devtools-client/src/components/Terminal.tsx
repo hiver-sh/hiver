@@ -6,11 +6,24 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
+/**
+ * Output + lifecycle handlers the terminal registers on the shared per-sandbox
+ * stream (owned by the parent). `onData` carries base64-encoded pty bytes.
+ */
+export interface TerminalSink {
+  onData: (base64: string) => void;
+  onConnected: () => void;
+  onClose: () => void;
+}
+
 interface Props {
   sandboxKey: string;
   serverUrl: string;
-  exposedEndpoint?: string;
-  initCommand?: string;
+  // Register on the parent's shared stream for terminal output/lifecycle.
+  // Returns an unsubscribe function. The parent replays current state (a
+  // `connected` + buffered scrollback) immediately if the terminal is already
+  // attached, so subscribing late (e.g. opening the panel) still restores it.
+  subscribe: (sink: TerminalSink) => () => void;
 }
 
 const FONT_FAMILY = "ui-monospace, Monaco, monospace";
@@ -65,12 +78,7 @@ const LIGHT_THEME = {
   brightWhite: "#444444",
 };
 
-export function Terminal({
-  sandboxKey,
-  serverUrl,
-  exposedEndpoint,
-  initCommand,
-}: Props) {
+export function Terminal({ sandboxKey, serverUrl, subscribe }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
   const { prefs, terminalScrollPassthrough } = useUserPreferences();
@@ -179,16 +187,39 @@ export function Terminal({
         return true;
       });
 
-      let abortCtrl: AbortController | null = null;
-      let retryTimer: ReturnType<typeof setTimeout> | null = null;
-      let shellExited = false;
       let connected = false;
+
+      // Track the geometry we last told the server. The server forces a
+      // repaint (SIGWINCH) on every resize it receives, so re-sending an
+      // unchanged size turns ordinary output into a resize→repaint→output
+      // feedback loop that pegs the CPU. Only emit on a real change; reset to
+      // -1 on (re)connect so a fresh server session always gets the size once.
+      let lastSentCols = -1;
+      let lastSentRows = -1;
+      const sendResizeIfChanged = () => {
+        if (!connected) return;
+        if (term.cols === lastSentCols && term.rows === lastSentRows) return;
+        lastSentCols = term.cols;
+        lastSentRows = term.rows;
+        sendInput({ type: "resize", cols: term.cols, rows: term.rows });
+      };
 
       const ro = new ResizeObserver(() => {
         requestAnimationFrame(() => {
+          // Skip the fit when the cell grid wouldn't change: refitting to the
+          // same size still churns layout and, with the server's
+          // repaint-on-resize, can self-sustain a loop.
+          const dims = fitAddon.proposeDimensions();
+          if (
+            !dims ||
+            !Number.isFinite(dims.cols) ||
+            !Number.isFinite(dims.rows) ||
+            (dims.cols === term.cols && dims.rows === term.rows)
+          ) {
+            return;
+          }
           fitAddon.fit();
-          if (connected)
-            sendInput({ type: "resize", cols: term.cols, rows: term.rows });
+          sendResizeIfChanged();
         });
       });
       ro.observe(el);
@@ -213,92 +244,29 @@ export function Terminal({
           .catch(() => {});
       }
 
-      async function connect() {
-        if (disposed) return;
-
-        connected = false;
-        abortCtrl = new AbortController();
-
-        const url = new URL(
-          `/api/sandboxes/${encodeURIComponent(sandboxKey)}/terminal/stream`,
-          serverUrl,
-        );
-        url.searchParams.set("cols", String(term.cols));
-        url.searchParams.set("rows", String(term.rows));
-        if (exposedEndpoint)
-          url.searchParams.set("exposedBackend", exposedEndpoint);
-        if (initCommand) url.searchParams.set("initCommand", initCommand);
-
-        let resp: Response;
-        try {
-          resp = await transport.fetch(url.toString(), {
-            signal: abortCtrl.signal,
-          });
-        } catch {
-          if (!disposed) retryTimer = setTimeout(connect, 2000);
-          return;
-        }
-
-        if (!resp.ok || !resp.body) {
-          if (!disposed) retryTimer = setTimeout(connect, 2000);
-          return;
-        }
-
-        const reader = resp.body.getReader();
-        const dec = new TextDecoder();
-        let buf = "";
-
-        outer: while (true) {
-          let done: boolean, value: Uint8Array | undefined;
-          try {
-            ({ done, value } = await reader.read());
-          } catch {
-            break;
-          }
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-
-          let sep: number;
-          while ((sep = buf.indexOf("\n\n")) !== -1) {
-            const block = buf.slice(0, sep);
-            buf = buf.slice(sep + 2);
-
-            let eventName = "message";
-            let dataLine = "";
-            for (const line of block.split("\n")) {
-              if (line.startsWith("event: ")) eventName = line.slice(7);
-              else if (line.startsWith("data: ")) dataLine = line.slice(6);
-            }
-
-            if (eventName === "connected") {
-              connected = true;
-              // Push the current size immediately: the PTY starts at a default
-              // geometry and the ResizeObserver's initial fire was dropped while
-              // still unconnected, so without this the remote process never
-              // learns the real dimensions and its repaints land at the wrong
-              // size (stale content survives screen transitions).
-              sendInput({ type: "resize", cols: term.cols, rows: term.rows });
-              term.focus();
-            } else if (eventName === "close") {
-              connected = false;
-              shellExited = true;
-              break outer;
-            } else if (eventName === "message" && dataLine) {
-              term.write(
-                Uint8Array.from(atob(dataLine), (c) => c.charCodeAt(0)),
-              );
-            }
-          }
-        }
-
-        if (!disposed && !shellExited) {
-          retryTimer = setTimeout(connect, 2000);
-        }
-      }
+      // Output + lifecycle come from the parent's shared per-sandbox stream
+      // (one connection carries both the event feed and this terminal), instead
+      // of the terminal holding its own SSE. Input/resize still go out as POSTs.
+      const unsubscribe = subscribe({
+        onData: (base64) => {
+          term.write(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)));
+        },
+        onConnected: () => {
+          connected = true;
+          // A fresh server attach doesn't know our geometry yet; force a send.
+          lastSentCols = -1;
+          lastSentRows = -1;
+          // Push the current size so the PTY repaints at the right geometry.
+          sendResizeIfChanged();
+          term.focus();
+        },
+        onClose: () => {
+          connected = false;
+        },
+      });
 
       const rafId = requestAnimationFrame(() => {
         fitAddon.fit();
-        connect();
         term.onData((data) => sendInput({ type: "input", data }));
       });
 
@@ -308,8 +276,7 @@ export function Terminal({
         themeObs.disconnect();
         el.removeEventListener("mouseup", onMouseUp);
         el.removeEventListener("wheel", onWheel, { capture: true });
-        if (retryTimer !== null) clearTimeout(retryTimer);
-        abortCtrl?.abort();
+        unsubscribe();
         term.dispose();
       };
     });
@@ -318,7 +285,7 @@ export function Terminal({
       disposed = true;
       cleanup();
     };
-  }, [sandboxKey, serverUrl, exposedEndpoint, transport]);
+  }, [sandboxKey, serverUrl, transport, subscribe]);
 
   return (
     <div ref={containerRef} className="h-full w-full overflow-hidden p-1" />

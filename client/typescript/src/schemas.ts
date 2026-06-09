@@ -162,6 +162,20 @@ export const SandboxConfig = z.object({
   memory: z.number().int().min(128).optional(),
   /** Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. */
   entrypoint: z.string().optional(),
+  /**
+   * Working directory for the entrypoint. When set, the entrypoint is launched
+   * with this as its current working directory, overriding the image's default
+   * working directory. When omitted, the image's working directory is used.
+   * This cannot be changed after the sandbox is initialized.
+   */
+  cwd: z.string().optional(),
+  /**
+   * When true, the entrypoint is launched attached to a pseudo-TTY. A client can
+   * then attach to that terminal by calling `execStream` with an empty command.
+   * Only supported for the `container` isolation. Defaults to false.
+   * This cannot be changed after the sandbox is initialized.
+   */
+  tty: z.boolean().optional(),
   /** Additional environment variables in `KEY=VALUE` form. This cannot be changed after the sandbox is initialized. */
   env: z.record(z.string(), z.string()).optional(),
   /**

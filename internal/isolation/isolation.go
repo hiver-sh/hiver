@@ -105,6 +105,11 @@ type AgentConfig struct {
 	Env         map[string]string
 	Mounts      []runc.BindMount
 	Hostname    string
+	// TTY, when set, launches the entrypoint attached to a pseudo-terminal so
+	// a client can attach to it via /v1/exec-stream. The caller wires the
+	// returned command's stdio to a pty (see internal/tty). Only the container
+	// backend honours this; the microvm backend ignores it.
+	TTY bool
 }
 
 // ExecConfig describes a command to run inside the running workload.

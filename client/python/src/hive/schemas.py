@@ -77,6 +77,13 @@ class SandboxConfig(BaseModel):
     cpu: Optional[int] = Field(None, ge=1)
     memory: Optional[int] = Field(None, ge=128)
     entrypoint: Optional[str] = None
+    # Working directory for the entrypoint. When set, overrides the image's
+    # default working directory. When omitted, the image's working directory is
+    # used. Cannot be changed after the sandbox is initialized.
+    cwd: Optional[str] = None
+    # When true, the entrypoint is launched attached to a pseudo-TTY; attach to
+    # it by calling exec_stream with an empty command. Container isolation only.
+    tty: Optional[bool] = None
     env: Optional[dict[str, str]] = None
     ttl: Optional[int] = Field(None, ge=0)
     fs: Optional[list[FileSystem]] = Field(None, min_length=1)
