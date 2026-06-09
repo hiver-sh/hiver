@@ -1,7 +1,8 @@
 [project]
-name = "hiver"
+name = "hiver-py"
 version = "0.1.15"
 description = "Python client for the Hiver runtime."
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.28",
@@ -21,6 +22,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hiver"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/hiver", "README.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

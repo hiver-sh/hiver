@@ -68,13 +68,22 @@ console.log(result.stdout);
 
 #### Python
 
-```py
+Add dependency:
+```sh
+pip install hiver-py
+```
+
+First agent:
+```python
+import asyncio
 import hiver
 
-sandbox = hiver.get_or_create_sandbox("agent-1")
+async def main():
+    sandbox = await hiver.get_or_create_sandbox("agent-1")
+    result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'")
+    print(result["stdout"])
 
-result = sandbox.exec("claude -p 'Write a poem and save it as pdf'")
-print(result.stdout)
+asyncio.run(main())
 ```
 
 #### Go

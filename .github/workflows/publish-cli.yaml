@@ -47,6 +47,11 @@ jobs:
             echo "Error: @hiver.sh/client version ($CLIENT_VERSION) does not match CLI version ($VERSION). Run scripts/sync-client-version.sh."
             exit 1
           fi
+          PYTHON_VERSION=$(grep '^version = ' client/python/pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          if [ "$PYTHON_VERSION" != "$VERSION" ]; then
+            echo "Error: hiver-py version ($PYTHON_VERSION) does not match CLI version ($VERSION). Run scripts/sync-client-version.sh."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v6
         if: steps.version.outputs.changed == 'true'
@@ -64,6 +69,14 @@ jobs:
         working-directory: client/typescript
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.version.outputs.changed == 'true'
+
+      - name: Build and publish python client
+        if: steps.version.outputs.changed == 'true'
+        run: uv build && uv publish
+        working-directory: client/python
 
       - name: Update CLI dependency and lockfile
         if: steps.version.outputs.changed == 'true'
