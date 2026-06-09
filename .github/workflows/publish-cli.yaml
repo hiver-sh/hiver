@@ -1,0 +1,101 @@
+name: Publish Hiver
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - cli/package.json
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check version change
+        id: version
+        run: |
+          CURRENT=$(jq -r .version cli/package.json)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            PREVIOUS=$(git show HEAD^:cli/package.json 2>/dev/null | jq -r .version || echo "")
+            if [ "$CURRENT" != "$PREVIOUS" ]; then
+              echo "changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.changed == 'true'
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install and build
+        if: steps.version.outputs.changed == 'true'
+        run: npm ci
+        working-directory: cli
+
+      - name: Publish CLI to npm
+        if: steps.version.outputs.changed == 'true'
+        run: npm publish
+        working-directory: cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Sync typescript client version
+        if: steps.version.outputs.changed == 'true'
+        id: ts-client
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          TS_VERSION=$(jq -r .version client/typescript/package.json)
+          if [ "$TS_VERSION" != "$VERSION" ]; then
+            jq --arg v "$VERSION" '.version = $v' client/typescript/package.json > tmp.json && mv tmp.json client/typescript/package.json
+            echo "updated=true" >> $GITHUB_OUTPUT
+          else
+            echo "updated=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push typescript client version
+        if: steps.version.outputs.changed == 'true' && steps.ts-client.outputs.updated == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add client/typescript/package.json
+          git commit -m "chore: bump @hiver.sh/client to v${VERSION}"
+          git push origin main
+
+      - name: Build and publish typescript client
+        if: steps.version.outputs.changed == 'true' && steps.ts-client.outputs.updated == 'true'
+        run: |
+          npm ci
+          npm run build
+          npm publish
+        working-directory: client/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag and release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+          gh release create "v${VERSION}" \
+            --title "CLI v${VERSION}" \
+            --generate-notes \
+            --latest=false
