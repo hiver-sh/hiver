@@ -47,6 +47,9 @@ publish-images: buildx-builder ## Build and push multi-arch images to the regist
 # an alias kept for the old name.
 publish-sandbox-images: bundle-sandbox-images ## Build and push sandbox images (multi-arch)
 
+sync-client-version: ## Sync @hiver.sh/client version to match cli/package.json, update cli dep and lockfile
+	./scripts/sync-client-version.sh
+
 link-cli: ## Builds the local CLI and makes it available as hiver in the PATH
 	cd cli && npm run build && npm link
 
