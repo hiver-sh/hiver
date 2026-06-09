@@ -3,6 +3,11 @@
   "version": "0.1.14",
   "description": "TypeScript client for the Hiver runtime.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hiver-sh/hiver.git",
+    "directory": "client/typescript"
+  },
   "publishConfig": {
     "access": "public"
   },
