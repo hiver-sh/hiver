@@ -11,4 +11,6 @@ jq --arg v "$CLI_VERSION" '.version = $v' \
   "$REPO_ROOT/client/typescript/package.json" > "$REPO_ROOT/client/typescript/package.json.tmp" \
   && mv "$REPO_ROOT/client/typescript/package.json.tmp" "$REPO_ROOT/client/typescript/package.json"
 
-echo "Done. Commit client/typescript/package.json."
+sed -i '' "s/^version = .*/version = \"$CLI_VERSION\"/" "$REPO_ROOT/client/python/pyproject.toml"
+
+echo "Done. Commit client/typescript/package.json and client/python/pyproject.toml."

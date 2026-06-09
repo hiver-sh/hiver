@@ -4,7 +4,7 @@
 import asyncio
 import sys
 
-import hive
+import hiver
 
 SCRIPT = """
 import sys, time
@@ -21,16 +21,16 @@ greet("world")
 
 
 async def main() -> None:
-    sandbox = await hive.get_or_create_sandbox(
+    sandbox = await hiver.get_or_create_sandbox(
         "hive-python-exec-stream",
-        hive.SandboxConfig(
+        hiver.SandboxConfig(
             image="hiversh/python:3.13-alpine",
             entrypoint="tail -f /dev/null",
             fs=[
-                hive.LocalFileSystem(
+                hiver.LocalFileSystem(
                     backend="local",
                     mount="/workspace",
-                    acls=[hive.ACLRule(path="/workspace/**", access="rw")],
+                    acls=[hiver.ACLRule(path="/workspace/**", access="rw")],
                 )
             ],
         ),

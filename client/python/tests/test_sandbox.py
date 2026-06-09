@@ -6,8 +6,8 @@ import httpx
 import pytest
 import respx
 
-from hive.sandbox import Sandbox, SandboxError
-from hive.schemas import SandboxRef
+from hiver.sandbox import Sandbox, SandboxError
+from hiver.schemas import SandboxRef
 
 GATEWAY = "http://gateway:10000"
 SANDBOX_BASE = f"{GATEWAY}/sandbox/sb-1"
@@ -148,7 +148,7 @@ async def test_apply_config_sends_put_v1_config_with_json_body() -> None:
     route = respx.put(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(200, json=MIN_APPLY_RESULT)
     )
-    from hive.schemas import SandboxConfig
+    from hiver.schemas import SandboxConfig
 
     config = SandboxConfig.model_validate(MIN_CONFIG)
     async with httpx.AsyncClient() as client:
@@ -167,7 +167,7 @@ async def test_apply_config_returns_apply_result() -> None:
     respx.put(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(200, json=MIN_APPLY_RESULT)
     )
-    from hive.schemas import SandboxConfig
+    from hiver.schemas import SandboxConfig
 
     config = SandboxConfig.model_validate(MIN_CONFIG)
     async with httpx.AsyncClient() as client:
@@ -182,7 +182,7 @@ async def test_apply_config_raises_sandbox_error_on_non_200() -> None:
     respx.put(f"{SANDBOX_BASE}/v1/config").mock(
         return_value=httpx.Response(400, json={"error": "bad config"})
     )
-    from hive.schemas import SandboxConfig
+    from hiver.schemas import SandboxConfig
 
     config = SandboxConfig.model_validate(MIN_CONFIG)
     async with httpx.AsyncClient() as client:

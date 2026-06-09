@@ -2,9 +2,9 @@ import pytest
 import httpx
 import respx
 
-from hive.controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox, shutdown
-from hive.sandbox import Sandbox, SandboxError
-from hive.schemas import SandboxConfig, SandboxRef
+from hiver.controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox, shutdown
+from hiver.sandbox import Sandbox, SandboxError
+from hiver.schemas import SandboxConfig, SandboxRef
 
 SANDBOX_ID = "11111111-1111-1111-1111-111111111111"
 SANDBOX_REF = {"id": SANDBOX_ID, "key": "test-sandbox"}
