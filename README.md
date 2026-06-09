@@ -14,6 +14,8 @@ Run agents autonomously with controlled network access, auditable file operation
 
 ## 🚀 Getting Started
 
+Install the CLI for the [Hiver](https://hiver.sh) agent runtime:
+
 ```sh
 npm install --global @hiver.sh/cli
 
@@ -24,10 +26,38 @@ npx -y @hiver.sh/cli
 curl -fsSL https://hiver.sh/install.sh | sh
 ```
 
+The Hiver CLI is handy for local development. You can also connect it to a remote deployment:
+
+```sh
+$ hiver
+
+⬢ Hiver · Agent Runtime v0.1.3
+
+  Usage: hiver <command> [options]
+
+  Commands
+    up       Bring up the stack
+    down     Bring down the stack
+    start    Start a sandbox
+    stop     Stop a sandbox
+    list     List the sandboxes
+    events   Stream a sandbox's events live as they happen
+    inspect  Launch the inspector
+    bundle   Bundle a Docker image into a Hiver runtime image
+
+  Run hiver <command> --help for command details.
+```
+
 ### Launch first agent
 
 #### TypeScript
 
+Install the client:
+```sh
+npm install --save @hiver.sh/client
+```
+
+First agent:
 ```ts
 import * as hiver from "@hiver.sh/client";
 
@@ -62,26 +92,6 @@ fmt.Println(result.Stdout)
 
 Command-line tool for the [Hiver](https://hiver.sh) agent runtime — run a local
 stack, bundle agent images, inspect live sandbox traffic, and stream events.
-
-```sh
-$ hiver
-
-⬢ Hiver · Agent Runtime v0.1.3
-
-  Usage: hiver <command> [options]
-
-  Commands
-    up       Bring up the stack
-    down     Bring down the stack
-    start    Start a sandbox
-    stop     Stop a sandbox
-    list     List the sandboxes
-    events   Stream a sandbox's events live as they happen
-    inspect  Launch the inspector
-    bundle   Bundle a Docker image into a Hiver runtime image
-
-  Run hiver <command> --help for command details.
-```
 
 
 ## Documentation
