@@ -23,7 +23,7 @@ import (
 
 const (
 	moduleRoot          = "../.."
-	sandboxRuntimeImage = "hiversh/agent-cli:latest"
+	sandboxRuntimeImage = "hiversh/core:latest"
 	// Pinned ports for the host-side upstream HTTP servers. They have
 	// to be fixed because the spec.json fixture references them
 	// literally (no template substitution). Picked high enough to
@@ -333,28 +333,52 @@ func BuildImages(t *testing.T, dockerfile, buildContext, agentImage string) {
 			t.Fatalf("docker build %s: %v\n%s", tag, err, out.String())
 		}
 	}
-	build(sandboxRuntimeImage, moduleRoot, "-f", filepath.Join(moduleRoot, "docker/sandbox-runtime.Dockerfile"))
+	build(sandboxRuntimeImage, moduleRoot, "-f", filepath.Join(moduleRoot, "docker/core.Dockerfile"))
 	build(agentImage, buildContext, "-f", dockerfile)
 }
 
-// BuildSandboxBundle calls bundle-images.sh to package agentImage
-// into a sandbox-bundle image tagged bundleTag. The bundle has the agent
-// rootfs pre-extracted at /mnt so sandboxd can skip the runtime unpack.
+// BuildSandboxBundle packages agentImage into a sandbox-bundle image tagged
+// bundleTag. It saves the agent image as a tarball then builds bundler.Dockerfile
+// against it, producing a core image with the agent rootfs pre-extracted at /mnt.
 func BuildSandboxBundle(t *testing.T, agentImage, bundleTag string) {
 	t.Helper()
 	absRoot, err := filepath.Abs(moduleRoot)
 	if err != nil {
 		t.Fatalf("abs module root: %v", err)
 	}
-	scriptPath := filepath.Join(absRoot, "scripts/bundle-images.sh")
+	tmpDir, err := os.MkdirTemp("", "sandbox-bundle-*")
+	if err != nil {
+		t.Fatalf("mktemp: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", scriptPath, agentImage, bundleTag)
-	cmd.Dir = absRoot
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("bundle-images.sh %s: %v\n%s", agentImage, err, out.String())
+
+	tarPath := filepath.Join(tmpDir, "sandbox.tar")
+	tarFile, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatalf("create sandbox.tar: %v", err)
+	}
+	saveCmd := exec.CommandContext(ctx, "docker", "save", agentImage)
+	saveCmd.Stdout = tarFile
+	var saveErr bytes.Buffer
+	saveCmd.Stderr = &saveErr
+	if runErr := saveCmd.Run(); runErr != nil {
+		tarFile.Close()
+		t.Fatalf("docker save %s: %v\n%s", agentImage, runErr, saveErr.String())
+	}
+	tarFile.Close()
+
+	buildCmd := exec.CommandContext(ctx, "docker", "build",
+		"-f", filepath.Join(absRoot, "docker/bundler.Dockerfile"),
+		"--build-context", "sandbox-tar="+tmpDir,
+		"-t", bundleTag,
+		absRoot)
+	var buildOut bytes.Buffer
+	buildCmd.Stdout, buildCmd.Stderr = &buildOut, &buildOut
+	if err := buildCmd.Run(); err != nil {
+		t.Fatalf("bundle %s: %v\n%s", agentImage, err, buildOut.String())
 	}
 }
 
