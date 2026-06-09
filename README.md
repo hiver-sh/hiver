@@ -14,7 +14,7 @@ Run agents autonomously with controlled network access, auditable file operation
 
 ## 🚀 Getting Started
 
-Install the CLI for the [Hiver](https://hiver.sh) agent runtime:
+Install the CLI for the agent runtime:
 
 ```sh
 npm install --global @hiver.sh/cli
@@ -26,7 +26,7 @@ npx -y @hiver.sh/cli
 curl -fsSL https://hiver.sh/install.sh | sh
 ```
 
-The Hiver CLI is handy for local development. You can also connect it to a remote deployment:
+Use the CLI to manage sandboxes, stream live events, and launch the inspector — against a local stack or a remote deployment:
 
 ```sh
 $ hiver
