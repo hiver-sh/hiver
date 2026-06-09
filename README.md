@@ -100,15 +100,10 @@ import "github.com/hiver-sh/hiver/client"
 c := client.NewClient("http://localhost:10000")
 sandbox, _ := c.GetOrCreateSandbox(context.Background(), "agent-1", client.SandboxConfig{})
 
-result, _ := sandbox.Exec(context.Background(), client.ExecRequest{Command: "claude -p 'Write a poem and save it as pdf'"})
+result, _ := sandbox.Exec(context.Background(),
+    client.ExecRequest{Command: "claude -p 'Write a poem and save it as pdf'"})
 fmt.Println(result.Stdout)
 ```
-
-### Hiver CLI
-
-Command-line tool for the [Hiver](https://hiver.sh) agent runtime — run a local
-stack, bundle agent images, inspect live sandbox traffic, and stream events.
-
 
 ## Documentation
 
@@ -129,6 +124,9 @@ Docker, k8s.
 ### Architecture
 
 The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together — serving the client API, reconciling sidecar policy, and streaming telemetry events.
+
+
+<img src="./docs/hiver-arch.svg" width="500">
 
 The root filesystem is assembled with overlayfs, layering the agent's writes over the read-only base image for efficient snapshotting.
 
