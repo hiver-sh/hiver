@@ -178,10 +178,16 @@ func TestSessionCloseSignalsDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pty.Open: %v", err)
 	}
-	defer slave.Close()
 	sess := NewSession(master, nil)
 
+	// Close the slave first so the master's blocked read() sees a hangup
+	// (EIO / kqueue event) and unblocks reliably on all platforms.
+	// Closing only the master is not sufficient on macOS: a goroutine already
+	// inside a blocking read() syscall is not interrupted by closing the fd
+	// from another goroutine.
+	slave.Close()
 	sess.Close()
+
 	select {
 	case <-sess.Done():
 	case <-time.After(2 * time.Second):
