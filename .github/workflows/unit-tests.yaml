@@ -30,6 +30,18 @@ jobs:
       - run: npm test
         working-directory: client/typescript
 
+  test-go-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go/go.mod
+
+      - run: go test ./...
+        working-directory: client/go
+
   test-python-client:
     runs-on: ubuntu-latest
     steps:

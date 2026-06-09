@@ -52,7 +52,7 @@ $ hiver
 
 #### TypeScript
 
-Install the client:
+Add dependency:
 ```sh
 npm install --save @hiver.sh/client
 ```
@@ -79,12 +79,19 @@ print(result.stdout)
 
 #### Go
 
+Add dependency:
+```sh
+go get github.com/hiver-sh/hiver/client
+```
+
+First agent:
 ```go
-import "github.com/hive-run/hive-runtime/client"
+import "github.com/hiver-sh/hiver/client"
 
-sandbox, _ := hive.GetOrCreateSandbox("agent-1", hive.SandboxConfig{})
+c := client.NewClient("http://localhost:10000")
+sandbox, _ := c.GetOrCreateSandbox(context.Background(), "agent-1", client.SandboxConfig{})
 
-result, _ := sandbox.Exec("claude -p 'Write a poem and save it as pdf'")
+result, _ := sandbox.Exec(context.Background(), client.ExecRequest{Command: "claude -p 'Write a poem and save it as pdf'"})
 fmt.Println(result.Stdout)
 ```
 
@@ -112,7 +119,7 @@ Docker, k8s.
 
 ### Architecture
 
-The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together — serving the client API, reconciling sidecar policy, and streaming telemetry events. 
+The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together — serving the client API, reconciling sidecar policy, and streaming telemetry events.
 
 The root filesystem is assembled with overlayfs, layering the agent's writes over the read-only base image for efficient snapshotting.
 
