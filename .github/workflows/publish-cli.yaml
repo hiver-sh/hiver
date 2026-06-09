@@ -1,15 +1,17 @@
 name: Publish Hiver
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Unit tests"]
     branches:
       - main
-    paths:
-      - cli/package.json
+    types:
+      - completed
   workflow_dispatch:
 
 jobs:
   publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
