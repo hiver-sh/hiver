@@ -64,9 +64,10 @@ const unknown = process.argv[2];
 // inspector.
 const introFlag = process.argv.slice(2).includes("--intro");
 const firstRun = !existsSync(HIVER_DIR);
-const intro = introFlag || firstRun;
 const interactive =
   Boolean(process.stdout.isTTY) && !process.env.CI && !process.env.NO_COLOR;
+// Intro only makes sense in an interactive terminal — skip on CI or pipes.
+const intro = (introFlag || firstRun) && interactive;
 
 console.log();
 if (interactive) {
