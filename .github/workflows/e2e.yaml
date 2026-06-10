@@ -16,8 +16,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build images (controller, core, gateway)
-        run: make build-images
+        run: |
+          docker buildx build \
+            --load -t hiversh/controller:latest \
+            -f docker/controller.Dockerfile \
+            --cache-from type=gha,scope=controller \
+            --cache-to   type=gha,mode=max,scope=controller \
+            .
+          docker buildx build \
+            --load -t hiversh/core:latest \
+            -f docker/core.Dockerfile \
+            --cache-from type=gha,scope=core \
+            --cache-to   type=gha,mode=max,scope=core \
+            .
+          docker buildx build \
+            --load -t hiversh/gateway:latest \
+            --cache-from type=gha,scope=gateway \
+            --cache-to   type=gha,mode=max,scope=gateway \
+            docker/gateway
 
       - name: Publish images (save as artifact)
         run: |

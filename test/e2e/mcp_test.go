@@ -123,6 +123,9 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 	t.Helper()
 	setup.RequireDocker(t)
 
+	if setup.GetEnv("HIVE_RUN_GDRIVE_TESTS") == "" {
+		t.Skip("set HIVE_RUN_GDRIVE_TESTS=1 (and HIVE_GDRIVE_ACCESS_TOKEN etc.) to run GDrive tests")
+	}
 	token := setup.GetEnv("HIVE_GDRIVE_ACCESS_TOKEN")
 	if token == "" {
 		t.Skip("set HIVE_GDRIVE_ACCESS_TOKEN [+ HIVE_GDRIVE_FOLDER_ID] to run")
@@ -165,9 +168,13 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 			t.Fatalf("abs module root: %v", err)
 		}
 	}
+	dockerfile := sandboxDir
+	if info, err := os.Stat(sandboxDir); err == nil && info.IsDir() {
+		dockerfile = filepath.Join(sandboxDir, "Dockerfile")
+	}
 	agentImage := "sandbox-" + fixtureName + ":e2e"
 	bundleImage := "sandbox-bundle-" + fixtureName + ":e2e"
-	setup.BuildImages(t, sandboxDir, buildContext, agentImage)
+	setup.BuildImages(t, dockerfile, buildContext, agentImage)
 	setup.BuildSandboxBundle(t, agentImage, bundleImage)
 
 	pod := startMCPPod(t, bundleImage, specPath)

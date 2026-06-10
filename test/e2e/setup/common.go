@@ -33,6 +33,10 @@ const (
 	// sandboxd's API + SSE port inside the pod, published to the host
 	// so the e2e harness can subscribe to /v1/events.
 	apiServerPort = 8099
+	// GatewayURL is the Envoy gateway address for the hiver stack
+	// started by `hiver up`. Tests that use the controller+gateway
+	// stack should call RequireStack(t) and address sandboxes via this URL.
+	GatewayURL = "http://localhost:10000"
 )
 
 // RunFixtureE2E orchestrates a single end-to-end run for the named
@@ -312,6 +316,28 @@ func RequireDocker(t *testing.T) {
 	}
 }
 
+// RequireHiverCLI skips the test if the `hiver` CLI is not on PATH. Build
+// and link it locally with `make link-cli`.
+func RequireHiverCLI(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("hiver"); err != nil {
+		t.Skipf("hiver CLI not on PATH (run 'make link-cli'): %v", err)
+	}
+}
+
+// RequireStack skips the test if the hive gateway is not reachable on
+// port 10000. Call this at the start of tests that assume `hiver up`
+// has already been run.
+func RequireStack(t *testing.T) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", "localhost:10000", 2*time.Second)
+	if err != nil {
+		t.Skipf("hive gateway not reachable on :10000 (run 'hiver up' first): %v", err)
+		return
+	}
+	conn.Close()
+}
+
 // BuildImages builds the two independent images this test needs:
 // sandbox-runtime (the pod, always at the module root) and the agent
 // image. dockerfile is the absolute path to the agent image's
@@ -322,7 +348,7 @@ func BuildImages(t *testing.T, dockerfile, buildContext, agentImage string) {
 	t.Helper()
 	build := func(tag, contextDir string, extraArgs ...string) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		args := append([]string{"build", "-t", tag}, extraArgs...)
 		args = append(args, contextDir)
@@ -352,7 +378,7 @@ func BuildSandboxBundle(t *testing.T, agentImage, bundleTag string) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	tarPath := filepath.Join(tmpDir, "sandbox.tar")

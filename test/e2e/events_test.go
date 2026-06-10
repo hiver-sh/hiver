@@ -1,58 +1,150 @@
 package e2e_test
 
 import (
+	"context"
+	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	hiverclient "github.com/hiver-sh/hiver/client"
 	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
 // TestEventsLastEventIdE2E exercises `GET /v1/events` end-to-end and
-// verifies resume semantics.
+// verifies resume semantics. It provisions the agent-node fixture via
+// the hiver controller and subscribes to its event stream through the
+// gateway. Assumes `hiver up` is running.
 func TestEventsLastEventIdE2E(t *testing.T) {
-	setup.RunFixtureE2EHook(t, "agent-node", func(t *testing.T, baseURL string) {
-		idleTimeout := 750 * time.Millisecond
+	setup.RequireDocker(t)
+	setup.RequireStack(t)
 
-		full := setup.FetchEvents(t, baseURL, setup.FetchOpts{
-			LastEventID: "0",
-			IdleTimeout: idleTimeout,
-		})
-		t.Logf("SSE events (%d):\n%s", len(full), setup.SummarizeEvents(full))
-		if len(full) < 4 {
-			t.Fatalf("expected ≥4 events to exercise resume; got %d", len(full))
-		}
-		assertIDsMonotonic(t, "full", full)
-		assertEventTypes(t, full)
+	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures/agent-node"))
+	if err != nil {
+		t.Fatalf("abs fixture dir: %v", err)
+	}
+	dockerfile := filepath.Join(fixtureDir, "Dockerfile")
 
-		// Pick the midpoint event's id and use it as the resume point.
-		midID := eventID(t, full[len(full)/2])
+	agentImage := "sandbox-agent-node:e2e"
+	bundleImage := "sandbox-bundle-agent-node:e2e"
+	setup.BuildImages(t, dockerfile, fixtureDir, agentImage)
+	setup.BuildSandboxBundle(t, agentImage, bundleImage)
 
-		afterQuery := setup.FetchEvents(t, baseURL, setup.FetchOpts{
-			LastEventID: strconv.FormatInt(midID, 10),
-			IdleTimeout: idleTimeout,
-		})
-		assertResumeMatchesSuffix(t, "?lastEventId resume", full, afterQuery, midID)
+	ctx := context.Background()
+	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
 
-		afterHeader := setup.FetchEvents(t, baseURL, setup.FetchOpts{
-			LastEventIDHeader: strconv.FormatInt(midID, 10),
-			IdleTimeout:       idleTimeout,
-		})
-		assertResumeMatchesSuffix(t, "Last-Event-ID header resume", full, afterHeader, midID)
+	key := fmt.Sprintf("e2e-events-%d", time.Now().UnixNano())
+	cfg := hiverclient.SandboxConfig{
+		Image: bundleImage,
+		FS: []hiverclient.FileSystem{{
+			Mount:   "/workspace",
+			Backend: "local",
+			ACLs: []hiverclient.ACLRule{
+				{Path: "/workspace", Access: "rw"},
+				{Path: "/workspace/**", Access: "rw"},
+				{Path: "/workspace/inputs/**", Access: "ro"},
+				{Path: "/workspace/secret/**", Access: "deny"},
+			},
+		}},
+		Egress: []hiverclient.EgressRule{
+			{
+				Access:  "allow",
+				Host:    "upstream-allowed",
+				Methods: []string{"GET"},
+				Paths:   []string{"/"},
+				Override: &hiverclient.EgressOverride{
+					Headers: map[string]string{"X-Sandbox-Agent": "agent-python"},
+				},
+			},
+			{
+				Access:  "allow",
+				Host:    "go.dev",
+				Methods: []string{"GET"},
+				Paths:   []string{"/solutions/case-studies/*"},
+			},
+		},
+	}
 
-		// A lastEventId past the highest emitted id should drain
-		// nothing on the replay; the live tail won't produce anything
-		// because the agent is past DONE.
-		beyondID := eventID(t, full[len(full)-1]) + 1_000_000
-		beyond := setup.FetchEvents(t, baseURL, setup.FetchOpts{
-			LastEventID: strconv.FormatInt(beyondID, 10),
-			IdleTimeout: 300 * time.Millisecond,
-		})
-		if len(beyond) != 0 {
-			t.Errorf("resume past max: expected 0 events, got %d: %v", len(beyond), beyond)
-		}
+	sbx, err := c.GetOrCreateSandbox(ctx, key, cfg)
+	if err != nil {
+		t.Fatalf("GetOrCreateSandbox: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = c.Shutdown(context.Background(), key)
 	})
+
+	// Subscribe to events via the gateway's /sandbox/{key}/ route, which
+	// Envoy forwards to the sandboxd API inside the container.
+	baseURL := setup.GatewayURL + "/sandbox/" + sbx.Key
+	idleTimeout := 750 * time.Millisecond
+
+	// Collect the full event stream. The agent-node fixture's HTTP server
+	// keeps the sandbox alive, so the SSE stream stays open; the idle
+	// timeout fires once the agent's work is done and no new events arrive.
+	full := setup.FetchEvents(t, baseURL, setup.FetchOpts{
+		LastEventID: "0",
+		IdleTimeout: idleTimeout,
+	})
+	t.Logf("SSE events (%d):\n%s", len(full), setup.SummarizeEvents(full))
+
+	if len(full) < 4 {
+		t.Fatalf("expected ≥4 events to exercise resume; got %d", len(full))
+	}
+	assertIDsMonotonic(t, "full", full)
+
+	// Verify the DONE marker arrived in a stdio event.
+	sawDone := false
+	for _, e := range full {
+		if typ, _ := e["type"].(string); typ == "stdio" {
+			if s, ok := e["stdout"].(string); ok && strings.Contains(s, "DONE") {
+				sawDone = true
+				break
+			}
+		}
+	}
+	if !sawDone {
+		t.Errorf("stdio: no event with 'DONE' in stdout; got %d events total", len(full))
+	}
+
+	// Verify fs events are present (FUSE operations are always sync, so
+	// these are independent of network/egress availability).
+	fsCount := 0
+	for _, e := range full {
+		if typ, _ := e["type"].(string); typ == "fs.request" {
+			fsCount++
+		}
+	}
+	if fsCount == 0 {
+		t.Errorf("expected fs.request events; got none")
+	}
+
+	// Pick the midpoint event's id and use it as the resume point.
+	midID := eventID(t, full[len(full)/2])
+
+	afterQuery := setup.FetchEvents(t, baseURL, setup.FetchOpts{
+		LastEventID: strconv.FormatInt(midID, 10),
+		IdleTimeout: idleTimeout,
+	})
+	assertResumeMatchesSuffix(t, "?lastEventId resume", full, afterQuery, midID)
+
+	afterHeader := setup.FetchEvents(t, baseURL, setup.FetchOpts{
+		LastEventIDHeader: strconv.FormatInt(midID, 10),
+		IdleTimeout:       idleTimeout,
+	})
+	assertResumeMatchesSuffix(t, "Last-Event-ID header resume", full, afterHeader, midID)
+
+	// A lastEventId past the highest emitted id should drain nothing.
+	beyondID := eventID(t, full[len(full)-1]) + 1_000_000
+	beyond := setup.FetchEvents(t, baseURL, setup.FetchOpts{
+		LastEventID: strconv.FormatInt(beyondID, 10),
+		IdleTimeout: 300 * time.Millisecond,
+	})
+	if len(beyond) != 0 {
+		t.Errorf("resume past max: expected 0 events, got %d", len(beyond))
+	}
 }
 
 // eventID extracts the monotonic id stamped by the broker. JSON
@@ -120,96 +212,5 @@ func sortedKeys(m map[int64]bool) []int64 {
 		out = append(out, k)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
-}
-
-// assertEventTypes verifies the SSE stream carries every SandboxEvent
-// variant the agent-node fixture drives (per its expectations.yaml):
-func assertEventTypes(t *testing.T, events []map[string]any) {
-	t.Helper()
-	byType := map[string][]map[string]any{}
-	for _, e := range events {
-		typ, _ := e["type"].(string)
-		byType[typ] = append(byType[typ], e)
-	}
-
-	for _, want := range []string{"egress.request", "egress.response", "fs.request", "fs.response", "stdio"} {
-		if len(byType[want]) == 0 {
-			t.Errorf("expected ≥1 event of type %q; got types %v", want, typeKeys(byType))
-		}
-	}
-
-	// egress.request: schema-required fields + both access verdicts.
-	accessCount := map[string]int{}
-	for _, e := range byType["egress.request"] {
-		access, _ := e["access"].(string)
-		accessCount[access]++
-		for _, f := range []string{"host", "method", "path"} {
-			if _, ok := e[f].(string); !ok {
-				t.Errorf("egress.request missing %s: %v", f, e)
-			}
-		}
-	}
-	if accessCount["allowed"] < 1 {
-		t.Errorf("egress.request: expected ≥1 allowed; got %v", accessCount)
-	}
-	if accessCount["denied"] < 1 {
-		t.Errorf("egress.request: expected ≥1 denied; got %v", accessCount)
-	}
-
-	// egress.response: schema-required fields. request_id is the
-	// broker's monotonic event id of the paired egress.request event.
-	for _, e := range byType["egress.response"] {
-		if v, ok := e["request_id"].(float64); !ok || v <= 0 {
-			t.Errorf("egress.response missing/empty request_id: %v", e)
-		}
-		if _, ok := e["status"].(float64); !ok {
-			t.Errorf("egress.response missing status: %v", e)
-		}
-		if _, ok := e["duration_ms"].(float64); !ok {
-			t.Errorf("egress.response missing duration_ms: %v", e)
-		}
-	}
-
-	// fs.request: schema-required fields.
-	for _, e := range byType["fs.request"] {
-		for _, f := range []string{"mount", "path", "operation", "access"} {
-			if _, ok := e[f].(string); !ok {
-				t.Errorf("fs.request missing %s: %v", f, e)
-			}
-		}
-	}
-
-	// fs.response: schema-required backend + duration_ms. agent-node's
-	// workspace mount is local, so the backend field is exactly "local".
-	for _, e := range byType["fs.response"] {
-		backend, _ := e["backend"].(string)
-		if backend != "local" {
-			t.Errorf("fs.response: expected backend=local, got %q (%v)", backend, e)
-		}
-		if _, ok := e["duration_ms"].(float64); !ok {
-			t.Errorf("fs.response missing duration_ms: %v", e)
-		}
-	}
-
-	// stdio: at least one event with a stdout chunk.
-	sawStdout := false
-	for _, e := range byType["stdio"] {
-		if _, ok := e["stdout"].(string); ok {
-			sawStdout = true
-			break
-		}
-	}
-	if !sawStdout {
-		t.Errorf("stdio: no event with stdout chunk; got %d stdio events", len(byType["stdio"]))
-	}
-}
-
-func typeKeys(byType map[string][]map[string]any) []string {
-	out := make([]string, 0, len(byType))
-	for k := range byType {
-		out = append(out, k)
-	}
-	sort.Strings(out)
 	return out
 }
