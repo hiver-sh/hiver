@@ -21,6 +21,7 @@
     "packages/commands/dist",
     "packages/inspector-server/dist",
     "packages/inspector-client/dist",
+    "container-config",
     "docs",
     "README.md"
   ],
@@ -30,7 +31,7 @@
     "build:inspector-client": "cd packages/inspector-client && vite build --config vite.lib.config.ts",
     "build:client": "cd packages/inspector-client && vite build",
     "build:server": "tsc -p packages/inspector-server/tsconfig.build.json",
-    "build:commands": "tsc -p packages/commands/tsconfig.build.json && cp packages/commands/src/compose/compose.yaml packages/commands/dist/compose/compose.yaml && cp packages/commands/src/bundle/bundler.Dockerfile packages/commands/dist/bundle/bundler.Dockerfile",
+    "build:commands": "tsc -p packages/commands/tsconfig.build.json && cp packages/commands/src/bundle/bundler.Dockerfile packages/commands/dist/bundle/bundler.Dockerfile",
     "cli": "DEV=1 ./packages/commands/bin.js",
     "link:client": "(cd ../client/typescript && npm link) && npm link @hiver.sh/client",
     "dev": "tsx watch packages/inspector-server/src/index.ts & (cd packages/inspector-client && vite) & wait",

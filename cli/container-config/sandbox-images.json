@@ -1,0 +1,5 @@
+{
+  "agent-cli": "hiversh/agent-cli:latest",
+  "python": "hiversh/python:3.13-alpine",
+  "node": "hiversh/node:alpine"
+}

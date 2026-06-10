@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { DEFAULT_GATEWAY_URL } from "@hiver.sh/client";
 import { createLoader } from "../hive.js";
 import { requireDocker } from "../docker.js";
@@ -14,6 +13,7 @@ import {
   publishedPort,
   removeNamespaceContainers,
 } from "./stack.js";
+import { composePath } from "../container-config.js";
 
 // Shared by `up` and `down`; the command name selects the action. Unknown args
 // (e.g. `hiver up --build`) are forwarded to docker compose.
@@ -34,10 +34,7 @@ const extra = process.argv.slice(3);
 // Parsed (so `--help` works without Docker) — now require Docker.
 await requireDocker();
 
-// An optimized compose lives next to this module (copied into dist/ at build
-// time), so it ships with the CLI rather than reaching into the monorepo.
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const composeFile = resolve(__dirname, "compose.yaml");
+const composeFile = composePath;
 
 // Default gateway port (the container always listens on this); the published
 // host port may differ when the default is taken.

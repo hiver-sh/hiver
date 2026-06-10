@@ -117,3 +117,8 @@ export const DEFAULT_INSPECTOR_SERVER = import.meta.env.PROD
   ? window.location.origin
   : "http://localhost:3001";
 export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
+export const DEFAULT_SANDBOX_IMAGES: Record<string, string> = {
+  "agent-cli": "hiversh/agent-cli:latest",
+  python: "hiversh/python:3.13-alpine",
+  node: "hiversh/node:alpine",
+};

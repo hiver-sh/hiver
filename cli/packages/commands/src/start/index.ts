@@ -15,8 +15,9 @@ import {
   selectAgentEntrypoint,
   applyAgentCliDefaults,
 } from "./agent-cli.js";
+import { sandboxImages } from "../container-config.js";
 
-const DEFAULT_IMAGE = "hiversh/agent-cli";
+const DEFAULT_IMAGE = sandboxImages["agent-cli"] ?? "hiversh/agent-cli:latest";
 
 const cmd = withGateway(subcommand("start", "Start a sandbox on the gateway."))
   .argument("[key]", "sandbox key (generated when omitted)")

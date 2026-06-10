@@ -5,6 +5,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { DEFAULT_SANDBOX_IMAGES } from "@/types";
+
+const injected = (
+  window as { __HIVE_SANDBOX_IMAGES__?: Record<string, string> }
+).__HIVE_SANDBOX_IMAGES__;
+const sandboxImages: Record<string, string> = { ...DEFAULT_SANDBOX_IMAGES, ...injected };
 
 export type AnyConfig = Record<string, unknown>;
 type FsEntry = Record<string, unknown>;
@@ -23,7 +29,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Claude Code",
         idPrefix: "claude-code",
         apply: () => ({
-          image: "hiversh/agent-cli:latest",
+          image: sandboxImages["agent-cli"],
           entrypoint: "claude",
           cwd: "/workspace",
           tty: true,
@@ -40,7 +46,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Codex",
         idPrefix: "codex",
         apply: () => ({
-          image: "hiversh/agent-cli:latest",
+          image: sandboxImages["agent-cli"],
           entrypoint: "codex",
           cwd: "/workspace",
           tty: true,
@@ -57,7 +63,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Gemini CLI",
         idPrefix: "gemini",
         apply: () => ({
-          image: "hiversh/agent-cli:latest",
+          image: sandboxImages["agent-cli"],
           entrypoint: "gemini",
           cwd: "/workspace",
           tty: true,
@@ -74,7 +80,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "GitHub Copilot",
         idPrefix: "copilot",
         apply: () => ({
-          image: "hiversh/agent-cli:latest",
+          image: sandboxImages["agent-cli"],
           entrypoint: "copilot",
           cwd: "/workspace",
           tty: true,
@@ -91,7 +97,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Node.js",
         idPrefix: "nodejs",
         apply: () => ({
-          image: "hiversh/node:alpine",
+          image: sandboxImages["node"],
           entrypoint: "node",
           cwd: "/workspace",
           tty: true,
@@ -104,7 +110,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Python 3.13",
         idPrefix: "python",
         apply: () => ({
-          image: "hiversh/python:3.13-alpine",
+          image: sandboxImages["python"],
           entrypoint: "python",
           cwd: "/workspace",
           tty: true,

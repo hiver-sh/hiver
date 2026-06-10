@@ -29,6 +29,11 @@ app.use("/api/trace", traceRoutes);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const clientDist = join(__dirname, "../../inspector-client/dist");
+const sandboxImagesPath = join(__dirname, "../../../container-config/sandbox-images.json");
+const sandboxImages: Record<string, string> = existsSync(sandboxImagesPath)
+  ? (JSON.parse(readFileSync(sandboxImagesPath, "utf8")) as Record<string, string>)
+  : {};
+
 if (existsSync(clientDist)) {
   // Hashed assets (index-<hash>.js/.css) are immutable — their name changes on
   // every rebuild — so they're safe to cache forever.
@@ -40,13 +45,18 @@ if (existsSync(clientDist)) {
     }),
   );
   // Read index.html per request so a rebuild is picked up without restarting
-  // the server, and inject the configured gateway URL so the web client
-  // defaults to it instead of its own hard-coded default.
-  const renderIndex = () =>
-    readFileSync(join(clientDist, "index.html"), "utf8").replace(
+  // the server, and inject runtime config so the web client defaults to it
+  // instead of its own hard-coded defaults.
+  const renderIndex = () => {
+    const globals = [
+      `window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}`,
+      `window.__HIVE_SANDBOX_IMAGES__=${JSON.stringify(sandboxImages)}`,
+    ].join(";");
+    return readFileSync(join(clientDist, "index.html"), "utf8").replace(
       "</head>",
-      `<script>window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}</script></head>`,
+      `<script>${globals}</script></head>`,
     );
+  };
   app.get("*", (_req, res) => {
     res.type("html");
     // index.html points at the current hashed bundle, so it must never be
