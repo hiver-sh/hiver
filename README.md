@@ -134,6 +134,7 @@ A typical deployment also includes a controller for sandbox lifecycle management
 
 Hiver is unopinionated about orchestration: the agent CLI or SDK can run entirely inside the sandbox or in a separate deployment. Because everything inside the sandbox is treated as untrusted, agents can call private APIs and access files without ever seeing auth tokens or secrets.
 
+Getting started is straightforward — just run `hiver start` locally or deploy to the cloud using the same client library.
 
 ## License
 
