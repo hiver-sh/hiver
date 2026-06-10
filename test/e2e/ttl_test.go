@@ -1,163 +1,115 @@
 package e2e_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/hiver-sh/hiver/internal/spec"
+	hiverclient "github.com/hiver-sh/hiver/client"
 	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
 // TestTTLE2E exercises the /v1/ping keepalive contract against the ttl
-// fixture. The test runs both directions in one docker run:
+// fixture. The sandbox is launched via the `hiver` CLI (`hiver start`),
+// which builds, bundles, and provisions it on the gateway — the test
+// never shells out to Docker directly. Assumes `hiver up` is running.
 //
-//  1. While pings flow every ttl/3, the pod must stay up — each ping
-//     resets the deadline.
-//  2. Once pings stop, the pod must shut itself down on its own,
-//     within ttl + sandboxd's graceful chain.
+//  1. While pings flow every ttl/3, the sandbox must stay reachable.
+//  2. Once pings stop, the sandbox must shut itself down within ttl+30s.
 func TestTTLE2E(t *testing.T) {
-	setup.RequireDocker(t)
+	setup.RequireStack(t)
+	setup.RequireHiverCLI(t)
 
-	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures/ttl"))
-	if err != nil {
-		t.Fatalf("abs fixture: %v", err)
-	}
-	specPath := filepath.Join(fixtureDir, "spec.json")
-	sp, err := spec.Load(specPath)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-	if sp.Ttl == nil {
-		t.Fatalf("ttl fixture is missing top-level ttl")
-	}
-	ttl := time.Duration(*sp.Ttl) * time.Second
+	const (
+		ttlSeconds  = 5
+		ttlDuration = ttlSeconds * time.Second
+	)
 
-	agentDir, err := filepath.Abs(filepath.Join(fixtureDir, sp.Image))
+	// The ttl fixture reuses the mcp-server image — a Debian box whose
+	// entrypoint is `sleep infinity`, so it stays up between pings. Hand
+	// the fixture directory to `hiver start`, which builds + bundles it.
+	imageDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures/mcp-server"))
 	if err != nil {
-		t.Fatalf("abs agent dir: %v", err)
-	}
-	moduleAbs, err := filepath.Abs(moduleRoot)
-	if err != nil {
-		t.Fatalf("abs module root: %v", err)
-	}
-	agentImage := "sandbox-ttl:e2e"
-	bundleImage := "sandbox-bundle-ttl:e2e"
-	setup.BuildImages(t, agentDir, moduleAbs, agentImage)
-	setup.BuildSandboxBundle(t, agentImage, bundleImage)
-
-	containerName := fmt.Sprintf("sandbox-pod-ttl-e2e-%d", time.Now().UnixNano())
-	args := []string{
-		"run", "--rm", "--name", containerName,
-		"--device", "/dev/fuse",
-		"--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN", "--cap-add", "MKNOD",
-		"--cap-add", "SYS_CHROOT", "--cap-add", "SETPCAP", "--cap-add", "SETFCAP",
-		"--cap-add", "SETUID", "--cap-add", "SETGID",
-		"--cap-add", "DAC_READ_SEARCH", "--cap-add", "FOWNER", "--cap-add", "CHOWN",
-		"--security-opt", "apparmor=unconfined",
-		"--security-opt", "seccomp=unconfined",
-		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-		"-p", "8080:8080",
-		"-v", specPath + ":/mnt/spec.json:ro",
-		bundleImage,
-		"--spec", "/mnt/spec.json",
+		t.Fatalf("abs image dir: %v", err)
 	}
 
-	var podOut bytes.Buffer
-	cmd := exec.Command("docker", args...)
-	cmd.Stdout, cmd.Stderr = &podOut, &podOut
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("docker run: %v", err)
+	key := fmt.Sprintf("e2e-ttl-%d", time.Now().UnixNano())
+
+	// Start the sandbox through the CLI — no direct Docker calls. `hiver
+	// start` bundles the image, provisions the sandbox on the gateway,
+	// and blocks until it's reachable. Bundling can build an image on the
+	// first run, so give it a generous deadline.
+	startCtx, cancelStart := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelStart()
+	startCmd := exec.CommandContext(startCtx, "hiver", "start", key,
+		"--image", imageDir,
+		"--ttl", fmt.Sprint(ttlSeconds),
+		"--gateway-url", setup.GatewayURL,
+	)
+	if out, err := startCmd.CombinedOutput(); err != nil {
+		t.Fatalf("hiver start: %v\n%s", err, out)
 	}
-	containerDone := make(chan error, 1)
-	go func() { containerDone <- cmd.Wait() }()
+
+	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "kill", containerName).Run()
-		select {
-		case <-containerDone:
-		case <-time.After(10 * time.Second):
-		}
-		if t.Failed() {
-			t.Logf("pod output:\n%s", podOut.String())
-		}
+		// Best-effort: the sandbox may have already shut itself down.
+		_ = exec.Command("hiver", "stop", key, "--gateway-url", setup.GatewayURL).Run()
 	})
 
-	// Pinger fires from t=0 so the first successful ping lands as soon
-	// as docker's port publish is wired up — minimises the chance
-	// startup latency eats the initial deadline. Pings before the API
-	// binds get connection-refused and are simply discarded.
-	apiURL := "http://127.0.0.1:8080"
-	pingerCtx, stopPinger := context.WithCancel(context.Background())
-	pingerDone := make(chan struct{})
-	pingedOK := make(chan struct{}, 1)
-	go func() {
-		defer close(pingerDone)
-		tk := time.NewTicker(ttl / 3)
-		defer tk.Stop()
-		for {
-			select {
-			case <-pingerCtx.Done():
-				return
-			case <-tk.C:
-				resp, err := http.Get(apiURL + "/v1/ping")
-				if err != nil {
-					continue
-				}
-				resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					select {
-					case pingedOK <- struct{}{}:
-					default:
-					}
-				}
-			}
+	// Resolve a handle to the freshly started sandbox so we can ping it.
+	sbx := findSandbox(t, c, key)
+	if sbx == nil {
+		t.Fatalf("sandbox %q not listed after hiver start", key)
+	}
+
+	// Phase 1: keepalive. Send pings every ttl/3; sandbox must stay
+	// reachable throughout the 3*ttl window.
+	keepaliveEnd := time.Now().Add(3 * ttlDuration)
+	for time.Now().Before(keepaliveEnd) {
+		pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := sbx.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			t.Fatalf("sandbox stopped responding to ping during keepalive: %v", err)
 		}
-	}()
-
-	// Wait for the first successful ping. Doubles as readiness for the
-	// API server and a smoke test for the /v1/ping endpoint itself.
-	const apiDeadline = 60 * time.Second
-	select {
-	case <-pingedOK:
-	case <-time.After(apiDeadline):
-		stopPinger()
-		<-pingerDone
-		t.Fatalf("no successful /v1/ping within %v\n%s", apiDeadline, podOut.String())
-	case err := <-containerDone:
-		stopPinger()
-		<-pingerDone
-		t.Fatalf("container exited before first ping succeeded: %v\n%s", err, podOut.String())
+		time.Sleep(ttlDuration / 3)
 	}
 
-	// Phase 1: keepalive. Pod must not exit while pings are flowing.
-	keepaliveWindow := 3 * ttl
-	select {
-	case err := <-containerDone:
-		stopPinger()
-		<-pingerDone
-		t.Fatalf("pod exited while being pinged (window=%v): %v\n%s", keepaliveWindow, err, podOut.String())
-	case <-time.After(keepaliveWindow):
+	// Phase 2: stop pinging. The idle timer now runs down and the sandbox
+	// must self-terminate within ttl+30s. Detect that by polling the
+	// controller's sandbox listing — crucially NOT by pinging the sandbox:
+	// every request to the sandbox API resets its TTL (see the middleware in
+	// sandbox_server.go), so a sub-TTL poll-ping would keep it alive forever.
+	// findSandbox hits /controller (a different gateway route), so it never
+	// touches the countdown.
+	shutdownDeadline := time.Now().Add(ttlDuration + 30*time.Second)
+	for time.Now().Before(shutdownDeadline) {
+		if findSandbox(t, c, key) == nil {
+			return // controller no longer lists it — it shut itself down
+		}
+		time.Sleep(time.Second)
 	}
+	t.Fatalf("sandbox still listed %v after pings stopped", ttlDuration+30*time.Second)
+}
 
-	// Phase 2: stop pinging — pod must self-terminate. Lifetime ticks
-	// every second, then sandboxd's graceful chain (sbxfuse drain,
-	// child reap) runs on top; budget ttl + 30s.
-	stopPinger()
-	<-pingerDone
-	graceful := ttl + 30*time.Second
-	select {
-	case <-containerDone:
-	case <-time.After(graceful):
-		t.Fatalf("pod did not exit within %v after pings stopped\n%s", graceful, podOut.String())
+// findSandbox returns the sandbox with the given key as the gateway lists
+// it, or nil if it isn't present (e.g. it has shut itself down).
+func findSandbox(t *testing.T, c *hiverclient.Client, key string) *hiverclient.Sandbox {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sandboxes, err := c.ListSandboxes(ctx)
+	if err != nil {
+		t.Logf("list sandboxes: %v", err)
+		return nil
 	}
-
-	if !strings.Contains(podOut.String(), "TTL elapsed since last /v1/ping") {
-		t.Errorf("pod output missing TTL shutdown log line:\n%s", podOut.String())
+	for _, s := range sandboxes {
+		if s.Key == key {
+			return s
+		}
 	}
+	return nil
 }

@@ -34,13 +34,6 @@ services:
       context: ..
       dockerfile: docker/bundler.Dockerfile
 
-  agent-cli-standalone:
-    image: hiversh/agent-cli-standalone:${TAG:-latest}
-    profiles: ["build"]
-    build:
-      context: agent-cli
-      dockerfile: Dockerfile
-
 volumes:
   snapshots:
     driver: local

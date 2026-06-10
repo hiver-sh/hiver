@@ -1,0 +1,148 @@
+name: E2E
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  # ── Stage 1 ──────────────────────────────────────────────────────────────
+  # Build the runtime docker images, then "publish" them to the downstream
+  # e2e job as an artifact (docker save → upload). Publishing here means
+  # handing *this run's* freshly built images to stage 3 — not pushing to a
+  # registry — so the e2e tests exercise exactly what was just built rather
+  # than whatever `:latest` happens to be in a registry.
+  build-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images (controller, core, gateway)
+        run: make build-images
+
+      - name: Publish images (save as artifact)
+        run: |
+          docker save \
+            hiversh/controller:latest \
+            hiversh/core:latest \
+            hiversh/gateway:latest \
+            -o images.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hiver-images
+          path: images.tar
+          retention-days: 1
+
+  # ── Stage 2 ──────────────────────────────────────────────────────────────
+  # Build the CLI against the *local* TypeScript client instead of the
+  # published @hiver.sh/client, so the e2e run picks up un-released client
+  # changes. We pack the local client and install that tarball into the CLI
+  # before building (a real file copy into node_modules, so it survives the
+  # artifact round-trip), then prune dev deps and ship the built CLI.
+  build-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build & pack the local TypeScript client
+        working-directory: client/typescript
+        run: |
+          npm ci
+          npm run build
+          npm pack   # → hiver.sh-client-<version>.tgz
+
+      - name: Build the CLI against the local client
+        working-directory: cli
+        run: |
+          npm ci
+          # Link the local client: override the published @hiver.sh/client with
+          # the freshly packed local build so the CLI uses the latest client.
+          npm install ../client/typescript/hiver.sh-client-*.tgz
+          npm run build
+          # Only the runtime deps + the local client are needed to run
+          # `hiver up/start/stop`; drop the heavy dev deps (storybook/vite/react)
+          # so the artifact stays small.
+          npm prune --omit=dev
+
+      - name: Package the built CLI
+        run: tar czf hiver-cli.tgz cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hiver-cli
+          path: hiver-cli.tgz
+          retention-days: 1
+
+  # ── Stage 3 ──────────────────────────────────────────────────────────────
+  # Load this run's images + CLI and run the e2e tests in parallel — one test
+  # per matrix leg, each bringing up its own isolated stack. Add more tests by
+  # extending `matrix.test`.
+  e2e:
+    needs: [build-images, build-cli]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - TestTTLE2E
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # `hiver` runs under node (shebang `#!/usr/bin/env node`).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Load the built docker images
+        uses: actions/download-artifact@v4
+        with:
+          name: hiver-images
+      - run: docker load -i images.tar
+
+      - name: Install the built CLI as `hiver`
+        uses: actions/download-artifact@v4
+        with:
+          name: hiver-cli
+      - name: Put `hiver` on PATH
+        run: |
+          tar xzf hiver-cli.tgz                       # overwrites cli/ with the built version
+          chmod +x cli/packages/commands/bin.js
+          sudo ln -sf "$PWD/cli/packages/commands/bin.js" /usr/local/bin/hiver
+          hiver --help >/dev/null
+
+      # The sandbox container the controller spawns mounts /dev/fuse for the
+      # workspace FUSE mount.
+      - name: Ensure /dev/fuse is available
+        run: |
+          sudo modprobe fuse || true
+          ls -l /dev/fuse
+
+      - name: Start the stack
+        run: |
+          hiver up
+          # Wait for the gateway to actually answer so the test runs instead of
+          # skipping on RequireStack (which probes localhost:10000).
+          for i in $(seq 1 60); do
+            if curl -sS -o /dev/null http://localhost:10000; then
+              echo "gateway reachable"; exit 0
+            fi
+            sleep 1
+          done
+          echo "gateway never came up on :10000"; exit 1
+
+      - name: Run ${{ matrix.test }}
+        run: go test -v -count=1 -timeout 15m -run "^${{ matrix.test }}$" ./test/e2e/...
+
+      - name: Stack diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker compose -f docker/compose.yaml logs || true

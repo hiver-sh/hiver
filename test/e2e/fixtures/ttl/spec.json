@@ -1,5 +1,5 @@
 {
-  "image": "../../../../docker/mcpserver.Dockerfile",
+  "image": "../mcp-server/Dockerfile",
   "ttl": 5,
   "fs": [
     {

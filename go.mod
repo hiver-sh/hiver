@@ -2,7 +2,12 @@ module github.com/hiver-sh/hiver
 
 go 1.26.0
 
-require bazil.org/fuse v0.0.0-20230120002735-62a210ff1fd5
+require (
+	bazil.org/fuse v0.0.0-20230120002735-62a210ff1fd5
+	github.com/hiver-sh/hiver/client v0.0.0-00010101000000-000000000000
+)
+
+replace github.com/hiver-sh/hiver/client => ./client/go
 
 require (
 	github.com/creack/pty v1.1.24
@@ -12,7 +17,6 @@ require (
 	github.com/hugelgupf/p9 v0.4.1
 	github.com/klauspost/compress v1.18.6
 	github.com/modelcontextprotocol/go-sdk v1.6.0
-	github.com/oapi-codegen/gin-middleware v1.0.2
 	github.com/oapi-codegen/runtime v1.4.0
 	github.com/refraction-networking/utls v1.8.2
 	golang.org/x/oauth2 v0.36.0
@@ -59,7 +63,6 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.15 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
-	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect

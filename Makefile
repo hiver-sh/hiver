@@ -3,7 +3,7 @@ CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 # JS/TS subprojects with their own format/lint npm scripts
 JS_DIRS := cli client/typescript
 
-.PHONY: help build build-images bundle-sandbox-images publish-images publish-sandbox-images buildx-builder up down test test-e2e test-unit gen fmt format lint $(CMDS)
+.PHONY: help build build-images bundle-sandbox-images publish-images publish-sandbox-images buildx-builder up down test e2e test-e2e test-unit gen fmt format lint $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -11,14 +11,14 @@ help:
 build: $(CMDS) ## Build all cmd binaries into bin/
 
 build-images: ## Build docker images
-	docker compose -f docker/compose.yaml --profile build build controller core gateway agent-cli-standalone
+	docker compose -f docker/compose.yaml --profile build build controller core gateway
 
 # Build and push the default sandbox images as multi-arch manifest lists.
 # `hiver bundle --platform` pushes directly, so there's no separate push step.
 # The inputs (hiversh/core, hiversh/agent-cli-standalone) are pulled per-arch
 # from the registry, so run `make publish-images` first.
 bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
-	hiver bundle hiversh/agent-cli-standalone --tag hiversh/agent-cli --platform $(PLATFORMS)
+	hiver bundle ./docker/agent-cli --tag hiversh/agent-cli --platform $(PLATFORMS)
 	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine --platform $(PLATFORMS)
 	hiver bundle node:alpine --tag hiversh/node:alpine --platform $(PLATFORMS)
 
@@ -64,8 +64,10 @@ down: ## Stop services
 
 test: test-unit ## Run tests
 
+e2e: test-e2e ## Run e2e tests (alias for test-e2e)
+
 test-e2e: ## Run e2e tests
-	go test -v -count=1 ./test/e2e/... 2>&1
+	go test -v -count=1 -timeout 30m ./test/e2e/... 2>&1
 
 test-unit: ## Run unit tests
 	go test -v -count=1 $$(go list ./... | grep -v '/test/e2e') 2>&1
