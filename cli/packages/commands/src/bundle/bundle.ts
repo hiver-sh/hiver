@@ -148,6 +148,25 @@ function run(
   });
 }
 
+/** Returns `--cache-from` / `--cache-to` args for a GHA scope, or [] outside CI. */
+function ghaCacheArgs(scope: string): string[] {
+  if (process.env.GITHUB_ACTIONS !== "true") return [];
+  return [
+    "--cache-from", `type=gha,scope=${scope}`,
+    "--cache-to", `type=gha,mode=max,scope=${scope}`,
+  ];
+}
+
+/** Derives a GHA cache scope slug from an image tag, e.g. `hiversh/python:3.13-alpine` → `bundle-python-3.13-alpine`. */
+function cacheScope(tag: string): string {
+  return (
+    "bundle-" +
+    repoOf(tag)
+      .replace(/^[^/]+\//, "")
+      .replace(/[:/]/g, "-")
+  );
+}
+
 /**
  * Build (when `arg` is a directory with a Dockerfile) or pull (when `arg` is an
  * image ref) the input, then bundle it into a Hiver runtime image via
@@ -307,6 +326,7 @@ async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
 
   ensureMultiarchBuilder();
   const repo = repoOf(tag);
+  const scope = cacheScope(tag);
 
   console.log(
     `\n${bold(brand("Bundle"))} ${accent(image)} ${dim("→")} ${bright(tag)} ${dim(`(${platforms.join(", ")})`)}\n`,
@@ -329,6 +349,7 @@ async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
         `type=docker,dest=${tarPath}`,
       ];
       if (isDir) {
+        prepArgs.push(...ghaCacheArgs(`${scope}-prep`));
         prepArgs.push(resolvedArg);
       } else {
         const fromFile = join(ctx, "from.Dockerfile");
@@ -360,6 +381,7 @@ async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
           "--load",
           "-t",
           tag,
+          ...ghaCacheArgs(scope),
           __dirname,
         ],
         "inherit",
@@ -393,6 +415,7 @@ async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
         `type=docker,dest=${tarPath}`,
       ];
       if (isDir) {
+        prepArgs.push(...ghaCacheArgs(`${scope}-prep`));
         prepArgs.push(resolvedArg);
       } else {
         const fromFile = join(ctx, "from.Dockerfile");
@@ -432,6 +455,7 @@ async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
           `type=image,name=${repo},push=true,push-by-digest=true,name-canonical=true`,
           "--metadata-file",
           metaFile,
+          ...ghaCacheArgs(scope),
           __dirname,
         ],
         "inherit",

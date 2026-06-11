@@ -13,7 +13,6 @@ jobs:
     permissions:
       contents: write
       id-token: write  # Required for OIDC
-      packages: write  # Required for GHCR push
     steps:
       - uses: actions/checkout@v4
         with:
@@ -125,7 +124,15 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Push runtime images
-        run: make buildx-builder && make publish-images PLATFORMS=linux/amd64,linux/arm64
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          make buildx-builder && make publish-images PLATFORMS=linux/amd64,linux/arm64
+          for img in controller core gateway; do
+            docker buildx imagetools create \
+              --tag hiversh/$img:$VERSION \
+              hiversh/$img:latest
+          done
 
       - name: Push sandbox images
         run: make bundle-sandbox-images PLATFORMS=linux/amd64,linux/arm64
