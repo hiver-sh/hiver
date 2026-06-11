@@ -70,7 +70,7 @@ const interactive =
 const intro = (introFlag || firstRun) && interactive;
 
 console.log();
-if (interactive) {
+if (intro) {
   // Restore the cursor if interrupted mid-animation.
   const restore = () => {
     process.stdout.write("\x1b[?25h");
@@ -87,8 +87,8 @@ printCommands(unknown);
 // `--intro` plays the logo, shows the help, starts an example agent, then
 // launches the inspector so the devtools open with something to show.
 if (intro) {
-  await runStart();
-  await import("./inspect/index.js");
+  const started = await runStart();
+  if (started) await import("./inspect/index.js");
 } else {
   // Non-zero exit when the user typed something we don't recognize, so the help
   // screen doubles as an error path for scripts.

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { getOrCreateSandbox, SandboxConfig } from "@hiver.sh/client";
-import { white, bold, dim, red } from "../theme.js";
+import { white, bold, dim, red, accent } from "../theme.js";
 import { createLoader } from "../hive.js";
 import { requireDocker } from "../docker.js";
 import {
@@ -116,7 +116,12 @@ try {
   const exposed = ports.length
     ? `  ${dim(ports.map((p) => `:${p}`).join(", "))}`
     : "";
-  loader.succeed(`${white(sandbox.key)}${exposed}\n`);
+  loader.succeed(`${white(sandbox.key)}${exposed}`);
+  console.log(
+    `\n  ${accent(`hiver shell ${sandbox.key}`)}   ${dim("open a shell")}` +
+    `\n  ${accent(`hiver events ${sandbox.key}`)}  ${dim("stream events")}` +
+    `\n  ${accent(`hiver stop ${sandbox.key}`)}    ${dim("stop sandbox")}\n`,
+  );
   process.exit(0);
 } catch (err) {
   loader.fail(`could not start sandbox: ${dim(String(err))}`);

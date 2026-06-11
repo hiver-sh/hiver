@@ -45,6 +45,15 @@ export const COMMANDS: CommandSpec[] = [
     usage: ["hiver stop <sandbox-key>"],
   },
   {
+    name: "shell",
+    summary: "Open an interactive shell in a sandbox",
+    entry: "shell/index.ts",
+    usage: [
+      "hiver shell <sandbox-key>",
+      "hiver shell <sandbox-key> --command /bin/bash",
+    ],
+  },
+  {
     name: "list",
     summary: "List the sandboxes",
     entry: "list/index.ts",
