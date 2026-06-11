@@ -29,9 +29,7 @@ curl -fsSL https://hiver.sh/install.sh | sh
 Use the CLI to manage sandboxes, stream live events, and launch the inspector — against a local stack or a remote deployment:
 
 ```sh
-$ hiver
-
-⬢ Hiver · Agent Runtime v0.1.3
+⬢ Hiver · Agent Runtime v0.1.15
 
   Usage: hiver <command> [options]
 
@@ -40,6 +38,7 @@ $ hiver
     down     Bring down the stack
     start    Start a sandbox
     stop     Stop a sandbox
+    shell    Open an interactive shell in a sandbox
     list     List the sandboxes
     events   Stream a sandbox's events live as they happen
     inspect  Launch the inspector
@@ -105,6 +104,135 @@ result, _ := sandbox.Exec(context.Background(),
 fmt.Println(result.Stdout)
 ```
 
+## The Inspector
+
+The inspector is the fastest way to understand what your agent is *actually* doing. Launch it with a single command:
+
+```sh
+hiver inspect agent-1
+```
+
+It opens a live, DevTools-style UI over a running sandbox. In one place you get:
+
+* **Timeline**: a waterfall of every event the agent generates, laid out over time with per-request durations. Click any bar to inspect the full request and response (headers, body, and verdict) and see exactly where the run spent its time.
+* **LLM**: the inspector decodes the model traffic itself and renders the conversation as **system**, **user**, and **assistant** messages, tool calls and all, with no agent-side hooks required. Built-in decoders cover Claude Code / Anthropic, Codex / ChatGPT, and Gemini, and the provider interface is pluggable, so GitHub Copilot, OpenCode, or your own CLI drop in with a few lines.
+* **Network**: every egress request the agent makes, with the host, path, and whether it was **allowed** or **denied** by policy. TLS is decrypted transparently, so you see the real requests, not opaque CONNECT tunnels.
+* **Files**: every read and write the agent performs, across local, Google Drive, GCS, S3, and other backends, with the same allowed/denied verdicts.
+* **Exec**: the commands the agent runs and their output.
+* **Terminal**: drop into an interactive shell inside the sandbox to poke around mid-run.
+* **Config**: view and edit the sandbox's network and filesystem policy live, then watch the agent react.
+
+Because the inspector is just a client over the same event stream and API the SDKs use, anything you see in the UI you can also script.
+
+## Events & Loop Engineering
+
+Every sandbox emits a structured, ordered, replayable stream of audit events: `egress.request`, `fs.request`, `exec.request`, `resource.usage`, and more, each tagged with whether the action was **allowed** or **denied**. Stream them live from the CLI:
+
+```sh
+hiver events agent-1
+```
+
+The stream is the foundation for *loop engineering*: closing the loop between what an agent tried to do and what your harness does next. Instead of letting an agent fail silently when it hits a wall, your harness can observe the denial, repair the environment or the prompt, and re-drive the agent.
+
+A harness that grants access on demand when the agent is blocked by policy:
+
+```python
+import asyncio
+import hiver
+
+async def main():
+    sandbox = await hiver.get_or_create_sandbox("agent-1")
+
+    # Drive the agent and watch its behavior at the same time.
+    agent = asyncio.create_task(
+        sandbox.exec("claude -p 'Fetch the changelog from internal-api.corp and summarize it'")
+    )
+
+    async for event in sandbox.get_events_stream():
+        if event.type == "egress.request" and event.access == "denied":
+            # The agent tried to reach a host that policy blocks.
+            # Repair the environment instead of letting the run fail.
+            print(f"unblocking {event.host}")
+            await sandbox.apply_config(
+                hiver.SandboxConfig(
+                    egress=[hiver.EgressRule(access="allow", host=event.host)]
+                )
+            )
+        if agent.done():
+            break
+
+    print((await agent)["stdout"])
+
+asyncio.run(main())
+```
+
+The same pattern powers richer loops: feed denied events back into the agent's next prompt, gate risky writes behind human approval, enforce a resource budget from `resource.usage`, or record the full stream and replay it deterministically for evals. Because events are ordered and carry an `id`, your harness can resume exactly where it left off after a disconnect.
+
+## File Systems
+
+A sandbox's filesystem is assembled from mounts you declare, each backed by local storage, Google Drive, Google Cloud Storage, OneDrive, S3, or Azure Blob. Every mount is FUSE-backed by `sbxfuse`, so the agent sees ordinary files and directories, but every read and write passes through the runtime, where it's checked against **path-level ACLs** and emitted as an auditable `fs.request` event.
+
+This is what lets you safely put real data in front of an agent. Mount **organization knowledge** like skills, runbooks, docs, and design specs **read-only**, so the agent can ground its work in it but can never corrupt the source of truth. Mount the user's **personal data** read-write in a scratch area for the agent to produce output. Lock everything else down with `deny`. Each ACL rule is just a `path` and an access level of `ro`, `rw`, or `deny`, evaluated most-specific-first, so you can open a tree and carve exceptions out of it:
+
+```python
+import hiver
+
+sandbox = await hiver.get_or_create_sandbox(
+    "agent-1",
+    config=hiver.SandboxConfig(
+        fs=[
+            # Org knowledge base, mounted from a shared bucket (read-only).
+            hiver.GCSFileSystem(
+                backend="gcs",
+                mount="/knowledge",
+                gcs_bucket="acme-handbook",
+                gcs_service_account_json=SA_JSON,
+                acls=[hiver.ACLRule(path="/knowledge", access="ro")],
+            ),
+            # The user's working directory: writable, but secrets are off-limits.
+            hiver.LocalFileSystem(
+                backend="local",
+                mount="/workspace",
+                acls=[
+                    hiver.ACLRule(path="/workspace", access="rw"),
+                    hiver.ACLRule(path="/workspace/.env", access="deny"),
+                ],
+            ),
+        ]
+    ),
+)
+```
+
+Because the ACL is enforced by the runtime rather than the agent, a misbehaving or jailbroken agent still can't write to a read-only mount or read a denied path, and every attempt, allowed or denied, shows up in the event stream and the inspector's **Files** view.
+
+## Request Overrides
+
+The egress proxy doesn't just allow or deny requests. It can **rewrite** them on the way out. Attach an `override` to an egress rule and the proxy injects **headers** and **query parameters** into every matching request, overwriting whatever the agent set. This is how you give an agent authenticated access to an API while the agent itself never holds the credential:
+
+```python
+import hiver
+
+sandbox = await hiver.get_or_create_sandbox(
+    "agent-1",
+    config=hiver.SandboxConfig(
+        egress=[
+            hiver.EgressRule(
+                access="allow",
+                host="api.internal.acme.com",
+                override=hiver.EgressOverride(
+                    # Auth token injected as a header. The agent never sees it.
+                    headers={"Authorization": f"Bearer {API_TOKEN}"},
+                    # URL params the proxy stamps onto the request.
+                    query={"tenant": "acme", "api-version": "2024-01"},
+                ),
+            ),
+        ]
+    ),
+)
+```
+
+The agent makes a plain request to `api.internal.acme.com`; the proxy adds the `Authorization` header and the `tenant` / `api-version` query params before the request leaves the sandbox. Because the secret is bound to the rule and applied outside the untrusted workload, a prompt-injected or compromised agent can spend the token against the allowed host but can never read, exfiltrate, or reuse it elsewhere. Combined with a default-deny egress policy, this lets you hand an agent exactly one authenticated integration and nothing more, and every rewritten request still shows up in the inspector's **Network** view.
+
 ## Documentation
 
 * [Docs](https://hiver.sh/docs)
@@ -125,8 +253,9 @@ Docker, k8s.
 
 The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together — serving the client API, reconciling sidecar policy, and streaming telemetry events.
 
-
+<p align="center">
 <img src="./docs/hiver-arch.svg" width="500">
+</p>
 
 The root filesystem is assembled with overlayfs, layering the agent's writes over the read-only base image for efficient snapshotting.
 
