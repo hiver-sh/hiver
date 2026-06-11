@@ -49,7 +49,13 @@ jobs:
         run: |
           npm ci
           npm run build
-          npm publish --provenance
+          PKG=$(jq -r .name package.json)
+          VER=$(jq -r .version package.json)
+          if [ -n "$(npm view "$PKG@$VER" version 2>/dev/null)" ]; then
+            echo "$PKG@$VER already published, skipping."
+          else
+            npm publish --provenance
+          fi
         working-directory: client/typescript
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -57,7 +63,14 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Build and publish python client
-        run: uv build && uv publish
+        run: |
+          PKG=$(grep -E '^name = ' pyproject.toml | sed 's/name = "\(.*\)"/\1/')
+          VER=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          if [ "$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/$PKG/$VER/json")" = "200" ]; then
+            echo "$PKG $VER already published, skipping."
+          else
+            uv build && uv publish
+          fi
         working-directory: client/python
 
       - name: Update CLI dependency and lockfile
@@ -73,7 +86,14 @@ jobs:
         working-directory: cli
 
       - name: Publish CLI to npm
-        run: npm publish --provenance
+        run: |
+          PKG=$(jq -r .name package.json)
+          VER=$(jq -r .version package.json)
+          if [ -n "$(npm view "$PKG@$VER" version 2>/dev/null)" ]; then
+            echo "$PKG@$VER already published, skipping."
+          else
+            npm publish --provenance
+          fi
         working-directory: cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -85,20 +105,32 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add cli/package.json cli/package-lock.json
-          git commit -m "chore: update @hiver.sh/client dep to v${VERSION}"
-          git push origin main
+          if git diff --cached --quiet; then
+            echo "No dependency changes to commit, skipping."
+          else
+            git commit -m "chore: update @hiver.sh/client dep to v${VERSION}"
+            git push origin main
+          fi
 
       - name: Tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.current }}
         run: |
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            --generate-notes \
-            --latest=false
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists, skipping tag push."
+          else
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "Release v${VERSION} already exists, skipping."
+          else
+            gh release create "v${VERSION}" \
+              --title "v${VERSION}" \
+              --generate-notes \
+              --latest=false
+          fi
 
       - uses: actions/setup-node@v4
         with:
