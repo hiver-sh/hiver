@@ -8,6 +8,7 @@ jobs:
   # ── Stage 1 ──────────────────────────────────────────────────────────────
   build-images:
     uses: ./.github/workflows/build-runtime-images.yaml
+    secrets: inherit
 
   # ── Stage 2 ──────────────────────────────────────────────────────────────
   build-cli:
