@@ -22,9 +22,9 @@ PLATFORMS ?= linux/amd64,linux/arm64
 # The inputs (hiversh/core, hiversh/agent-cli-standalone) are pulled per-arch
 # from the registry, so run `make publish-images` first.
 bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
-	hiver bundle ./docker/agent-cli --tag hiversh/agent-cli --platform $(PLATFORMS)
-	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine --platform $(PLATFORMS)
-	hiver bundle node:alpine --tag hiversh/node:alpine --platform $(PLATFORMS)
+	hiver bundle ./docker/agent-cli --tag hiversh/agent-cli --push --platform $(PLATFORMS)
+	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine --push --platform $(PLATFORMS)
+	hiver bundle node:alpine --tag hiversh/node:alpine --push --platform $(PLATFORMS)
 
 
 # Multi-arch builds need a docker-container driver builder; the default `docker`
