@@ -19,6 +19,7 @@ const SERVER_ENTRY = resolve(
 );
 
 const cli = withGateway(subcommand("inspect", "Launch the Hiver DevTools."))
+  .argument("[key]", "open the inspector on this sandbox (opens the home view when omitted)")
   .option("--record", "record a trace to ~/.hiver/traces")
   .option("--port <port>", "inspector server port", "5173");
 run(cli);
@@ -26,6 +27,10 @@ const opts = cli.opts();
 const recording = Boolean(opts.record);
 const port = opts.port as string;
 const serverUrl = `http://localhost:${port}`;
+// When a sandbox key is given, deep-link straight to its view. The client uses
+// a HashRouter, so the route lives in the URL fragment.
+const key = cli.args[0] as string | undefined;
+const inspectPath = key ? `/#/sandboxes/${encodeURIComponent(key)}` : "";
 let gatewayUrl = resolveGatewayUrl(opts.gatewayUrl);
 
 if (!existsSync(SERVER_ENTRY)) {
@@ -51,7 +56,7 @@ gatewayUrl = await ensureGateway(gatewayUrl);
 // Gateway is ready — now show where things are.
 console.log();
 console.log(
-  `${hex(0.82)} ${brand("Hiver")} ${dim("Inspector")} → ${serverUrl}`,
+  `${hex(0.82)} ${brand("Hiver")} ${dim("Inspector")} → ${serverUrl}${inspectPath}`,
 );
 if (recording)
   console.log(
@@ -93,7 +98,7 @@ let server: ReturnType<typeof spawn> | undefined;
 let spinning = false;
 
 if (await serverReachable()) {
-  if (!recording) openBrowser(serverUrl);
+  if (!recording) openBrowser(serverUrl + inspectPath);
 } else {
   const loader = createLoader("starting devtools server…").start();
   spinning = true;
@@ -122,7 +127,7 @@ if (await serverReachable()) {
         const url = match?.[0] ?? serverUrl;
         loader.stop();
         spinning = false;
-        if (!recording) openBrowser(url);
+        if (!recording) openBrowser(url + inspectPath);
       }
     });
   }

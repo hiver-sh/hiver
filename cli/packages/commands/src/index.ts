@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -11,12 +12,15 @@ import { playIntro, staticLogo, type HiveLogo } from "./hive.js";
 // both src/ and dist/.
 const BIN = resolve(dirname(fileURLToPath(import.meta.url)), "../bin.js");
 
-// Start an example agent (the CLI's own `start`), inheriting stdio so its
-// output shows. Used on the intro/first-run path so the inspector opens with a
-// running sandbox to look at. Best-effort: failure shouldn't block the intro.
-function runStart(): Promise<boolean> {
+// Start an example agent (the CLI's own `start`) under a known key, inheriting
+// stdio so its output shows. Used on the intro/first-run path so the inspector
+// can open straight onto this running sandbox. Best-effort: failure shouldn't
+// block the intro.
+function runStart(key: string): Promise<boolean> {
   return new Promise((res) => {
-    const child = spawn(process.execPath, [BIN, "start"], { stdio: "inherit" });
+    const child = spawn(process.execPath, [BIN, "start", key], {
+      stdio: "inherit",
+    });
     child.on("error", () => res(false));
     child.on("exit", (code) => res(code === 0));
   });
@@ -87,8 +91,16 @@ printCommands(unknown);
 // `--intro` plays the logo, shows the help, starts an example agent, then
 // launches the inspector so the devtools open with something to show.
 if (intro) {
-  const started = await runStart();
-  if (started) await import("./inspect/index.js");
+  // Pick the key here so we can both start under it and point the inspector at
+  // it. Matches `start`'s own `agent-<hex>` default for an omitted key.
+  const exampleKey = `agent-${randomBytes(2).toString("hex")}`;
+  const started = await runStart(exampleKey);
+  if (started) {
+    // `inspect` reads its args from argv (`process.argv.slice(3)`); rewrite it
+    // so the imported command opens directly on the sandbox we just started.
+    process.argv = [process.argv[0], process.argv[1], "inspect", exampleKey];
+    await import("./inspect/index.js");
+  }
 } else {
   // Non-zero exit when the user typed something we don't recognize, so the help
   // screen doubles as an error path for scripts.

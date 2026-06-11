@@ -116,11 +116,12 @@ try {
   const exposed = ports.length
     ? `  ${dim(ports.map((p) => `:${p}`).join(", "))}`
     : "";
-  loader.succeed(`${white(sandbox.key)}${exposed}`);
+  loader.succeed(`${white(sandbox.key)} ${dim("started")}${exposed}`);
   console.log(
-    `\n  ${accent(`hiver shell ${sandbox.key}`)}   ${dim("open a shell")}` +
-    `\n  ${accent(`hiver events ${sandbox.key}`)}  ${dim("stream events")}` +
-    `\n  ${accent(`hiver stop ${sandbox.key}`)}    ${dim("stop sandbox")}\n`,
+    `\n  ${accent(`hiver shell ${sandbox.key}`)}    ${dim("open a shell")}` +
+    `\n  ${accent(`hiver inspect ${sandbox.key}`)}  ${dim("inspect this agent")}` +
+    `\n  ${accent(`hiver events ${sandbox.key}`)}   ${dim("stream events")}` +
+    `\n  ${accent(`hiver stop ${sandbox.key}`)}     ${dim("stop sandbox")}\n`,
   );
   process.exit(0);
 } catch (err) {

@@ -85,6 +85,43 @@ func TestSandboxCreationE2E(t *testing.T) {
 		}
 	})
 
+	// env: verify that SandboxConfig.Env vars are present inside the container.
+	// printenv exits 0 and prints the value when the variable exists; a missing
+	// variable would produce empty output, which the check below rejects.
+	t.Run("env", func(t *testing.T) {
+		key := fmt.Sprintf("e2e-create-env-%d", time.Now().UnixNano())
+		config := hiverclient.SandboxConfig{
+			Image:      "hiversh/python:3.13-alpine",
+			Entrypoint: "tail -f /dev/null",
+			Env: map[string]string{
+				"MY_VAR":    "hello",
+				"OTHER_VAR": "world",
+			},
+		}
+		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
+
+		sbx, err := c.GetOrCreateSandbox(ctx, key, config)
+		if err != nil {
+			t.Fatalf("GetOrCreateSandbox: %v", err)
+		}
+
+		for varName, want := range config.Env {
+			res, err := sbx.Exec(ctx, hiverclient.ExecRequest{
+				Command: fmt.Sprintf("printenv %s", varName),
+			})
+			if err != nil {
+				t.Fatalf("Exec printenv %s: %v", varName, err)
+			}
+			if res.ExitCode != 0 {
+				t.Errorf("%s: exit_code=%d, want 0; stderr=%q", varName, res.ExitCode, res.Stderr)
+			}
+			got := strings.TrimSpace(res.Stdout)
+			if got != want {
+				t.Errorf("%s: got %q, want %q", varName, got, want)
+			}
+		}
+	})
+
 	// tty: verify that SandboxConfig.TTY:true configures a PTY session for
 	// the entrypoint. The observable is that ExecStream with an empty command
 	// (which attaches to the entrypoint's TTY session) connects without error.
