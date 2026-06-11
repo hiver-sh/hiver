@@ -6,51 +6,8 @@ on:
 
 jobs:
   # ── Stage 1 ──────────────────────────────────────────────────────────────
-  # Build the runtime docker images, then "publish" them to the downstream
-  # e2e job as an artifact (docker save → upload). Publishing here means
-  # handing *this run's* freshly built images to stage 3 — not pushing to a
-  # registry — so the e2e tests exercise exactly what was just built rather
-  # than whatever `:latest` happens to be in a registry.
   build-images:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build images (controller, core, gateway)
-        run: |
-          docker buildx build \
-            --load -t hiversh/controller:latest \
-            -f docker/controller.Dockerfile \
-            --cache-from type=gha,scope=controller \
-            --cache-to   type=gha,mode=max,scope=controller \
-            .
-          docker buildx build \
-            --load -t hiversh/core:latest \
-            -f docker/core.Dockerfile \
-            --cache-from type=gha,scope=core \
-            --cache-to   type=gha,mode=max,scope=core \
-            .
-          docker buildx build \
-            --load -t hiversh/gateway:latest \
-            --cache-from type=gha,scope=gateway \
-            --cache-to   type=gha,mode=max,scope=gateway \
-            docker/gateway
-
-      - name: Publish images (save as artifact)
-        run: |
-          docker save \
-            hiversh/controller:latest \
-            hiversh/core:latest \
-            hiversh/gateway:latest \
-            -o images.tar
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hiver-images
-          path: images.tar
-          retention-days: 1
+    uses: ./.github/workflows/build-images.yaml
 
   # ── Stage 2 ──────────────────────────────────────────────────────────────
   # Build the CLI against the *local* TypeScript client instead of the

@@ -387,7 +387,7 @@ type containerFiles struct {
 	upperDir string
 }
 
-func (f containerFiles) List(agentPath string, mounts []string) ([]FileEntry, error) {
+func (f containerFiles) List(agentPath string, mounts []MountRoute) ([]FileEntry, error) {
 	entries, err := os.ReadDir(f.hostPath(agentPath, mounts))
 	if err != nil {
 		return nil, err
@@ -407,7 +407,7 @@ func (f containerFiles) List(agentPath string, mounts []string) ([]FileEntry, er
 	return out, nil
 }
 
-func (f containerFiles) Open(agentPath string, mounts []string) (io.ReadCloser, int64, error) {
+func (f containerFiles) Open(agentPath string, mounts []MountRoute) (io.ReadCloser, int64, error) {
 	host := f.hostPath(agentPath, mounts)
 	info, err := os.Stat(host)
 	if err != nil {
@@ -423,7 +423,7 @@ func (f containerFiles) Open(agentPath string, mounts []string) (io.ReadCloser, 
 	return fh, info.Size(), nil
 }
 
-func (f containerFiles) Stat(agentPath string, mounts []string) (FileEntry, error) {
+func (f containerFiles) Stat(agentPath string, mounts []MountRoute) (FileEntry, error) {
 	host := f.hostPath(agentPath, mounts)
 	info, err := os.Stat(host)
 	if err != nil {
@@ -436,7 +436,7 @@ func (f containerFiles) Stat(agentPath string, mounts []string) (FileEntry, erro
 	return FileEntry{Name: filepath.Base(host), IsDir: info.IsDir(), Size: size}, nil
 }
 
-func (f containerFiles) Save(agentDir, name string, mounts []string, r io.Reader) (int64, error) {
+func (f containerFiles) Save(agentDir, name string, mounts []MountRoute, r io.Reader) (int64, error) {
 	hostDir := f.hostPath(agentDir, mounts)
 	if err := os.MkdirAll(hostDir, 0o755); err != nil {
 		return 0, err
@@ -459,22 +459,32 @@ func (f containerFiles) Save(agentDir, name string, mounts []string, r io.Reader
 	return n, nil
 }
 
-// hostPath maps an agent-visible absolute path to its host location:
-// longest-prefix match against mounts → that mount's "-backend" dir; no
-// match → the overlay upper layer.
-func (f containerFiles) hostPath(agentPath string, mounts []string) string {
+// hostPath maps an agent-visible absolute path to its host location by
+// longest-prefix match against the configured mounts:
+//
+//   - local-backend mount → that mount's "-backend" dir (the source of truth;
+//     reading it bypasses sbxfuse ACLs, which the file API intentionally does).
+//   - remote-backed mount → the FUSE mount point itself. The "-backend" dir is
+//     only a write buffer the oplog evicts after flushing to the remote, so it
+//     would miss already-flushed files; the FUSE mount serves the merged
+//     remote+local view (and routes writes back through the oplog).
+//   - no match → the overlay upper layer.
+func (f containerFiles) hostPath(agentPath string, mounts []MountRoute) string {
 	cleaned := filepath.Clean(agentPath)
-	var matched string
+	var matched MountRoute
 	for _, m := range mounts {
-		if cleaned == m || strings.HasPrefix(cleaned, strings.TrimRight(m, "/")+"/") {
-			if len(m) > len(matched) {
+		if cleaned == m.Mount || strings.HasPrefix(cleaned, strings.TrimRight(m.Mount, "/")+"/") {
+			if len(m.Mount) > len(matched.Mount) {
 				matched = m
 			}
 		}
 	}
-	if matched != "" {
-		rel := strings.TrimPrefix(cleaned, matched)
-		return filepath.Join(matched+spec.BackendSuffix, rel)
+	if matched.Mount != "" {
+		rel := strings.TrimPrefix(cleaned, matched.Mount)
+		if matched.Remote {
+			return filepath.Join(matched.Mount, rel)
+		}
+		return filepath.Join(matched.Mount+spec.BackendSuffix, rel)
 	}
 	return filepath.Join(f.upperDir, cleaned)
 }

@@ -1,6 +1,6 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache bash findutils grep
+RUN apk add --no-cache bash curl findutils grep
 
 WORKDIR /app
 COPY package.json ./

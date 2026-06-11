@@ -85,7 +85,6 @@ class Sandbox:
         self.id = ref.id
         self.key = ref.key
         self.api_server_url = f"{gateway_url.rstrip('/')}/sandbox/{ref.key}"
-        self.mcp_endpoint: str = f"{self.api_server_url}/v1/mcp"
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
 

@@ -13,7 +13,6 @@ import socket
 import struct
 import time
 
-
 # ── WebSocket codec ──────────────────────────────────────────────────────────
 
 def _ws_connect(host, port, path="/"):

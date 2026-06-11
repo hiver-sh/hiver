@@ -351,6 +351,10 @@ type GDriveFileSystem struct {
 	// omitted, the account root is used.
 	GdriveFolderId *string `json:"gdrive_folder_id,omitempty"`
 
+	// GdrivePrefix Optional subfolder path within GdriveFolderId that the file
+	// system is scoped to (e.g. `e2e-test/run-42`). Created if absent.
+	GdrivePrefix *string `json:"gdrive_prefix,omitempty"`
+
 	// GdriveRefreshToken OAuth refresh token.
 	GdriveRefreshToken *string `json:"gdrive_refresh_token,omitempty"`
 
@@ -404,6 +408,9 @@ type SandboxConfig struct {
 
 	// Env Additional environment variables as a key/value map. This cannot be changed after the sandbox is initialized.
 	Env *map[string]string `json:"env,omitempty"`
+
+	// ExtraHosts Additional /etc/hosts entries injected before the sandbox starts, in `hostname:ip` form. The special value `host-gateway` resolves to the host machine's IP on the container network (equivalent to Docker's `--add-host` flag). Cannot be changed after the sandbox is initialized.
+	ExtraHosts *[]string `json:"extra_hosts,omitempty"`
 
 	// Fs One or more file systems exposed to the agent. Mount paths
 	// must be unique and non-overlapping (a mount path may not

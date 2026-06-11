@@ -77,6 +77,19 @@ components:
           example:
             LOG_LEVEL: info
             REGION: us-east-1
+        extra_hosts:
+          type: array
+          items:
+            type: string
+          description: >
+            Additional /etc/hosts entries injected before the sandbox starts,
+            in `hostname:ip` form. The special value `host-gateway` resolves
+            to the host machine's IP on the container network (equivalent to
+            Docker's `--add-host` flag). Cannot be changed after the sandbox
+            is initialized.
+          example:
+            - "upstream-ws:host-gateway"
+            - "db.internal:10.0.0.5"
         ttl:
           type: integer
           minimum: 0
@@ -223,6 +236,13 @@ components:
               description: |
                 ID of the Drive folder the file system is scoped to. When
                 omitted, the account root is used.
+            gdrive_prefix:
+              type: string
+              description: |
+                Optional subfolder path within `gdrive_folder_id` that the
+                file system is scoped to (e.g. `e2e-test/run-42`). The path
+                is created if it does not exist. When omitted, the folder
+                root is used.
 
     GCSFileSystem:
       description: A file system backed by Google Cloud Storage.

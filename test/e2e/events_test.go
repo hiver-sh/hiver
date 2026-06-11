@@ -3,8 +3,7 @@ package e2e_test
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,16 +21,7 @@ func TestEventsLastEventIdE2E(t *testing.T) {
 	setup.RequireDocker(t)
 	setup.RequireStack(t)
 
-	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures/agent-node"))
-	if err != nil {
-		t.Fatalf("abs fixture dir: %v", err)
-	}
-	dockerfile := filepath.Join(fixtureDir, "Dockerfile")
-
-	agentImage := "sandbox-agent-node:e2e"
-	bundleImage := "sandbox-bundle-agent-node:e2e"
-	setup.BuildImages(t, dockerfile, fixtureDir, agentImage)
-	setup.BuildSandboxBundle(t, agentImage, bundleImage)
+	bundleImage := setup.BuildAgentNodeBundle(t)
 
 	ctx := context.Background()
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
@@ -87,6 +77,7 @@ func TestEventsLastEventIdE2E(t *testing.T) {
 	full := setup.FetchEvents(t, baseURL, setup.FetchOpts{
 		LastEventID: "0",
 		IdleTimeout: idleTimeout,
+		UntilStdout: "DONE",
 	})
 	t.Logf("SSE events (%d):\n%s", len(full), setup.SummarizeEvents(full))
 
@@ -211,6 +202,6 @@ func sortedKeys(m map[int64]bool) []int64 {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }

@@ -408,6 +408,54 @@ func BuildSandboxBundle(t *testing.T, agentImage, bundleTag string) {
 	}
 }
 
+// BuildAgentWebsocketBundle builds the agent-websocket fixture image from
+// test/e2e/fixtures/agent-websocket/ and bundles it into a sandbox-ready image.
+// Returns the bundle image tag.
+func BuildAgentWebsocketBundle(t *testing.T) string {
+	t.Helper()
+	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures/agent-websocket"))
+	if err != nil {
+		t.Fatalf("abs agent-websocket fixture dir: %v", err)
+	}
+	const agentImage = "sandbox-agent-websocket:e2e"
+	const bundleTag = "sandbox-bundle-agent-websocket:e2e"
+	BuildImages(t, filepath.Join(fixtureDir, "Dockerfile"), fixtureDir, agentImage)
+	BuildSandboxBundle(t, agentImage, bundleTag)
+	return bundleTag
+}
+
+// BuildAgentNodeBundle builds the agent-node fixture image from
+// test/e2e/fixtures/agent-node/ and bundles it into a sandbox-ready image.
+// Returns the bundle image tag.
+func BuildAgentNodeBundle(t *testing.T) string {
+	t.Helper()
+	fixtureDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/fixtures/agent-node"))
+	if err != nil {
+		t.Fatalf("abs agent-node fixture dir: %v", err)
+	}
+	const agentImage = "sandbox-agent-node:e2e"
+	const bundleTag = "sandbox-bundle-agent-node:e2e"
+	BuildImages(t, filepath.Join(fixtureDir, "Dockerfile"), fixtureDir, agentImage)
+	BuildSandboxBundle(t, agentImage, bundleTag)
+	return bundleTag
+}
+
+// BuildTSMCPServerBundle builds the TypeScript MCP server image from
+// client/typescript/examples/mcp-server/image/ and bundles it into a
+// sandbox-ready image. Returns the bundle image tag.
+func BuildTSMCPServerBundle(t *testing.T) string {
+	t.Helper()
+	imageDir, err := filepath.Abs(filepath.Join(moduleRoot, "client/typescript/examples/mcp-server/image"))
+	if err != nil {
+		t.Fatalf("abs ts mcp-server image dir: %v", err)
+	}
+	const agentImage = "ts-mcp-server:e2e"
+	const bundleTag = "ts-mcp-server-bundle:e2e"
+	BuildImages(t, filepath.Join(imageDir, "Dockerfile"), imageDir, agentImage)
+	BuildSandboxBundle(t, agentImage, bundleTag)
+	return bundleTag
+}
+
 // startUpstreams spins up two HTTP servers on the host on the ports the
 // fixture's spec.json pins. Both bind to all interfaces (so Docker can
 // reach them via the host-gateway alias). They're aliased inside the

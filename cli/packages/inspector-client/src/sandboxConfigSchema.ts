@@ -203,6 +203,11 @@ export const SANDBOX_CONFIG_SCHEMA = {
               description:
                 "ID of the Drive folder the file system is scoped to. Defaults to the account root.",
             },
+            gdrive_prefix: {
+              type: "string",
+              description:
+                "Optional subfolder path within gdrive_folder_id (e.g. e2e-test/run-42). Created if absent. Defaults to the folder root.",
+            },
           },
         },
       ],

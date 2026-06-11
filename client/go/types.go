@@ -39,6 +39,7 @@ type FileSystem struct {
 	GDriveClientSecret       string `json:"gdrive_client_secret,omitempty"`
 	GDriveServiceAccountJSON string `json:"gdrive_service_account_json,omitempty"`
 	GDriveFolderID           string `json:"gdrive_folder_id,omitempty"`
+	GDrivePrefix             string `json:"gdrive_prefix,omitempty"`
 
 	// gcs backend
 	GCSBucket             string `json:"gcs_bucket,omitempty"`
@@ -63,6 +64,7 @@ type SandboxConfig struct {
 	CWD        string            `json:"cwd,omitempty"`
 	TTY        bool              `json:"tty,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
+	ExtraHosts []string          `json:"extra_hosts,omitempty"`
 	TTL        *int              `json:"ttl,omitempty"` // pointer so callers can set 0 (disable TTL)
 	FS         []FileSystem      `json:"fs,omitempty"`
 	Egress     []EgressRule      `json:"egress,omitempty"`
@@ -127,7 +129,7 @@ type ExecResult struct {
 // ExecStreamRequest is the body for POST /v1/exec-stream/{id}.
 // Leave Command empty to attach to the sandbox entrypoint's TTY.
 type ExecStreamRequest struct {
-	Command string            `json:"command,omitempty"`
+	Command string            `json:"command"` // required by the server schema; empty = attach to entrypoint TTY
 	CWD     string            `json:"cwd,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 	TTY     bool              `json:"tty,omitempty"`

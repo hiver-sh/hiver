@@ -58,9 +58,22 @@ func NewClient(gatewayURL string, opts ...Option) *Client {
 // sandbox with that key already exists it is returned unchanged; otherwise
 // one is created from config. The call blocks until the sandbox responds to
 // Ping (up to the client's configured timeout).
+//
+// If config.FS is empty a default /workspace local mount with rw access is
+// added automatically. If config.Egress is empty egress is opened to all
+// hosts. Both match the TypeScript client defaults.
 func (c *Client) GetOrCreateSandbox(ctx context.Context, key string, config SandboxConfig) (*Sandbox, error) {
 	if !sandboxKeyPattern.MatchString(key) {
 		return nil, fmt.Errorf("GetOrCreateSandbox: key %q must match %s", key, sandboxKeyPattern)
+	}
+
+	if len(config.FS) == 0 {
+		config.FS = []FileSystem{
+			{Mount: "/workspace", Backend: "local", ACLs: []ACLRule{{Path: "/workspace/**", Access: "rw"}}},
+		}
+	}
+	if len(config.Egress) == 0 {
+		config.Egress = []EgressRule{{Access: "allow", Host: "*"}}
 	}
 
 	body, err := json.Marshal(config)

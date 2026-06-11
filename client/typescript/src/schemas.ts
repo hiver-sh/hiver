@@ -52,6 +52,8 @@ export const GDriveFileSystem = FileSystemBase.extend({
   gdrive_service_account_json: z.string().optional(),
   /** ID of the Drive folder the file system is scoped to. When omitted, the account root is used. */
   gdrive_folder_id: z.string().optional(),
+  /** Optional subfolder path within gdrive_folder_id (e.g. `e2e-test/run-42`). Created if absent. */
+  gdrive_prefix: z.string().optional(),
 });
 export type GDriveFileSystem = z.infer<typeof GDriveFileSystem>;
 
@@ -178,6 +180,8 @@ export const SandboxConfig = z.object({
   tty: z.boolean().optional(),
   /** Additional environment variables in `KEY=VALUE` form. This cannot be changed after the sandbox is initialized. */
   env: z.record(z.string(), z.string()).optional(),
+  /** Additional /etc/hosts entries in `hostname:ip` form (use `host-gateway` for the host machine's IP). Cannot be changed after the sandbox is initialized. */
+  extra_hosts: z.array(z.string()).optional(),
   /**
    * Sandbox time to live in seconds. The client must ping `/v1/ping` to reset the timer;
    * once a ping has not been received for this long the sandbox receives SIGTERM.

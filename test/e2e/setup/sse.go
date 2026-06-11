@@ -124,6 +124,11 @@ type FetchOpts struct {
 	// open-ended (live tail), so a one-shot caller needs an idle
 	// signal to know when the replay is drained. Defaults to 500 ms.
 	IdleTimeout time.Duration
+	// UntilStdout, if non-empty, defers the first idle-tick until a
+	// stdio event whose stdout field contains this substring is seen.
+	// Use it when the agent does slow work (e.g. external HTTPS calls)
+	// that would otherwise cause the idle timer to fire prematurely.
+	UntilStdout string
 }
 
 // FetchEvents opens a one-shot SSE subscription, accumulates frames
@@ -186,8 +191,18 @@ func FetchEvents(t *testing.T, baseURL string, opts FetchOpts) []map[string]any 
 	}()
 
 	var out []map[string]any
+	// When UntilStdout is set, hold the idle timer until the marker
+	// event arrives so that slow gaps in the stream (e.g. external HTTPS
+	// calls inside the agent) don't fire the timer prematurely.
+	idleArmed := opts.UntilStdout == ""
 	idle := time.NewTimer(opts.IdleTimeout)
 	defer idle.Stop()
+	if !idleArmed {
+		// Park the timer until the marker event is seen.
+		if !idle.Stop() {
+			<-idle.C
+		}
+	}
 	for {
 		select {
 		case ev, ok := <-eventCh:
@@ -195,6 +210,13 @@ func FetchEvents(t *testing.T, baseURL string, opts FetchOpts) []map[string]any 
 				return out
 			}
 			out = append(out, ev)
+			if !idleArmed {
+				if stdout, _ := ev["stdout"].(string); strings.Contains(stdout, opts.UntilStdout) {
+					idleArmed = true
+					idle.Reset(opts.IdleTimeout)
+				}
+				continue
+			}
 			if !idle.Stop() {
 				select {
 				case <-idle.C:

@@ -284,9 +284,18 @@ func (a *auditCtx) responseError(err error) {
 // an in-flight upload can't leave behind a stale pre-write snapshot
 // that survives [Oplog.IsDirty] flipping back to false on completion,
 // because we never cached during the dirty window in the first place.
+//
+// p is the agent-visible absolute path (cache key); the dirty check uses
+// the store-relative (virt) path since the oplog is keyed that way.
 func (s *Server) cachePut(p string, info remotefs.FileInfo) {
-	if s.cfg.Oplog != nil && s.cfg.Oplog.IsDirty(p) {
-		return
+	if s.cfg.Oplog != nil {
+		virt := strings.TrimPrefix(p, s.cfg.MountPoint)
+		if virt == "" {
+			virt = "/"
+		}
+		if s.cfg.Oplog.IsDirty(virt) {
+			return
+		}
 	}
 	s.statCache.put(p, info)
 }
@@ -407,7 +416,7 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 			ac.response()
 			return nil
 		}
-		info, err := n.s.cfg.Remote.Stat(ctx, n.absPath())
+		info, err := n.s.cfg.Remote.Stat(ctx, n.virtPath())
 		if err == nil {
 			n.s.cachePut(n.absPath(), info)
 			fillAttrFromRemote(a, info)
@@ -438,7 +447,7 @@ func (n *node) isDirty() bool {
 	if n.s.cfg.Oplog == nil {
 		return false
 	}
-	return n.s.cfg.Oplog.IsDirty(n.absPath())
+	return n.s.cfg.Oplog.IsDirty(n.virtPath())
 }
 
 // Lookup resolves a child by name.
@@ -461,7 +470,7 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 			n.s.trackNode(child)
 			return child, nil
 		}
-		info, err := n.s.cfg.Remote.Stat(ctx, child.absPath())
+		info, err := n.s.cfg.Remote.Stat(ctx, child.virtPath())
 		if err == nil {
 			n.s.cachePut(child.absPath(), info)
 			ac.response()
@@ -498,7 +507,7 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	seen := map[string]fuse.DirentType{}
 
 	if n.s.cfg.Remote != nil {
-		infos, err := n.s.cfg.Remote.ListDir(ctx, n.absPath())
+		infos, err := n.s.cfg.Remote.ListDir(ctx, n.virtPath())
 		if err != nil && !errors.Is(err, remotefs.ErrNotExist) {
 			ac.responseError(err)
 			return nil, mapErr(err)
@@ -656,7 +665,7 @@ func (n *node) materializeLocal(ctx context.Context, flags fuse.OpenFlags) error
 	info, ok := n.s.statCache.get(n.absPath())
 	if !ok {
 		var err error
-		info, err = n.s.cfg.Remote.Stat(ctx, n.absPath())
+		info, err = n.s.cfg.Remote.Stat(ctx, n.virtPath())
 		if err != nil {
 			return err
 		}
@@ -682,7 +691,7 @@ func (n *node) materializeLocal(ctx context.Context, flags fuse.OpenFlags) error
 		}
 		return f.Close()
 	}
-	rc, err := n.s.cfg.Remote.Get(ctx, n.absPath())
+	rc, err := n.s.cfg.Remote.Get(ctx, n.virtPath())
 	if err != nil {
 		return err
 	}
@@ -750,7 +759,7 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	resp.Size = nWritten
 	ac.response()
 	n.s.statCache.invalidate(n.absPath())
-	n.s.enqueuePut(n.absPath(), n.hostPath())
+	n.s.enqueuePut(n.virtPath(), n.hostPath())
 	return nil
 }
 
@@ -809,6 +818,7 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 // "Neither local nor remote" → ENOENT, matching POSIX `rm` semantics.
 func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	childAbs := n.childAbs(req.Name)
+	childVirt := path.Join(n.virtPath(), req.Name)
 	ac := n.s.beginAudit("remove", childAbs)
 	if n.s.currentACLs().Eval(childAbs) != AccessRW {
 		ac.deny()
@@ -827,17 +837,17 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	n.s.statCache.invalidate(childAbs)
 
 	if n.s.cfg.Remote != nil {
-		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(childAbs)
+		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(childVirt)
 		if dirty {
 			// A pending OpPut for this path is queued or in flight.
 			// Enqueue OpDelete so the FIFO queue runs Put-then-Delete
 			// against the remote (the wasted upload is cheaper than
 			// stalling the FUSE handler waiting for the Put to finish).
 			ac.response()
-			n.s.enqueueDelete(childAbs)
+			n.s.enqueueDelete(childVirt)
 			return nil
 		}
-		if err := n.s.cfg.Remote.Delete(ctx, childAbs); err != nil && !errors.Is(err, remotefs.ErrNotExist) {
+		if err := n.s.cfg.Remote.Delete(ctx, childVirt); err != nil && !errors.Is(err, remotefs.ErrNotExist) {
 			ac.responseError(err)
 			return mapErr(err)
 		}
@@ -951,13 +961,13 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	n.s.nodesMu.Unlock()
 
 	if n.s.cfg.Remote != nil {
-		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(oldAbs)
+		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(oldVirt)
 		if dirty {
 			ac.response()
-			n.s.enqueueMove(oldAbs, newAbs)
+			n.s.enqueueMove(oldVirt, newVirt)
 			return nil
 		}
-		if err := n.s.cfg.Remote.Move(ctx, oldAbs, newAbs); err != nil {
+		if err := n.s.cfg.Remote.Move(ctx, oldVirt, newVirt); err != nil {
 			// Try to undo a local rename so the agent's view stays
 			// consistent with the remote (which is the source of truth).
 			if localRenamed {

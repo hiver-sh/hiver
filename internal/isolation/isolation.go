@@ -127,20 +127,33 @@ type FileEntry struct {
 	Size  int64
 }
 
+// MountRoute describes one configured FUSE mount for path routing in the
+// FileBridge. Remote reports whether the backend writes through to a remote
+// store (gdrive, gcs); for those the mount's "-backend" dir is only a write
+// buffer the oplog evicts after flushing, so the file API must read the FUSE
+// mount point (the merged remote+local view) instead.
+type MountRoute struct {
+	Mount  string
+	Remote bool
+}
+
 // FileBridge exposes the workload's filesystem to the management API
-// (/v1/file*). Both backends serve workspace paths from the host FUSE backend
-// dirs (sbxfuse is host-side); the container backend also serves non-workspace
-// paths from the overlay upper layer, while the microvm backend reports those
-// as guest-only (they live in the guest's block device). Paths are
-// agent-visible absolute paths; mounts is the configured FUSE mount list, used
-// to route a path to its backing store.
+// (/v1/file*). For local-backend mounts both isolation backends serve workspace
+// paths from the host FUSE backend dir directly (sbxfuse is host-side),
+// bypassing ACLs — the file API is a higher-privilege control surface. For
+// remote-backed mounts the backend dir is only a write buffer, so reads/writes
+// route through the FUSE mount point instead. The container backend also serves
+// non-workspace paths from the overlay upper layer, while the microvm backend
+// reports those as guest-only (they live in the guest's block device). Paths are
+// agent-visible absolute paths; mounts is the configured mount list, used to
+// route a path to its backing store.
 type FileBridge interface {
-	List(agentPath string, mounts []string) ([]FileEntry, error)
-	Open(agentPath string, mounts []string) (rc io.ReadCloser, size int64, err error)
-	Save(agentDir, name string, mounts []string, r io.Reader) (written int64, err error)
+	List(agentPath string, mounts []MountRoute) ([]FileEntry, error)
+	Open(agentPath string, mounts []MountRoute) (rc io.ReadCloser, size int64, err error)
+	Save(agentDir, name string, mounts []MountRoute, r io.Reader) (written int64, err error)
 	// Stat reports a single entry; Name is the base name. Used by the MCP
 	// file tools to distinguish files from directories.
-	Stat(agentPath string, mounts []string) (FileEntry, error)
+	Stat(agentPath string, mounts []MountRoute) (FileEntry, error)
 }
 
 // Isolation is the polymorphic runtime boundary. A single instance is

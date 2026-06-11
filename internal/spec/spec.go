@@ -109,6 +109,7 @@ type FS struct {
 	GdriveClientSecret       string `json:"gdrive_client_secret,omitempty"`
 	GdriveServiceAccountJSON string `json:"gdrive_service_account_json,omitempty"`
 	GdriveFolderID           string `json:"gdrive_folder_id,omitempty"`
+	GdrivePrefix             string `json:"gdrive_prefix,omitempty"`
 
 	// gcs only — bucket, optional key prefix, and optional service account.
 	GcsBucket             string `json:"gcs_bucket,omitempty"`
@@ -191,6 +192,7 @@ const (
 	envGdriveClientSecret       = "HIVE_GDRIVE_CLIENT_SECRET"
 	envGdriveServiceAccountJSON = "HIVE_GDRIVE_SERVICE_ACCOUNT_JSON"
 	envGdriveFolderID           = "HIVE_GDRIVE_FOLDER_ID"
+	envGdrivePrefix             = "HIVE_GDRIVE_PREFIX"
 )
 
 // Env-var fallbacks for gcs credentials.
@@ -211,13 +213,14 @@ func or(value, envKey string) string {
 // fields with env-var fallback. Used by both Validate (to check that
 // at least one credential is present) and BackendConfigJSON (to build
 // the JSON sbxfuse receives).
-func (f *FS) gdriveResolved() (accessToken, refreshToken, clientID, clientSecret, serviceAccountJSON, folderID string) {
+func (f *FS) gdriveResolved() (accessToken, refreshToken, clientID, clientSecret, serviceAccountJSON, folderID, prefix string) {
 	return or(f.GdriveAccessToken, envGdriveAccessToken),
 		or(f.GdriveRefreshToken, envGdriveRefreshToken),
 		or(f.GdriveClientID, envGdriveClientID),
 		or(f.GdriveClientSecret, envGdriveClientSecret),
 		or(f.GdriveServiceAccountJSON, envGdriveServiceAccountJSON),
-		or(f.GdriveFolderID, envGdriveFolderID)
+		or(f.GdriveFolderID, envGdriveFolderID),
+		or(f.GdrivePrefix, envGdrivePrefix)
 }
 
 // gcsResolved returns the effective gcs config — spec fields with env-var fallback.
@@ -235,7 +238,7 @@ func (f *FS) gcsResolved() (bucket, prefix, serviceAccountJSON string) {
 func (f *FS) BackendConfigJSON() ([]byte, error) {
 	switch f.Backend {
 	case BackendGoogleDrive:
-		access, refresh, clientID, clientSecret, sa, folder := f.gdriveResolved()
+		access, refresh, clientID, clientSecret, sa, folder, prefix := f.gdriveResolved()
 		return json.Marshal(struct {
 			AccessToken        string `json:"access_token,omitempty"`
 			RefreshToken       string `json:"refresh_token,omitempty"`
@@ -243,6 +246,7 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			ClientSecret       string `json:"client_secret,omitempty"`
 			ServiceAccountJSON string `json:"service_account_json,omitempty"`
 			FolderID           string `json:"folder_id,omitempty"`
+			Prefix             string `json:"prefix,omitempty"`
 		}{
 			AccessToken:        access,
 			RefreshToken:       refresh,
@@ -250,6 +254,7 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			ClientSecret:       clientSecret,
 			ServiceAccountJSON: sa,
 			FolderID:           folder,
+			Prefix:             prefix,
 		})
 	case BackendGoogleCloudStorage:
 		bucket, prefix, sa := f.gcsResolved()
@@ -318,7 +323,7 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage)
 		}
 		if f.Backend == BackendGoogleDrive {
-			access, _, _, _, sa, _ := f.gdriveResolved()
+			access, _, _, _, sa, _, _ := f.gdriveResolved()
 			if access == "" && sa == "" {
 				return fmt.Errorf("%s.backend gdrive: one of gdrive_access_token / gdrive_service_account_json is required (or env %s / %s)", ctx, envGdriveAccessToken, envGdriveServiceAccountJSON)
 			}

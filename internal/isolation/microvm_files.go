@@ -63,7 +63,7 @@ func readResult(conn net.Conn) (vsockfile.Result, error) {
 	return res, nil
 }
 
-func (f microvmGuestFiles) List(agentPath string, _ []string) ([]FileEntry, error) {
+func (f microvmGuestFiles) List(agentPath string, _ []MountRoute) ([]FileEntry, error) {
 	conn, err := f.dial()
 	if err != nil {
 		return nil, err
@@ -83,7 +83,7 @@ func (f microvmGuestFiles) List(agentPath string, _ []string) ([]FileEntry, erro
 	return out, nil
 }
 
-func (f microvmGuestFiles) Stat(agentPath string, _ []string) (FileEntry, error) {
+func (f microvmGuestFiles) Stat(agentPath string, _ []MountRoute) (FileEntry, error) {
 	conn, err := f.dial()
 	if err != nil {
 		return FileEntry{}, err
@@ -102,7 +102,7 @@ func (f microvmGuestFiles) Stat(agentPath string, _ []string) (FileEntry, error)
 	return FileEntry{Name: res.Entry.Name, IsDir: res.Entry.IsDir, Size: res.Entry.Size}, nil
 }
 
-func (f microvmGuestFiles) Open(agentPath string, _ []string) (io.ReadCloser, int64, error) {
+func (f microvmGuestFiles) Open(agentPath string, _ []MountRoute) (io.ReadCloser, int64, error) {
 	conn, err := f.dial()
 	if err != nil {
 		return nil, 0, err
@@ -135,7 +135,7 @@ func (f microvmGuestFiles) Open(agentPath string, _ []string) (io.ReadCloser, in
 	return io.NopCloser(&buf), res.Size, nil
 }
 
-func (f microvmGuestFiles) Save(agentDir, name string, _ []string, r io.Reader) (int64, error) {
+func (f microvmGuestFiles) Save(agentDir, name string, _ []MountRoute, r io.Reader) (int64, error) {
 	conn, err := f.dial()
 	if err != nil {
 		return 0, err

@@ -70,11 +70,6 @@ func (s *Sandbox) ProxyURL(port int) string {
 	return fmt.Sprintf("%s/v1/proxy/%d", s.apiURL, port)
 }
 
-// MCPEndpoint returns the MCP endpoint URL for this sandbox.
-func (s *Sandbox) MCPEndpoint() string {
-	return fmt.Sprintf("%s/v1/mcp", s.apiURL)
-}
-
 // Ping resets the sandbox TTL countdown.
 func (s *Sandbox) Ping(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/ping", nil)

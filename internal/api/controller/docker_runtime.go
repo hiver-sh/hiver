@@ -167,6 +167,11 @@ func (r *DockerRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.San
 			createArgs = append(createArgs, "-e", k+"="+v)
 		}
 	}
+	if cfg.ExtraHosts != nil {
+		for _, h := range *cfg.ExtraHosts {
+			createArgs = append(createArgs, "--add-host", h)
+		}
+	}
 
 	// Mount volumes
 	for _, fs := range cfg.Fs {

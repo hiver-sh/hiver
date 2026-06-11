@@ -44,6 +44,10 @@ type GoogleDriveConfig struct {
 	ClientSecret       string `json:"client_secret,omitempty"`
 	ServiceAccountJSON string `json:"service_account_json,omitempty"`
 	FolderID           string `json:"folder_id,omitempty"`
+	// Prefix, when set, is a slash-separated subfolder path resolved (and
+	// created if absent) within FolderID. The resulting folder becomes the
+	// effective root — useful for isolating runs or tenants.
+	Prefix string `json:"prefix,omitempty"`
 }
 
 // driveScopes is what we ask Google for when refreshing user tokens.
@@ -92,11 +96,24 @@ func NewGoogleDrive(ctx context.Context, cfg GoogleDriveConfig, outboundMark int
 	if root == "" {
 		root = "root" // Drive's alias for the user's My Drive root
 	}
-	return &GoogleDrive{
+	gd := &GoogleDrive{
 		svc:      svc,
 		rootID:   root,
 		pathToID: map[string]string{"/": root},
-	}, nil
+	}
+	if cfg.Prefix != "" {
+		// Walk each path component of the prefix, creating folders as needed,
+		// then re-anchor the store to the resulting leaf folder.
+		ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		prefixID, err := gd.ensureFolder(ctx2, cfg.Prefix)
+		if err != nil {
+			return nil, fmt.Errorf("gdrive: prefix %q: %w", cfg.Prefix, err)
+		}
+		gd.rootID = prefixID
+		gd.pathToID = map[string]string{"/": prefixID}
+	}
+	return gd, nil
 }
 
 func newOAuthClient(ctx context.Context, cfg GoogleDriveConfig, mark int, requestLog io.Writer) (*http.Client, error) {
@@ -168,6 +185,12 @@ func (g *GoogleDrive) resolve(ctx context.Context, p string) (string, error) {
 	g.cacheMu.Unlock()
 
 	parent := path.Dir(p)
+	if parent == p {
+		// p is "/" and was not in cache — re-anchor to rootID rather than
+		// recurse forever. This can happen if invalidate mistakenly evicted
+		// the root entry.
+		return g.rootID, nil
+	}
 	parentID, err := g.resolve(ctx, parent)
 	if err != nil {
 		return "", err
@@ -189,6 +212,8 @@ func (g *GoogleDrive) findChild(ctx context.Context, parentID, name string) (str
 		Context(ctx).
 		Q(q).
 		Fields("files(id,name,mimeType)").
+		SupportsAllDrives(true).
+		IncludeItemsFromAllDrives(true).
 		Do()
 	if err != nil {
 		return "", err
@@ -217,7 +242,7 @@ func (g *GoogleDrive) ensureFolder(ctx context.Context, p string) (string, error
 		Name:     path.Base(p),
 		MimeType: "application/vnd.google-apps.folder",
 		Parents:  []string{parentID},
-	}).Context(ctx).Fields("id").Do()
+	}).Context(ctx).Fields("id").SupportsAllDrives(true).Do()
 	if err != nil {
 		return "", fmt.Errorf("create folder %s: %w", p, err)
 	}
@@ -228,6 +253,11 @@ func (g *GoogleDrive) ensureFolder(ctx context.Context, p string) (string, error
 }
 
 func (g *GoogleDrive) invalidate(p string) {
+	if p == "/" {
+		// Root always maps to rootID; evicting it would cause resolve("/")
+		// to recurse infinitely (path.Dir("/") == "/").
+		return
+	}
 	g.cacheMu.Lock()
 	delete(g.pathToID, p)
 	g.cacheMu.Unlock()
@@ -250,6 +280,8 @@ func (g *GoogleDrive) List(ctx context.Context, prefix string) ([]string, error)
 				Q(fmt.Sprintf("'%s' in parents and trashed = false", folderID)).
 				Fields("nextPageToken, files(id,name,mimeType)").
 				PageToken(pageToken).
+				SupportsAllDrives(true).
+				IncludeItemsFromAllDrives(true).
 				Do()
 			if err != nil {
 				return err
@@ -290,6 +322,7 @@ func (g *GoogleDrive) Stat(ctx context.Context, p string) (FileInfo, error) {
 	f, err := g.svc.Files.Get(id).
 		Context(ctx).
 		Fields("id,name,mimeType,size,modifiedTime").
+		SupportsAllDrives(true).
 		Do()
 	if err != nil {
 		var ge *googleapi.Error
@@ -324,6 +357,8 @@ func (g *GoogleDrive) ListDir(ctx context.Context, dir string) ([]FileInfo, erro
 			Q(fmt.Sprintf("'%s' in parents and trashed = false", folderID)).
 			Fields("nextPageToken, files(id,name,mimeType,size,modifiedTime)").
 			PageToken(pageToken).
+			SupportsAllDrives(true).
+			IncludeItemsFromAllDrives(true).
 			Do()
 		if err != nil {
 			return nil, err
@@ -356,7 +391,7 @@ func (g *GoogleDrive) Get(ctx context.Context, p string) (io.ReadCloser, error) 
 	if err != nil {
 		return nil, err
 	}
-	resp, err := g.svc.Files.Get(id).Context(ctx).Download()
+	resp, err := g.svc.Files.Get(id).Context(ctx).SupportsAllDrives(true).Download()
 	if err != nil {
 		var ge *googleapi.Error
 		if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
@@ -379,6 +414,7 @@ func (g *GoogleDrive) Put(ctx context.Context, p string, content io.Reader) erro
 			Context(ctx).
 			Media(content).
 			Fields("id").
+			SupportsAllDrives(true).
 			Do()
 		return err
 	} else if !errors.Is(err, ErrNotExist) {
@@ -387,7 +423,7 @@ func (g *GoogleDrive) Put(ctx context.Context, p string, content io.Reader) erro
 	f, err := g.svc.Files.Create(&drive.File{
 		Name:    name,
 		Parents: []string{parentID},
-	}).Context(ctx).Media(content).Fields("id").Do()
+	}).Context(ctx).Media(content).Fields("id").SupportsAllDrives(true).Do()
 	if err != nil {
 		return err
 	}
@@ -405,7 +441,7 @@ func (g *GoogleDrive) Delete(ctx context.Context, p string) error {
 	if err != nil {
 		return err
 	}
-	if err := g.svc.Files.Delete(id).Context(ctx).Do(); err != nil {
+	if err := g.svc.Files.Delete(id).Context(ctx).SupportsAllDrives(true).Do(); err != nil {
 		var ge *googleapi.Error
 		if errors.As(err, &ge) && ge.Code == http.StatusNotFound {
 			g.invalidate(path.Clean("/" + strings.TrimPrefix(p, "/")))
@@ -422,7 +458,7 @@ func (g *GoogleDrive) Move(ctx context.Context, src, dst string) error {
 	if err != nil {
 		return err
 	}
-	srcMeta, err := g.svc.Files.Get(id).Context(ctx).Fields("parents").Do()
+	srcMeta, err := g.svc.Files.Get(id).Context(ctx).Fields("parents").SupportsAllDrives(true).Do()
 	if err != nil {
 		return err
 	}
@@ -432,7 +468,8 @@ func (g *GoogleDrive) Move(ctx context.Context, src, dst string) error {
 	}
 	upd := g.svc.Files.Update(id, &drive.File{Name: path.Base(dst)}).
 		Context(ctx).
-		Fields("id")
+		Fields("id").
+		SupportsAllDrives(true)
 	if len(srcMeta.Parents) > 0 {
 		upd = upd.RemoveParents(strings.Join(srcMeta.Parents, ","))
 	}

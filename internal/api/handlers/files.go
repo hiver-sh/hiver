@@ -12,14 +12,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/isolation"
+	"github.com/hiver-sh/hiver/internal/spec"
 )
 
-// mountPaths returns the configured FUSE mount paths, which the backend's
-// FileBridge uses to route an agent path to its backing store.
-func (h *SandboxHandlers) mountPaths(cfg gen.SandboxConfig) []string {
-	out := make([]string, 0, len(cfg.Fs))
+// mountRoutes returns the configured mounts and whether each is remote-backed,
+// which the backend's FileBridge uses to route an agent path to its backing
+// store (local backend dir vs. the FUSE mount point for remote mounts).
+func (h *SandboxHandlers) mountRoutes(cfg gen.SandboxConfig) []isolation.MountRoute {
+	out := make([]isolation.MountRoute, 0, len(cfg.Fs))
 	for _, f := range cfg.Fs {
-		out = append(out, fsBase(f).Mount)
+		base := fsBase(f)
+		out = append(out, isolation.MountRoute{
+			Mount:  base.Mount,
+			Remote: spec.Backend(base.Backend).IsRemote(),
+		})
 	}
 	return out
 }
@@ -68,7 +75,7 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 	}
 	defer src.Close()
 
-	n, err := h.iso.Files().Save(cleaned, name, h.mountPaths(cfg), src)
+	n, err := h.iso.Files().Save(cleaned, name, h.mountRoutes(cfg), src)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
@@ -77,8 +84,9 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 }
 
 // ListDirectory returns the immediate children of a directory, served by the
-// backend's FileBridge (FUSE backend for paths under a mount, the writable
-// layer otherwise). The read bypasses sbxfuse ACLs.
+// backend's FileBridge. Local-backend mounts read the host backend dir directly
+// (bypassing sbxfuse ACLs); remote-backed mounts read the FUSE mount point so
+// already-flushed files the oplog evicted from the write buffer stay visible.
 func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) {
 	path := params.Path
 	if path == "" {
@@ -96,7 +104,7 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectory
 		return
 	}
 
-	entries, err := h.iso.Files().List(cleaned, h.mountPaths(cfg))
+	entries, err := h.iso.Files().List(cleaned, h.mountRoutes(cfg))
 	if err != nil {
 		c.JSON(fileErrStatus(err), gen.Error{Error: err.Error()})
 		return
@@ -139,7 +147,7 @@ func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 		return
 	}
 
-	rc, size, err := h.iso.Files().Open(cleaned, h.mountPaths(cfg))
+	rc, size, err := h.iso.Files().Open(cleaned, h.mountRoutes(cfg))
 	if err != nil {
 		c.JSON(fileErrStatus(err), gen.Error{Error: err.Error()})
 		return

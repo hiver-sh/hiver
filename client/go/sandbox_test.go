@@ -28,12 +28,6 @@ func TestSandbox_ProxyURL(t *testing.T) {
 	}
 }
 
-func TestSandbox_MCPEndpoint(t *testing.T) {
-	s := &Sandbox{apiURL: "http://gw/sandbox/k"}
-	if got := s.MCPEndpoint(); got != "http://gw/sandbox/k/v1/mcp" {
-		t.Errorf("got %q", got)
-	}
-}
 
 func TestSandbox_Ping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

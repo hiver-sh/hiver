@@ -17,6 +17,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/hiver-sh/hiver/internal/fusefs"
@@ -24,6 +25,13 @@ import (
 )
 
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 1<<16)
+			n := runtime.Stack(buf, true)
+			log.Fatalf("sbxfuse: panic: %v\n%s", r, buf[:n])
+		}
+	}()
 	var (
 		mountPoint   = flag.String("mount", "/workspace", "FUSE mount point (agent-visible path root)")
 		backendDir   = flag.String("backend", "", "host directory backing the workspace (required)")

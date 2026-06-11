@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +25,24 @@ func (h *SandboxHandlers) GetConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, cfg)
 }
 
+// validateConfig returns an error if the config contains fields that sandboxd
+// would reject at startup (e.g. relative mount paths, unknown backends).
+func validateConfig(cfg gen.SandboxConfig) error {
+	for i, fs := range cfg.Fs {
+		base := fsBase(fs)
+		if base.Mount == "" {
+			return fmt.Errorf("fs[%d].mount is required", i)
+		}
+		if !strings.HasPrefix(base.Mount, "/") {
+			return fmt.Errorf("fs[%d].mount: must be an absolute path, got %q", i, base.Mount)
+		}
+		if !base.Backend.Valid() {
+			return fmt.Errorf("fs[%d].backend: unknown value %q", i, base.Backend)
+		}
+	}
+	return nil
+}
+
 // ApplyConfig diffs the desired config against the current on-disk
 // state, writes the new config, emits a ConfigApplyEvent carrying the
 // delta, and returns the post-apply state. Policy enforcers (sbxfuse,
@@ -31,6 +51,11 @@ func (h *SandboxHandlers) GetConfig(c *gin.Context) {
 func (h *SandboxHandlers) ApplyConfig(c *gin.Context) {
 	var desired gen.SandboxConfig
 	if err := c.ShouldBindJSON(&desired); err != nil {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
+		return
+	}
+
+	if err := validateConfig(desired); err != nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
 		return
 	}

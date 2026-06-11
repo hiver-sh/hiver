@@ -34,6 +34,7 @@ class GDriveFileSystem(_FileSystemBase):
     gdrive_client_secret: Optional[str] = None
     gdrive_service_account_json: Optional[str] = None
     gdrive_folder_id: Optional[str] = None
+    gdrive_prefix: Optional[str] = None
 
 
 class GCSFileSystem(_FileSystemBase):
@@ -85,6 +86,7 @@ class SandboxConfig(BaseModel):
     # it by calling exec_stream with an empty command. Container isolation only.
     tty: Optional[bool] = None
     env: Optional[dict[str, str]] = None
+    extra_hosts: Optional[list[str]] = None
     ttl: Optional[int] = Field(None, ge=0)
     fs: Optional[list[FileSystem]] = Field(None, min_length=1)
     egress: Optional[list[EgressRule]] = None
