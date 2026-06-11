@@ -136,34 +136,30 @@ The stream is the foundation for *loop engineering*: closing the loop between wh
 
 A harness that grants access on demand when the agent is blocked by policy:
 
-```python
-import asyncio
-import hiver
+```typescript
+import * as hiver from "@hiver.sh/client";
 
-async def main():
-    sandbox = await hiver.get_or_create_sandbox("agent-1")
+const sandbox = await hiver.getOrCreateSandbox("agent-1");
 
-    # Drive the agent and watch its behavior at the same time.
-    agent = asyncio.create_task(
-        sandbox.exec("claude -p 'Fetch the changelog from internal-api.corp and summarize it'")
-    )
+const ac = new AbortController();
 
-    async for event in sandbox.get_events_stream():
-        if event.type == "egress.request" and event.access == "denied":
-            # The agent tried to reach a host that policy blocks.
-            # Repair the environment instead of letting the run fail.
-            print(f"unblocking {event.host}")
-            await sandbox.apply_config(
-                hiver.SandboxConfig(
-                    egress=[hiver.EgressRule(access="allow", host=event.host)]
-                )
-            )
-        if agent.done():
-            break
+// Drive the agent and watch its behavior at the same time.
+const agent = sandbox
+  .exec("claude -p 'Fetch the changelog from internal-api.corp and summarize it'")
+  .then((result) => { ac.abort(); return result; });
 
-    print((await agent)["stdout"])
+for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
+  if (event.type === "egress.request" && event.access === "denied") {
+    // The agent tried to reach a host that policy blocks.
+    // Repair the environment instead of letting the run fail.
+    console.log(`unblocking ${event.host}`);
+    await sandbox.applyConfig({
+      egress: [{ access: "allow", host: event.host }],
+    });
+  }
+}
 
-asyncio.run(main())
+console.log((await agent).stdout);
 ```
 
 The same pattern powers richer loops: feed denied events back into the agent's next prompt, gate risky writes behind human approval, enforce a resource budget from `resource.usage`, or record the full stream and replay it deterministically for evals. Because events are ordered and carry an `id`, your harness can resume exactly where it left off after a disconnect.
@@ -174,33 +170,30 @@ A sandbox's filesystem is assembled from mounts you declare, each backed by loca
 
 This is what lets you safely put real data in front of an agent. Mount **organization knowledge** like skills, runbooks, docs, and design specs **read-only**, so the agent can ground its work in it but can never corrupt the source of truth. Mount the user's **personal data** read-write in a scratch area for the agent to produce output. Lock everything else down with `deny`. Each ACL rule is just a `path` and an access level of `ro`, `rw`, or `deny`, evaluated most-specific-first, so you can open a tree and carve exceptions out of it:
 
-```python
-import hiver
+```typescript
+import * as hiver from "@hiver.sh/client";
 
-sandbox = await hiver.get_or_create_sandbox(
-    "agent-1",
-    config=hiver.SandboxConfig(
-        fs=[
-            # Org knowledge base, mounted from a shared bucket (read-only).
-            hiver.GCSFileSystem(
-                backend="gcs",
-                mount="/knowledge",
-                gcs_bucket="acme-handbook",
-                gcs_service_account_json=SA_JSON,
-                acls=[hiver.ACLRule(path="/knowledge", access="ro")],
-            ),
-            # The user's working directory: writable, but secrets are off-limits.
-            hiver.LocalFileSystem(
-                backend="local",
-                mount="/workspace",
-                acls=[
-                    hiver.ACLRule(path="/workspace", access="rw"),
-                    hiver.ACLRule(path="/workspace/.env", access="deny"),
-                ],
-            ),
-        ]
-    ),
-)
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  fs: [
+    // Org knowledge base, mounted from a shared bucket (read-only).
+    {
+      backend: "gcs",
+      mount: "/knowledge",
+      gcs_bucket: "acme-handbook",
+      gcs_service_account_json: SA_JSON,
+      acls: [{ path: "/knowledge", access: "ro" }],
+    },
+    // The user's working directory: writable, but secrets are off-limits.
+    {
+      backend: "local",
+      mount: "/workspace",
+      acls: [
+        { path: "/workspace", access: "rw" },
+        { path: "/workspace/.env", access: "deny" },
+      ],
+    },
+  ],
+});
 ```
 
 Because the ACL is enforced by the runtime rather than the agent, a misbehaving or jailbroken agent still can't write to a read-only mount or read a denied path, and every attempt, allowed or denied, shows up in the event stream and the inspector's **Files** view.
@@ -209,26 +202,23 @@ Because the ACL is enforced by the runtime rather than the agent, a misbehaving 
 
 The egress proxy doesn't just allow or deny requests. It can **rewrite** them on the way out. Attach an `override` to an egress rule and the proxy injects **headers** and **query parameters** into every matching request, overwriting whatever the agent set. This is how you give an agent authenticated access to an API while the agent itself never holds the credential:
 
-```python
-import hiver
+```typescript
+import * as hiver from "@hiver.sh/client";
 
-sandbox = await hiver.get_or_create_sandbox(
-    "agent-1",
-    config=hiver.SandboxConfig(
-        egress=[
-            hiver.EgressRule(
-                access="allow",
-                host="api.internal.acme.com",
-                override=hiver.EgressOverride(
-                    # Auth token injected as a header. The agent never sees it.
-                    headers={"Authorization": f"Bearer {API_TOKEN}"},
-                    # URL params the proxy stamps onto the request.
-                    query={"tenant": "acme", "api-version": "2024-01"},
-                ),
-            ),
-        ]
-    ),
-)
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  egress: [
+    {
+      access: "allow",
+      host: "api.internal.acme.com",
+      override: {
+        // Auth token injected as a header. The agent never sees it.
+        headers: { Authorization: `Bearer ${API_TOKEN}` },
+        // URL params the proxy stamps onto the request.
+        query: { tenant: "acme", "api-version": "2024-01" },
+      },
+    },
+  ],
+});
 ```
 
 The agent makes a plain request to `api.internal.acme.com`; the proxy adds the `Authorization` header and the `tenant` / `api-version` query params before the request leaves the sandbox. Because the secret is bound to the rule and applied outside the untrusted workload, a prompt-injected or compromised agent can spend the token against the allowed host but can never read, exfiltrate, or reuse it elsewhere. Combined with a default-deny egress policy, this lets you hand an agent exactly one authenticated integration and nothing more, and every rewritten request still shows up in the inspector's **Network** view.
