@@ -16,7 +16,7 @@ const cli = subcommand(
   )
   .option(
     "--platform <platforms>",
-    "comma-separated target platforms, e.g. linux/amd64,linux/arm64 (implies --push)",
+    "comma-separated target platforms, e.g. linux/amd64,linux/arm64",
   );
 parseCli(cli);
 

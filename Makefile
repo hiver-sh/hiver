@@ -13,6 +13,10 @@ build: $(CMDS) ## Build all cmd binaries into bin/
 build-images: ## Build docker images
 	docker compose -f docker/compose.yaml --profile build build controller core gateway
 
+# Platforms to build multi-arch images for. The deployment servers are amd64,
+# so amd64 must be included or `docker pull` fails with "no matching manifest".
+PLATFORMS ?= linux/amd64,linux/arm64
+
 # Build and push the default sandbox images as multi-arch manifest lists.
 # `hiver bundle --platform` pushes directly, so there's no separate push step.
 # The inputs (hiversh/core, hiversh/agent-cli-standalone) are pulled per-arch
@@ -22,9 +26,6 @@ bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch
 	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine --platform $(PLATFORMS)
 	hiver bundle node:alpine --tag hiversh/node:alpine --platform $(PLATFORMS)
 
-# Platforms to build multi-arch images for. The deployment servers are amd64,
-# so amd64 must be included or `docker pull` fails with "no matching manifest".
-PLATFORMS ?= linux/amd64,linux/arm64
 
 # Multi-arch builds need a docker-container driver builder; the default `docker`
 # driver can't build+push a manifest list. Create one if it's missing.
@@ -40,7 +41,7 @@ publish-images: buildx-builder ## Build and push multi-arch images to the regist
 		--builder hiver-multiarch \
 		--set "*.platform=$(PLATFORMS)" \
 		--push \
-		controller core gateway agent-cli-standalone
+		controller core gateway
 
 # `bundle-sandbox-images` already builds and pushes multi-arch manifests; a plain
 # `docker push` here would clobber them with a single-arch image, so this is just

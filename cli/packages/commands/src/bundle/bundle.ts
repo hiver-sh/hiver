@@ -35,8 +35,8 @@ export interface BundleOptions {
   microvm?: boolean;
   /**
    * Target platforms (e.g. `["linux/amd64", "linux/arm64"]`). When set, the
-   * bundle is built per-platform and pushed as a manifest list — implies
-   * `push`, since a multi-arch image can't be loaded into the local store.
+   * bundle is built using the multiarch builder. Multiple platforms require
+   * `push: true` since Docker cannot store multi-arch images locally.
    */
   platforms?: string[];
   /** Push the result to the registry instead of loading it locally. */
@@ -176,9 +176,9 @@ export async function bundleImage(
   const microvm = Boolean(opts.microvm);
   const target = microvm ? "microvm" : "bundle";
 
-  // Multi-arch or any pushed bundle goes through buildx + a manifest list; a
-  // multi-arch image can't be loaded into the local docker store, so it must be
-  // pushed. The local single-arch path below is unchanged for `hiver start`.
+  // Builds that target a specific platform (or need to push) go through the
+  // multiarch builder. The local single-arch path below is unchanged for
+  // `hiver start` (no --platform, no --push).
   if (opts.push || opts.platforms?.length) {
     const platforms = opts.platforms?.length
       ? opts.platforms
@@ -190,6 +190,7 @@ export async function bundleImage(
       tag,
       target,
       platforms,
+      push: Boolean(opts.push),
     });
   }
 
@@ -274,6 +275,7 @@ interface MultiArchArgs {
   tag: string;
   target: string;
   platforms: string[];
+  push: boolean;
 }
 
 /**
@@ -295,13 +297,80 @@ interface MultiArchArgs {
  * resolve.
  */
 async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
-  const { image, isDir, resolvedArg, tag, target, platforms } = args;
+  const { image, isDir, resolvedArg, tag, target, platforms, push } = args;
+
+  if (!push && platforms.length > 1) {
+    throw new Error(
+      `building for multiple platforms requires --push (Docker cannot store multi-arch images locally)`,
+    );
+  }
+
   ensureMultiarchBuilder();
   const repo = repoOf(tag);
 
   console.log(
     `\n${bold(brand("Bundle"))} ${accent(image)} ${dim("→")} ${bright(tag)} ${dim(`(${platforms.join(", ")})`)}\n`,
   );
+
+  if (!push) {
+    // Single platform, no push: export input tar then build with --load.
+    const [platform] = platforms;
+    const ctx = mkdtempSync(join(tmpdir(), "hiver-bundle-"));
+    try {
+      const tarPath = join(ctx, "sandbox.tar");
+      const prepArgs = [
+        "buildx",
+        "build",
+        "--builder",
+        MULTIARCH_BUILDER,
+        "--platform",
+        platform,
+        "-o",
+        `type=docker,dest=${tarPath}`,
+      ];
+      if (isDir) {
+        prepArgs.push(resolvedArg);
+      } else {
+        const fromFile = join(ctx, "from.Dockerfile");
+        writeFileSync(fromFile, `FROM ${image}\n`);
+        prepArgs.push("-f", fromFile, ctx);
+      }
+      console.log(`${dim("→")} preparing ${accent(`${image} (${platform})`)}`);
+      await run("docker", prepArgs, "inherit");
+
+      if (isHiverBundleTar(tarPath)) {
+        throw new Error(`${image} is already a Hiver bundle`);
+      }
+
+      await run(
+        "docker",
+        [
+          "buildx",
+          "build",
+          "-f",
+          DOCKERFILE,
+          "--build-context",
+          `sandbox-tar=${ctx}`,
+          "--target",
+          target,
+          "--platform",
+          platform,
+          "--builder",
+          MULTIARCH_BUILDER,
+          "--load",
+          "-t",
+          tag,
+          __dirname,
+        ],
+        "inherit",
+      );
+    } finally {
+      rmSync(ctx, { recursive: true, force: true });
+    }
+
+    console.log(`\n  ${bright("✔")} bundled ${accent(tag)}\n`);
+    return tag;
+  }
 
   const sources: string[] = [];
   for (const [i, platform] of platforms.entries()) {

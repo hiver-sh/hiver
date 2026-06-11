@@ -1,4 +1,4 @@
-name: Build Images
+name: Build Runtime Images
 
 on:
   workflow_call:

@@ -7,51 +7,11 @@ on:
 jobs:
   # ── Stage 1 ──────────────────────────────────────────────────────────────
   build-images:
-    uses: ./.github/workflows/build-images.yaml
+    uses: ./.github/workflows/build-runtime-images.yaml
 
   # ── Stage 2 ──────────────────────────────────────────────────────────────
-  # Build the CLI against the *local* TypeScript client instead of the
-  # published @hiver.sh/client, so the e2e run picks up un-released client
-  # changes. We pack the local client and install that tarball into the CLI
-  # before building (a real file copy into node_modules, so it survives the
-  # artifact round-trip), then prune dev deps and ship the built CLI.
   build-cli:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Build & pack the local TypeScript client
-        working-directory: client/typescript
-        run: |
-          npm ci
-          npm run build
-          npm pack   # → hiver.sh-client-<version>.tgz
-
-      - name: Build the CLI against the local client
-        working-directory: cli
-        run: |
-          npm ci
-          # Link the local client: override the published @hiver.sh/client with
-          # the freshly packed local build so the CLI uses the latest client.
-          npm install ../client/typescript/hiver.sh-client-*.tgz
-          npm run build
-          # Only the runtime deps + the local client are needed to run
-          # `hiver up/start/stop`; drop the heavy dev deps (storybook/vite/react)
-          # so the artifact stays small.
-          npm prune --omit=dev
-
-      - name: Package the built CLI
-        run: tar czf hiver-cli.tgz cli
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hiver-cli
-          path: hiver-cli.tgz
-          retention-days: 1
+    uses: ./.github/workflows/build-cli.yaml
 
   # ── Stage 3 ──────────────────────────────────────────────────────────────
   # Load this run's images + CLI and run the e2e tests in parallel — one test
