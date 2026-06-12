@@ -142,6 +142,11 @@ func (r *DockerRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.San
 		"--cgroupns", "host",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 	)
+	// IPv6 egress is blocked inside the pod by sandboxd (ip6tables in the
+	// isolation backends' RedirectEgress), not here: it needs only CAP_NET_ADMIN,
+	// so it works identically under docker and k8s and keeps the control next to
+	// the v4 egress rules it mirrors.
+	//
 	// The microvm backend additionally needs /dev/kvm (the VMM) and
 	// /dev/net/tun (the tap device that carries guest egress). It also
 	// loop-mounts the guest's overlay image on the host to capture/restore

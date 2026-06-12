@@ -1,6 +1,7 @@
 package isolation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -223,6 +224,15 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark i
 		// Proxy-originated upstream traffic (stamped with SO_MARK) escapes
 		// any redirect so it isn't looped back.
 		{"iptables", "-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", fmt.Sprintf("0x%x", mark), "-j", "RETURN"},
+		// Block all non-TCP guest egress. Guest TCP and DNS were DNAT'd to the
+		// host proxy/sink in PREROUTING above (delivered locally, never
+		// forwarded), so the only traffic reaching the FORWARD chain off the tap
+		// is the workload trying to egress non-TCP directly — UDP, ICMP, SCTP,
+		// raw IP (the workload holds CAP_NET_RAW). Drop it. The ! -p tcp guard is
+		// belt-and-suspenders — no guest TCP reaches FORWARD here because the
+		// PREROUTING DNAT catches all of it — and it closes the ICMP/raw-socket
+		// channels alongside UDP.
+		{"iptables", "-t", "filter", "-A", "FORWARD", "-i", m.tapName, "!", "-p", "tcp", "-j", "DROP"},
 	}
 	if err := enableIPForward(); err != nil {
 		return err
@@ -231,6 +241,14 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark i
 		if out, err := exec.CommandContext(ctx, s[0], s[1:]...).CombinedOutput(); err != nil {
 			return fmt.Errorf("%v: %w (%s)", s, err, out)
 		}
+	}
+	// Drop guest IPv6 egress. The v4 DNAT/proxy path has no v6 equivalent, so
+	// any guest v6 forwarded off the tap would bypass the proxy; drop it the
+	// same way the v4 non-TCP FORWARD rule does.
+	if err := dropIPv6Egress(ctx, [][]string{
+		{"-A", "FORWARD", "-i", m.tapName, "-j", "DROP"},
+	}); err != nil {
+		return err
 	}
 	// route_localnet (needed so the kernel delivers the DNAT-to-127.0.0.1
 	// packets instead of dropping them as martians) is enabled at pod-create
@@ -573,6 +591,30 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// dropIPv6Egress applies ip6tables rules that block the workload's IPv6 egress.
+// The egress model (proxy redirect, DNS sink) is IPv4-only, so there is no v6
+// path the proxy controls; without this, a routable v6 address (common on
+// dual-stack k8s clusters) would let the workload egress straight around every
+// control. It runs in sandboxd under CAP_NET_ADMIN — the same privilege the v4
+// iptables rules use — so it needs no read-write /proc/sys and behaves the same
+// under docker and k8s.
+//
+// If the kernel has no IPv6 (e.g. booted with ipv6.disable=1), ip6tables can't
+// initialize its tables; that's the benign "nothing to block" case, so it is
+// treated as a no-op rather than an error.
+func dropIPv6Egress(ctx context.Context, rules [][]string) error {
+	for _, args := range rules {
+		out, err := exec.CommandContext(ctx, "ip6tables", args...).CombinedOutput()
+		if err != nil {
+			if bytes.Contains(out, []byte("Address family not supported")) {
+				return nil // kernel has no IPv6; there is nothing to block
+			}
+			return fmt.Errorf("ip6tables %v: %w (%s)", args, err, bytes.TrimSpace(out))
+		}
+	}
+	return nil
 }
 
 // enableIPForward ensures net.ipv4.ip_forward=1. It reads the current value

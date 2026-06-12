@@ -114,8 +114,10 @@ redirected to `sbxproxy` and there is no route around it:
   (`internal/isolation/container.go`).
 - **microvm backend:** the guest is a separate network stack; its egress arrives
   on the host tap and is `DNAT`'d in `PREROUTING` to `127.0.0.1:proxyPort`
-  (`route_localnet` lifts the martian-packet drop), and an in-guest firewall
-  mirrors the rules (`internal/isolation/microvm.go`).
+  (`route_localnet` lifts the martian-packet drop). Enforcement lives entirely on
+  the host tap (`FORWARD` drop for non-TCP), outside the guest's reach; the
+  in-guest firewall only mirrors the `SO_MARK` exemption so a future in-guest
+  transparent step wouldn't loop proxy traffic (`internal/isolation/microvm.go`).
 
 The proxy evaluates ordered allow/deny rules (first match wins, **empty list =
 deny all**). For HTTPS it can either raw-forward after matching SNI host + port,
@@ -123,6 +125,46 @@ or — when configured with the per-sandbox CA — terminate TLS and additionall
 match method/path/headers, inject `override` headers and query params, and decode
 the body for audit. `Passthrough` rules opt out of interception to preserve the
 client's TLS fingerprint for fingerprint-sensitive WAFs.
+
+**DNS (sinkholed).** The workload has no real resolver. All workload DNS — both
+`UDP/53` and `TCP/53`, to _any_ nameserver address — is redirected (runc: nat
+`REDIRECT`; microvm: `DNAT` off the tap) to an in-pod sink that answers every
+query with a single constant placeholder address, regardless of the name or
+whether the host is allowlisted (`internal/proxy/dns.go`). Two consequences:
+
+- **DNS is not an exfil channel.** A resolution carries no attacker-chosen labels
+  to a real authoritative server, so the classic "encode data in the subdomain"
+  tunnel is closed. Every query is still audited.
+- **Names are resolved by the proxy, not the workload.** An allowlisted host is
+  reachable because the workload connects to the placeholder, and `sbxproxy`
+  reads the SNI/`Host` and re-resolves the real name on its own (marked,
+  exempt) resolver before dialing upstream. Resolution authority lives outside
+  the workload's control.
+
+**Non-TCP (dropped).** Beyond the DNS sink there is no non-TCP path off-box.
+After the DNS redirect and the proxy's own `SO_MARK`-exempt resolver traffic are
+accounted for, all remaining non-TCP workload egress — UDP, ICMP, SCTP, raw IP —
+is dropped at the firewall (runc: `filter OUTPUT` `! -p tcp -j DROP`, which
+surfaces to the workload as an immediate `EPERM`; microvm: `FORWARD` `! -p tcp`
+`DROP` on the tap). This matters specifically because the workload is granted
+`CAP_NET_RAW`: without the drop it could open a raw socket and tunnel data out
+over ICMP (the classic ping-tunnel) or any other IP protocol, bypassing the
+proxy entirely. With it, **TCP is the only protocol with an off-box path, and it
+is the proxy's.**
+
+**IPv6 (egress dropped).** The entire egress model above — proxy redirect, DNS
+sink, non-TCP drop — is built with `iptables`, which is IPv4-only; there is no v6
+proxy or DNS-sink path. A routable IPv6 address (common on dual-stack
+Kubernetes) would therefore let a workload egress straight around every control.
+sandboxd closes this with `ip6tables` in the same `RedirectEgress` step as the v4
+rules: workload-initiated v6 is dropped (runc: `filter OUTPUT` drop on NEW
+connections; microvm: `FORWARD` drop on the tap), exempting loopback (`::1`),
+established replies (so inbound v6 to the API still works), and the sidecars' own
+marked sockets. It runs under `CAP_NET_ADMIN` — no read-write `/proc/sys`
+required — so it behaves identically under the docker and k8s runtimes, and a
+kernel with IPv6 compiled out is the benign "nothing to block" no-op. Dropping
+v6 egress rather than disabling the v6 stack leaves `::1` loopback intact for the
+workload.
 
 **Filesystem (`sbxfuse`).** Every mount is FUSE-backed. Each read/write/lookup
 traps into the daemon, which evaluates path ACLs **most-specific-first with a
@@ -141,7 +183,10 @@ the agent's writes layer over a read-only base image.
 | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent exfiltrates data to an arbitrary host                | Default-deny egress; only allowlisted hosts reachable; every request audited                                                                   |
 | Agent reads an injected auth token                         | Token lives in the proxy `override`, applied _after_ the request leaves the workload; the agent's own headers are overwritten, never read back |
-| Agent bypasses the proxy (raw socket, direct IP, alt port) | iptables REDIRECT/DNAT catches _all_ TCP regardless of destination or port; non-TCP has no route out                                           |
+| Agent bypasses the proxy (raw socket, direct IP, alt port) | iptables REDIRECT/DNAT catches _all_ TCP regardless of destination or port; all non-TCP is dropped, so TCP-via-proxy is the only off-box path   |
+| Agent exfiltrates via DNS (data encoded in query labels)   | DNS is sinkholed to an in-pod responder that returns a constant placeholder for every name; queries never reach a real authoritative server    |
+| Agent tunnels over raw UDP / ICMP / other IP protocols     | All non-TCP workload egress is dropped at the firewall (`! -p tcp`), closing the ICMP ping-tunnel that `CAP_NET_RAW` would otherwise enable; only the local DNS sink and the sidecars' own marked sockets are exempt |
+| Agent egresses over IPv6 to dodge the v4-only iptables model | sandboxd drops workload-initiated IPv6 egress with `ip6tables` (exempting `::1`, established replies, and marked sidecar sockets); enforced in-pod under `CAP_NET_ADMIN`, so docker and k8s behave alike |
 | Agent writes to read-only data / reads secrets             | FUSE ACL default-deny, evaluated in the daemon; `deny` returns ENOENT                                                                          |
 | Agent tampers with policy by editing config files          | Policy lives in `sandboxd`'s work dir outside the workload's mount namespace; the workload cannot reach it                                     |
 | Agent escapes the workload                                 | runc namespace/cgroup confinement, or firecracker hardware (KVM) boundary for a stronger guarantee                                             |
@@ -164,9 +209,13 @@ the agent's writes layer over a read-only base image.
   input (a malicious HTTP response parsed by the proxy decoders, a crafted path
   through FUSE) is a privilege-escalation surface — these parsers are the highest-
   value code to fuzz and review.
-- **Covert channels.** Resource-usage and timing side channels (and DNS-style
-  encoding within _allowed_ hosts) are not eliminated; the audit stream surfaces
-  volume but policy is host-granular, not content-granular.
+- **Covert channels.** The DNS-tunnel and raw non-TCP exfil paths are now closed
+  (DNS is sinkholed; UDP, ICMP, and other IP protocols are dropped, and IPv6 is
+  disabled). What remains is content smuggled inside _allowed_ TCP egress — data
+  encoded in the path/query/body/headers of a request to an allowlisted host, or
+  in a subdomain under an allowed host that the proxy re-resolves — plus
+  resource-usage and timing side channels. The audit stream surfaces volume and
+  the request shape, but policy is host-granular, not content-granular.
 - **DoS within the pod.** cgroup limits (`VcpuCount`/`MemoryMiB`) bound resource
   use; a workload can still exhaust its own quota. Cross-tenant DoS depends on the
   host's pod-level limits.
@@ -277,7 +326,7 @@ gateway sits inside a trusted network perimeter.**
 | External caller → stack     | Gateway :10000                                   | Routing only — **no authN today (Gap)**               |
 | Caller → host privilege     | Controller → Docker socket / K8s                 | Controller is trusted infra; must be network-isolated |
 | Sandbox ↔ sandbox           | Separate pods, separate networks, UUID-addressed | Per-pod isolation + Docker/K8s network separation     |
-| Workload → network          | iptables REDIRECT/DNAT → `sbxproxy`              | Inescapable proxy interception; default-deny rules    |
+| Workload → network          | iptables REDIRECT/DNAT → `sbxproxy`; DNS → in-pod sink; non-TCP dropped; IPv6 egress dropped | Inescapable proxy interception (default-deny); DNS sinkholed; TCP-via-proxy is the only off-box path |
 | Workload → filesystem       | FUSE trap → `sbxfuse`                            | Path ACLs, default-deny, daemon-enforced              |
 | Workload → injected secrets | Proxy `override` applied post-egress             | Secret never enters the workload's address space      |
 | Workload → host kernel      | runc namespaces / firecracker KVM                | Kernel / hypervisor boundary                          |

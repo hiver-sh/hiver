@@ -141,6 +141,25 @@ func (c *container) InstallCA(certPEM []byte) error {
 //  4. -p tcp -j REDIRECT --to-ports <proxyPort> — all other TCP, loopback
 //     included.
 //
+// Non-TCP egress is blocked outright (filter OUTPUT): TCP is the workload's
+// only off-box path — it's redirected to the proxy by the nat rules above —
+// so UDP, ICMP, SCTP, and raw IP have nowhere legitimate to go and are
+// dropped here. This matters because the workload holds CAP_NET_RAW, which
+// would otherwise let it open a raw socket and tunnel data out over ICMP
+// (or any other IP protocol) around the proxy entirely. The DROP exempts
+// loopback (the DNS query, post-REDIRECT, is delivered locally to the sink on
+// lo; the redirected workload TCP also lands on lo) and our own marked sockets
+// (the proxy's real resolver UDP/53 and its TCP upstream). Unmarked infra TCP
+// on a real interface falls through and is accepted, so only non-TCP workload
+// traffic is actually dropped.
+//
+// IPv6 egress is dropped separately (ip6tables, via dropIPv6Egress): the whole
+// egress model above is IPv4-only — there is no v6 proxy or DNS-sink path — so
+// any routable v6 the workload reached would bypass every control. Doing this
+// with ip6tables (CAP_NET_ADMIN, same as the v4 rules) instead of disabling the
+// v6 stack keeps it in sandboxd (identical under docker and k8s, no read-write
+// /proc/sys needed) and leaves loopback ::1 intact.
+//
 // Requires CAP_NET_ADMIN; the sandbox-pod runs with NET_ADMIN for now.
 func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark int) error {
 	markHex := fmt.Sprintf("0x%x", mark)
@@ -155,6 +174,15 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark
 		// entries are the narrow 127.0.0.11:53 DNATs handled above.
 		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", markHex, "-j", "RETURN"},
 		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(proxyPort)},
+		// Block all non-TCP workload egress: TCP reaches the proxy via the nat
+		// redirect, everything else (UDP, ICMP, SCTP, raw IP) has no off-box
+		// path. Loopback (DNS to the local sink, the redirected workload TCP)
+		// and our own marked sockets (proxy/sbxfuse upstream) are exempt;
+		// non-TCP that matches neither is dropped. Unmarked infra TCP on a real
+		// interface falls through past the drop and is accepted.
+		{"-t", "filter", "-A", "OUTPUT", "-o", "lo", "-j", "RETURN"},
+		{"-t", "filter", "-A", "OUTPUT", "-m", "mark", "--mark", markHex, "-j", "RETURN"},
+		{"-t", "filter", "-A", "OUTPUT", "!", "-p", "tcp", "-j", "DROP"},
 	}
 	for _, args := range rules {
 		out, err := exec.CommandContext(ctx, "iptables", args...).CombinedOutput()
@@ -162,7 +190,16 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark
 			return fmt.Errorf("iptables %v: %w (%s)", args, err, bytes.TrimSpace(out))
 		}
 	}
-	return nil
+	// Drop the workload's IPv6 egress. The workload shares the pod netns, so a
+	// filter OUTPUT drop on NEW v6 connections covers it; loopback (::1),
+	// established replies (inbound v6 to the API), and our own marked sockets
+	// are exempt so only workload-initiated off-box v6 is blocked.
+	return dropIPv6Egress(ctx, [][]string{
+		{"-A", "OUTPUT", "-o", "lo", "-j", "RETURN"},
+		{"-A", "OUTPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "RETURN"},
+		{"-A", "OUTPUT", "-m", "mark", "--mark", markHex, "-j", "RETURN"},
+		{"-A", "OUTPUT", "-j", "DROP"},
+	})
 }
 
 // --- capability 3: cgroup ---
