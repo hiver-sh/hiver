@@ -6,6 +6,8 @@ export {
 export type {
   UserPreferences,
   Theme,
+  PanelId,
+  PanelSize,
   UserPreferencesContextValue,
 } from "./lib/userPreferences";
 

@@ -764,6 +764,7 @@ export function TimelineView({
   setZoomWindow,
   follow,
   onDisableFollow,
+  detailInDialog = false,
 }: {
   events: SandboxEvent[];
   filter: FilterState;
@@ -774,6 +775,9 @@ export function TimelineView({
   follow?: boolean;
   onDisableFollow?: () => void;
   paused?: boolean;
+  /** When true (single-column layout), selecting an event opens the detail in a
+   *  dialog instead of the inline bottom panel, which has no room when stacked. */
+  detailInDialog?: boolean;
 }) {
   const rows = useMemo(() => buildRows(events), [events]);
   const [trackWidth, setTrackWidth] = useState(600);
@@ -2004,6 +2008,7 @@ export function TimelineView({
       {/* end timeline area */}
 
       {selectedBar &&
+        !detailInDialog &&
         (panelCollapsed ? (
           <div className="shrink-0 border-t border-border flex items-center px-3 h-7">
             <button
@@ -2046,7 +2051,16 @@ export function TimelineView({
         ))}
 
       {selectedBar && (
-        <Dialog open={detailExpanded} onOpenChange={setDetailExpanded}>
+        <Dialog
+          open={detailInDialog ? true : detailExpanded}
+          onOpenChange={(open) => {
+            if (open) return;
+            // In single-column mode the dialog *is* the selection, so closing it
+            // deselects the event; otherwise it just collapses the expanded view.
+            if (detailInDialog) setSelectedId(null);
+            else setDetailExpanded(false);
+          }}
+        >
           <DialogContent className="max-w-5xl p-0 flex flex-col overflow-hidden h-[80vh]">
             <DialogTitle className="sr-only">Event detail</DialogTitle>
             <RowDetailPanel

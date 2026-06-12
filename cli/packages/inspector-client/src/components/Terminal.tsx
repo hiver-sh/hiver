@@ -189,39 +189,151 @@ export function Terminal({ sandboxKey, serverUrl, subscribe }: Props) {
 
       let connected = false;
 
-      // Track the geometry we last told the server. The server forces a
-      // repaint (SIGWINCH) on every resize it receives, so re-sending an
-      // unchanged size turns ordinary output into a resize→repaint→output
-      // feedback loop that pegs the CPU. Only emit on a real change; reset to
-      // -1 on (re)connect so a fresh server session always gets the size once.
+      // We send the *intent* to resize (our panel's fit) to the server, but the
+      // size we actually render at is decided by the program's output (below).
+      // The server forces a repaint (SIGWINCH) on every resize it receives, so
+      // re-sending an unchanged size turns ordinary output into a
+      // resize→repaint→output feedback loop that pegs the CPU. Only emit on a
+      // real change; reset to -1 on (re)connect so a fresh session gets it once.
       let lastSentCols = -1;
       let lastSentRows = -1;
-      const sendResizeIfChanged = () => {
+      const sendResizeIntent = (cols: number, rows: number) => {
         if (!connected) return;
-        if (term.cols === lastSentCols && term.rows === lastSentRows) return;
-        lastSentCols = term.cols;
-        lastSentRows = term.rows;
-        sendInput({ type: "resize", cols: term.cols, rows: term.rows });
+        if (cols === lastSentCols && rows === lastSentRows) return;
+        lastSentCols = cols;
+        lastSentRows = rows;
+        sendInput({ type: "resize", cols, rows });
       };
 
-      const ro = new ResizeObserver(() => {
-        requestAnimationFrame(() => {
-          // Skip the fit when the cell grid wouldn't change: refitting to the
-          // same size still churns layout and, with the server's
-          // repaint-on-resize, can self-sustain a loop.
-          const dims = fitAddon.proposeDimensions();
-          if (
-            !dims ||
-            !Number.isFinite(dims.cols) ||
-            !Number.isFinite(dims.rows) ||
-            (dims.cols === term.cols && dims.rows === term.rows)
-          ) {
-            return;
+      // The program tells us the grid it's actually drawing for: full-screen
+      // apps position the cursor and set the scroll region in absolute terms.
+      // Track the largest column/row addressed since the last screen epoch so we
+      // render at the program's real size (and scroll a smaller panel) instead
+      // of reflowing its output. This lets us adopt whatever size the server
+      // settles on after our resize intent — including a shared terminal pinned
+      // larger than our panel — with no server-side protocol change.
+      const SIZE_CAP = 1000;
+      let detCols = 0;
+      let detRows = 0;
+      let parseCarry = "";
+      // Last panel fit (our resize intent), the floor the render grid falls back
+      // to when no program is addressing the screen (e.g. a plain shell).
+      let fitCols = 0;
+      let fitRows = 0;
+      const noteSize = (cols: number, rows: number) => {
+        if (cols > detCols && cols <= SIZE_CAP) detCols = cols;
+        if (rows > detRows && rows <= SIZE_CAP) detRows = rows;
+      };
+
+      // Reconcile the two sizes: the server's current emitted grid (detCols/
+      // detRows, inferred from output) and our resize intent (fitCols/fitRows,
+      // the panel fit). Render at the larger so the program's output is never
+      // squeezed, and show a scrollbar only on the axis where the server's grid
+      // overflows the panel — i.e. where the server did NOT resize down to our
+      // intent. When it does resize to fit, both sizes agree and the scrollbars
+      // disappear. Driven by both panel resizes and output, but never sends —
+      // only the intent goes upstream, so this can't feed the repaint loop.
+      const applyGrid = () => {
+        const cols = Math.max(fitCols, detCols);
+        const rows = Math.max(fitRows, detRows);
+        if (cols < 1 || rows < 1) return;
+        if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+        el.style.overflowX = detCols > fitCols ? "auto" : "hidden";
+        el.style.overflowY = detRows > fitRows ? "auto" : "hidden";
+      };
+
+      // Scan a raw output chunk for the absolute cursor/scroll-region escapes
+      // (CSI H/f cursor pos, G column, d row, r scroll region, 8;rows;cols t),
+      // carrying any half-received sequence over to the next chunk. A full-screen
+      // clear (CSI 2J/3J) or an alternate-screen switch (DECSET/DECRST 1049/47/
+      // 1047) starts a fresh repaint, so we reset the detected grid and let that
+      // repaint rebuild it — that's how the server's emitted size (and the
+      // scrollbars) follow the program when it resizes *down*, not just up.
+      const scanForSize = (chunk: string) => {
+        const s = parseCarry + chunk;
+        let i = 0;
+        let consumed = 0;
+        while (i < s.length) {
+          const esc = s.indexOf("\x1b[", i);
+          if (esc === -1) {
+            consumed = s.length;
+            break;
           }
-          fitAddon.fit();
-          sendResizeIfChanged();
-        });
-      });
+          let j = esc + 2;
+          // CSI parameter bytes (0x30–0x3f) then intermediates (0x20–0x2f).
+          while (
+            j < s.length &&
+            s.charCodeAt(j) >= 0x30 &&
+            s.charCodeAt(j) <= 0x3f
+          )
+            j++;
+          while (
+            j < s.length &&
+            s.charCodeAt(j) >= 0x20 &&
+            s.charCodeAt(j) <= 0x2f
+          )
+            j++;
+          if (j >= s.length) {
+            consumed = esc; // incomplete CSI — re-parse from here next chunk
+            break;
+          }
+          const final = s[j];
+          const parts = s.slice(esc + 2, j).split(";");
+          const num = (idx: number, def: number) => {
+            const v = parseInt(parts[idx] ?? "", 10);
+            return Number.isFinite(v) ? v : def;
+          };
+          // Cursor moves can be a size *probe*: apps jump to CSI 999;999H then
+          // send CSI 6n (DSR) to read back the clamped position — the 999 is not
+          // the real grid. Ignore a cursor move that is immediately followed by a
+          // DSR. Defer one landing at the chunk edge so the 4-byte DSR look-ahead
+          // can still see it once the next chunk arrives.
+          const isCursorMove =
+            final === "H" || final === "f" || final === "G" || final === "d";
+          if (isCursorMove && s.length - (j + 1) < 4) {
+            consumed = esc;
+            break;
+          }
+          const isProbe = isCursorMove && s.startsWith("\x1b[6n", j + 1);
+          if ((final === "H" || final === "f") && !isProbe)
+            noteSize(num(1, 1), num(0, 1));
+          else if (final === "G" && !isProbe) noteSize(num(0, 1), 0);
+          else if (final === "d" && !isProbe) noteSize(0, num(0, 1));
+          else if (final === "r") noteSize(0, num(1, 0));
+          else if (final === "t" && num(0, 0) === 8)
+            noteSize(num(2, 0), num(1, 0));
+          else if (
+            (final === "J" && (num(0, 0) === 2 || num(0, 0) === 3)) ||
+            ((final === "h" || final === "l") &&
+              (parts[0] === "?1049" ||
+                parts[0] === "?47" ||
+                parts[0] === "?1047"))
+          ) {
+            detCols = 0;
+            detRows = 0;
+          }
+          i = j + 1;
+          consumed = i;
+        }
+        parseCarry = s.slice(consumed);
+        if (parseCarry.length > 64) parseCarry = parseCarry.slice(-64);
+        applyGrid();
+      };
+
+      // Measure the panel, send that as our resize intent, and render to it
+      // (clamped up to the program's grid). The program's response arrives as
+      // output and is picked up by scanForSize.
+      const refit = () => {
+        const dims = fitAddon.proposeDimensions();
+        if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows))
+          return;
+        fitCols = dims.cols;
+        fitRows = dims.rows;
+        sendResizeIntent(dims.cols, dims.rows);
+        applyGrid();
+      };
+
+      const ro = new ResizeObserver(() => requestAnimationFrame(refit));
       ro.observe(el);
 
       function sendInput(msg: {
@@ -249,15 +361,17 @@ export function Terminal({ sandboxKey, serverUrl, subscribe }: Props) {
       // of the terminal holding its own SSE. Input/resize still go out as POSTs.
       const unsubscribe = subscribe({
         onData: (base64) => {
-          term.write(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)));
+          const bin = atob(base64);
+          term.write(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+          scanForSize(bin);
         },
         onConnected: () => {
           connected = true;
           // A fresh server attach doesn't know our geometry yet; force a send.
           lastSentCols = -1;
           lastSentRows = -1;
-          // Push the current size so the PTY repaints at the right geometry.
-          sendResizeIfChanged();
+          // Push our resize intent so the PTY repaints at the right geometry.
+          if (fitCols > 0 && fitRows > 0) sendResizeIntent(fitCols, fitRows);
           term.focus();
         },
         onClose: () => {
@@ -266,7 +380,7 @@ export function Terminal({ sandboxKey, serverUrl, subscribe }: Props) {
       });
 
       const rafId = requestAnimationFrame(() => {
-        fitAddon.fit();
+        refit();
         term.onData((data) => sendInput({ type: "input", data }));
       });
 

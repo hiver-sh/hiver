@@ -9,17 +9,32 @@ import type { ReactNode } from "react";
 
 export type Theme = "light" | "dark" | "system";
 
+/** Identifies a resizable side panel in the sandbox detail layout. */
+export type PanelId = "terminal" | "files";
+
+/** Sizing for one resizable side panel. `defaultWidth`/`minWidth` are static
+ *  config (owned by the code, reconciled on load); `width` is the user's
+ *  resized value, or null when they haven't resized it yet. When the panels
+ *  can't all satisfy their `minWidth` in the available space, the layout
+ *  stacks vertically instead of laying them out side by side. */
+export interface PanelSize {
+  id: PanelId;
+  /** Width in px used until the user resizes the panel. */
+  defaultWidth: number;
+  /** Smallest width in px before the layout switches to vertical stacking. */
+  minWidth: number;
+  /** User-set width in px; null = use `defaultWidth`. */
+  width: number | null;
+}
+
 export interface UserPreferences {
   theme: Theme;
   sidebarCollapsed: boolean;
   showTerminal: boolean;
   showFiles: boolean;
   showTimeline: boolean;
-  /** Terminal panel width in px. null = not set yet; falls back to a
-   *  percentage of the available content width (see SandboxDetail). */
-  terminalWidth: number | null;
-  /** File explorer panel width in px. null = not set yet (see terminalWidth). */
-  filesWidth: number | null;
+  /** Sizing for each resizable side panel (terminal, files). */
+  panelSizes: PanelSize[];
   followEvents: boolean;
   /** Expanded file-explorer directories, keyed by sandbox key. Each sandbox
    *  restores only its own expanded folders; an entry is dropped when the
@@ -36,8 +51,10 @@ export const DEFAULT_PREFS: UserPreferences = {
   showTerminal: true,
   showFiles: true,
   showTimeline: true,
-  terminalWidth: null,
-  filesWidth: null,
+  panelSizes: [
+    { id: "terminal", defaultWidth: 360, minWidth: 240, width: null },
+    { id: "files", defaultWidth: 240, minWidth: 200, width: null },
+  ],
   followEvents: false,
   expandedPaths: {},
   terminalClipboardCopy: true,
@@ -49,14 +66,44 @@ function loadFromStorage(): Partial<UserPreferences> {
   try {
     const parsed = JSON.parse(
       localStorage.getItem(STORAGE_KEY) ?? "{}",
-    ) as Partial<UserPreferences>;
+    ) as Partial<UserPreferences> & {
+      terminalWidth?: number | null;
+      filesWidth?: number | null;
+    };
     // Migrate the legacy global `expandedPaths: string[]` to the per-sandbox
     // map shape. Old data isn't worth keying to any sandbox, so drop it.
     if (Array.isArray(parsed.expandedPaths)) parsed.expandedPaths = {};
+    // Migrate the legacy per-panel width keys into the `panelSizes` array.
+    // Only the user-set widths carry over; defaults/minimums come from code.
+    if (
+      !Array.isArray(parsed.panelSizes) &&
+      (parsed.terminalWidth != null || parsed.filesWidth != null)
+    ) {
+      parsed.panelSizes = [
+        { id: "terminal", width: parsed.terminalWidth ?? null },
+        { id: "files", width: parsed.filesWidth ?? null },
+      ] as PanelSize[];
+    }
     return parsed;
   } catch {
     return {};
   }
+}
+
+/** Reconcile a persisted `panelSizes` array against the canonical defaults:
+ *  keep each panel's user-set `width`, but always take `defaultWidth`/`minWidth`
+ *  (and the panel set itself) from the code, so config changes take effect. */
+function reconcilePanelSizes(stored: unknown): PanelSize[] {
+  const storedArr = Array.isArray(stored)
+    ? (stored as Partial<PanelSize>[])
+    : [];
+  return DEFAULT_PREFS.panelSizes.map((def) => {
+    const prev = storedArr.find((p) => p?.id === def.id);
+    return {
+      ...def,
+      width: typeof prev?.width === "number" ? prev.width : null,
+    };
+  });
 }
 
 function saveToStorage(prefs: UserPreferences) {
@@ -120,11 +167,20 @@ export function UserPreferencesProvider({
    *  polling, SSE connections). Defaults to true. */
   enableNetworkRequests?: boolean;
 }) {
-  const [prefs, setPrefs] = useState<UserPreferences>(() => ({
-    ...DEFAULT_PREFS,
-    ...(persist ? loadFromStorage() : {}),
-    ...initialPreferences,
-  }));
+  const [prefs, setPrefs] = useState<UserPreferences>(() => {
+    const merged = {
+      ...DEFAULT_PREFS,
+      ...(persist ? loadFromStorage() : {}),
+      ...initialPreferences,
+    };
+    // Reconcile only *persisted* panel sizes against the canonical config (drop
+    // any stale defaultWidth/minWidth from storage). An explicit
+    // initialPreferences.panelSizes is an intentional override — honor it as-is.
+    if (!initialPreferences?.panelSizes) {
+      merged.panelSizes = reconcilePanelSizes(merged.panelSizes);
+    }
+    return merged;
+  });
 
   const setPref = useCallback(
     <K extends keyof UserPreferences>(key: K, value: UserPreferences[K]) => {

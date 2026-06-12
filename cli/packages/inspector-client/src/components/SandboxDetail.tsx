@@ -56,15 +56,12 @@ import type { SandboxEvent, SandboxRef } from "@/types";
 import { loadEvents, appendEvent, clearEvents } from "@/lib/eventStore";
 import { useTransport } from "@/lib/transport";
 import { useUserPreferences } from "@/lib/userPreferences";
+import type { PanelId } from "@/lib/userPreferences";
 
 const MIN_TIMELINE_WIDTH = 300;
-const MIN_TERMINAL_WIDTH = 240;
-const MIN_FILES_WIDTH = 200;
 const DRAG_HANDLE_WIDTH = 5;
-
-// Default panel split used until the user resizes (50% timeline / 30% terminal / 20% files).
-const DEFAULT_TERMINAL_FRACTION = 0.3;
-const DEFAULT_FILES_FRACTION = 0.2;
+// Smallest height a panel keeps when the layout stacks vertically.
+const MIN_PANEL_HEIGHT = 140;
 
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
@@ -140,16 +137,29 @@ export function SandboxDetail({
   const setShowFiles = (v: boolean) => setPref("showFiles", v);
   const showTimeline = prefs.showTimeline;
   const setShowTimeline = (v: boolean) => setPref("showTimeline", v);
-  const setFilesWidth = (v: number) => setPref("filesWidth", v);
-  const setTerminalWidth = (v: number) => setPref("terminalWidth", v);
-  // Measured width of the panel row, used to derive the default percentage-based
-  // widths until the user explicitly resizes a panel.
+  const panelSizes = prefs.panelSizes;
+  const terminalPanel = panelSizes.find((p) => p.id === "terminal")!;
+  const filesPanel = panelSizes.find((p) => p.id === "files")!;
+  const setPanelWidth = (id: PanelId, v: number) =>
+    setPref(
+      "panelSizes",
+      panelSizes.map((p) => (p.id === id ? { ...p, width: v } : p)),
+    );
+  const setFilesWidth = (v: number) => setPanelWidth("files", v);
+  const setTerminalWidth = (v: number) => setPanelWidth("terminal", v);
+  // Width of each side panel: the user's resized value, or the panel default.
+  const terminalWidth = terminalPanel.width ?? terminalPanel.defaultWidth;
+  const filesWidth = filesPanel.width ?? filesPanel.defaultWidth;
+  // Measured width of the panel row. Used to decide when the panels can no
+  // longer all satisfy their min widths and the layout should stack vertically.
   const [contentWidth, setContentWidth] = useState(0);
-  // Fall back to the 30%/20% split when the user hasn't set a width yet.
-  const terminalWidth =
-    prefs.terminalWidth ?? Math.round(contentWidth * DEFAULT_TERMINAL_FRACTION);
-  const filesWidth =
-    prefs.filesWidth ?? Math.round(contentWidth * DEFAULT_FILES_FRACTION);
+  const requiredWidth =
+    (showTimeline ? MIN_TIMELINE_WIDTH : 0) +
+    (showTerminal ? terminalPanel.minWidth + DRAG_HANDLE_WIDTH : 0) +
+    (showFiles ? filesPanel.minWidth + DRAG_HANDLE_WIDTH : 0);
+  // Below the combined min widths, stack panels vertically instead of side by
+  // side. `contentWidth === 0` means we haven't measured yet — stay horizontal.
+  const vertical = contentWidth > 0 && contentWidth < requiredWidth;
   const [showConfig, setShowConfig] = useState(false);
   const [configProposal, setConfigProposal] = useState<
     ConfigProposal | undefined
@@ -526,12 +536,21 @@ export function SandboxDetail({
       {/* Content */}
       <div
         ref={contentRef}
-        className="min-h-0 flex-1 flex overflow-x-auto overflow-y-hidden"
+        className={cn(
+          "min-h-0 flex-1 flex",
+          vertical
+            ? "flex-col overflow-y-auto overflow-x-hidden"
+            : "overflow-x-auto overflow-y-hidden",
+        )}
       >
         {showTimeline && (
           <div
             className="flex flex-1 flex-col overflow-hidden"
-            style={{ minWidth: MIN_TIMELINE_WIDTH }}
+            style={
+              vertical
+                ? { minHeight: MIN_PANEL_HEIGHT }
+                : { minWidth: MIN_TIMELINE_WIDTH }
+            }
           >
             {/* Toolbar: event count + filter + clear */}
             <div className="relative flex items-center justify-between px-5 py-1.5 text-xs text-muted-foreground border-b border-border">
@@ -704,6 +723,7 @@ export function SandboxDetail({
                 follow={follow}
                 onDisableFollow={() => setFollow(false)}
                 paused={streamingPaused}
+                detailInDialog={vertical}
               />
             </div>
           </div>
@@ -711,37 +731,46 @@ export function SandboxDetail({
 
         {showTerminal && (
           <>
-            {showTimeline && (
-              <div
-                className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
-                style={{ width: DRAG_HANDLE_WIDTH }}
-                onMouseDown={makeDragHandler(
-                  setTerminalWidth,
-                  terminalWidth,
-                  MIN_TERMINAL_WIDTH,
-                  () => {
-                    const w =
-                      contentRef.current?.getBoundingClientRect().width ?? 1200;
-                    return (
-                      w -
-                      MIN_TIMELINE_WIDTH -
-                      (showFiles ? filesWidth + DRAG_HANDLE_WIDTH : 0) -
-                      DRAG_HANDLE_WIDTH
-                    );
-                  },
-                )}
-              />
-            )}
+            {showTimeline &&
+              (vertical ? (
+                <div
+                  className="shrink-0 bg-border"
+                  style={{ height: DRAG_HANDLE_WIDTH }}
+                />
+              ) : (
+                <div
+                  className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
+                  style={{ width: DRAG_HANDLE_WIDTH }}
+                  onMouseDown={makeDragHandler(
+                    setTerminalWidth,
+                    terminalWidth,
+                    terminalPanel.minWidth,
+                    () => {
+                      const w =
+                        contentRef.current?.getBoundingClientRect().width ??
+                        1200;
+                      return (
+                        w -
+                        MIN_TIMELINE_WIDTH -
+                        (showFiles ? filesWidth + DRAG_HANDLE_WIDTH : 0) -
+                        DRAG_HANDLE_WIDTH
+                      );
+                    },
+                  )}
+                />
+              ))}
             <div
               className="overflow-hidden"
               style={
-                showTimeline
-                  ? {
-                      width: terminalWidth,
-                      flexShrink: 0,
-                      minWidth: MIN_TERMINAL_WIDTH,
-                    }
-                  : { flex: 1, minWidth: MIN_TERMINAL_WIDTH }
+                vertical
+                  ? { flex: 1, minHeight: MIN_PANEL_HEIGHT }
+                  : showTimeline
+                    ? {
+                        width: terminalWidth,
+                        flexShrink: 0,
+                        minWidth: terminalPanel.minWidth,
+                      }
+                    : { flex: 1, minWidth: terminalPanel.minWidth }
               }
             >
               <Terminal
@@ -755,37 +784,46 @@ export function SandboxDetail({
 
         {showFiles && (
           <>
-            {(showTimeline || showTerminal) && (
-              <div
-                className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
-                style={{ width: DRAG_HANDLE_WIDTH }}
-                onMouseDown={makeDragHandler(
-                  setFilesWidth,
-                  filesWidth,
-                  MIN_FILES_WIDTH,
-                  () => {
-                    const w =
-                      contentRef.current?.getBoundingClientRect().width ?? 1200;
-                    return (
-                      w -
-                      MIN_TIMELINE_WIDTH -
-                      (showTerminal ? terminalWidth + DRAG_HANDLE_WIDTH : 0) -
-                      DRAG_HANDLE_WIDTH
-                    );
-                  },
-                )}
-              />
-            )}
+            {(showTimeline || showTerminal) &&
+              (vertical ? (
+                <div
+                  className="shrink-0 bg-border"
+                  style={{ height: DRAG_HANDLE_WIDTH }}
+                />
+              ) : (
+                <div
+                  className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
+                  style={{ width: DRAG_HANDLE_WIDTH }}
+                  onMouseDown={makeDragHandler(
+                    setFilesWidth,
+                    filesWidth,
+                    filesPanel.minWidth,
+                    () => {
+                      const w =
+                        contentRef.current?.getBoundingClientRect().width ??
+                        1200;
+                      return (
+                        w -
+                        MIN_TIMELINE_WIDTH -
+                        (showTerminal ? terminalWidth + DRAG_HANDLE_WIDTH : 0) -
+                        DRAG_HANDLE_WIDTH
+                      );
+                    },
+                  )}
+                />
+              ))}
             <div
               className="overflow-hidden"
               style={
-                showTimeline || showTerminal
-                  ? {
-                      width: filesWidth,
-                      flexShrink: 0,
-                      minWidth: MIN_FILES_WIDTH,
-                    }
-                  : { flex: 1, minWidth: MIN_FILES_WIDTH }
+                vertical
+                  ? { flex: 1, minHeight: MIN_PANEL_HEIGHT }
+                  : showTimeline || showTerminal
+                    ? {
+                        width: filesWidth,
+                        flexShrink: 0,
+                        minWidth: filesPanel.minWidth,
+                      }
+                    : { flex: 1, minWidth: filesPanel.minWidth }
               }
             >
               <FileExplorer
