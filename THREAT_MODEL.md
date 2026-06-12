@@ -210,8 +210,8 @@ the agent's writes layer over a read-only base image.
   through FUSE) is a privilege-escalation surface — these parsers are the highest-
   value code to fuzz and review.
 - **Covert channels.** The DNS-tunnel and raw non-TCP exfil paths are now closed
-  (DNS is sinkholed; UDP, ICMP, and other IP protocols are dropped, and IPv6 is
-  disabled). What remains is content smuggled inside _allowed_ TCP egress — data
+  (DNS is sinkholed; UDP, ICMP, and other IP protocols are dropped, and IPv6
+  egress is dropped). What remains is content smuggled inside _allowed_ TCP egress — data
   encoded in the path/query/body/headers of a request to an allowlisted host, or
   in a subdomain under an allowed host that the proxy re-resolves — plus
   resource-usage and timing side channels. The audit stream surfaces volume and
