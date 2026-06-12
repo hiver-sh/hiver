@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { Check, Clipboard } from "lucide-react";
 import { CodeTabs } from "@/components/CodeTabs";
 
-const TS_EXAMPLE = `import * as hive from "@hiver.sh/client";
+const TS_EXAMPLE = `import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox("agent-1");
+const sandbox = await hiver.getOrCreateSandbox("agent-1");
 
 const result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'");
 console.log(result.stdout);`;

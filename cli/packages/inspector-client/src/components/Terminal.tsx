@@ -188,6 +188,8 @@ export function Terminal({ sandboxKey, serverUrl, subscribe }: Props) {
       });
 
       let connected = false;
+      // Persistent UTF-8 decoder for the column scanner (see onData).
+      const utf8 = new TextDecoder();
 
       // We send the *intent* to resize (our panel's fit) to the server, but the
       // size we actually render at is decided by the program's output (below).
@@ -205,124 +207,139 @@ export function Terminal({ sandboxKey, serverUrl, subscribe }: Props) {
         sendInput({ type: "resize", cols, rows });
       };
 
-      // The program tells us the grid it's actually drawing for: full-screen
-      // apps position the cursor and set the scroll region in absolute terms.
-      // Track the largest column/row addressed since the last screen epoch so we
-      // render at the program's real size (and scroll a smaller panel) instead
-      // of reflowing its output. This lets us adopt whatever size the server
-      // settles on after our resize intent — including a shared terminal pinned
-      // larger than our panel — with no server-side protocol change.
+      // The sandbox PTY can't be resized (no SDK hook — the winsize is fixed), so
+      // the program always draws at one width and a narrower panel would wrap it.
+      // Instead we learn that width from the program's raw output and render xterm
+      // at it, letting a smaller panel scroll horizontally. `detCols` is the
+      // furthest column the program writes to since the last screen epoch; the
+      // grid never goes below it, so output is never wrapped.
       const SIZE_CAP = 1000;
       let detCols = 0;
-      let detRows = 0;
+      // Virtual cursor column + carry for an escape split across chunks.
+      let vcol = 0;
       let parseCarry = "";
-      // Last panel fit (our resize intent), the floor the render grid falls back
-      // to when no program is addressing the screen (e.g. a plain shell).
+      // Last panel fit: the grid floor when the program is narrower than the
+      // panel (e.g. a plain shell), and our resize intent to the server.
       let fitCols = 0;
       let fitRows = 0;
-      const noteSize = (cols: number, rows: number) => {
-        if (cols > detCols && cols <= SIZE_CAP) detCols = cols;
-        if (rows > detRows && rows <= SIZE_CAP) detRows = rows;
-      };
 
-      // Reconcile the two sizes: the server's current emitted grid (detCols/
-      // detRows, inferred from output) and our resize intent (fitCols/fitRows,
-      // the panel fit). Render at the larger so the program's output is never
-      // squeezed, and show a scrollbar only on the axis where the server's grid
-      // overflows the panel — i.e. where the server did NOT resize down to our
-      // intent. When it does resize to fit, both sizes agree and the scrollbars
-      // disappear. Driven by both panel resizes and output, but never sends —
-      // only the intent goes upstream, so this can't feed the repaint loop.
+      // Render the grid at least as wide as the program draws; scroll a narrower
+      // panel rather than wrapping. Height tracks the panel (xterm scrolls its
+      // scrollback vertically as usual), so only the width needs the override.
       const applyGrid = () => {
         const cols = Math.max(fitCols, detCols);
-        const rows = Math.max(fitRows, detRows);
-        if (cols < 1 || rows < 1) return;
-        if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+        if (cols < 1 || fitRows < 1) return;
+        if (cols !== term.cols || fitRows !== term.rows)
+          term.resize(cols, fitRows);
         el.style.overflowX = detCols > fitCols ? "auto" : "hidden";
-        el.style.overflowY = detRows > fitRows ? "auto" : "hidden";
       };
 
-      // Scan a raw output chunk for the absolute cursor/scroll-region escapes
-      // (CSI H/f cursor pos, G column, d row, r scroll region, 8;rows;cols t),
-      // carrying any half-received sequence over to the next chunk. A full-screen
-      // clear (CSI 2J/3J) or an alternate-screen switch (DECSET/DECRST 1049/47/
-      // 1047) starts a fresh repaint, so we reset the detected grid and let that
-      // repaint rebuild it — that's how the server's emitted size (and the
-      // scrollbars) follow the program when it resizes *down*, not just up.
+      // Run a minimal virtual terminal over the program's raw output to learn the
+      // width it draws for: track the cursor column and record the furthest one
+      // *written* to (bare cursor moves don't count, so size probes like
+      // CSI 999;999H are ignored). A full-screen clear (CSI 2J/3J) or an
+      // alternate-screen switch (DECSET/DECRST 1049/47/1047) starts a fresh epoch.
+      // Reading the byte stream directly (not xterm's buffer) means this works on
+      // the alternate screen too, which xterm never reflows.
+      const noteCol = () => {
+        if (vcol > detCols && vcol <= SIZE_CAP) detCols = vcol;
+      };
       const scanForSize = (chunk: string) => {
         const s = parseCarry + chunk;
+        const n = s.length;
         let i = 0;
         let consumed = 0;
-        while (i < s.length) {
-          const esc = s.indexOf("\x1b[", i);
-          if (esc === -1) {
-            consumed = s.length;
-            break;
+        while (i < n) {
+          const c = s.charCodeAt(i);
+          if (c === 0x1b) {
+            if (i + 1 >= n) break; // incomplete escape — carry from ESC
+            const kind = s[i + 1];
+            if (kind === "[") {
+              let j = i + 2;
+              while (
+                j < n &&
+                s.charCodeAt(j) >= 0x30 &&
+                s.charCodeAt(j) <= 0x3f
+              )
+                j++;
+              while (
+                j < n &&
+                s.charCodeAt(j) >= 0x20 &&
+                s.charCodeAt(j) <= 0x2f
+              )
+                j++;
+              if (j >= n) break; // incomplete CSI — carry
+              const final = s[j];
+              const p = s.slice(i + 2, j).split(";");
+              const num = (idx: number, def: number) => {
+                const v = parseInt(p[idx] ?? "", 10);
+                return Number.isFinite(v) ? v : def;
+              };
+              if (final === "H" || final === "f")
+                vcol = Math.max(0, num(1, 1) - 1);
+              else if (final === "G" || final === "`")
+                vcol = Math.max(0, num(0, 1) - 1);
+              else if (final === "C" || final === "a") vcol += num(0, 1);
+              else if (final === "D") vcol = Math.max(0, vcol - num(0, 1));
+              else if (final === "E" || final === "F") vcol = 0;
+              else if (final === "t" && num(0, 0) === 8) {
+                if (num(2, 0) > detCols && num(2, 0) <= SIZE_CAP)
+                  detCols = num(2, 0);
+              } else if (
+                (final === "J" && (num(0, 0) === 2 || num(0, 0) === 3)) ||
+                ((final === "h" || final === "l") &&
+                  (p[0] === "?1049" || p[0] === "?47" || p[0] === "?1047"))
+              ) {
+                detCols = 0;
+                vcol = 0;
+              }
+              i = j + 1;
+            } else if (kind === "]") {
+              // OSC: skip to BEL or ST (ESC \) without counting the payload.
+              let k = i + 2;
+              while (k < n && s.charCodeAt(k) !== 0x07) {
+                if (s.charCodeAt(k) === 0x1b && s[k + 1] === "\\") break;
+                k++;
+              }
+              if (k >= n) break; // incomplete OSC — carry
+              i = s.charCodeAt(k) === 0x1b ? k + 2 : k + 1;
+            } else {
+              i += 2; // two-char escape (ESC 7/8, ESC M, …)
+            }
+          } else if (c === 0x0d) {
+            vcol = 0;
+            i++;
+          } else if (c === 0x08) {
+            if (vcol > 0) vcol--;
+            i++;
+          } else if (c === 0x09) {
+            vcol = (Math.floor(vcol / 8) + 1) * 8;
+            i++;
+          } else if (c < 0x20 || c === 0x7f) {
+            i++; // LF and other controls: no column change
+          } else {
+            // Printable; an astral surrogate pair (usually wide) counts as 2.
+            if (c >= 0xd800 && c <= 0xdbff) {
+              vcol += 2;
+              i += 2;
+            } else {
+              vcol += 1;
+              i++;
+            }
+            noteCol();
           }
-          let j = esc + 2;
-          // CSI parameter bytes (0x30–0x3f) then intermediates (0x20–0x2f).
-          while (
-            j < s.length &&
-            s.charCodeAt(j) >= 0x30 &&
-            s.charCodeAt(j) <= 0x3f
-          )
-            j++;
-          while (
-            j < s.length &&
-            s.charCodeAt(j) >= 0x20 &&
-            s.charCodeAt(j) <= 0x2f
-          )
-            j++;
-          if (j >= s.length) {
-            consumed = esc; // incomplete CSI — re-parse from here next chunk
-            break;
-          }
-          const final = s[j];
-          const parts = s.slice(esc + 2, j).split(";");
-          const num = (idx: number, def: number) => {
-            const v = parseInt(parts[idx] ?? "", 10);
-            return Number.isFinite(v) ? v : def;
-          };
-          // Cursor moves can be a size *probe*: apps jump to CSI 999;999H then
-          // send CSI 6n (DSR) to read back the clamped position — the 999 is not
-          // the real grid. Ignore a cursor move that is immediately followed by a
-          // DSR. Defer one landing at the chunk edge so the 4-byte DSR look-ahead
-          // can still see it once the next chunk arrives.
-          const isCursorMove =
-            final === "H" || final === "f" || final === "G" || final === "d";
-          if (isCursorMove && s.length - (j + 1) < 4) {
-            consumed = esc;
-            break;
-          }
-          const isProbe = isCursorMove && s.startsWith("\x1b[6n", j + 1);
-          if ((final === "H" || final === "f") && !isProbe)
-            noteSize(num(1, 1), num(0, 1));
-          else if (final === "G" && !isProbe) noteSize(num(0, 1), 0);
-          else if (final === "d" && !isProbe) noteSize(0, num(0, 1));
-          else if (final === "r") noteSize(0, num(1, 0));
-          else if (final === "t" && num(0, 0) === 8)
-            noteSize(num(2, 0), num(1, 0));
-          else if (
-            (final === "J" && (num(0, 0) === 2 || num(0, 0) === 3)) ||
-            ((final === "h" || final === "l") &&
-              (parts[0] === "?1049" ||
-                parts[0] === "?47" ||
-                parts[0] === "?1047"))
-          ) {
-            detCols = 0;
-            detRows = 0;
-          }
-          i = j + 1;
           consumed = i;
         }
+        // Carry the trailing incomplete sequence whole (slicing it would corrupt
+        // a long split escape, e.g. an OSC clipboard payload); abandon only a
+        // pathologically unterminated one so the buffer stays bounded.
         parseCarry = s.slice(consumed);
-        if (parseCarry.length > 64) parseCarry = parseCarry.slice(-64);
+        if (parseCarry.length > 65536) parseCarry = "";
         applyGrid();
       };
 
-      // Measure the panel, send that as our resize intent, and render to it
-      // (clamped up to the program's grid). The program's response arrives as
-      // output and is picked up by scanForSize.
+      // Measure the panel, send it as our resize intent, and use it as the grid
+      // floor (the program's real width, from scanForSize, takes over when wider).
       const refit = () => {
         const dims = fitAddon.proposeDimensions();
         if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows))
@@ -362,8 +379,11 @@ export function Terminal({ sandboxKey, serverUrl, subscribe }: Props) {
       const unsubscribe = subscribe({
         onData: (base64) => {
           const bin = atob(base64);
-          term.write(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
-          scanForSize(bin);
+          const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+          term.write(bytes);
+          // Decode as UTF-8 (streaming, so multibyte chars split across frames
+          // are handled) so the column scanner counts characters, not bytes.
+          scanForSize(utf8.decode(bytes, { stream: true }));
         },
         onConnected: () => {
           connected = true;
