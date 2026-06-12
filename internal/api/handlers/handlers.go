@@ -149,6 +149,11 @@ func normalizeConfig(cfg gen.SandboxConfig) gen.SandboxConfig {
 				v.Acls = acls
 				_ = cfg.Fs[i].FromGCSFileSystem(v)
 			}
+		case gen.BackendExternal:
+			if v, err := fs.AsExternalFileSystem(); err == nil {
+				v.Acls = acls
+				_ = cfg.Fs[i].FromExternalFileSystem(v)
+			}
 		}
 	}
 	return cfg

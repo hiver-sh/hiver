@@ -104,7 +104,7 @@ result, _ := sandbox.Exec(context.Background(),
 fmt.Println(result.Stdout)
 ```
 
-## The Inspector
+## Inspector
 
 The inspector is the fastest way to understand what your agent is *actually* doing. Launch it with a single command:
 
@@ -198,9 +198,21 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
 
 Because the ACL is enforced by the runtime rather than the agent, a misbehaving or jailbroken agent still can't write to a read-only mount or read a denied path, and every attempt, allowed or denied, shows up in the event stream and the inspector's **Files** view.
 
+### Network File System
+
+Point a mount at any HTTP host that implements the [file system interface](api/external_file_system.yaml) and the runtime turns every read and write into a call against it — bring your own storage without a built-in backend:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  fs: [{ backend: "external", mount: "/data", host: "https://fs.internal:8080" }],
+});
+```
+
 ## Request Overrides
 
-The egress proxy doesn't just allow or deny requests. It can **rewrite** them on the way out. Attach an `override` to an egress rule and the proxy injects **headers** and **query parameters** into every matching request, overwriting whatever the agent set. This is how you give an agent authenticated access to an API while the agent itself never holds the credential:
+The egress proxy doesn't just allow or deny requests. It can **rewrite** them on the way out. Attach an `override` to an egress rule and the proxy can inject **headers** and **query parameters**, redirect the request to a different **upstream host**, and prepend a **path prefix** — all on every matching request, overwriting whatever the agent set. This is how you give an agent authenticated access to an API while the agent itself never holds the credential:
 
 ```typescript
 import * as hiver from "@hiver.sh/client";
@@ -223,6 +235,69 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
 
 The agent makes a plain request to `api.internal.acme.com`; the proxy adds the `Authorization` header and the `tenant` / `api-version` query params before the request leaves the sandbox. Because the secret is bound to the rule and applied outside the untrusted workload, a prompt-injected or compromised agent can spend the token against the allowed host but can never read, exfiltrate, or reuse it elsewhere. Combined with a default-deny egress policy, this lets you hand an agent exactly one authenticated integration and nothing more, and every rewritten request still shows up in the inspector's **Network** view.
 
+### Redirecting to a mock server
+
+`host` and `prefix_path` rewrite *where* the request goes, so you can transparently point an agent at a local mock or stub server without touching its code:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  egress: [
+    {
+      access: "allow",
+      host: "api.openai.com",
+      override: {
+        // Dial a local mock instead of the real API...
+        host: "mockserver.internal:8080",
+        // ...and namespace its routes under /openai.
+        // The agent's GET /v1/models arrives as GET /openai/v1/models.
+        prefix_path: "/openai",
+      },
+    },
+  ],
+});
+```
+
+The agent issues a normal `https://api.openai.com/v1/models` request; the proxy dials `mockserver.internal:8080` and forwards it as `/openai/v1/models`, while the agent still sees `api.openai.com` as the host. This is ideal for deterministic tests, replaying recorded fixtures, or injecting faults without the agent ever knowing the traffic was diverted.
+
+### Gating a request behind user consent
+
+Start from a default-deny policy and treat each blocked host as a prompt for human approval. The event stream surfaces the `egress.request` denial; your harness pauses, asks the user, and only then opens the host — turning policy denials into an interactive allow-list the user builds up as the agent runs:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+import { confirm } from "./prompt"; // your UI: returns a Promise<boolean>
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1");
+const approved = new Set<string>();
+const ac = new AbortController();
+
+const agent = sandbox
+  .exec("claude -p 'Research the topic and post a summary to our CRM'")
+  .then((result) => { ac.abort(); return result; });
+
+for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
+  if (event.type === "egress.request" && event.access === "denied") {
+    if (approved.has(event.host)) continue;
+    approved.add(event.host);
+
+    // Ask the user before letting the agent reach a new host.
+    const ok = await confirm(`Agent wants to reach ${event.host}. Allow?`);
+    if (!ok) continue; // leave the host blocked; the agent sees the denial
+
+    await sandbox.applyConfig({
+      egress: [{ access: "allow", host: event.host }],
+    });
+  }
+}
+
+console.log((await agent).stdout);
+```
+
+The first request to each host is denied and the agent stalls there; the user decides, and an approval flips the rule to `allow` so the agent's retry succeeds.
+
+
 ## Documentation
 
 * [Docs](https://hiver.sh/docs)
@@ -233,7 +308,7 @@ The agent makes a plain request to `api.internal.acme.com`; the proxy adds the `
 Container-level isolation using [`runc`](https://github.com/opencontainers/runc) and kernel-level isolation using [`firecracker`](https://github.com/firecracker-microvm/firecracker).
 
 ### File Systems
-Local, Google Drive, Google Cloud Storage, Microsoft OneDrive, Amazon S3,Azure Blob Storage.
+Local, External over HTTP, Google Drive, Google Cloud Storage, Microsoft OneDrive, Amazon S3,Azure Blob Storage.
 
 ### Container Orchestration
 Docker, k8s.

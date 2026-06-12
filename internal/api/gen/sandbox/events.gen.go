@@ -226,9 +226,10 @@ type FSRequestEventOperation string
 // FSResponseEvent defines model for FSResponseEvent.
 type FSResponseEvent struct {
 	// Backend Storage type for a file system.
-	//   * `local`  — sandbox-local storage with no external dependency.
-	//   * `gdrive` — backed by Google Drive.
-	//   * `gcs`    — backed by Google Cloud Storage.
+	//   * `local`    — sandbox-local storage with no external dependency.
+	//   * `gdrive`   — backed by Google Drive.
+	//   * `gcs`      — backed by Google Cloud Storage.
+	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 	Backend Backend `json:"backend"`
 
 	// DurationMs Wall-clock duration of the request, in milliseconds.

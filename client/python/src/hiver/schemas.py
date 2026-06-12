@@ -44,8 +44,17 @@ class GCSFileSystem(_FileSystemBase):
     gcs_service_account_json: str
 
 
+class ExternalFileSystem(_FileSystemBase):
+    backend: Literal["external"]
+    # Base URL of the host implementing the external file system HTTP interface
+    # (see external_file_system.yaml). Store operations are issued relative to
+    # this URL, e.g. host "https://fs.internal:8080" makes a read
+    # "GET https://fs.internal:8080/v1/file?path=...". A trailing slash is ignored.
+    host: str
+
+
 FileSystem = Annotated[
-    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem],
+    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, ExternalFileSystem],
     Field(discriminator="backend"),
 ]
 
@@ -53,6 +62,15 @@ HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 
 class EgressOverride(BaseModel):
+    # Upstream the proxy dials instead of the matched host, as "hostname[:port]"
+    # or "ip[:port]". When the port is omitted, the original destination port is
+    # kept. Rule matching and the agent-visible request (Host header, TLS SNI)
+    # keep the original hostname.
+    host: Optional[str] = None
+    # Path prefix prepended to the outbound request path ("/mock" turns
+    # "/v1/user" into "/mock/v1/user"). Rule matching and audit events keep the
+    # original path. Applies to inspected HTTP requests only.
+    prefix_path: Optional[str] = None
     query: Optional[dict[str, str]] = None
     headers: Optional[dict[str, str]] = None
 
@@ -180,7 +198,7 @@ class FSRequestEvent(_SandboxEventBase):
 
 class FSResponseEvent(_SandboxEventBase):
     type: Literal["fs.response"]
-    backend: Literal["local", "gdrive", "gcs"]
+    backend: Literal["local", "gdrive", "gcs", "external"]
     request_id: int
     duration_ms: int
     error: Optional[str] = None

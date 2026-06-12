@@ -175,6 +175,20 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
+        label: "External (HTTP host)",
+        apply: (cfg) => ({
+          ...cfg,
+          fs: [
+            ...((cfg.fs as FsEntry[]) ?? []),
+            {
+              backend: "external",
+              mount: "/external",
+              host: "https://fs.internal:8080",
+            },
+          ],
+        }),
+      },
+      {
         label: "Amazon S3",
         apply: (cfg) => ({
           ...cfg,

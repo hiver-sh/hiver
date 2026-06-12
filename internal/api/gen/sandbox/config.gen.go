@@ -32,14 +32,17 @@ func (e ACLRuleAccess) Valid() bool {
 
 // Defines values for Backend.
 const (
-	BackendGcs    Backend = "gcs"
-	BackendGdrive Backend = "gdrive"
-	BackendLocal  Backend = "local"
+	BackendExternal Backend = "external"
+	BackendGcs      Backend = "gcs"
+	BackendGdrive   Backend = "gdrive"
+	BackendLocal    Backend = "local"
 )
 
 // Valid indicates whether the value is a known member of the Backend enum.
 func (e Backend) Valid() bool {
 	switch e {
+	case BackendExternal:
+		return true
 	case BackendGcs:
 		return true
 	case BackendGdrive:
@@ -69,15 +72,30 @@ func (e EgressRuleAccess) Valid() bool {
 	}
 }
 
+// Defines values for ExternalFileSystemBackend.
+const (
+	ExternalFileSystemBackendExternal ExternalFileSystemBackend = "external"
+)
+
+// Valid indicates whether the value is a known member of the ExternalFileSystemBackend enum.
+func (e ExternalFileSystemBackend) Valid() bool {
+	switch e {
+	case ExternalFileSystemBackendExternal:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GCSFileSystemBackend.
 const (
-	GCSFileSystemBackendGcs GCSFileSystemBackend = "gcs"
+	Gcs GCSFileSystemBackend = "gcs"
 )
 
 // Valid indicates whether the value is a known member of the GCSFileSystemBackend enum.
 func (e GCSFileSystemBackend) Valid() bool {
 	switch e {
-	case GCSFileSystemBackendGcs:
+	case Gcs:
 		return true
 	default:
 		return false
@@ -201,9 +219,10 @@ type ApplyResult struct {
 }
 
 // Backend Storage type for a file system.
-//   - `local`  — sandbox-local storage with no external dependency.
-//   - `gdrive` — backed by Google Drive.
-//   - `gcs`    — backed by Google Cloud Storage.
+//   - `local`    — sandbox-local storage with no external dependency.
+//   - `gdrive`   — backed by Google Drive.
+//   - `gcs`      — backed by Google Cloud Storage.
+//   - `external` — backed by an HTTP host (see `external_file_system.yaml`).
 type Backend string
 
 // Changes Concrete additions and removals carried out by the apply. Each
@@ -295,6 +314,29 @@ type Error struct {
 	Error string `json:"error"`
 }
 
+// ExternalFileSystem defines model for ExternalFileSystem.
+type ExternalFileSystem struct {
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
+	Acls    *[]ACLRule                `json:"acls,omitempty"`
+	Backend ExternalFileSystemBackend `json:"backend"`
+
+	// Host Base URL of the host implementing the external file
+	// system HTTP interface (see `external_file_system.yaml`).
+	// Store operations are issued relative to this URL — e.g.
+	// with host `https://fs.internal:8080`, a read becomes
+	// `GET https://fs.internal:8080/v1/file?path=...`. A
+	// trailing slash is ignored.
+	Host string `json:"host"`
+
+	// Mount Absolute path at which the file system appears to the agent.
+	Mount string `json:"mount"`
+}
+
+// ExternalFileSystemBackend defines model for ExternalFileSystem.Backend.
+type ExternalFileSystemBackend string
+
 // FileSystem A file system exposed to the agent at `mount`. The `backend`
 // selects the storage type and determines which variant applies.
 // Access is governed by `acls`, evaluated longest-prefix-first
@@ -313,9 +355,10 @@ type FileSystemBase struct {
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
 	// Backend Storage type for a file system.
-	//   * `local`  — sandbox-local storage with no external dependency.
-	//   * `gdrive` — backed by Google Drive.
-	//   * `gcs`    — backed by Google Cloud Storage.
+	//   * `local`    — sandbox-local storage with no external dependency.
+	//   * `gdrive`   — backed by Google Drive.
+	//   * `gcs`      — backed by Google Cloud Storage.
+	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 	Backend Backend `json:"backend"`
 
 	// Mount Absolute path at which the file system appears to the agent.
@@ -550,6 +593,32 @@ func (t *FileSystem) FromGCSFileSystem(v GCSFileSystem) error {
 
 // MergeGCSFileSystem performs a merge with any union data inside the FileSystem, using the provided GCSFileSystem
 func (t *FileSystem) MergeGCSFileSystem(v GCSFileSystem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsExternalFileSystem returns the union data inside the FileSystem as a ExternalFileSystem
+func (t FileSystem) AsExternalFileSystem() (ExternalFileSystem, error) {
+	var body ExternalFileSystem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromExternalFileSystem overwrites any union data inside the FileSystem as the provided ExternalFileSystem
+func (t *FileSystem) FromExternalFileSystem(v ExternalFileSystem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeExternalFileSystem performs a merge with any union data inside the FileSystem, using the provided ExternalFileSystem
+func (t *FileSystem) MergeExternalFileSystem(v ExternalFileSystem) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

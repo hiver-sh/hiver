@@ -33,7 +33,7 @@ type EgressRule struct {
 // Set Backend to "local", "gdrive", or "gcs" and populate the corresponding fields.
 type FileSystem struct {
 	Mount   string    `json:"mount"`
-	Backend string    `json:"backend"` // "local", "gdrive", or "gcs"
+	Backend string    `json:"backend"` // "local", "gdrive", "gcs", or "external"
 	ACLs    []ACLRule `json:"acls,omitempty"`
 
 	// local backend
@@ -52,6 +52,10 @@ type FileSystem struct {
 	GCSBucket             string `json:"gcs_bucket,omitempty"`
 	GCSPrefix             string `json:"gcs_prefix,omitempty"`
 	GCSServiceAccountJSON string `json:"gcs_service_account_json,omitempty"`
+
+	// external backend — base URL of the HTTP host implementing the
+	// external file system contract (api/external_file_system.yaml).
+	Host string `json:"host,omitempty"`
 }
 
 // Snapshot configures automatic sandbox snapshots.

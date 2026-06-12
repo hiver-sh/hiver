@@ -127,6 +127,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
         { $ref: "#/definitions/LocalFileSystem" },
         { $ref: "#/definitions/GDriveFileSystem" },
         { $ref: "#/definitions/GCSFileSystem" },
+        { $ref: "#/definitions/ExternalFileSystem" },
       ],
     },
 
@@ -238,11 +239,32 @@ export const SANDBOX_CONFIG_SCHEMA = {
       ],
     },
 
+    ExternalFileSystem: {
+      description:
+        "A file system backed by an external HTTP host implementing the external file system interface.",
+      allOf: [
+        { $ref: "#/definitions/FileSystemBase" },
+        {
+          type: "object",
+          required: ["host"],
+          properties: {
+            backend: { type: "string", enum: ["external"] },
+            host: {
+              type: "string",
+              description:
+                "Base URL of the host implementing the external file system HTTP interface. Store operations are issued relative to this URL (e.g. GET <host>/v1/file?path=...). A trailing slash is ignored.",
+              examples: ["https://fs.internal:8080"],
+            },
+          },
+        },
+      ],
+    },
+
     Backend: {
       type: "string",
-      enum: ["local", "gdrive", "gcs"],
+      enum: ["local", "gdrive", "gcs", "external"],
       description:
-        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage).",
+        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage), external (HTTP host).",
     },
 
     ACLRule: {

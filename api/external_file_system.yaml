@@ -1,0 +1,313 @@
+openapi: 3.0.0
+info:
+  title: External File System API
+  version: 0.0.1
+  summary: HTTP contract a host implements to back an `external` sandbox file system.
+  description: |
+    An **external** file system delegates storage to an HTTP host the
+    operator runs. Inside the sandbox, the FUSE daemon turns each agent
+    file operation into one call against this API, so the host is the
+    source of truth for reads and the write-back target for mutations.
+
+    The model is the same path-keyed object store every remote backend
+    in this project speaks (the Go `remotefs.Store` interface): paths
+    are forward-slash, rooted at `/`, and opaque to the host — folder
+    structure is the caller's convention, not something the host has to
+    interpret. There are no Drive-style opaque IDs on the wire.
+
+    Implement every operation below. The endpoints map one-to-one to the
+    store methods the FUSE layer needs:
+
+      * `GET  /v1/list`        — recursive object paths under a prefix
+      * `GET  /v1/directory`   — immediate children of one directory
+      * `GET  /v1/stat`        — metadata for a single path
+      * `GET  /v1/file`        — download a file's bytes
+      * `PUT  /v1/file`        — create or replace a file
+      * `DELETE /v1/file`      — remove a file (idempotent)
+      * `POST /v1/move`        — rename within the store
+
+    ## Errors
+
+    Operations that address a single object return `404` with an
+    `Error` body when the object does not exist. `DELETE /v1/file` is
+    the exception: removing a missing object is a success. Malformed
+    requests return `400`; any other failure returns `500`. Every
+    non-2xx response carries an `Error` body.
+
+paths:
+  /v1/list:
+    get:
+      summary: List object paths under a prefix (recursive).
+      operationId: list
+      description: |
+        Returns every object path at or beneath `prefix`, recursing into
+        nested directories. An empty or omitted `prefix` lists the whole
+        store. Directory markers are not returned — only file paths.
+        A missing prefix is not an error; it yields an empty list.
+      parameters:
+        - in: query
+          name: prefix
+          required: false
+          schema:
+            type: string
+          description: Forward-slash path prefix to list under. Empty means the whole store.
+          example: /workspace
+      responses:
+        '200':
+          description: The matching object paths.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paths]
+                additionalProperties: false
+                properties:
+                  paths:
+                    type: array
+                    items:
+                      type: string
+                    description: Canonical forward-slash paths, each rooted at `/`.
+                    example: ["/workspace/data.csv", "/workspace/notes/todo.md"]
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/directory:
+    get:
+      summary: List the immediate children of a directory.
+      operationId: listDirectory
+      description: |
+        Returns the entries one level deep under `path` — unlike
+        `/v1/list`, this does not recurse. Each entry's `path` is its
+        full store path; `is_dir` distinguishes sub-directories from
+        files. Returns `404` when `path` itself does not exist.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Forward-slash path of the directory to list.
+          example: /workspace
+      responses:
+        '200':
+          description: The directory's immediate children.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                additionalProperties: false
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/FileInfo' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/stat:
+    get:
+      summary: Return metadata for a single path.
+      operationId: stat
+      description: |
+        Returns the `FileInfo` for the object at `path` without
+        transferring its body. Returns `404` when nothing exists there.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Forward-slash path to stat.
+          example: /workspace/data.csv
+      responses:
+        '200':
+          description: Metadata for the object.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileInfo' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/file:
+    get:
+      summary: Download a file's contents.
+      operationId: getFile
+      description: |
+        Streams the raw bytes of the object at `path`. Returns `404`
+        when the object does not exist — the host must not synthesize an
+        empty body, because the caller distinguishes "exists, empty"
+        from "does not exist yet".
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Forward-slash path of the file to read.
+          example: /workspace/data.csv
+      responses:
+        '200':
+          description: The file contents.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      summary: Create or replace a file.
+      operationId: putFile
+      description: |
+        Writes the request body to `path`, creating the object or
+        replacing it wholesale. The body is streamed; hosts should not
+        require a `Content-Length`. Parent directories are created
+        implicitly as needed.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Forward-slash path to write.
+          example: /workspace/data.csv
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '204':
+          description: The file was written.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      summary: Remove a file.
+      operationId: deleteFile
+      description: |
+        Removes the object at `path`. Idempotent — deleting a path that
+        does not exist is a success, not a `404`.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: Forward-slash path to delete.
+          example: /workspace/data.csv
+      responses:
+        '204':
+          description: The object is gone (whether or not it existed).
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/move:
+    post:
+      summary: Rename an object within the store.
+      operationId: move
+      description: |
+        Renames `src` to `dst`. Hosts with a native rename should use it;
+        others may copy-then-delete. Returns `404` when `src` does not
+        exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [src, dst]
+              additionalProperties: false
+              properties:
+                src:
+                  type: string
+                  description: Forward-slash path to rename from.
+                  example: /workspace/old.csv
+                dst:
+                  type: string
+                  description: Forward-slash path to rename to.
+                  example: /workspace/new.csv
+      responses:
+        '204':
+          description: The object was moved.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    FileInfo:
+      type: object
+      description: Metadata for one object in the store.
+      required: [path, size, mtime, is_dir]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: Canonical forward-slash path, rooted at `/`.
+          example: /workspace/data.csv
+        size:
+          type: integer
+          format: int64
+          description: Byte length; 0 for directories.
+          example: 4096
+        mtime:
+          type: string
+          format: date-time
+          description: |
+            Last-modified time as an RFC 3339 timestamp. Send the zero
+            time (`0001-01-01T00:00:00Z`) when unknown.
+          example: "2026-06-12T10:30:00Z"
+        is_dir:
+          type: boolean
+          description: True when the entry is a directory.
+
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Human-readable failure reason.
+
+  responses:
+    BadRequest:
+      description: The request is malformed (missing `path`, bad body, …).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No object exists at the addressed path.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InternalError:
+      description: The host failed to service the request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

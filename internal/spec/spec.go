@@ -117,6 +117,9 @@ type FS struct {
 	GcsBucket             string `json:"gcs_bucket,omitempty"`
 	GcsPrefix             string `json:"gcs_prefix,omitempty"`
 	GcsServiceAccountJSON string `json:"gcs_service_account_json,omitempty"`
+
+	// external only — base URL of the HTTP host backing the file system.
+	Host string `json:"host,omitempty"`
 }
 
 // Backend names a workspace storage type. New backends extend this
@@ -145,12 +148,13 @@ const (
 	BackendLocal              Backend = "local"
 	BackendGoogleDrive        Backend = "gdrive"
 	BackendGoogleCloudStorage Backend = "gcs"
+	BackendExternal           Backend = "external"
 )
 
 // Valid reports whether the backend is one sandboxd knows how to wire up.
 func (b Backend) Valid() bool {
 	switch b {
-	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage:
+	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendExternal:
 		return true
 	}
 	return false
@@ -160,7 +164,7 @@ func (b Backend) Valid() bool {
 // store via the oplog. Local is the only non-remote backend today.
 func (b Backend) IsRemote() bool {
 	switch b {
-	case BackendGoogleDrive, BackendGoogleCloudStorage:
+	case BackendGoogleDrive, BackendGoogleCloudStorage, BackendExternal:
 		return true
 	}
 	return false
@@ -204,6 +208,9 @@ const (
 	envGcsServiceAccountJSON = "HIVE_GCS_SERVICE_ACCOUNT_JSON"
 )
 
+// Env-var fallback for the external backend host.
+const envExternalHost = "HIVE_EXTERNAL_HOST"
+
 func or(value, envKey string) string {
 	if value != "" {
 		return value
@@ -230,6 +237,12 @@ func (f *FS) gcsResolved() (bucket, prefix, serviceAccountJSON string) {
 	return or(f.GcsBucket, envGcsBucket),
 		or(f.GcsPrefix, envGcsPrefix),
 		or(f.GcsServiceAccountJSON, envGcsServiceAccountJSON)
+}
+
+// externalResolved returns the effective external host — spec field with
+// env-var fallback.
+func (f *FS) externalResolved() (host string) {
+	return or(f.Host, envExternalHost)
 }
 
 // BackendConfigJSON returns the per-backend config sandboxd should hand
@@ -268,6 +281,12 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			Bucket:             bucket,
 			Prefix:             prefix,
 			ServiceAccountJSON: sa,
+		})
+	case BackendExternal:
+		return json.Marshal(struct {
+			Host string `json:"host"`
+		}{
+			Host: f.externalResolved(),
 		})
 	}
 	return nil, nil
@@ -322,7 +341,7 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("%s.backend is required", ctx)
 		}
 		if !f.Backend.Valid() {
-			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage)
+			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendExternal)
 		}
 		if f.Backend == BackendGoogleDrive {
 			access, _, _, _, sa, _, _ := f.gdriveResolved()
@@ -337,6 +356,11 @@ func (s *Spec) Validate() error {
 			}
 			if sa == "" {
 				return fmt.Errorf("%s.backend gcs: gcs_service_account_json is required (or env %s)", ctx, envGcsServiceAccountJSON)
+			}
+		}
+		if f.Backend == BackendExternal {
+			if f.externalResolved() == "" {
+				return fmt.Errorf("%s.backend external: host is required (or env %s)", ctx, envExternalHost)
 			}
 		}
 		if f.Mount == "" {

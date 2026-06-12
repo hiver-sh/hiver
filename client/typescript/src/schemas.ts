@@ -2,11 +2,12 @@ import { z } from "zod";
 
 /**
  * Storage type for a file system.
- * - `local`  — sandbox-local storage with no external dependency.
- * - `gdrive` — backed by Google Drive.
- * - `gcs`    — backed by Google Cloud Storage.
+ * - `local`    — sandbox-local storage with no external dependency.
+ * - `gdrive`   — backed by Google Drive.
+ * - `gcs`      — backed by Google Cloud Storage.
+ * - `external` — backed by an HTTP host (see external_file_system.yaml).
  */
-export const Backend = z.enum(["local", "gdrive", "gcs"]);
+export const Backend = z.enum(["local", "gdrive", "gcs", "external"]);
 export type Backend = z.infer<typeof Backend>;
 
 /** One access control rule. */
@@ -73,6 +74,23 @@ export const GCSFileSystem = FileSystemBase.extend({
 export type GCSFileSystem = z.infer<typeof GCSFileSystem>;
 
 /**
+ * A file system backed by an external HTTP host implementing the contract in
+ * external_file_system.yaml. The sandbox turns each agent file operation into
+ * one call against `host`.
+ */
+export const ExternalFileSystem = FileSystemBase.extend({
+  backend: z.literal("external"),
+  /**
+   * Base URL of the host implementing the external file system HTTP interface
+   * (see external_file_system.yaml). Store operations are issued relative to this
+   * URL — e.g. with host `https://fs.internal:8080`, a read becomes
+   * `GET https://fs.internal:8080/v1/file?path=...`. A trailing slash is ignored.
+   */
+  host: z.string(),
+});
+export type ExternalFileSystem = z.infer<typeof ExternalFileSystem>;
+
+/**
  * A file system exposed to the agent at `mount`. The `backend` selects the storage type and
  * determines which variant applies. Access is governed by `acls`, evaluated longest-prefix-first
  * with deny as the default.
@@ -81,6 +99,7 @@ export const FileSystem = z.discriminatedUnion("backend", [
   LocalFileSystem,
   GDriveFileSystem,
   GCSFileSystem,
+  ExternalFileSystem,
 ]);
 export type FileSystem = z.infer<typeof FileSystem>;
 
@@ -101,6 +120,19 @@ export type HttpMethod = z.infer<typeof HttpMethod>;
  * otherwise the value is added. The agent cannot read these values back.
  */
 export const EgressOverride = z.object({
+  /**
+   * Upstream the proxy dials instead of the matched host, as `hostname[:port]` or `ip[:port]`.
+   * When the port is omitted, the original destination port is kept. Rule matching and the
+   * agent-visible request (Host header, TLS SNI) keep the original hostname; audit events report
+   * the substituted dial target in `upstream`.
+   */
+  host: z.string().optional(),
+  /**
+   * Path prefix prepended to the outbound request path (`/mock` turns `/v1/user` into `/mock/v1/user`).
+   * Rule matching and audit events keep the agent's original path. Applies to inspected HTTP requests
+   * only; CONNECT and passthrough TLS are unaffected. A trailing slash is ignored.
+   */
+  prefix_path: z.string().optional(),
   /** URL query parameters to add or overwrite on the outbound request. Useful for injecting API keys the agent should never see. */
   query: z.record(z.string(), z.string()).optional(),
   /** HTTP headers to add or overwrite on the outbound request. Useful for injecting bearer tokens or tenant identifiers. */
