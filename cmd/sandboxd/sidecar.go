@@ -373,6 +373,10 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 	if b, ok := raw["body"].(string); ok && b != "" {
 		body = &b
 	}
+	var upstream *string
+	if u, ok := raw["upstream"].(string); ok && u != "" {
+		upstream = &u
+	}
 	return func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		_ = ev.FromEgressRequestEvent(gen.EgressRequestEvent{
@@ -385,6 +389,7 @@ func proxyRequestFactory(raw map[string]any) events.Factory {
 			Query:     query,
 			Headers:   headers,
 			Body:      body,
+			Upstream:  upstream,
 		})
 		return ev
 	}

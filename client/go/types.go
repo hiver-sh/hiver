@@ -7,9 +7,16 @@ type ACLRule struct {
 }
 
 // EgressOverride specifies values the proxy injects into outbound requests.
+// Host ("hostname[:port]") substitutes the upstream the proxy dials for
+// matching requests; matching and the agent-visible request (Host header,
+// SNI) keep the original hostname. When the port is omitted, the original
+// destination port is kept. PrefixPath ("/mock") is prepended to the
+// outbound request path; matching and audit events keep the original path.
 type EgressOverride struct {
-	Query   map[string]string `json:"query,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Host       string            `json:"host,omitempty"`
+	PrefixPath string            `json:"prefix_path,omitempty"`
+	Query      map[string]string `json:"query,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 
 // EgressRule is one egress rule.

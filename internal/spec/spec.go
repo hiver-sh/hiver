@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/hiver-sh/hiver/internal/fusefs"
@@ -369,6 +371,16 @@ func (s *Spec) Validate() error {
 				return fmt.Errorf("%s.ports[%d]: %d out of range [1, 65535]", ctx, j, p)
 			}
 		}
+		if ov := e.Override; ov != nil && ov.Host != "" {
+			if err := validateOverrideHost(ov.Host, e.Access); err != nil {
+				return fmt.Errorf("%s.override.host: %w", ctx, err)
+			}
+		}
+		if ov := e.Override; ov != nil && ov.PrefixPath != "" {
+			if err := validateOverridePrefixPath(ov.PrefixPath, e.Access); err != nil {
+				return fmt.Errorf("%s.override.prefix_path: %w", ctx, err)
+			}
+		}
 	}
 	if sn := s.Snapshot; sn != nil {
 		if sn.RestoreKey != "" && !snapshotKeyRE.MatchString(sn.RestoreKey) {
@@ -377,6 +389,47 @@ func (s *Spec) Validate() error {
 		if sn.WriteKey != "" && !snapshotKeyRE.MatchString(sn.WriteKey) {
 			return fmt.Errorf("snapshot.write_key: must match %s", snapshotKeyRE)
 		}
+	}
+	return nil
+}
+
+// validateOverrideHost checks an EgressRule override.host value:
+// `hostname[:port]` or `ip[:port]` — no scheme, no path, no wildcard —
+// and only meaningful on allow rules (a denied request is never dialed).
+func validateOverrideHost(v, access string) error {
+	if access != "allow" {
+		return errors.New("only valid on allow rules")
+	}
+	if strings.Contains(v, "://") || strings.Contains(v, "/") {
+		return fmt.Errorf("must be host[:port] without scheme or path, got %q", v)
+	}
+	if strings.Contains(v, "*") {
+		return fmt.Errorf("wildcards are not allowed, got %q", v)
+	}
+	if host, portStr, err := net.SplitHostPort(v); err == nil {
+		if strings.TrimSpace(host) == "" {
+			return fmt.Errorf("missing hostname in %q", v)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("port %q out of range [1, 65535]", portStr)
+		}
+	}
+	return nil
+}
+
+// validateOverridePrefixPath checks an EgressRule override.prefix_path
+// value: an absolute path fragment with no wildcard, query, or fragment
+// characters, and only meaningful on allow rules.
+func validateOverridePrefixPath(v, access string) error {
+	if access != "allow" {
+		return errors.New("only valid on allow rules")
+	}
+	if !strings.HasPrefix(v, "/") {
+		return fmt.Errorf("must start with '/', got %q", v)
+	}
+	if strings.ContainsAny(v, "*?#") {
+		return fmt.Errorf("must not contain wildcard, query, or fragment characters, got %q", v)
 	}
 	return nil
 }

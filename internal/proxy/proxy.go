@@ -87,12 +87,19 @@ type EgressRule struct {
 	Passthrough bool            `json:"passthrough,omitempty"`
 }
 
-// EgressOverride bundles per-rule URL query and header injections.
-// Both maps are applied with Set semantics: an existing value (set by
-// the agent) is replaced; an absent value is added.
+// EgressOverride bundles per-rule URL query and header injections plus an
+// optional upstream substitution. The maps are applied with Set semantics:
+// an existing value (set by the agent) is replaced; an absent value is
+// added. Host, when set ("hostname[:port]"), replaces the dial target for
+// matching requests — matching and every agent-visible artifact (Host
+// header, SNI, minted certs) still use the original hostname. PrefixPath,
+// when set ("/mock"), is prepended to the outbound request path; matching
+// and audit events keep the agent's original path.
 type EgressOverride struct {
-	Query   map[string]string `json:"query,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Host       string            `json:"host,omitempty"`
+	PrefixPath string            `json:"prefix_path,omitempty"`
+	Query      map[string]string `json:"query,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 
 // AuditEvent is one record on the audit.network topic (§9.1).
@@ -123,6 +130,7 @@ type AuditEvent struct {
 	Status     int               `json:"status,omitempty"`
 	DurationMs int               `json:"duration_ms,omitempty"`
 	Reason     string            `json:"reason,omitempty"`
+	Upstream   string            `json:"upstream,omitempty"` // dial target substituted by override.host; empty when not rewritten
 }
 
 // Proxy is the running proxy. Construct with [New], drive with [Run].
@@ -292,6 +300,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		applyOverride(r, rule.Override)
 		ac.requestHeaders = headerMap(r.Header)
 	}
+	dialAddr := dialTarget(rule, net.JoinHostPort(host, strconv.Itoa(port)))
+	overridden := rule.Override != nil && rule.Override.Host != ""
+	if overridden {
+		ac.upstream = dialAddr
+	}
 	ac.allow()
 
 	// Rebuild the request for forwarding. http.DefaultTransport requires
@@ -303,9 +316,14 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Host == "" {
 		r.URL.Host = r.Host
 	}
+	if overridden {
+		// Dial the override target; r.Host keeps the original hostname so
+		// the upstream still sees the agent's Host header.
+		r.URL.Host = dialAddr
+	}
 
 	if isWebSocketUpgrade(r) {
-		p.handleWebSocket(w, r, host, port, ac)
+		p.handleWebSocket(w, r, dialAddr, ac)
 		return
 	}
 
@@ -490,9 +508,10 @@ func writeWebSocketUpgrade(w io.Writer, req *http.Request) error {
 
 // handleWebSocket tunnels a plain ws:// WebSocket through the proxy.
 // The egress rule has already been matched and ac.allow() already called by
-// handleHTTP; this function owns the ac.response() call.
-func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, host string, port int, ac *auditCtx) {
-	upstream, err := p.dialer.DialContext(r.Context(), "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+// handleHTTP, which also resolved dialAddr (including any override.host
+// substitution); this function owns the ac.response() call.
+func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, dialAddr string, ac *auditCtx) {
+	upstream, err := p.dialer.DialContext(r.Context(), "tcp", dialAddr)
 	if err != nil {
 		ac.responseError(err.Error(), http.StatusBadGateway)
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -573,13 +592,21 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host, port := splitHostPort("", r.Host, 443)
 	ac := p.beginAudit("CONNECT", host, "", "")
 	// CONNECT is host-only — body is opaque under TLS.
-	if r := MatchEgress(p.currentRules(), "CONNECT", host, port, ""); r == nil || r.Access == "deny" {
+	rule := MatchEgress(p.currentRules(), "CONNECT", host, port, "")
+	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
 	}
+	// An override.host redirects the tunnel's TCP target only — the TLS
+	// inside is end-to-end, so the override target must present a cert the
+	// agent trusts for the original hostname.
+	dialAddr := dialTarget(rule, r.Host)
+	if rule.Override != nil && rule.Override.Host != "" {
+		ac.upstream = dialAddr
+	}
 
-	upstream, err := p.dialer.DialContext(r.Context(), "tcp", r.Host)
+	upstream, err := p.dialer.DialContext(r.Context(), "tcp", dialAddr)
 	if err != nil && err != io.EOF {
 		// Tunnel dial failed before we ever allowed the tunnel: surface
 		// as a deny so consumers don't see an orphan response event.
@@ -683,6 +710,15 @@ func applyOverride(r *http.Request, ov *EgressOverride) {
 	for k, v := range ov.Headers {
 		r.Header.Set(k, v)
 	}
+	if ov.PrefixPath != "" && r.URL != nil {
+		prefix := strings.TrimSuffix(ov.PrefixPath, "/")
+		r.URL.Path = prefix + r.URL.Path
+		// Keep RawPath consistent so EscapedPath() doesn't silently fall
+		// back to re-encoding Path when the original had escaped octets.
+		if r.URL.RawPath != "" {
+			r.URL.RawPath = prefix + r.URL.RawPath
+		}
+	}
 }
 
 // upstreamAddr is the address the proxy dials for a transparent connection.
@@ -699,6 +735,30 @@ func upstreamAddr(host, origDst string) string {
 		return origDst
 	}
 	return net.JoinHostPort(hostOnly, strconv.Itoa(port))
+}
+
+// dialTarget returns the address the proxy dials for a request matched by
+// rule. A rule with override.host substitutes the upstream: its port wins
+// when present, otherwise the port of def (the address that would have been
+// dialed) is kept. Without an override, def is returned unchanged. When
+// neither the override nor def carries a port (explicit-proxy URLs with a
+// scheme-default port), the bare hostname is returned and the caller's
+// scheme default applies.
+func dialTarget(rule *EgressRule, def string) string {
+	if rule == nil || rule.Override == nil || rule.Override.Host == "" {
+		return def
+	}
+	host, port := splitHostPort("", rule.Override.Host, 0)
+	if port == 0 {
+		_, port = splitHostPort("", def, 0)
+	}
+	if host == "" {
+		return def
+	}
+	if port == 0 {
+		return host
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 func matchHost(pat, host string) bool {
@@ -797,6 +857,7 @@ type auditCtx struct {
 	requestHeaders  map[string]string // outbound headers after strip+override; nil for CONNECT/TLS
 	requestBody     string            // request body
 	responseHeaders map[string]string // upstream response headers; nil for CONNECT/TLS
+	upstream        string            // dial target substituted by override.host; empty when not rewritten
 }
 
 // beginAudit allocates an auditCtx for one request/response pair.
@@ -850,9 +911,10 @@ func (a *auditCtx) allow() {
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
-		Headers: a.requestHeaders,
-		Body:    a.requestBody,
-		Verdict: "allow",
+		Headers:  a.requestHeaders,
+		Body:     a.requestBody,
+		Verdict:  "allow",
+		Upstream: a.upstream,
 	})
 }
 

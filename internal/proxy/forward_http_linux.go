@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 )
 
 // maxAuditBodyBytes caps the request body snapshot captured for audit so a
@@ -145,6 +146,9 @@ func (p *Proxy) applyRequestRule(req *http.Request, host string, port int, ac *a
 	if rule.Access == "allow" {
 		applyOverride(req, rule.Override)
 		ac.requestHeaders = headerMap(req.Header)
+		if rule.Override != nil && rule.Override.Host != "" {
+			ac.upstream = dialTarget(rule, net.JoinHostPort(host, strconv.Itoa(port)))
+		}
 	}
 	ac.allow()
 	req.RequestURI = ""

@@ -32,11 +32,12 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	log.Printf("transparent http: host=%s port=%d method=%s path=%s ws=%v", hostOnly, port, req.Method, req.URL.Path, isWebSocketUpgrade(req))
 
 	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path, req.URL.RawQuery)
-	if rule := p.applyRequestRule(req, hostOnly, port, ac, func() { writeDenyHTTP(c, hostOnly) }); rule == nil {
+	rule := p.applyRequestRule(req, hostOnly, port, ac, func() { writeDenyHTTP(c, hostOnly) })
+	if rule == nil {
 		return
 	}
 
-	dialAddr := upstreamAddr(host, origDst)
+	dialAddr := dialTarget(rule, upstreamAddr(host, origDst))
 	upstream, err := p.dialer.DialContext(req.Context(), "tcp", dialAddr)
 	if err != nil {
 		log.Printf("transparent http: upstream dial error host=%s dialAddr=%s origDst=%s: %v", hostOnly, dialAddr, origDst, err)

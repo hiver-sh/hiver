@@ -308,6 +308,18 @@ export const SANDBOX_CONFIG_SCHEMA = {
           description:
             "Values the proxy injects into outbound requests. The agent cannot read these back.",
           properties: {
+            host: {
+              type: "string",
+              description:
+                "Upstream the proxy dials instead of the matched host, as `hostname[:port]`. When the port is omitted, the original destination port is kept. Matching and the agent-visible request (Host header, SNI) keep the original hostname.",
+              examples: ["stub.internal:17080"],
+            },
+            prefix_path: {
+              type: "string",
+              description:
+                "Path prefix prepended to the outbound request path (`/mock` turns `/v1/user` into `/mock/v1/user`). Matching and audit events keep the original path. Inspected HTTP only.",
+              examples: ["/mock"],
+            },
             query: {
               type: "object",
               additionalProperties: { type: "string" },

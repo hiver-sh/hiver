@@ -343,6 +343,31 @@ components:
             or header, the proxy overwrites it; otherwise the value is
             added. The agent cannot read these values back.
           properties:
+            host:
+              type: string
+              description: |
+                Upstream the proxy dials instead of the matched host, as
+                `hostname[:port]` or `ip[:port]`. When the port is omitted,
+                the original destination port is kept. Rule matching is
+                unaffected — it still uses the rule's `host` — and the
+                agent-visible request is unchanged: the Host header and TLS
+                SNI still carry the original hostname, so the override
+                target can route by virtual host. During TLS interception
+                the upstream handshake still verifies the certificate
+                against the original hostname. Audit events report the
+                substituted dial target in `upstream`.
+              example: stub.internal:17080
+            prefix_path:
+              type: string
+              description: |
+                Path prefix prepended to the outbound request path. With
+                prefix `/mock`, an agent request for `/v1/user` reaches
+                the upstream as `/mock/v1/user`. Rule matching and audit
+                events use the agent's original path. Applies to inspected
+                HTTP requests only; CONNECT and passthrough TLS are opaque
+                and unaffected. A trailing slash is ignored (`/mock/` ≡
+                `/mock`).
+              example: /mock
             query:
               type: object
               additionalProperties: { type: string }

@@ -726,3 +726,152 @@ func TestMatchEgressWildcardHost(t *testing.T) {
 		}
 	}
 }
+
+func TestOverrideHostRedirectsUpstream(t *testing.T) {
+	type seen struct {
+		host string
+		path string
+	}
+	seenCh := make(chan seen, 1)
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case seenCh <- seen{host: r.Host, path: r.URL.Path}:
+		default:
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("stubbed"))
+	}))
+	defer stub.Close()
+	stubAddr := strings.TrimPrefix(stub.URL, "http://")
+
+	// The matched host doesn't resolve anywhere — the override must be the
+	// only reason the request reaches the stub.
+	const agentHost = "api.original.test"
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{
+		Access:   "allow",
+		Host:     agentHost,
+		Override: &proxy.EgressOverride{Host: stubAddr},
+	}})
+	defer stop()
+
+	resp, err := client.Get("http://" + agentHost + "/probe")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "stubbed" {
+		t.Errorf("body: got %q, want %q", body, "stubbed")
+	}
+
+	select {
+	case s := <-seenCh:
+		// The stub must see the agent's intended hostname, not its own.
+		if s.host != agentHost {
+			t.Errorf("stub saw Host %q, want %q", s.host, agentHost)
+		}
+		if s.path != "/probe" {
+			t.Errorf("stub saw path %q, want %q", s.path, "/probe")
+		}
+	default:
+		t.Fatal("stub was never reached")
+	}
+
+	events := decodeAudit(t, audit)
+	if len(events) == 0 || events[0].Phase != "request" || events[0].Verdict != "allow" {
+		t.Fatalf("expected allow request event first, got %+v", events)
+	}
+	// The audit keeps the agent's view in Host and discloses the rewrite.
+	if events[0].Host != agentHost {
+		t.Errorf("request event host: got %q, want %q", events[0].Host, agentHost)
+	}
+	if events[0].Upstream != stubAddr {
+		t.Errorf("request event upstream: got %q, want %q", events[0].Upstream, stubAddr)
+	}
+}
+
+func TestNoOverrideHostOmitsUpstreamFromAudit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
+
+	resp, err := client.Get(upstream.URL + "/")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	resp.Body.Close()
+
+	events := decodeAudit(t, audit)
+	if len(events) == 0 {
+		t.Fatal("no audit events")
+	}
+	if events[0].Upstream != "" {
+		t.Errorf("request event upstream should be empty without override, got %q", events[0].Upstream)
+	}
+}
+
+func TestOverridePrefixPathRewritesOutboundPath(t *testing.T) {
+	type seen struct {
+		path     string
+		rawQuery string
+	}
+	seenCh := make(chan seen, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case seenCh <- seen{path: r.URL.Path, rawQuery: r.URL.RawQuery}:
+		default:
+		}
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, audit, stop := startProxy(t, []proxy.EgressRule{{
+		Access: "allow",
+		Host:   upstreamHost,
+		// Trailing slash must be tolerated: "/mock/" ≡ "/mock".
+		Override: &proxy.EgressOverride{PrefixPath: "/mock/"},
+	}})
+	defer stop()
+
+	resp, err := client.Get(upstream.URL + "/v1/user?id=7")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+
+	select {
+	case s := <-seenCh:
+		if s.path != "/mock/v1/user" {
+			t.Errorf("upstream saw path %q, want %q", s.path, "/mock/v1/user")
+		}
+		if s.rawQuery != "id=7" {
+			t.Errorf("upstream saw query %q, want %q", s.rawQuery, "id=7")
+		}
+	default:
+		t.Fatal("upstream was never reached")
+	}
+
+	events := decodeAudit(t, audit)
+	if len(events) == 0 || events[0].Phase != "request" {
+		t.Fatalf("expected request event first, got %+v", events)
+	}
+	// The audit keeps the agent's view: original path, no upstream rewrite.
+	if events[0].Path != "/v1/user" {
+		t.Errorf("request event path: got %q, want %q", events[0].Path, "/v1/user")
+	}
+	if events[0].Upstream != "" {
+		t.Errorf("request event upstream should be empty without override.host, got %q", events[0].Upstream)
+	}
+}

@@ -108,3 +108,126 @@ func TestLoadMissingRequired(t *testing.T) {
 		})
 	}
 }
+
+func TestOverrideHostValidation(t *testing.T) {
+	mk := func(rule string) string {
+		return `{
+			"fs": [{"backend": "local", "mount": "/work"}],
+			"egress": [` + rule + `]
+		}`
+	}
+	cases := []struct {
+		name    string
+		rule    string
+		wantErr string // empty means must load
+	}{
+		{
+			"valid host with port",
+			`{"access": "allow", "host": "api.example.com", "override": {"host": "stub.internal:17080"}}`,
+			"",
+		},
+		{
+			"valid host without port",
+			`{"access": "allow", "host": "api.example.com", "override": {"host": "stub.internal"}}`,
+			"",
+		},
+		{
+			"scheme rejected",
+			`{"access": "allow", "host": "api.example.com", "override": {"host": "http://stub.internal"}}`,
+			"override.host",
+		},
+		{
+			"path rejected",
+			`{"access": "allow", "host": "api.example.com", "override": {"host": "stub.internal/v1"}}`,
+			"override.host",
+		},
+		{
+			"wildcard rejected",
+			`{"access": "allow", "host": "api.example.com", "override": {"host": "*.internal"}}`,
+			"override.host",
+		},
+		{
+			"port out of range",
+			`{"access": "allow", "host": "api.example.com", "override": {"host": "stub.internal:99999"}}`,
+			"override.host",
+		},
+		{
+			"deny rule rejected",
+			`{"access": "deny", "host": "api.example.com", "override": {"host": "stub.internal:8080"}}`,
+			"override.host",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := spec.Load(writeSpec(t, mk(c.rule)))
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("Load: got %v, want error containing %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestOverridePrefixPathValidation(t *testing.T) {
+	mk := func(rule string) string {
+		return `{
+			"fs": [{"backend": "local", "mount": "/work"}],
+			"egress": [` + rule + `]
+		}`
+	}
+	cases := []struct {
+		name    string
+		rule    string
+		wantErr string // empty means must load
+	}{
+		{
+			"valid prefix",
+			`{"access": "allow", "host": "api.example.com", "override": {"prefix_path": "/mock"}}`,
+			"",
+		},
+		{
+			"valid with trailing slash",
+			`{"access": "allow", "host": "api.example.com", "override": {"prefix_path": "/mock/"}}`,
+			"",
+		},
+		{
+			"relative rejected",
+			`{"access": "allow", "host": "api.example.com", "override": {"prefix_path": "mock"}}`,
+			"override.prefix_path",
+		},
+		{
+			"wildcard rejected",
+			`{"access": "allow", "host": "api.example.com", "override": {"prefix_path": "/mock/*"}}`,
+			"override.prefix_path",
+		},
+		{
+			"query char rejected",
+			`{"access": "allow", "host": "api.example.com", "override": {"prefix_path": "/mock?x=1"}}`,
+			"override.prefix_path",
+		},
+		{
+			"deny rule rejected",
+			`{"access": "deny", "host": "api.example.com", "override": {"prefix_path": "/mock"}}`,
+			"override.prefix_path",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := spec.Load(writeSpec(t, mk(c.rule)))
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("Load: got %v, want error containing %q", err, c.wantErr)
+			}
+		})
+	}
+}

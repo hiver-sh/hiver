@@ -247,6 +247,27 @@ type EgressRule struct {
 		// identifiers.
 		Headers *map[string]string `json:"headers,omitempty"`
 
+		// Host Upstream the proxy dials instead of the matched host, as
+		// `hostname[:port]` or `ip[:port]`. When the port is omitted,
+		// the original destination port is kept. Rule matching is
+		// unaffected — it still uses the rule's `host` — and the
+		// agent-visible request is unchanged: the Host header and TLS
+		// SNI still carry the original hostname, so the override
+		// target can route by virtual host. During TLS interception
+		// the upstream handshake still verifies the certificate
+		// against the original hostname. Audit events report the
+		// substituted dial target in `upstream`.
+		Host *string `json:"host,omitempty"`
+
+		// PrefixPath Path prefix prepended to the outbound request path. With
+		// prefix `/mock`, an agent request for `/v1/user` reaches
+		// the upstream as `/mock/v1/user`. Rule matching and audit
+		// events use the agent's original path. Applies to inspected
+		// HTTP requests only; CONNECT and passthrough TLS are opaque
+		// and unaffected. A trailing slash is ignored (`/mock/` ≡
+		// `/mock`).
+		PrefixPath *string `json:"prefix_path,omitempty"`
+
 		// Query URL query parameters to add or overwrite on the outbound
 		// request. Useful for injecting API keys the agent should
 		// never see (e.g. `apikey=...`).
@@ -351,8 +372,10 @@ type GDriveFileSystem struct {
 	// omitted, the account root is used.
 	GdriveFolderId *string `json:"gdrive_folder_id,omitempty"`
 
-	// GdrivePrefix Optional subfolder path within GdriveFolderId that the file
-	// system is scoped to (e.g. `e2e-test/run-42`). Created if absent.
+	// GdrivePrefix Optional subfolder path within `gdrive_folder_id` that the
+	// file system is scoped to (e.g. `e2e-test/run-42`). The path
+	// is created if it does not exist. When omitted, the folder
+	// root is used.
 	GdrivePrefix *string `json:"gdrive_prefix,omitempty"`
 
 	// GdriveRefreshToken OAuth refresh token.

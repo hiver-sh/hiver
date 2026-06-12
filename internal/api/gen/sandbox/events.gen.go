@@ -141,6 +141,12 @@ type EgressRequestEvent struct {
 	Query     *string   `json:"query,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
+
+	// Upstream Dial target substituted by the matching rule's
+	// `override.host`, as `host:port`. Present only when the
+	// proxy rewrote the upstream; `host` always carries the
+	// hostname the agent requested.
+	Upstream *string `json:"upstream,omitempty"`
 }
 
 // EgressRequestEventAccess defines model for EgressRequestEvent.Access.

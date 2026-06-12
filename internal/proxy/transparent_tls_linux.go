@@ -56,15 +56,18 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 		p.interceptTLS(c, br, host, origDst, hello)
 		return
 	}
-	p.rawForwardTLS(c, br, host, origDst)
+	p.rawForwardTLS(c, br, host, origDst, rule)
 }
 
 // rawForwardTLS pipes the agent's TLS stream straight to the upstream without
 // touching the cipher. Used when the rule sets Passthrough, or when no CA is
 // configured. The dial target is the SNI host (origDst is a sinkhole
-// placeholder); see upstreamAddr. No audit visibility beyond host + port.
-func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string) {
-	dialAddr := upstreamAddr(host, origDst)
+// placeholder); see upstreamAddr. An override.host on the rule redirects the
+// TCP target only — the TLS inside is end-to-end, so the override target must
+// present a cert the agent trusts for the original hostname. No audit
+// visibility beyond host + port.
+func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string, rule *EgressRule) {
+	dialAddr := dialTarget(rule, upstreamAddr(host, origDst))
 	log.Printf("transparent tls: raw forward host=%s dialAddr=%s origDst=%s", host, dialAddr, origDst)
 	upstream, err := p.dialer.DialContext(context.Background(), "tcp", dialAddr)
 	if err != nil {
@@ -116,7 +119,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		return
 	}
 
-	upstreamConn, err := p.dialUpstreamTLS(upstreamAddr(host, origDst), host, clientHello, isWebSocketUpgrade(req))
+	upstreamConn, err := p.dialUpstreamTLS(dialTarget(rule, upstreamAddr(host, origDst)), host, clientHello, isWebSocketUpgrade(req))
 	if err != nil {
 		log.Printf("intercept tls: upstream tls error host=%s origDst=%s: %v", host, origDst, err)
 		ac.responseError("upstream: "+err.Error(), http.StatusBadGateway)
@@ -125,7 +128,10 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	defer upstreamConn.Close()
 
 	var rawReqBytes []byte
-	if isWebSocketUpgrade(req) {
+	if isWebSocketUpgrade(req) && (rule.Override == nil || rule.Override.PrefixPath == "") {
+		// The verbatim capture still carries the agent's original path, so
+		// a prefix_path rewrite can't use it — fall back to req.Write at
+		// the cost of the agent's exact header casing/ordering.
 		rawReqBytes = rawReqBuf.Bytes()
 	}
 	p.forwardHTTP(clientTLS, upstreamConn, req, rawReqBytes, ac)
