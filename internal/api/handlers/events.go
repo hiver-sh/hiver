@@ -39,6 +39,8 @@ func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) 
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	follow := params.Follow == nil || *params.Follow
+
 	replay, ch, cancel := h.broker.Subscribe(after)
 	defer cancel()
 
@@ -49,6 +51,10 @@ func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) 
 	}
 	if len(replay) > 0 {
 		flusher.Flush()
+	}
+
+	if !follow {
+		return
 	}
 
 	notify := c.Request.Context().Done()

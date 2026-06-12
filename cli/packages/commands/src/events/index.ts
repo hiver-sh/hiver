@@ -35,16 +35,17 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-console.log();
+const tty = process.stdout.isTTY;
+if (tty) console.log();
 try {
   for await (const event of sandbox.getEventsStream({
     signal: ac.signal,
     lastEventId: startEventId !== undefined ? Number(startEventId) : undefined,
-    maxRetries: follow ? Infinity : 0,
+    follow: follow ?? false,
   })) {
     console.log(JSON.stringify(event));
   }
-  console.log();
+  if (tty) console.log();
 } catch (err) {
   if (!ac.signal.aborted) {
     console.error(`  ${red("✖")} stream error: ${dim(String(err))}\n`);

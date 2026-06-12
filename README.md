@@ -129,40 +129,33 @@ Because the inspector is just a client over the same event stream and API the SD
 Every sandbox emits a structured, ordered, replayable stream of audit events: `egress.request`, `fs.request`, `exec.request`, `resource.usage`, and more, each tagged with whether the action was **allowed** or **denied**. Stream them live from the CLI:
 
 ```sh
-hiver events agent-1
+hiver events agent-1 --follow
 ```
 
-The stream is the foundation for *loop engineering*: closing the loop between what an agent tried to do and what your harness does next. Instead of letting an agent fail silently when it hits a wall, your harness can observe the denial, repair the environment or the prompt, and re-drive the agent.
+Pipe the event backlog into an LLM to get a plain-English summary of what the agent did:
 
-A harness that grants access on demand when the agent is blocked by policy:
-
-```typescript
-import * as hiver from "@hiver.sh/client";
-
-const sandbox = await hiver.getOrCreateSandbox("agent-1");
-
-const ac = new AbortController();
-
-// Drive the agent and watch its behavior at the same time.
-const agent = sandbox
-  .exec("claude -p 'Fetch the changelog from internal-api.corp and summarize it'")
-  .then((result) => { ac.abort(); return result; });
-
-for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
-  if (event.type === "egress.request" && event.access === "denied") {
-    // The agent tried to reach a host that policy blocks.
-    // Repair the environment instead of letting the run fail.
-    console.log(`unblocking ${event.host}`);
-    await sandbox.applyConfig({
-      egress: [{ access: "allow", host: event.host }],
-    });
-  }
-}
-
-console.log((await agent).stdout);
+```sh
+hiver events claude-code-an \
+  | jq -c 'select(.type | IN("exec.request","egress.request","fs.request","stdio"))' \
+  | claude -p "what did the agent did?"
 ```
 
-The same pattern powers richer loops: feed denied events back into the agent's next prompt, gate risky writes behind human approval, enforce a resource budget from `resource.usage`, or record the full stream and replay it deterministically for evals. Because events are ordered and carry an `id`, your harness can resume exactly where it left off after a disconnect.
+Result:
+```txt
+**22:55 UTC — Idle hook fired**
+- Ran a `Notification:idle_prompt` hook after 1 command
+- Tried to show a notification but found no available notification method (`no_method_available` — expected since it's a headless container with no desktop)
+
+**23:14 UTC — ~20 minutes idle**
+- Showed a "Max/RC upsell" tip notification (`tengu_rc_upsell_notification_shown`, `idleMinutes: 20`)
+- Ran background maintenance: `job_sweep_drafts` (cleared draft jobs) and `native_cleanup_versions` (pruned old native binaries)
+
+**23:24 UTC — ~30 minutes idle**
+- Checked npm registry for a Claude Code update (`GET registry.npmjs.org/@anthropic-ai/claude-code`)
+- Logged `update_check` — this is the periodic version check Claude Code runs in the background
+
+All of this is **routine background telemetry and housekeeping** — no user-initiated work happened. The agent was sitting idle and these are the automated maintenance tasks it runs on timers (hook notification, upsell tips, cleanup, update check). All events were mirrored to both `api.anthropic.com` and Datadog.
+```
 
 ## File Systems
 

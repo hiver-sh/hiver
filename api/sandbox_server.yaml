@@ -311,6 +311,16 @@ paths:
             Resume the stream after this event id. Only events with a
             strictly greater `id` will be sent. Omit to start from the
             next new event.
+        - in: query
+          name: follow
+          schema:
+            type: boolean
+            default: true
+          description: |
+            When `false`, the server sends the current backlog of events
+            and then closes the connection. When `true` (the default),
+            the connection stays open and the server pushes new events
+            as they arrive.
       responses:
         '200':
           description: |

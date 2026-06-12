@@ -56,6 +56,11 @@ export interface EventsStreamOptions {
   signal?: AbortSignal;
   /** Max number of retries if the connection is lost. Defaults to `3`. */
   maxRetries?: number;
+  /**
+   * When `false`, the server sends all buffered events and closes the
+   * connection immediately — no live tail. Defaults to `true`.
+   */
+  follow?: boolean;
 }
 
 /**
@@ -156,8 +161,9 @@ export class Sandbox {
   ): AsyncGenerator<SandboxEvent, void, void> {
     let lastEventId = opts.lastEventId;
     let backoffMs = 200;
+    const follow = opts.follow ?? true;
 
-    const maxRetries = opts.maxRetries || 3;
+    const maxRetries = follow ? (opts.maxRetries ?? 3) : 0;
     let retry = 0;
     while (!opts.signal?.aborted) {
       if (retry > maxRetries) {
@@ -167,11 +173,13 @@ export class Sandbox {
         for await (const event of this.openEventsStream(
           lastEventId,
           opts.signal,
+          follow,
         )) {
           lastEventId = event.id;
           backoffMs = 200;
           yield event;
         }
+        if (!follow) return;
         // Server closed the stream cleanly (e.g. shutdown). Fall
         // through to the backoff + reconnect path; if it really is
         // gone, subsequent attempts will keep failing until the
@@ -193,10 +201,14 @@ export class Sandbox {
   private async *openEventsStream(
     lastEventId: number | undefined,
     signal?: AbortSignal,
+    follow = true,
   ): AsyncGenerator<SandboxEvent, void, void> {
     const url = new URL(`${this.apiServerUrl}/v1/events`);
     if (lastEventId !== undefined) {
       url.searchParams.set("lastEventId", String(lastEventId));
+    }
+    if (!follow) {
+      url.searchParams.set("follow", "false");
     }
     const ac = new AbortController();
     if (signal) {
@@ -211,8 +223,27 @@ export class Sandbox {
       signal: ac.signal,
     });
     if (!res.ok || !res.body) throw await toError(res, "events");
-    for await (const frame of parseSSE(res.body, ac.signal)) {
-      yield SandboxEvent.parse(JSON.parse(frame.data));
+
+    // When not following, close the connection after a short idle window.
+    // The server sends the replay burst then goes silent; 500 ms of no
+    // frames means the backlog is exhausted.
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => ac.abort(), 500);
+    };
+    if (!follow) armIdle();
+
+    try {
+      for await (const frame of parseSSE(res.body, ac.signal)) {
+        if (!follow) armIdle();
+        yield SandboxEvent.parse(JSON.parse(frame.data));
+      }
+    } catch (err) {
+      if (!isAbortError(err)) throw err;
+    } finally {
+      clearTimeout(idleTimer);
+      ac.abort();
     }
   }
 

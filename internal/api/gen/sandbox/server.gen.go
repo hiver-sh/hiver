@@ -134,6 +134,9 @@ type GetEventsParams struct {
 	// strictly greater `id` will be sent. Omit to start from the
 	// next new event.
 	LastEventId *int `form:"lastEventId,omitempty" json:"lastEventId,omitempty"`
+	// Follow When false, the server sends the current backlog of events and
+	// then closes the connection. Defaults to true.
+	Follow *bool `form:"follow,omitempty" json:"follow,omitempty"`
 }
 
 // ExecStreamStdinJSONBody defines parameters for ExecStreamStdin.
@@ -305,6 +308,14 @@ func (siw *ServerInterfaceWrapper) GetEvents(c *gin.Context) {
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "lastEventId", c.Request.URL.Query(), &params.LastEventId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter lastEventId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "follow" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "follow", c.Request.URL.Query(), &params.Follow, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter follow: %w", err), http.StatusBadRequest)
 		return
 	}
 

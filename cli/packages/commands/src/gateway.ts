@@ -43,12 +43,18 @@ function runUp(): Promise<boolean> {
  * Exits the process if the user declines or the stack fails to come up.
  */
 export async function ensureGateway(gatewayUrl: string): Promise<string> {
-  const ping = createLoader(`checking gateway ${gatewayUrl}`).start();
+  const interactive = Boolean(process.stdout.isTTY);
+  const ping = interactive
+    ? createLoader(`checking gateway ${gatewayUrl}`).start()
+    : null;
   if (await gatewayReachable(gatewayUrl)) {
-    ping.stop();
+    ping?.stop();
     return gatewayUrl;
   }
-  ping.fail(`gateway not reachable at ${gatewayUrl}`);
+  ping?.fail(`gateway not reachable at ${gatewayUrl}`);
+  if (!interactive) {
+    process.stderr.write(`gateway not reachable at ${gatewayUrl}\n`);
+  }
 
   if (
     !(await confirm(`  Start the local stack now with ${brand("hiver up")}?`))
