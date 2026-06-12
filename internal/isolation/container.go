@@ -120,17 +120,40 @@ func (c *container) InstallCA(certPEM []byte) error {
 // the proxy transparent to the agent. Runs in the sandbox-pod's network
 // namespace, so the agent (which shares the netns) inherits these rules.
 //
-// Rule order:
-//  1. -m mark --mark <mark> -j RETURN — proxy- and sbxfuse-originated
-//     upstream traffic is stamped with SO_MARK so it escapes the redirect,
-//     otherwise the proxy talks to itself.
-//  2. -p tcp -j REDIRECT --to-ports <proxyPort> — everything else,
-//     loopback included.
+// DNS interception (the head rules) must sit ABOVE docker's embedded-DNS
+// rules. On a user-defined docker network the agent's resolver is 127.0.0.11,
+// and docker installs nat OUTPUT DNAT rules for 127.0.0.11:53 at container
+// create time — before sandboxd runs. Appending our DNS redirect would let
+// docker's rule win and the sink would never see the default resolver's
+// traffic, so we -I OUTPUT them at the head. They carry `-m mark ! --mark`:
+// the agent's (unmarked) DNS is redirected to the sink, while the proxy's and
+// sbxfuse's own (marked) resolver traffic is left alone to fall through to
+// docker's DNAT and resolve for real.
+//
+// Rule order (top of OUTPUT downward):
+//  1. -p udp --dport 53 -m mark ! --mark <mark> → sink  (above docker's DNAT)
+//  2. -p tcp --dport 53 -m mark ! --mark <mark> → sink port (UDP-only, so the
+//     connection is refused; this rule exists only to keep TCP DNS from
+//     reaching docker's DNAT and resolving for real)
+//     … docker's 127.0.0.11:53 DNAT (marked resolver traffic lands here) …
+//  3. -m mark --mark <mark> -j RETURN — proxy/sbxfuse upstream escapes the TCP
+//     redirect below; sits before it but below the narrow DNS DNAT.
+//  4. -p tcp -j REDIRECT --to-ports <proxyPort> — all other TCP, loopback
+//     included.
 //
 // Requires CAP_NET_ADMIN; the sandbox-pod runs with NET_ADMIN for now.
-func (c *container) RedirectEgress(ctx context.Context, proxyPort, mark int) error {
+func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark int) error {
+	markHex := fmt.Sprintf("0x%x", mark)
 	rules := [][]string{
-		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", fmt.Sprintf("0x%x", mark), "-j", "RETURN"},
+		// Head: DNS → sink, above docker's embedded-DNS DNAT, skipping our own
+		// marked resolver sockets. Inserted at positions 1 and 2 so they keep
+		// this relative order at the top of the chain.
+		{"-t", "nat", "-I", "OUTPUT", "1", "-p", "udp", "--dport", "53", "-m", "mark", "!", "--mark", markHex, "-j", "REDIRECT", "--to-ports", strconv.Itoa(dnsPort)},
+		{"-t", "nat", "-I", "OUTPUT", "2", "-p", "tcp", "--dport", "53", "-m", "mark", "!", "--mark", markHex, "-j", "REDIRECT", "--to-ports", strconv.Itoa(dnsPort)},
+		// Tail: exempt marked upstream traffic, then redirect all other TCP to
+		// the proxy. These can append below docker's rules — docker's only nat
+		// entries are the narrow 127.0.0.11:53 DNATs handled above.
+		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", markHex, "-j", "RETURN"},
 		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(proxyPort)},
 	}
 	for _, args := range rules {

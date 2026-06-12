@@ -188,11 +188,12 @@ type Isolation interface {
 	// agent, which installs it before the workload starts.
 	InstallCA(certPEM []byte) error
 
-	// RedirectEgress installs the firewall rules that funnel the
-	// workload's outbound TCP to the in-pod proxy at proxyPort, exempting
-	// sockets stamped with the given SO_MARK (the proxy's own upstream
-	// traffic) so they aren't redirected back into the proxy.
-	RedirectEgress(ctx context.Context, proxyPort, mark int) error
+	// RedirectEgress installs the firewall rules that funnel the workload's
+	// outbound traffic to the in-pod sidecars: TCP to the proxy at proxyPort,
+	// and all DNS (UDP/53 and TCP/53, to any resolver) to the DNS sinkhole at
+	// dnsPort. Sockets stamped with the given SO_MARK (the proxy's own upstream
+	// and resolver traffic) are exempted so they aren't redirected back.
+	RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark int) error
 
 	// CgroupPath is the absolute cgroup the workload runs under, used both
 	// to confine it (written into the runtime config) and to read resource

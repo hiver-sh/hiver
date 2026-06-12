@@ -142,6 +142,8 @@ type Proxy struct {
 	auditEnc *json.Encoder
 
 	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
+
+	dnsDedupe dnsDedupe // collapses repeated DNS-sink lookups in the audit stream
 }
 
 // SetRules atomically replaces the egress rules. Safe to call from
@@ -172,7 +174,21 @@ func New(cfg Config) (*Proxy, error) {
 	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	if cfg.OutboundMark != 0 {
-		dialer.Control = soMarkControl(cfg.OutboundMark)
+		ctrl := soMarkControl(cfg.OutboundMark)
+		dialer.Control = ctrl
+		// The proxy now dials upstreams by hostname (DNS is sinkholed for the
+		// workload), so it does its own resolution. Those DNS sockets must
+		// carry the same SO_MARK as upstream connections, otherwise the
+		// iptables UDP/53 REDIRECT would bounce them into the sink and the
+		// proxy would "resolve" every name to the placeholder. Force the Go
+		// resolver and stamp its sockets too.
+		dialer.Resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := &net.Dialer{Timeout: 5 * time.Second, Control: ctrl}
+				return d.DialContext(ctx, network, address)
+			},
+		}
 	}
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
@@ -667,6 +683,22 @@ func applyOverride(r *http.Request, ov *EgressOverride) {
 	for k, v := range ov.Headers {
 		r.Header.Set(k, v)
 	}
+}
+
+// upstreamAddr is the address the proxy dials for a transparent connection.
+// With DNS sinkholed for the workload, origDst is a placeholder, so we dial the
+// matched hostname (re-resolved on the proxy's own SO_MARK'd resolver) and keep
+// the real destination port from origDst. When no name was observed — host fell
+// back to origDst, e.g. a raw IP-literal connection — origDst is the real
+// destination and we use it unchanged. host may carry a port (HTTP Host header);
+// the port from origDst always wins since that's what the kernel actually dialed.
+func upstreamAddr(host, origDst string) string {
+	hostOnly, _ := splitHostPort("", host, 0)
+	_, port := splitHostPort("", origDst, 0)
+	if hostOnly == "" || port == 0 {
+		return origDst
+	}
+	return net.JoinHostPort(hostOnly, strconv.Itoa(port))
 }
 
 func matchHost(pat, host string) bool {

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -35,6 +36,8 @@ func main() {
 		mark        = flag.Int("mark", 0, "SO_MARK to stamp on upstream sockets so iptables can skip them; required when -transparent is set")
 		caCertPath  = flag.String("ca-cert", "", "PEM CA cert; with -ca-key enables TLS interception for inspectable rules")
 		caKeyPath   = flag.String("ca-key", "", "PEM CA private key (paired with -ca-cert)")
+		dnsAddr     = flag.String("dns-addr", "", "listen address for the DNS sinkhole (UDP+TCP); when set, all workload DNS is redirected here and answered with -dns-sink")
+		dnsSink     = flag.String("dns-sink", "192.0.2.1", "IPv4 placeholder returned for every DNS query (TEST-NET-1 by default; the agent connects to it and the proxy re-resolves the real name)")
 	)
 	flag.Parse()
 
@@ -100,6 +103,20 @@ func main() {
 			}
 		}
 	}()
+
+	// DNS sinkhole: iptables redirects all workload DNS here, and we answer
+	// every query with a constant placeholder so DNS can't be a tunnel. The
+	// agent then connects to the placeholder and the proxy re-resolves the
+	// real host on its own SO_MARK'd resolver. Runs alongside ServeTransparent.
+	if *dnsAddr != "" {
+		sinkIP := net.ParseIP(*dnsSink)
+		if sinkIP == nil || sinkIP.To4() == nil {
+			log.Fatalf("sbxproxy: -dns-sink %q is not a valid IPv4 address", *dnsSink)
+		}
+		if err := p.ServeDNSSink(ctx, *dnsAddr, sinkIP); err != nil {
+			log.Fatalf("proxy.ServeDNSSink: %v", err)
+		}
+	}
 
 	if *transparent {
 		log.Printf("sbxproxy listening (transparent) on %s, %d rules, mark=0x%x", *addr, len(rules), *mark)

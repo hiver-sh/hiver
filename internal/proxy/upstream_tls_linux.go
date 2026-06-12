@@ -11,20 +11,23 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-// dialUpstreamTLS dials origDst over TCP and completes a TLS handshake. WS
+// dialUpstreamTLS dials dialAddr over TCP and completes a TLS handshake. WS
 // upgrades mirror the agent's ClientHello (with a Chrome fallback) so
 // Cloudflare Bot Management sees the agent's JA3 paired with the agent's
 // HTTP headers rather than Go's stdlib JA3. Regular HTTPS uses the Chrome
 // fingerprint directly — fast path; the mirror buys nothing here because
 // the agent's own stdlib JA3 would already trip CF.
 //
+// dialAddr is normally "<sni-host>:<port>" (the workload's DNS is sinkholed, so
+// the proxy resolves the name itself); host is the TLS ServerName.
+//
 // ALPN is pinned to http/1.1 in both cases so the inspection loop can read
 // the inner request after the handshake.
-func (p *Proxy) dialUpstreamTLS(origDst, host string, clientHello []byte, ws bool) (net.Conn, error) {
+func (p *Proxy) dialUpstreamTLS(dialAddr, host string, clientHello []byte, ws bool) (net.Conn, error) {
 	if ws {
-		return dialMirroredWithChromeFallback(p.dialer, origDst, host, clientHello)
+		return dialMirroredWithChromeFallback(p.dialer, dialAddr, host, clientHello)
 	}
-	rawUp, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
+	rawUp, err := p.dialer.DialContext(context.Background(), "tcp", dialAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
@@ -101,8 +104,8 @@ func pinALPN(spec *utls.ClientHelloSpec, proto string) {
 // through to Cloudflare-protected hosts. Mirroring is preferred because it
 // pairs the agent's JA3 with the agent's HTTP headers; Chrome is a much
 // better fallback than stdlib TLS, which is widely fingerprinted as bot.
-func dialMirroredWithChromeFallback(dialer *net.Dialer, origDst, host string, clientHello []byte) (net.Conn, error) {
-	rawUp, err := dialer.DialContext(context.Background(), "tcp", origDst)
+func dialMirroredWithChromeFallback(dialer *net.Dialer, dialAddr, host string, clientHello []byte) (net.Conn, error) {
+	rawUp, err := dialer.DialContext(context.Background(), "tcp", dialAddr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
@@ -115,7 +118,7 @@ func dialMirroredWithChromeFallback(dialer *net.Dialer, origDst, host string, cl
 	log.Printf("upstream tls: mirrored handshake failed host=%s err=%v — falling back to chrome", host, mirrorErr)
 	_ = rawUp.Close()
 
-	rawUp2, err := dialer.DialContext(context.Background(), "tcp", origDst)
+	rawUp2, err := dialer.DialContext(context.Background(), "tcp", dialAddr)
 	if err != nil {
 		return nil, fmt.Errorf("redial for chrome fallback: %w", err)
 	}

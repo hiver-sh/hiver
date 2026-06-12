@@ -59,12 +59,14 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	p.rawForwardTLS(c, br, host, origDst)
 }
 
-// rawForwardTLS pipes the agent's TLS stream straight to origDst without
-// touching the cipher. Used when the rule sets Passthrough, or when no CA
-// is configured. No audit visibility beyond host + port.
+// rawForwardTLS pipes the agent's TLS stream straight to the upstream without
+// touching the cipher. Used when the rule sets Passthrough, or when no CA is
+// configured. The dial target is the SNI host (origDst is a sinkhole
+// placeholder); see upstreamAddr. No audit visibility beyond host + port.
 func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string) {
-	log.Printf("transparent tls: raw forward host=%s origDst=%s", host, origDst)
-	upstream, err := p.dialer.DialContext(context.Background(), "tcp", origDst)
+	dialAddr := upstreamAddr(host, origDst)
+	log.Printf("transparent tls: raw forward host=%s dialAddr=%s origDst=%s", host, dialAddr, origDst)
+	upstream, err := p.dialer.DialContext(context.Background(), "tcp", dialAddr)
 	if err != nil {
 		p.beginAudit("TLS", host, "", "").deny("upstream dial: "+err.Error(), http.StatusBadGateway)
 		return
@@ -114,7 +116,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		return
 	}
 
-	upstreamConn, err := p.dialUpstreamTLS(origDst, host, clientHello, isWebSocketUpgrade(req))
+	upstreamConn, err := p.dialUpstreamTLS(upstreamAddr(host, origDst), host, clientHello, isWebSocketUpgrade(req))
 	if err != nil {
 		log.Printf("intercept tls: upstream tls error host=%s origDst=%s: %v", host, origDst, err)
 		ac.responseError("upstream: "+err.Error(), http.StatusBadGateway)

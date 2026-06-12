@@ -10,9 +10,10 @@ import (
 )
 
 // handleTransparentHTTP serves one origin-form HTTP request. The Host header
-// carries the agent's intended hostname (used for allowlist matching); the
-// pre-redirect destination IP/port (recovered via SO_ORIGINAL_DST) is what
-// we actually dial, so DNS happens once at the agent — we don't re-resolve.
+// carries the agent's intended hostname, used both for allowlist matching and
+// as the dial target: the agent's DNS is sinkholed, so origDst is a placeholder
+// and the proxy re-resolves the name itself (see upstreamAddr). The destination
+// port still comes from SO_ORIGINAL_DST.
 func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst string) {
 	req, err := http.ReadRequest(br)
 	if err != nil {
@@ -35,9 +36,10 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 		return
 	}
 
-	upstream, err := p.dialer.DialContext(req.Context(), "tcp", origDst)
+	dialAddr := upstreamAddr(host, origDst)
+	upstream, err := p.dialer.DialContext(req.Context(), "tcp", dialAddr)
 	if err != nil {
-		log.Printf("transparent http: upstream dial error host=%s origDst=%s: %v", hostOnly, origDst, err)
+		log.Printf("transparent http: upstream dial error host=%s dialAddr=%s origDst=%s: %v", hostOnly, dialAddr, origDst, err)
 		ac.responseError(err.Error(), http.StatusBadGateway)
 		_, _ = c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 		return

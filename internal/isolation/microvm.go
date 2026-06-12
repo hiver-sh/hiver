@@ -186,20 +186,24 @@ func (m *microvm) InstallCA(certPEM []byte) error {
 }
 
 // RedirectEgress provisions the host tap device that carries guest egress
-// and installs the nat rules that funnel guest TCP to sbxproxy. The guest
-// reaches the host at gatewayIP; the host receives the forwarded packets in
-// PREROUTING (not OUTPUT — the guest is a separate network stack) and DNATs
-// them to the proxy on loopback.
+// and installs the nat rules that funnel guest TCP to sbxproxy and guest DNS
+// to the sinkhole. The guest reaches the host at gatewayIP; the host receives
+// the forwarded packets in PREROUTING (not OUTPUT — the guest is a separate
+// network stack) and DNATs them to the sidecars on loopback.
 //
-// DNAT to 127.0.0.1, not REDIRECT: sbxproxy listens on 127.0.0.1:proxyPort,
-// but REDIRECT on a *forwarded* packet rewrites the destination to the
-// incoming interface's primary address (gatewayIP), where nothing is
-// listening — so the redirect would silently black-hole guest egress.
-// DNAT'ing straight to 127.0.0.1 lands it on the proxy; route_localnet (set
-// below) lifts the kernel's martian-drop of loopback-destined packets
-// arriving on the tap, and SO_ORIGINAL_DST still recovers the guest's real
-// destination from conntrack.
-func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, mark int) error {
+// DNAT to 127.0.0.1, not REDIRECT: sbxproxy listens on 127.0.0.1:proxyPort
+// (and the sink on 127.0.0.1:dnsPort), but REDIRECT on a *forwarded* packet
+// rewrites the destination to the incoming interface's primary address
+// (gatewayIP), where nothing is listening — so the redirect would silently
+// black-hole guest egress. DNAT'ing straight to 127.0.0.1 lands it on the
+// sidecar; route_localnet (set below) lifts the kernel's martian-drop of
+// loopback-destined packets arriving on the tap, and SO_ORIGINAL_DST still
+// recovers the guest's real destination from conntrack.
+//
+// The guest's resolv.conf points its nameserver at gatewayIP (see
+// resolvConfForGuest); both UDP/53 and TCP/53 to it are DNAT'd to the sink, so
+// no in-pod resolver listens on the gateway and DNS can't leave the box.
+func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark int) error {
 	m.mu.Lock()
 	m.proxyPort = proxyPort
 	m.mark = mark
@@ -209,10 +213,12 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, mark int) error
 		{"ip", "tuntap", "add", "dev", m.tapName, "mode", "tap"},
 		{"ip", "addr", "add", gatewayIP + "/30", "dev", m.tapName},
 		{"ip", "link", "set", "dev", m.tapName, "up"},
-		// DNS-over-TCP to the gateway is served by the in-pod relay (startDNSForwarder
-		// below), not the proxy: exempt it from the redirect that follows.
-		{"iptables", "-t", "nat", "-A", "PREROUTING", "-i", m.tapName, "-p", "tcp", "--dport", guestDNSPort, "-j", "RETURN"},
-		// Guest TCP arriving on the tap is DNAT'd to the host proxy on loopback.
+		// Guest DNS (UDP and TCP/53) is DNAT'd to the host DNS sinkhole. These
+		// must precede the general TCP rule so DNS doesn't fall through to the
+		// proxy.
+		{"iptables", "-t", "nat", "-A", "PREROUTING", "-i", m.tapName, "-p", "udp", "--dport", guestDNSPort, "-j", "DNAT", "--to-destination", fmt.Sprintf("127.0.0.1:%d", dnsPort)},
+		{"iptables", "-t", "nat", "-A", "PREROUTING", "-i", m.tapName, "-p", "tcp", "--dport", guestDNSPort, "-j", "DNAT", "--to-destination", fmt.Sprintf("127.0.0.1:%d", dnsPort)},
+		// All other guest TCP arriving on the tap is DNAT'd to the host proxy.
 		{"iptables", "-t", "nat", "-A", "PREROUTING", "-i", m.tapName, "-p", "tcp", "-j", "DNAT", "--to-destination", fmt.Sprintf("127.0.0.1:%d", proxyPort)},
 		// Proxy-originated upstream traffic (stamped with SO_MARK) escapes
 		// any redirect so it isn't looped back.
@@ -225,13 +231,6 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, mark int) error
 		if out, err := exec.CommandContext(ctx, s[0], s[1:]...).CombinedOutput(); err != nil {
 			return fmt.Errorf("%v: %w (%s)", s, err, out)
 		}
-	}
-	// The guest's resolv.conf points at the tap gateway; relay its DNS to the
-	// pod's own resolver, which the guest's separate network stack can't reach.
-	// UDP DNS lands here directly (it isn't matched by the TCP redirect above);
-	// TCP DNS is exempted by the RETURN rule.
-	if err := startDNSForwarder(ctx, gatewayIP, podUpstreamDNS()); err != nil {
-		return err
 	}
 	// route_localnet (needed so the kernel delivers the DNAT-to-127.0.0.1
 	// packets instead of dropping them as martians) is enabled at pod-create
