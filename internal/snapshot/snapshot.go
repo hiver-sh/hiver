@@ -12,8 +12,10 @@
 // patterns (/home/user/*); a trailing /* is stripped to obtain the base
 // directory, which is then walked recursively.
 //
-// Local FS mounts are automatically appended to include so callers don't
-// have to repeat them.
+// Only the paths listed in include are captured. Local FS mounts are not
+// added automatically: a mounted path is captured only when the caller lists
+// it explicitly in include, in which case the mounts table routes it to the
+// correct backend directory.
 package snapshot
 
 import (

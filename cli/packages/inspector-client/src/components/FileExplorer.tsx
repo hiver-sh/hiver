@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  Cloud,
   File,
   Folder,
   FolderOpen,
@@ -103,6 +104,7 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
   const { transport } = useTransport();
   const { prefs, toggleExpandedPath } = useUserPreferences();
   const [roots, setRoots] = useState<TreeNode[]>([]);
+  const [mountBackends, setMountBackends] = useState<Map<string, string>>(new Map());
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -167,17 +169,36 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
       }
       collectExpanded(rootsRef.current);
 
+      const configUrl = new URL(
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxKey)}/config`,
+      );
+
       const allPaths = [
         "/",
         ...new Set([...treeExpandedPaths, ...expandedPathsPrefRef.current]),
       ];
-      const results = await Promise.all(
-        allPaths.map((p) =>
+      const [configResult, ...results] = await Promise.all([
+        transport
+          .fetch(configUrl)
+          .then(
+            (r) =>
+              r.json() as Promise<{
+                fs?: { mount: string; backend: string }[];
+              }>,
+          )
+          .catch(() => null),
+        ...allPaths.map((p) =>
           fetchChildren(p)
             .then((nodes) => ({ path: p, nodes }))
             .catch(() => null),
         ),
-      );
+      ]);
+
+      if (configResult?.fs) {
+        setMountBackends(
+          new Map(configResult.fs.map((f) => [f.mount, f.backend])),
+        );
+      }
       const freshByPath = new Map(
         results.filter((r) => r !== null).map((r) => [r.path, r.nodes]),
       );
@@ -328,6 +349,8 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
 
   function renderNode(node: TreeNode, depth: number) {
     const isLoadingThis = loadingPath === node.path;
+    const backend = mountBackends.get(node.path);
+    const isCloudMount = node.is_dir && backend != null && backend !== "local";
     return (
       <div key={node.path}>
         <button
@@ -341,7 +364,7 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
           onClick={() =>
             node.is_dir ? toggle(node.path) : openFile(node.path)
           }
-          title={node.is_dir ? node.path : node.path}
+          title={isCloudMount ? `${node.path} (${backend})` : node.path}
           disabled={isLoadingThis}
         >
           <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
@@ -358,11 +381,16 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
             )}
           </span>
           {node.is_dir ? (
-            node.expanded ? (
-              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
-            ) : (
-              <Folder className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
-            )
+            <>
+              {node.expanded ? (
+                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+              ) : (
+                <Folder className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+              )}
+              {isCloudMount && (
+                <Cloud className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+              )}
+            </>
           ) : (
             <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
           )}

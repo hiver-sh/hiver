@@ -1,7 +1,7 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { extname } from "node:path";
 
-const TEXT_EXTS = new Set([".md", ".py", ".json", ".txt", ".js", ".xml"]);
+const TEXT_EXTS = new Set([".md", ".py", ".json", ".jsonl", ".txt", ".js", ".xml"]);
 
 interface DirEntry {
   path: string;
@@ -140,7 +140,9 @@ export class EventRecorder {
           const { entries } = JSON.parse(text) as { entries: DirEntry[] };
           for (const entry of entries) {
             const fullPath = entry.path;
-            if (!entry.is_dir && TEXT_EXTS.has(extname(fullPath))) {
+            if (entry.is_dir) {
+              this.trackDirectory(sandboxKey, fullPath);
+            } else if (TEXT_EXTS.has(extname(fullPath))) {
               this.trackFile(sandboxKey, fullPath);
             }
           }

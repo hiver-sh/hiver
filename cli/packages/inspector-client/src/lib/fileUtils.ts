@@ -7,6 +7,8 @@ const TEXT_LANGS: Record<string, string> = {
   env: "plaintext",
   json: "json",
   jsonc: "json",
+  jsonl: "json",
+  ndjson: "json",
   js: "javascript",
   jsx: "javascript",
   mjs: "javascript",

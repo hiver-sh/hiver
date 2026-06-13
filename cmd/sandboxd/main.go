@@ -514,11 +514,10 @@ func main() {
 					writeKey = *sn.RestoreKey
 				}
 				if writeKey != "" {
-					var userInclude []string
+					var include []string
 					if sn.Include != nil {
-						userInclude = *sn.Include
+						include = *sn.Include
 					}
-					include := effectiveInclude(userInclude, localFSMounts(sp.FS))
 					dst := snapshot.SnapshotPath(*snapshotDir, writeKey)
 					log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
 					if err := iso.CaptureSnapshot(dst, include); err != nil {
@@ -905,24 +904,4 @@ func isolationLocalMounts(fsList []spec.FS) []isolation.SnapshotMount {
 		out = append(out, isolation.SnapshotMount{ContainerPath: m.ContainerPath, HostDir: m.HostDir})
 	}
 	return out
-}
-
-// effectiveInclude returns the snapshot include list with local FS mounts
-// appended automatically. This ensures local filesystems are always captured
-// even when the caller omits them from the explicit include list.
-func effectiveInclude(userInclude []string, mounts []snapshot.MountSource) []string {
-	include := append([]string(nil), userInclude...)
-	for _, m := range mounts {
-		already := false
-		for _, p := range include {
-			if p == m.ContainerPath || p == m.ContainerPath+"/*" {
-				already = true
-				break
-			}
-		}
-		if !already {
-			include = append(include, m.ContainerPath)
-		}
-	}
-	return include
 }
