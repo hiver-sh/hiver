@@ -20,7 +20,7 @@ var sandboxKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 const defaultTimeout = 30 * time.Second
 
 // Client is the controller client. It provisions and manages sandboxes
-// via the Hive gateway's /controller/* routes.
+// through the Hive gateway.
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -54,14 +54,13 @@ func NewClient(gatewayURL string, opts ...Option) *Client {
 	return c
 }
 
-// GetOrCreateSandbox idempotently provisions a sandbox under key. If a
-// sandbox with that key already exists it is returned unchanged; otherwise
-// one is created from config. The call blocks until the sandbox responds to
-// Ping (up to the client's configured timeout).
+// GetOrCreateSandbox creates a sandbox, or fetches the existing one when key
+// is already in use. The key acts as an idempotency key: calling again with
+// the same key returns the same sandbox and leaves config unapplied. It blocks
+// until the sandbox is ready (up to the client's configured timeout).
 //
-// If config.FS is empty a default /workspace local mount with rw access is
-// added automatically. If config.Egress is empty egress is opened to all
-// hosts. Both match the TypeScript client defaults.
+// As a convenience, an empty config.FS defaults to a /workspace local mount
+// with rw access, and an empty config.Egress opens egress to all hosts.
 func (c *Client) GetOrCreateSandbox(ctx context.Context, key string, config SandboxConfig) (*Sandbox, error) {
 	if !sandboxKeyPattern.MatchString(key) {
 		return nil, fmt.Errorf("GetOrCreateSandbox: key %q must match %s", key, sandboxKeyPattern)
@@ -150,8 +149,8 @@ func (c *Client) ListSandboxes(ctx context.Context) ([]*Sandbox, error) {
 	return sandboxes, nil
 }
 
-// Shutdown stops and removes the sandbox identified by key. It is idempotent
-// for already-stopped containers; unknown keys return an error.
+// Shutdown permanently stops and removes the sandbox identified by key. It is
+// idempotent for already-stopped sandboxes; unknown keys return an error.
 func (c *Client) Shutdown(ctx context.Context, key string) error {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()

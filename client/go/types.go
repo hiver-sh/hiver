@@ -1,184 +1,299 @@
 package client
 
-// ACLRule is one access control rule for a filesystem mount.
+// ACLRule is one access control rule. Rules are matched longest-prefix-first;
+// access is denied by default when no rule matches.
 type ACLRule struct {
-	Path   string `json:"path"`
-	Access string `json:"access"` // "rw", "ro", or "deny"
+	// Path or glob the rule applies to (e.g. "/workspace/secret/**").
+	Path string `json:"path"`
+	// Access is "rw" (read-write), "ro" (read-only), or "deny".
+	Access string `json:"access"`
 }
 
-// EgressOverride specifies values the proxy injects into outbound requests.
-// Host ("hostname[:port]") substitutes the upstream the proxy dials for
-// matching requests; matching and the agent-visible request (Host header,
-// SNI) keep the original hostname. When the port is omitted, the original
-// destination port is kept. PrefixPath ("/mock") is prepended to the
-// outbound request path; matching and audit events keep the original path.
+// EgressOverride holds values the proxy injects into outbound requests that
+// match an egress rule. If the agent already set the same query parameter or
+// header, the proxy overwrites it; otherwise the value is added. The agent
+// cannot read these values back.
 type EgressOverride struct {
-	Host       string            `json:"host,omitempty"`
-	PrefixPath string            `json:"prefix_path,omitempty"`
-	Query      map[string]string `json:"query,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
+	// Host is the upstream the proxy dials instead of the matched host, as
+	// "hostname[:port]" or "ip[:port]". When the port is omitted, the original
+	// destination port is kept. The agent-visible request (Host header, TLS
+	// SNI) keeps the original hostname.
+	Host string `json:"host,omitempty"`
+	// PrefixPath is prepended to the outbound request path ("/mock" turns
+	// "/v1/user" into "/mock/v1/user"). The agent's original path is preserved
+	// for rule matching and audit events. A trailing slash is ignored.
+	PrefixPath string `json:"prefix_path,omitempty"`
+	// Query holds URL query parameters to add or overwrite on the outbound
+	// request. Useful for injecting API keys the agent should never see.
+	Query map[string]string `json:"query,omitempty"`
+	// Headers holds HTTP headers to add or overwrite on the outbound request.
+	// Useful for injecting bearer tokens or tenant identifiers.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // EgressRule is one egress rule.
 type EgressRule struct {
-	Access   string          `json:"access"` // "allow" or "deny"
-	Host     string          `json:"host"`
-	Ports    []int           `json:"ports,omitempty"`
-	Methods  []string        `json:"methods,omitempty"`
-	Paths    []string        `json:"paths,omitempty"`
+	// Access is "allow" or "deny" for matching requests.
+	Access string `json:"access"`
+	// Host is an exact host ("api.github.com") or wildcard suffix ("*.pypi.org").
+	Host string `json:"host"`
+	// Ports optionally restricts the rule; when empty no port enforcement is performed.
+	Ports []int `json:"ports,omitempty"`
+	// Methods are the HTTP methods matched by this rule. Empty means any method.
+	Methods []string `json:"methods,omitempty"`
+	// Paths are glob path patterns matched by this rule. Empty means any path.
+	Paths []string `json:"paths,omitempty"`
+	// Override holds values the proxy injects into matching outbound requests.
 	Override *EgressOverride `json:"override,omitempty"`
 }
 
-// FileSystem describes a filesystem exposed to the sandbox.
-// Set Backend to "local", "gdrive", or "gcs" and populate the corresponding fields.
+// FileSystem describes a file system exposed to the agent at Mount. Backend
+// selects the storage type; populate the fields for that backend. Access is
+// governed by ACLs, evaluated longest-prefix-first with deny as the default.
 type FileSystem struct {
-	Mount   string    `json:"mount"`
-	Backend string    `json:"backend"` // "local", "gdrive", "gcs", or "external"
-	ACLs    []ACLRule `json:"acls,omitempty"`
+	// Mount is the absolute path at which the file system appears to the agent.
+	Mount string `json:"mount"`
+	// Backend is "local", "gdrive", "gcs", or "external".
+	Backend string `json:"backend"`
+	// ACLs are access control rules for paths under Mount.
+	ACLs []ACLRule `json:"acls,omitempty"`
 
-	// local backend
+	// Origin (local backend) is the local path to mount into this sandbox.
+	// Supported only with the local Docker runtime — helpful for development,
+	// e.g. mounting local skill files into the sandbox.
 	Origin string `json:"origin,omitempty"`
 
-	// gdrive backend
-	GDriveAccessToken        string `json:"gdrive_access_token,omitempty"`
-	GDriveRefreshToken       string `json:"gdrive_refresh_token,omitempty"`
-	GDriveClientID           string `json:"gdrive_client_id,omitempty"`
-	GDriveClientSecret       string `json:"gdrive_client_secret,omitempty"`
+	// GDriveAccessToken (gdrive backend) is an OAuth access token.
+	GDriveAccessToken string `json:"gdrive_access_token,omitempty"`
+	// GDriveRefreshToken (gdrive backend) is an OAuth refresh token.
+	GDriveRefreshToken string `json:"gdrive_refresh_token,omitempty"`
+	// GDriveClientID (gdrive backend) is an OAuth client ID.
+	GDriveClientID string `json:"gdrive_client_id,omitempty"`
+	// GDriveClientSecret (gdrive backend) is an OAuth client secret.
+	GDriveClientSecret string `json:"gdrive_client_secret,omitempty"`
+	// GDriveServiceAccountJSON (gdrive backend) is service account credential
+	// JSON. Mutually exclusive with the OAuth fields above.
 	GDriveServiceAccountJSON string `json:"gdrive_service_account_json,omitempty"`
-	GDriveFolderID           string `json:"gdrive_folder_id,omitempty"`
-	GDrivePrefix             string `json:"gdrive_prefix,omitempty"`
+	// GDriveFolderID (gdrive backend) scopes the file system to a Drive folder.
+	// When omitted, the account root is used.
+	GDriveFolderID string `json:"gdrive_folder_id,omitempty"`
+	// GDrivePrefix (gdrive backend) is an optional subfolder path within
+	// GDriveFolderID (e.g. "e2e-test/run-42"). Created if absent.
+	GDrivePrefix string `json:"gdrive_prefix,omitempty"`
 
-	// gcs backend
-	GCSBucket             string `json:"gcs_bucket,omitempty"`
-	GCSPrefix             string `json:"gcs_prefix,omitempty"`
+	// GCSBucket (gcs backend) is the bucket name.
+	GCSBucket string `json:"gcs_bucket,omitempty"`
+	// GCSPrefix (gcs backend) is an optional key prefix within the bucket
+	// (e.g. "workspace/session-42"). When omitted, the bucket root is used.
+	GCSPrefix string `json:"gcs_prefix,omitempty"`
+	// GCSServiceAccountJSON (gcs backend) is service account credential JSON.
+	// When omitted, Application Default Credentials are used.
 	GCSServiceAccountJSON string `json:"gcs_service_account_json,omitempty"`
 
-	// external backend — base URL of the HTTP host implementing the
-	// external file system contract (api/external_file_system.yaml).
+	// Host (external backend) is the base URL of the host you implement to back
+	// this file system. A trailing slash is ignored.
 	Host string `json:"host,omitempty"`
 }
 
-// Snapshot configures automatic sandbox snapshots.
+// Snapshot configures automatic sandbox snapshots. A snapshot is captured
+// before the sandbox shuts down and restored before it starts.
 type Snapshot struct {
-	RestoreKey string   `json:"restore_key,omitempty"`
-	WriteKey   string   `json:"write_key,omitempty"`
-	Include    []string `json:"include,omitempty"`
+	// RestoreKey identifies the snapshot to restore when the sandbox starts.
+	// When omitted, no snapshot is restored on start.
+	RestoreKey string `json:"restore_key,omitempty"`
+	// WriteKey is the key under which the snapshot is saved on shutdown. When
+	// omitted, RestoreKey is used.
+	WriteKey string `json:"write_key,omitempty"`
+	// Include are glob patterns for the paths to capture (e.g. "/home/user/*").
+	Include []string `json:"include,omitempty"`
 }
 
-// SandboxConfig is the configuration document for a sandbox.
+// SandboxConfig is the configuration for a sandbox.
 type SandboxConfig struct {
-	Image      string            `json:"image,omitempty"`
-	Isolation  string            `json:"isolation,omitempty"` // "container" or "microvm"
-	CPU        int               `json:"cpu,omitempty"`
-	Memory     int               `json:"memory,omitempty"`
-	Entrypoint string            `json:"entrypoint,omitempty"`
-	CWD        string            `json:"cwd,omitempty"`
-	TTY        bool              `json:"tty,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	ExtraHosts []string          `json:"extra_hosts,omitempty"`
-	TTL        *int              `json:"ttl,omitempty"` // pointer so callers can set 0 (disable TTL)
-	FS         []FileSystem      `json:"fs,omitempty"`
-	Egress     []EgressRule      `json:"egress,omitempty"`
-	Snapshot   *Snapshot         `json:"snapshot,omitempty"`
+	// Image references the agent image to launch. Cannot be changed after the
+	// sandbox is initialized.
+	Image string `json:"image,omitempty"`
+	// Isolation is the mechanism used to run the sandbox: "container" or
+	// "microvm". Cannot be changed after the sandbox is initialized.
+	Isolation string `json:"isolation,omitempty"`
+	// CPU is the number of virtual CPUs allocated to the sandbox. Defaults to 1.
+	// Cannot be changed after the sandbox is initialized.
+	CPU int `json:"cpu,omitempty"`
+	// Memory allocated to the sandbox, in MiB. Defaults to 512. Cannot be
+	// changed after the sandbox is initialized.
+	Memory int `json:"memory,omitempty"`
+	// Entrypoint overrides the entrypoint used when the sandbox is run. When
+	// omitted, the image's default entrypoint is used.
+	Entrypoint string `json:"entrypoint,omitempty"`
+	// CWD is the working directory for the entrypoint. When omitted, the
+	// image's working directory is used. Cannot be changed after the sandbox
+	// is initialized.
+	CWD string `json:"cwd,omitempty"`
+	// TTY launches the entrypoint attached to a pseudo-TTY; attach to it with
+	// ExecStream and an empty command. Container isolation only. Cannot be
+	// changed after the sandbox is initialized.
+	TTY bool `json:"tty,omitempty"`
+	// Env holds additional environment variables.
+	Env map[string]string `json:"env,omitempty"`
+	// ExtraHosts holds additional /etc/hosts entries in "hostname:ip" form (use
+	// "host-gateway" for the host machine's IP). Cannot be changed after the
+	// sandbox is initialized.
+	ExtraHosts []string `json:"extra_hosts,omitempty"`
+	// TTL is the sandbox time to live in seconds. Call Sandbox.Ping to reset
+	// the timer; once a ping has not been received for this long the sandbox is
+	// stopped. Defaults to 1800 (30 min). It is a pointer so callers can set 0
+	// to disable shutdown.
+	TTL *int `json:"ttl,omitempty"`
+	// FS holds the file systems exposed to the agent. Mount paths must be
+	// unique and non-overlapping.
+	FS []FileSystem `json:"fs,omitempty"`
+	// Egress is the ordered list of egress rules. The first rule that matches a
+	// request decides the outcome; requests that match no rule are denied.
+	Egress []EgressRule `json:"egress,omitempty"`
+	// Snapshot configures automatic snapshots for this sandbox.
+	Snapshot *Snapshot `json:"snapshot,omitempty"`
 }
 
-// SandboxRef is the minimal reference returned by the controller.
+// SandboxRef is a provisioned sandbox handle returned by the controller.
 type SandboxRef struct {
-	ID  string `json:"id"`
+	// ID is the server-assigned unique identifier (uuid).
+	ID string `json:"id"`
+	// Key is the caller-chosen key the sandbox was provisioned under.
 	Key string `json:"key"`
 }
 
-// APIError is the error body returned by the server.
+// APIError is the structured error returned by the server.
 type APIError struct {
-	Message string                 `json:"error"`
+	// Message is the human-readable failure reason.
+	Message string `json:"error"`
+	// Details is optional structured context such as the offending field path.
 	Details map[string]interface{} `json:"details,omitempty"`
 }
 
 func (e *APIError) Error() string { return e.Message }
 
-// FSChanges describes filesystem changes from an apply.
+// FSChanges lists the file systems added or removed by an apply.
 type FSChanges struct {
 	Added   []FileSystem `json:"added,omitempty"`
 	Removed []FileSystem `json:"removed,omitempty"`
 }
 
-// EgressChanges describes egress rule changes from an apply.
+// EgressChanges lists the egress rules added or removed by an apply.
 type EgressChanges struct {
 	Added   []EgressRule `json:"added,omitempty"`
 	Removed []EgressRule `json:"removed,omitempty"`
 }
 
-// Changes describes the concrete additions and removals carried out by an apply.
+// Changes describes the concrete additions and removals carried out by an
+// apply, so the caller can audit what changed without re-diffing the request.
 type Changes struct {
-	FS       *FSChanges     `json:"fs,omitempty"`
-	Egress   *EgressChanges `json:"egress,omitempty"`
-	Warnings []string       `json:"warnings,omitempty"`
+	// FS holds file systems added or removed.
+	FS *FSChanges `json:"fs,omitempty"`
+	// Egress holds egress rules added or removed.
+	Egress *EgressChanges `json:"egress,omitempty"`
+	// Warnings are non-fatal advisories, e.g. a non-modifiable field was
+	// present in the request and was ignored.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
-// ApplyResult is the response from PUT /v1/config.
+// ApplyResult is the outcome of an apply. The change is all-or-nothing.
 type ApplyResult struct {
-	Applied bool          `json:"applied"`
-	Config  SandboxConfig `json:"config"`
-	Changes Changes       `json:"changes"`
-	Error   string        `json:"error,omitempty"`
+	// Applied is true if every change was committed; false if the apply failed
+	// and was rolled back, leaving the sandbox unchanged.
+	Applied bool `json:"applied"`
+	// Config is the configuration in effect after this call.
+	Config SandboxConfig `json:"config"`
+	// Changes details what was added or removed.
+	Changes Changes `json:"changes"`
+	// Error is the human-readable failure reason. Set only when Applied is false.
+	Error string `json:"error,omitempty"`
 }
 
-// ExecRequest is the body for POST /v1/exec.
+// ExecRequest runs a command inside the sandbox and buffers its output.
 type ExecRequest struct {
-	Command string            `json:"command"`
-	CWD     string            `json:"cwd,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	// Command is the command line to run.
+	Command string `json:"command"`
+	// CWD is the working directory to run in. When empty, the sandbox's
+	// working directory is used.
+	CWD string `json:"cwd,omitempty"`
+	// Env is merged on top of the sandbox config's environment, overriding
+	// entries with the same name.
+	Env map[string]string `json:"env,omitempty"`
 }
 
-// ExecResult is the response from POST /v1/exec.
+// ExecResult is the buffered result of a command, available once it exits.
 type ExecResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
+	// Stdout is everything the command wrote to stdout.
+	Stdout string `json:"stdout"`
+	// Stderr is everything the command wrote to stderr.
+	Stderr string `json:"stderr"`
+	// ExitCode is the command's process exit code.
+	ExitCode int `json:"exit_code"`
 }
 
-// ExecStreamRequest is the body for POST /v1/exec-stream/{id}.
-// Leave Command empty to attach to the sandbox entrypoint's TTY.
+// ExecStreamRequest runs a command with streamed I/O. Leave Command empty to
+// attach to the sandbox entrypoint's terminal (requires the sandbox to have
+// been created with TTY true).
 type ExecStreamRequest struct {
-	Command string            `json:"command"` // required by the server schema; empty = attach to entrypoint TTY
-	CWD     string            `json:"cwd,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	TTY     bool              `json:"tty,omitempty"`
+	// Command is the command line to run; empty attaches to the entrypoint terminal.
+	Command string `json:"command"`
+	// CWD is the working directory to run in. When empty, the sandbox's
+	// working directory is used.
+	CWD string `json:"cwd,omitempty"`
+	// Env is merged on top of the sandbox config's environment, overriding
+	// entries with the same name.
+	Env map[string]string `json:"env,omitempty"`
+	// TTY allocates a pseudo-TTY so interactive programs behave as in a terminal.
+	TTY bool `json:"tty,omitempty"`
 }
 
-// ExecOutput is one stdout or stderr frame from a streaming exec.
+// ExecOutput is one output frame from a streaming exec.
 type ExecOutput struct {
-	Stdout string // non-empty on stdout frames
-	Stderr string // non-empty on stderr frames
+	// Stdout is a chunk of stdout output; non-empty on stdout frames.
+	Stdout string
+	// Stderr is a chunk of stderr output; non-empty on stderr frames.
+	Stderr string
 }
 
 // DirEntry is one entry in a directory listing.
 type DirEntry struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	IsDir bool   `json:"is_dir"`
-	Size  int64  `json:"size"`
+	// Name is the entry's base name.
+	Name string `json:"name"`
+	// Path is the agent-visible absolute path of the entry.
+	Path string `json:"path"`
+	// IsDir reports whether the entry is a directory.
+	IsDir bool `json:"is_dir"`
+	// Size is the entry size in bytes.
+	Size int64 `json:"size"`
 }
 
-// UploadResult is the response from POST /v1/file.
+// UploadResult reports where an uploaded file landed.
 type UploadResult struct {
-	Path  string `json:"path"`
-	Bytes int64  `json:"bytes"`
+	// Path is the agent-visible path the file was written to.
+	Path string `json:"path"`
+	// Bytes is the number of bytes written.
+	Bytes int64 `json:"bytes"`
 }
 
-// SandboxLifecycleEvent is a controller-side lifecycle event.
+// SandboxLifecycleEvent is a lifecycle change observed for a single sandbox.
 type SandboxLifecycleEvent struct {
-	ID     string `json:"id"`
-	Key    string `json:"key"`
-	Status string `json:"status"` // "start", "stop", "die", or "destroy"
+	// ID is the server-assigned unique identifier (uuid).
+	ID string `json:"id"`
+	// Key is the caller-chosen key the sandbox was provisioned under.
+	Key string `json:"key"`
+	// Status is the transition that occurred: "start", "stop", "die", or "destroy".
+	Status string `json:"status"`
 }
 
-// SandboxEvent is a sandbox-side audit event. Check Type to determine which
-// fields are populated.
+// SandboxEvent is a single activity event from a sandbox. Inspect Type to
+// determine which fields are populated.
 type SandboxEvent struct {
-	ID        int    `json:"id"`
+	// ID is a monotonic event id, usable as a resume cursor.
+	ID int `json:"id"`
+	// Timestamp is when the event occurred, as an ISO-8601 string.
 	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"`
+	// Type discriminates the event variant.
+	Type string `json:"type"`
 
 	// config.apply
 	Success      bool     `json:"success,omitempty"`
@@ -201,7 +316,7 @@ type SandboxEvent struct {
 	DurationMs int `json:"duration_ms,omitempty"`
 
 	// egress.chunk
-	Label string `json:"label,omitempty"`
+	Label string `json:"label,omitempty"` // "up" for client→upstream, "down" for upstream→client (WebSocket only)
 
 	// fs.request
 	Mount     string `json:"mount,omitempty"`

@@ -70,7 +70,7 @@ func (s *Sandbox) ProxyURL(port int) string {
 	return fmt.Sprintf("%s/v1/proxy/%d", s.apiURL, port)
 }
 
-// Ping resets the sandbox TTL countdown.
+// Ping keeps the sandbox alive by resetting its TTL countdown.
 func (s *Sandbox) Ping(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/ping", nil)
 	if err != nil {
@@ -367,10 +367,11 @@ func (s *Sandbox) UploadFile(ctx context.Context, destination, filename string, 
 	return &result, nil
 }
 
-// WatchEvents streams SandboxEvents from /v1/events. It auto-reconnects on
-// disconnect up to 3 times with exponential backoff. Pass lastEventID = -1
-// to start from the next new event, or a non-negative value to resume after
-// a specific event.
+// WatchEvents streams the sandbox's activity events (egress, filesystem, exec,
+// stdio, resource usage) as they happen. It auto-resumes across transient
+// disconnects up to 3 times with exponential backoff. Pass lastEventID = -1 to
+// start from the next new event, or a non-negative value to resume after a
+// specific event.
 //
 // The returned channel is closed when ctx is done or retries are exhausted.
 // Any terminal error is sent on errc.

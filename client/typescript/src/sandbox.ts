@@ -10,7 +10,7 @@ import { parseSSE } from "./sse";
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 export interface SandboxOptions {
-  /** Base URL of the gateway. Used to build per-sandbox API URLs. */
+  /** Base URL of the gateway. */
   gatewayUrl: string;
   /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
@@ -22,43 +22,48 @@ export interface RequestOptions {
 }
 
 export interface ExecOptions {
+  /** Working directory to run the command in. When omitted, the sandbox's working directory is used. */
   cwd?: string;
   /**
    * Environment variables for the command, merged on top of the sandbox
    * config's `env`. When omitted, the sandbox config environment is used.
    */
   env?: Record<string, string>;
+  /** Abort the command from the caller's side. */
   signal?: AbortSignal;
+  /** Abort after this many milliseconds. */
   timeoutMs?: number;
 }
 
 export interface ExecStreamOptions {
+  /** Working directory to run the command in. When omitted, the sandbox's working directory is used. */
   cwd?: string;
   /**
    * Environment variables for the command, merged on top of the sandbox
    * config's `env`. When omitted, the sandbox config environment is used.
    */
   env?: Record<string, string>;
+  /** Allocate a pseudo-TTY so interactive programs behave as they would in a terminal. */
   tty?: boolean;
+  /** Abort the command from the caller's side. */
   signal?: AbortSignal;
+  /** Abort after this many milliseconds. */
   timeoutMs?: number;
 }
 
 export interface EventsStreamOptions {
   /**
-   * Initial cursor: skip past this id on the first connect. After that
-   * the stream tracks the cursor itself — on a transient disconnect
-   * it reconnects with the latest id observed, so no events are
-   * missed across drops.
+   * Resume after this event id, skipping anything already seen — useful to
+   * pick up where a previous stream left off.
    */
   lastEventId?: number;
   /** Abort the stream from the caller's side. */
   signal?: AbortSignal;
-  /** Max number of retries if the connection is lost. Defaults to `3`. */
+  /** Max number of reconnect attempts after a dropped connection. Defaults to `3`. */
   maxRetries?: number;
   /**
-   * When `false`, the server sends all buffered events and closes the
-   * connection immediately — no live tail. Defaults to `true`.
+   * When `false`, replay the buffered events and stop instead of tailing
+   * live. Defaults to `true`.
    */
   follow?: boolean;
 }
@@ -80,8 +85,10 @@ export class Sandbox {
    */
   readonly proxyUrl: (port: number | string) => string;
 
+  /** The `fetch` implementation used for all requests to this sandbox. */
   readonly fetchImpl: typeof fetch;
 
+  /** Build a handle from a sandbox reference. Prefer {@link getOrCreateSandbox} over constructing directly. */
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.key = ref.key;
@@ -91,9 +98,8 @@ export class Sandbox {
   }
 
   /**
-   * Reset the sandbox's TTL countdown. Bound as an arrow so
-   * `setInterval(sandbox.ping, 10_000)` works without an explicit
-   * `.bind(sandbox)`.
+   * Keep the sandbox alive by resetting its TTL countdown. Bound as an arrow
+   * so it can be passed straight to `setInterval(sandbox.ping, 10_000)`.
    */
   ping = async (opts?: RequestOptions): Promise<void> => {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -104,8 +110,8 @@ export class Sandbox {
   };
 
   /**
-   * List the TCP ports the sandbox exposes (the image's EXPOSE
-   * directives). Each is reachable via {@link proxyUrl}.
+   * List the network ports the sandbox exposes. Reach each one via
+   * {@link proxyUrl}.
    */
   async getPorts(opts?: RequestOptions): Promise<number[]> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -127,9 +133,9 @@ export class Sandbox {
   }
 
   /**
-   * Apply a desired `SandboxConfig`. Returns an `ApplyResult` whose
-   * `applied` field reports whether the change was committed or
-   * rolled back.
+   * Apply a new `SandboxConfig`. The change is all-or-nothing: the returned
+   * `ApplyResult.applied` reports whether it was committed or rolled back,
+   * and `changes` details what was added or removed.
    */
   async applyConfig(
     config: SandboxConfig,
@@ -148,13 +154,12 @@ export class Sandbox {
   }
 
   /**
-   * Long-lived async iterator over `SandboxEvent`s.
+   * Stream the sandbox's activity events (egress, filesystem, exec, stdio,
+   * resource usage) as they happen.
    *
-   * Auto-resumes across disconnects: if the underlying SSE connection
-   * drops (server restart, transient network blip, etc.) the iterator
-   * silently reopens it with the last id observed, so the consumer
-   * never sees a gap. Reconnect uses exponential backoff up to 30s
-   * and runs forever — terminate the stream with `opts.signal`.
+   * Auto-resumes across transient disconnects without dropping events. Stop
+   * the stream with `opts.signal`, or set `opts.follow: false` to replay the
+   * buffered events and finish instead of tailing live.
    */
   async *getEventsStream(
     opts: EventsStreamOptions = {},
@@ -266,18 +271,16 @@ export class Sandbox {
   }
 
   /**
-   * Run `command` inside the sandbox and return an `ExecProcess` handle.
-   * Stream output via `exec.pipes`, write to stdin via `exec.writeStdin()`,
-   * and await the exit code via `exec.exitCode`.
+   * Run `command` inside the sandbox and return an `ExecProcess` handle for
+   * interactive use: stream output via `exec.pipes`, send input via
+   * `exec.writeStdin()`, and await the result via `exec.exitCode`.
    *
    * Pass an empty (or omitted) `command` to attach to the sandbox
-   * entrypoint's TTY instead of running a new command — this requires the
-   * sandbox to have been created with `tty: true`. Output frames carry the
-   * entrypoint terminal's bytes, `writeStdin` writes to it, and the stream
-   * stays open until the client disconnects or the entrypoint exits.
+   * entrypoint's terminal instead of running a new command — this requires
+   * the sandbox to have been created with `tty: true`. The stream stays open
+   * until the entrypoint exits or you disconnect.
    *
-   * The returned promise resolves once the server has accepted the connection
-   * and registered the process — at that point `writeStdin` is safe to call.
+   * Resolves once the process is ready, so `writeStdin` is safe to call.
    */
   async execStream(
     command?: string,
@@ -432,19 +435,27 @@ export class Sandbox {
 }
 
 export interface ExecResult {
+  /** Everything the command wrote to stdout. */
   stdout: string;
+  /** Everything the command wrote to stderr. */
   stderr: string;
+  /** The command's process exit code. */
   exit_code: number;
 }
 
 export interface ExecPipeEvent {
+  /** A chunk of stdout output. Present on stdout frames. */
   stdout?: string;
+  /** A chunk of stderr output. Present on stderr frames. */
   stderr?: string;
 }
 
 export class ExecProcess {
+  /** Unique id for this exec invocation. */
   readonly id: string;
+  /** Async iterable of output chunks (stdout/stderr) emitted as the process runs. */
   readonly pipes: AsyncIterable<ExecPipeEvent>;
+  /** Resolves with the process exit code once it finishes. */
   readonly exitCode: Promise<number>;
   private readonly _writeStdin: (data: string) => Promise<void>;
 
@@ -460,11 +471,13 @@ export class ExecProcess {
     this._writeStdin = opts.writeStdin;
   }
 
+  /** Send `data` to the process's standard input. */
   writeStdin(data: string): Promise<void> {
     return this._writeStdin(data);
   }
 }
 
+/** A single frame from a streaming exec: an output chunk or the final exit code. */
 export type ExecStreamEvent =
   | { type: "stdout"; text: string }
   | { type: "stderr"; text: string }
@@ -541,8 +554,11 @@ function toBlob(content: Blob | Uint8Array | ArrayBuffer | string): Blob {
  * `err.body.details` without re-parsing the response.
  */
 export class SandboxError extends Error {
+  /** HTTP status from the failed response, or `0` if the request never reached the server. */
   readonly status: number;
+  /** The client operation that failed (e.g. `"applyConfig"`). */
   readonly operation: string;
+  /** Structured error payload from the server, when one was returned. */
   readonly body?: { error: string; details?: Record<string, unknown> };
 
   constructor(

@@ -5,13 +5,19 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 
 class ACLRule(BaseModel):
+    """One access control rule."""
+
     path: str
+    """Path or glob the rule applies to (e.g. ``/workspace/secret/**``). Rules are matched longest-prefix-first; access is denied by default when no rule matches."""
     access: Literal["rw", "ro", "deny"]
+    """Read-write, read-only, or fully denied."""
 
 
 class _FileSystemBase(BaseModel):
     mount: str
+    """Absolute path at which the file system appears to the agent."""
     acls: Optional[list[ACLRule]] = None
+    """Access control rules for paths under ``mount``."""
 
     @field_validator("mount")
     @classmethod
@@ -22,93 +28,133 @@ class _FileSystemBase(BaseModel):
 
 
 class LocalFileSystem(_FileSystemBase):
+    """Sandbox-local storage with no external dependency."""
+
     backend: Literal["local"]
     origin: Optional[str] = None
+    """The local path to mount into this sandbox. Local origins are only supported locally with the Docker runtime — helpful for local development, e.g. mounting local skill files into the sandbox."""
 
 
 class GDriveFileSystem(_FileSystemBase):
+    """A file system backed by Google Drive."""
+
     backend: Literal["gdrive"]
     gdrive_access_token: Optional[str] = None
+    """OAuth access token."""
     gdrive_refresh_token: Optional[str] = None
+    """OAuth refresh token."""
     gdrive_client_id: Optional[str] = None
+    """OAuth client ID."""
     gdrive_client_secret: Optional[str] = None
+    """OAuth client secret."""
     gdrive_service_account_json: Optional[str] = None
+    """Service account credential JSON. Mutually exclusive with the OAuth fields above."""
     gdrive_folder_id: Optional[str] = None
+    """ID of the Drive folder the file system is scoped to. When omitted, the account root is used."""
     gdrive_prefix: Optional[str] = None
+    """Optional subfolder path within ``gdrive_folder_id`` (e.g. ``e2e-test/run-42``). Created if absent."""
 
 
 class GCSFileSystem(_FileSystemBase):
+    """A file system backed by Google Cloud Storage."""
+
     backend: Literal["gcs"]
     gcs_bucket: str
+    """GCS bucket name."""
     gcs_prefix: Optional[str] = None
+    """Optional key prefix within the bucket (e.g. ``workspace/session-42``). When omitted, the bucket root is used."""
     gcs_service_account_json: str
+    """Service account credential JSON. When omitted, Application Default Credentials are used (the ``GOOGLE_APPLICATION_CREDENTIALS`` env var, gcloud user credentials, or the GCE/GKE metadata server)."""
 
 
 class ExternalFileSystem(_FileSystemBase):
+    """A file system backed by an external HTTP host. Each agent file operation becomes one call against ``host``."""
+
     backend: Literal["external"]
-    # Base URL of the host implementing the external file system HTTP interface
-    # (see external_file_system.yaml). Store operations are issued relative to
-    # this URL, e.g. host "https://fs.internal:8080" makes a read
-    # "GET https://fs.internal:8080/v1/file?path=...". A trailing slash is ignored.
     host: str
+    """Base URL of the host implementing the external file system interface. A trailing slash is ignored."""
 
 
 FileSystem = Annotated[
     Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, ExternalFileSystem],
     Field(discriminator="backend"),
 ]
+"""A file system exposed to the agent at ``mount``. ``backend`` selects the storage type. Access is governed by ``acls``, evaluated longest-prefix-first with deny as the default."""
 
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+"""An HTTP method an egress rule can match."""
 
 
 class EgressOverride(BaseModel):
-    # Upstream the proxy dials instead of the matched host, as "hostname[:port]"
-    # or "ip[:port]". When the port is omitted, the original destination port is
-    # kept. Rule matching and the agent-visible request (Host header, TLS SNI)
-    # keep the original hostname.
+    """Values the proxy injects into outbound requests that match an egress rule. If the agent already set the same query parameter or header, the proxy overwrites it; otherwise the value is added. The agent cannot read these values back."""
+
     host: Optional[str] = None
-    # Path prefix prepended to the outbound request path ("/mock" turns
-    # "/v1/user" into "/mock/v1/user"). Rule matching and audit events keep the
-    # original path. Applies to inspected HTTP requests only.
+    """Upstream the proxy dials instead of the matched host, as ``hostname[:port]`` or ``ip[:port]``. When the port is omitted, the original destination port is kept. The agent-visible request (Host header, TLS SNI) keeps the original hostname."""
     prefix_path: Optional[str] = None
+    """Path prefix prepended to the outbound request path (``/mock`` turns ``/v1/user`` into ``/mock/v1/user``). The agent's original path is preserved for rule matching and audit events. A trailing slash is ignored."""
     query: Optional[dict[str, str]] = None
+    """URL query parameters to add or overwrite on the outbound request. Useful for injecting API keys the agent should never see."""
     headers: Optional[dict[str, str]] = None
+    """HTTP headers to add or overwrite on the outbound request. Useful for injecting bearer tokens or tenant identifiers."""
 
 
 class EgressRule(BaseModel):
+    """One egress rule."""
+
     access: Literal["allow", "deny"]
+    """Whether matching requests are allowed or denied."""
     host: str
+    """Exact host (``api.github.com``) or wildcard suffix (``*.pypi.org``)."""
     ports: Optional[list[int]] = None
+    """Optional ports; when omitted no port enforcement is performed."""
     methods: Optional[list[HttpMethod]] = None
+    """HTTP methods matched by this rule. Empty means any method."""
     paths: Optional[list[str]] = None
+    """Glob path patterns matched by this rule. Empty means any path."""
     override: Optional[EgressOverride] = None
+    """Values the proxy injects into matching outbound requests."""
 
 
 class Snapshot(BaseModel):
+    """Snapshot configuration. A snapshot is captured automatically before the sandbox shuts down and restored before it starts."""
+
     restore_key: Optional[str] = Field(None, pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    """Key identifying the snapshot to restore when the sandbox starts. When omitted, no snapshot is restored on start."""
     write_key: Optional[str] = Field(None, pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    """Key under which the snapshot is saved on shutdown. When omitted, ``restore_key`` is used."""
     include: Optional[list[str]] = Field(None, min_length=1)
+    """Glob patterns specifying which paths to include in the snapshot (e.g. ``/home/user/*``)."""
 
 
 class SandboxConfig(BaseModel):
+    """Hive sandbox configuration."""
+
     image: Optional[str] = None
+    """Reference to the agent image to launch. Cannot be changed after the sandbox is initialized."""
     isolation: Optional[Literal["container", "microvm"]] = None
+    """The isolation mechanism used to run the sandbox. Cannot be changed after the sandbox is initialized."""
     cpu: Optional[int] = Field(None, ge=1)
+    """Number of virtual CPUs allocated to the sandbox. Defaults to 1. Cannot be changed after the sandbox is initialized."""
     memory: Optional[int] = Field(None, ge=128)
+    """Memory allocated to the sandbox, in MiB. Defaults to 512. Cannot be changed after the sandbox is initialized."""
     entrypoint: Optional[str] = None
-    # Working directory for the entrypoint. When set, overrides the image's
-    # default working directory. When omitted, the image's working directory is
-    # used. Cannot be changed after the sandbox is initialized.
+    """Override the entrypoint used when the sandbox is run. When omitted, the image's default entrypoint is used."""
     cwd: Optional[str] = None
-    # When true, the entrypoint is launched attached to a pseudo-TTY; attach to
-    # it by calling exec_stream with an empty command. Container isolation only.
+    """Working directory for the entrypoint. When omitted, the image's working directory is used. Cannot be changed after the sandbox is initialized."""
     tty: Optional[bool] = None
+    """When true, the entrypoint is launched attached to a pseudo-TTY; attach to it by calling ``exec_stream`` with an empty command. Container isolation only. Defaults to false. Cannot be changed after the sandbox is initialized."""
     env: Optional[dict[str, str]] = None
+    """Additional environment variables in ``KEY=VALUE`` form. Cannot be changed after the sandbox is initialized."""
     extra_hosts: Optional[list[str]] = None
+    """Additional ``/etc/hosts`` entries in ``hostname:ip`` form (use ``host-gateway`` for the host machine's IP). Cannot be changed after the sandbox is initialized."""
     ttl: Optional[int] = Field(None, ge=0)
+    """Sandbox time to live in seconds. Call :meth:`Sandbox.ping` to reset the timer; once a ping has not been received for this long the sandbox is stopped. Defaults to 1800 (30 min). Use ``0`` to disable shutdown."""
     fs: Optional[list[FileSystem]] = Field(None, min_length=1)
+    """File systems exposed to the agent. Mount paths must be unique and non-overlapping (a mount path may not be a parent directory of another)."""
     egress: Optional[list[EgressRule]] = None
+    """Ordered list of egress rules. The first rule that matches a request decides the outcome; requests that match no rule are denied."""
     snapshot: Optional[Snapshot] = None
+    """Snapshot configuration for this sandbox."""
 
 
 class _FSChanges(BaseModel):
@@ -122,37 +168,58 @@ class _EgressChanges(BaseModel):
 
 
 class Changes(BaseModel):
+    """Concrete additions and removals carried out by an apply call. Each list contains whole entries so the caller can audit what changed without re-diffing the request."""
+
     fs: Optional[_FSChanges] = None
+    """File systems added or removed."""
     egress: Optional[_EgressChanges] = None
+    """Egress rules added or removed."""
     warnings: Optional[list[str]] = None
+    """Non-fatal advisories. Example: a non-modifiable field was present in the request and was ignored."""
 
 
 class ApplyResult(BaseModel):
+    """The outcome of an apply call."""
+
     applied: bool
+    """``True`` if every change was applied successfully. ``False`` if the apply failed and was rolled back; in that case the sandbox is unchanged."""
     config: SandboxConfig
+    """The configuration in effect after this call."""
     changes: Changes
+    """What was added or removed by this call."""
     error: Optional[str] = None
+    """Human-readable failure reason. Set only when ``applied`` is ``False``."""
 
 
 class ApiError(BaseModel):
+    """Structured error body returned by the server."""
+
     error: str
+    """Human-readable failure reason."""
     details: Optional[dict[str, object]] = None
+    """Optional structured context such as the offending field path or a conflict identifier."""
 
 
 class SandboxRef(BaseModel):
-    #: Server-assigned unique identifier (uuid).
+    """A provisioned sandbox handle returned by the controller."""
+
     id: str
-    #: Caller-chosen key the sandbox was provisioned under; used for routing.
+    """Server-assigned unique identifier (uuid)."""
     key: str
+    """Caller-chosen key the sandbox was provisioned under; used for routing."""
 
 
 
 class _SandboxEventBase(BaseModel):
     id: int
+    """Monotonic event id, usable as a resume cursor."""
     timestamp: str
+    """When the event occurred, as an ISO-8601 string."""
 
 
 class ConfigApplyEvent(_SandboxEventBase):
+    """Emitted when a configuration apply is attempted."""
+
     type: Literal["config.apply"]
     success: bool
     changes: Changes
@@ -162,6 +229,8 @@ class ConfigApplyEvent(_SandboxEventBase):
 
 
 class EgressRequestEvent(_SandboxEventBase):
+    """An outbound request the agent made through the egress proxy."""
+
     type: Literal["egress.request"]
     access: Literal["allowed", "denied"]
     host: str
@@ -173,6 +242,8 @@ class EgressRequestEvent(_SandboxEventBase):
 
 
 class EgressResponseEvent(_SandboxEventBase):
+    """The response to an earlier egress request."""
+
     type: Literal["egress.response"]
     request_id: int
     status: int
@@ -181,14 +252,18 @@ class EgressResponseEvent(_SandboxEventBase):
 
 
 class EgressChunkEvent(_SandboxEventBase):
+    """A streamed body chunk for an egress request or response."""
+
     type: Literal["egress.chunk"]
     request_id: int
     body: str
-    # `up` for client→upstream, `down` for upstream→client (WebSocket only).
     label: Optional[str] = None
+    """Optional origin tag: ``up`` for client→upstream, ``down`` for upstream→client (WebSocket only)."""
 
 
 class FSRequestEvent(_SandboxEventBase):
+    """A file operation the agent attempted against a mount."""
+
     type: Literal["fs.request"]
     access: Literal["allowed", "denied"]
     mount: str
@@ -197,6 +272,8 @@ class FSRequestEvent(_SandboxEventBase):
 
 
 class FSResponseEvent(_SandboxEventBase):
+    """The outcome of an earlier file operation."""
+
     type: Literal["fs.response"]
     backend: Literal["local", "gdrive", "gcs", "external"]
     request_id: int
@@ -205,29 +282,39 @@ class FSResponseEvent(_SandboxEventBase):
 
 
 class StdioEvent(_SandboxEventBase):
+    """Standard output or error emitted by the sandbox entrypoint."""
+
     type: Literal["stdio"]
     stdout: Optional[str] = None
     stderr: Optional[str] = None
 
 
 class ResourceUsageEvent(_SandboxEventBase):
+    """A periodic sample of the sandbox's CPU and memory usage."""
+
     type: Literal["resource.usage"]
     cpu_percent: float
     memory_bytes: int
 
 
 class ExecRequestEvent(_SandboxEventBase):
+    """A command started inside the sandbox."""
+
     type: Literal["exec.request"]
     cwd: str
     command: str
 
 
 class ExecResponseEvent(_SandboxEventBase):
+    """Marks completion of an earlier exec request."""
+
     type: Literal["exec.response"]
     request_id: int
 
 
 class IngressRequestEvent(_SandboxEventBase):
+    """An inbound request reaching a sandbox port through the proxy."""
+
     type: Literal["ingress.request"]
     port: str
     method: str
@@ -238,6 +325,8 @@ class IngressRequestEvent(_SandboxEventBase):
 
 
 class IngressResponseEvent(_SandboxEventBase):
+    """The response to an earlier ingress request."""
+
     type: Literal["ingress.response"]
     request_id: int
     status: int
@@ -263,6 +352,7 @@ SandboxEvent = Annotated[
     ],
     Field(discriminator="type"),
 ]
+"""A single activity event from a sandbox. Inspect ``type`` to discriminate the variant."""
 
 FileSystemAdapter: TypeAdapter[FileSystem] = TypeAdapter(FileSystem)
 SandboxEventAdapter: TypeAdapter[SandboxEvent] = TypeAdapter(SandboxEvent)

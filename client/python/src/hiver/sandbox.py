@@ -20,6 +20,8 @@ _FETCH_TIMEOUT = httpx.Timeout(connect=3.0, read=3.0, write=3.0, pool=3.0)
 
 
 class SandboxError(Exception):
+    """Raised when a client operation against a sandbox or the controller fails."""
+
     def __init__(
         self,
         operation: str,
@@ -29,8 +31,11 @@ class SandboxError(Exception):
     ) -> None:
         super().__init__(f"{operation}: {message}")
         self.status = status
+        """HTTP status from the failed response, or ``0`` if the request never reached the server."""
         self.operation = operation
+        """The client operation that failed (e.g. ``"apply_config"``)."""
         self.body = body
+        """Structured error payload from the server, when one was returned."""
 
 
 def _to_error(res: httpx.Response, operation: str) -> SandboxError:
@@ -48,10 +53,17 @@ def _to_error(res: httpx.Response, operation: str) -> SandboxError:
 
 class ExecProcess:
     """
-    Handle to a running exec-stream process. Returned by `Sandbox.exec_stream`.
-    Stream output via `pipes`, write to stdin via `write_stdin()`, and
-    await the exit code via `exit_code`.
+    Handle to an interactive command started with :meth:`Sandbox.exec_stream`.
+    Stream output via :attr:`pipes`, send input via :meth:`write_stdin`, and
+    await the result via :attr:`exit_code`.
     """
+
+    id: str
+    """Unique id for this exec invocation."""
+    pipes: AsyncIterable[dict[str, str]]
+    """Async iterable of output chunks emitted as the process runs — each is ``{"stdout": ...}`` or ``{"stderr": ...}``."""
+    exit_code: "asyncio.Future[int]"
+    """Resolves with the process exit code once it finishes."""
 
     def __init__(
         self,
@@ -72,9 +84,16 @@ class ExecProcess:
 
 class Sandbox:
     """
-    Handle to a provisioned sandbox. Returned by `get_or_create_sandbox`;
+    Handle to a provisioned sandbox. Returned by :func:`get_or_create_sandbox`;
     not constructed directly by callers.
     """
+
+    id: str
+    """Server-assigned unique identifier (uuid)."""
+    key: str
+    """Caller-chosen key the sandbox was provisioned under; routes requests."""
+    api_server_url: str
+    """Base URL of the per-sandbox API server."""
 
     def __init__(
         self,
@@ -90,12 +109,13 @@ class Sandbox:
 
     def proxy_url(self, port: Union[int, str]) -> str:
         """
-        Base proxy URL for a specific port inside the sandbox. Append the
-        path to get a full URL, e.g. `sandbox.proxy_url(8080) + "/health"`.
+        Base proxy URL for reaching a port inside the sandbox. Append the
+        path to get a full URL, e.g. ``sandbox.proxy_url(8080) + "/health"``.
         """
         return f"{self.api_server_url}/v1/proxy/{port}"
 
     async def aclose(self) -> None:
+        """Close the underlying HTTP client if this sandbox owns it."""
         if self._owns_client:
             await self._client.aclose()
 
@@ -106,15 +126,15 @@ class Sandbox:
         await self.aclose()
 
     async def ping(self) -> None:
-        """Reset the sandbox's TTL countdown."""
+        """Keep the sandbox alive by resetting its TTL countdown."""
         res = await self._client.get(f"{self.api_server_url}/v1/ping")
         if not res.is_success:
             raise _to_error(res, "ping")
 
     async def get_ports(self) -> list[int]:
         """
-        List the TCP ports the sandbox exposes (the image's EXPOSE
-        directives). Each is reachable via `proxy_url(port)`.
+        List the network ports the sandbox exposes. Reach each one via
+        :meth:`proxy_url`.
         """
         res = await self._client.get(f"{self.api_server_url}/v1/ports")
         if not res.is_success:
@@ -130,9 +150,9 @@ class Sandbox:
 
     async def apply_config(self, config: SandboxConfig) -> ApplyResult:
         """
-        Apply a desired SandboxConfig. Returns an ApplyResult whose
-        `applied` field reports whether the change was committed or
-        rolled back.
+        Apply a new SandboxConfig. The change is all-or-nothing: the returned
+        ApplyResult's ``applied`` field reports whether it was committed or
+        rolled back, and ``changes`` details what was added or removed.
         """
         validated = SandboxConfig.model_validate(config.model_dump(exclude_none=True))
         res = await self._client.put(
@@ -178,23 +198,20 @@ class Sandbox:
         env: Optional[dict[str, str]] = None,
     ) -> ExecProcess:
         """
-        Run `command` inside the sandbox and return an ExecProcess handle.
-        Stream output via `exec.pipes`, write to stdin via `exec.write_stdin()`,
-        and await the exit code via `exec.exit_code`.
+        Run `command` inside the sandbox and return an ExecProcess handle for
+        interactive use: stream output via ``exec.pipes``, send input via
+        ``exec.write_stdin()``, and await the result via ``exec.exit_code``.
 
-        Pass an empty `command` to attach to the sandbox entrypoint's TTY
+        Pass an empty `command` to attach to the sandbox entrypoint's terminal
         instead of running a new command — this requires the sandbox to have
-        been created with `tty=True`. Output frames carry the entrypoint
-        terminal's bytes, `write_stdin` writes to it, and the stream stays open
-        until the client disconnects or the entrypoint exits.
+        been created with ``tty=True``. The stream stays open until the
+        entrypoint exits or you disconnect.
 
         `env` is merged on top of the sandbox config's environment, overriding
         entries with the same name. When omitted, the sandbox config
         environment is used as-is.
 
-        The returned coroutine resolves once the server has accepted the
-        connection and registered the process — at that point `write_stdin`
-        is safe to call.
+        Resolves once the process is ready, so ``write_stdin`` is safe to call.
         """
         exec_id = str(uuid.uuid4())
         stream_url = f"{self.api_server_url}/v1/exec-stream/{exec_id}"
@@ -333,12 +350,12 @@ class Sandbox:
         max_retries: int = 3,
     ) -> AsyncGenerator[SandboxEvent, None]:
         """
-        Long-lived async generator over SandboxEvents.
+        Stream the sandbox's activity events (egress, filesystem, exec, stdio,
+        resource usage) as they happen.
 
-        Auto-resumes across disconnects: if the underlying SSE connection
-        drops the generator silently reopens it with the last id observed,
-        so the consumer never sees a gap. Reconnect uses exponential
-        backoff up to 30s. Terminate the stream by setting `abort` or
+        Auto-resumes across transient disconnects without dropping events,
+        reconnecting up to ``max_retries`` times. Resume from a known position
+        with ``last_event_id``. Stop the stream by setting ``abort`` or
         cancelling the calling task.
         """
         backoff_s = 0.2

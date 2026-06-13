@@ -27,14 +27,10 @@ async def get_or_create_sandbox(
     timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> Sandbox:
     """
-    Idempotent provision against PUT /v1/sandboxes/{key}. If a sandbox
-    with `key` already exists the controller returns it unchanged and
-    the supplied `config` is ignored; otherwise the controller creates
-    a new sandbox from `config`.
-
-    `config` is validated before the request is sent — a bad config
-    fails fast on the caller side instead of producing a 400 from the
-    controller.
+    Create a sandbox, or fetch the existing one when `key` is already in use.
+    The key acts as an idempotency key: calling again with the same key returns
+    the same sandbox and leaves the supplied `config` unapplied. Resolves once
+    the sandbox is ready to accept requests.
     """
     if not _SANDBOX_KEY_PATTERN.match(key):
         raise ValueError(
@@ -139,7 +135,7 @@ async def shutdown(
     client: Optional[httpx.AsyncClient] = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> None:
-    """Stop the sandbox container and remove it."""
+    """Permanently stop and remove a sandbox."""
     base = gateway_url.rstrip("/")
     owns_client = client is None
     http = client or httpx.AsyncClient()
@@ -170,11 +166,11 @@ async def watch_sandbox_events(
     client: Optional[httpx.AsyncClient] = None,
     abort: Optional[asyncio.Event] = None,
 ) -> AsyncGenerator[dict, None]:
-    """Stream sandbox lifecycle events via SSE from GET /v1/sandboxes/events.
+    """Watch lifecycle changes across all sandboxes as they happen.
 
     Yields dicts of the form
     ``{"id": "<uuid>", "key": "<key>", "status": "start|stop|die|destroy"}``
-    until *abort* is set or the server closes the stream.
+    until *abort* is set or the stream ends.
     """
     base = gateway_url.rstrip("/")
     owns_client = client is None

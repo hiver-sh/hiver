@@ -2,6 +2,7 @@ import { ApiError, SandboxConfig, SandboxRef } from "./schemas";
 import { Sandbox, SandboxError, toError } from "./sandbox";
 import { parseSSE } from "./sse";
 
+/** Gateway URL used when none is supplied via {@link GatewayOptions}. */
 export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
 
 const SANDBOX_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -12,9 +13,9 @@ export interface GatewayOptions {
   /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
   /**
-   * Timeout in milliseconds applied to every controller fetch operation and
-   * to the readiness polling loop in `getOrCreateSandbox`. Defaults to 30s.
-   * Pass `0` to disable timeouts and skip the readiness wait.
+   * Timeout in milliseconds for controller operations, and the maximum time
+   * `getOrCreateSandbox` waits for a new sandbox to become ready. Defaults to
+   * 30s. Pass `0` to disable timeouts and skip the readiness wait.
    */
   timeoutMs?: number;
 }
@@ -23,14 +24,10 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const READINESS_POLL_INTERVAL_MS = 200;
 
 /**
- * Idempotent provision against `PUT /v1/sandboxes/{key}`. If a sandbox
- * with `key` already exists the controller returns it unchanged and
- * the supplied `config` is ignored; otherwise the controller creates
- * a new sandbox from `config`.
- *
- * `config` is validated against the SandboxConfig schema before the
- * request is sent — a bad config fails fast on the caller side
- * instead of producing a 400 from the controller.
+ * Create a sandbox, or fetch the existing one when `key` is already in use.
+ * The key acts as an idempotency key: calling again with the same key returns
+ * the same sandbox and leaves the supplied `config` unapplied. Resolves once
+ * the sandbox is ready to accept requests.
  */
 export async function getOrCreateSandbox(
   key: string,
@@ -178,7 +175,7 @@ export async function listSandboxes(
 }
 
 /**
- * Stop the sandbox container and remove it.
+ * Permanently stop and remove a sandbox.
  */
 export async function shutdown(
   sandbox: Sandbox,
@@ -208,18 +205,21 @@ export async function shutdown(
   throw await toError(res, "shutdown");
 }
 
+/** Lifecycle transition a sandbox can go through. */
 export type SandboxLifecycleStatus = "start" | "stop" | "die" | "destroy";
+/** A lifecycle change observed for a single sandbox. */
 export interface SandboxLifecycleEvent {
   /** Server-assigned unique identifier (uuid). */
   id: string;
   /** Caller-chosen key the sandbox was provisioned under. */
   key: string;
+  /** Which lifecycle transition occurred. */
   status: SandboxLifecycleStatus;
 }
 
 /**
- * Stream sandbox lifecycle events via SSE from `GET /v1/sandboxes/events`.
- * Yields events until the signal is aborted or the server closes the stream.
+ * Watch lifecycle changes (start, stop, die, destroy) across all sandboxes as
+ * they happen. Yields events until `signal` is aborted or the stream ends.
  */
 export async function* watchSandboxEvents(
   opts: GatewayOptions = {},

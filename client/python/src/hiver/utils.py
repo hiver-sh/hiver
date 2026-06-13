@@ -2,6 +2,11 @@ from .schemas import EgressRule
 
 
 def allowed_python_packages(*packages: str) -> list[EgressRule]:
+    """Build egress rules that allow installing the named packages from PyPI.
+
+    Add the returned rules to ``SandboxConfig.egress`` so ``pip install`` can
+    reach only those packages.
+    """
     return [
         EgressRule(
             access="allow",
@@ -13,6 +18,11 @@ def allowed_python_packages(*packages: str) -> list[EgressRule]:
 
 
 def allowed_npm_packages(*packages: str) -> list[EgressRule]:
+    """Build egress rules that allow installing the named packages from the npm registry.
+
+    Add the returned rules to ``SandboxConfig.egress`` so ``npm install`` can
+    reach only those packages.
+    """
     return [
         EgressRule(
             access="allow",
