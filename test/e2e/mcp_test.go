@@ -152,10 +152,6 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 	if err != nil {
 		t.Fatalf("re-render spec: %v", err)
 	}
-	specPath := filepath.Join(t.TempDir(), "spec.json")
-	if err := os.WriteFile(specPath, rendered, 0o644); err != nil {
-		t.Fatalf("write spec: %v", err)
-	}
 
 	sandboxDir := sp.Image
 	if !filepath.IsAbs(sandboxDir) {
@@ -177,7 +173,7 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 	setup.BuildImages(t, dockerfile, buildContext, agentImage)
 	setup.BuildSandboxBundle(t, agentImage, bundleImage)
 
-	pod := startMCPPod(t, bundleImage, specPath)
+	pod := startMCPPod(t, bundleImage, string(rendered))
 
 	mcpURL := "http://127.0.0.1:8080/v1/mcp"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -197,7 +193,7 @@ type mcpPod struct {
 // runSandboxPod it doesn't wait for any agent-side "DONE" marker — the
 // readiness check is "MCP server answers initialize", which the caller
 // does via connectMCP.
-func startMCPPod(t *testing.T, bundleImage, specPath string) *mcpPod {
+func startMCPPod(t *testing.T, bundleImage, specJSON string) *mcpPod {
 	t.Helper()
 
 	containerName := fmt.Sprintf("sandbox-pod-mcp-e2e-%d", time.Now().UnixNano())
@@ -212,9 +208,8 @@ func startMCPPod(t *testing.T, bundleImage, specPath string) *mcpPod {
 		"--security-opt", "seccomp=unconfined",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8080:8080",
-		"-v", specPath + ":/mnt/spec.json:ro",
+		"-e", spec.EnvSpec + "=" + specJSON,
 		bundleImage,
-		"--spec", "/mnt/spec.json",
 	}
 
 	pod := &mcpPod{}

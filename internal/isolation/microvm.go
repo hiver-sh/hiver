@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +84,11 @@ type microvm struct {
 	proxyPort int
 	mark      int
 	caCertPEM []byte
+
+	// readyLn is the host-side listener for the guest's readiness beacon
+	// (firecracker.GuestReadyPort). LaunchAgent opens it before boot; WaitReady
+	// blocks on Accept. nil until LaunchAgent runs.
+	readyLn net.Listener
 }
 
 func newMicroVM(cfg Config) *microvm {
@@ -250,11 +256,11 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark i
 	}); err != nil {
 		return err
 	}
-	// route_localnet (needed so the kernel delivers the DNAT-to-127.0.0.1
-	// packets instead of dropping them as martians) is enabled at pod-create
-	// time via a docker --sysctl on net.ipv4.conf.all: the pod's /proc/sys is
-	// read-only, so it can't be set here, and the kernel ORs the "all" value
-	// over this tap anyway. See the controller's DockerRuntime.Start.
+	// route_localnet lets the kernel deliver the DNAT-to-127.0.0.1 packets
+	// instead of dropping them as martians.
+	if err := enableRouteLocalnet(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -424,6 +430,14 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		return "", nil, fmt.Errorf("write firecracker config: %w", err)
 	}
 
+	// Open the readiness-beacon listener before boot so the guest's dial (once
+	// its exec listener is up) is never refused; WaitReady blocks on its Accept.
+	readyLn, err := firecracker.HostVsockListener(m.vsockUDS, firecracker.GuestReadyPort)
+	if err != nil {
+		return "", nil, fmt.Errorf("open ready listener: %w", err)
+	}
+	m.readyLn = readyLn
+
 	bin, args := firecracker.Command(m.fcBin, m.apiSock, m.configFile)
 	// Place the firecracker process in the sandbox cgroup before exec so its
 	// CPU/memory (the guest runs as VMM threads) are accounted under
@@ -446,10 +460,35 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	return "sh", []string{"-c", shell}, nil
 }
 
-// WaitReady blocks until the in-guest agent is accepting exec sessions on
-// its vsock port (it listens only after the workload root is assembled).
+// WaitReady blocks until the in-guest agent dials the readiness beacon (it
+// does so right after its exec listener is up, i.e. once the workload root is
+// assembled) or ctx is cancelled.
 func (m *microvm) WaitReady(ctx context.Context) error {
-	return firecracker.WaitGuestPort(ctx, m.vsockUDS, firecracker.GuestExecPort)
+	if m.readyLn == nil {
+		return fmt.Errorf("ready listener not initialized; LaunchAgent must run first")
+	}
+	defer m.readyLn.Close()
+
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		conn, err := m.readyLn.Accept()
+		done <- result{conn, err}
+	}()
+	select {
+	case <-ctx.Done():
+		m.readyLn.Close() // unblock Accept above
+		return ctx.Err()
+	case r := <-done:
+		if r.err != nil {
+			return fmt.Errorf("accept ready beacon: %w", r.err)
+		}
+		r.conn.Close()
+		return nil
+	}
 }
 
 // FlushAgent runs `sync` inside the guest so the agent's writes reach the
@@ -628,6 +667,25 @@ func enableIPForward() error {
 	}
 	if err := os.WriteFile(proc, []byte("1"), 0); err != nil {
 		return fmt.Errorf("enable ip_forward: %w", err)
+	}
+	return nil
+}
+
+// enableRouteLocalnet ensures net.ipv4.conf.all.route_localnet=1 so the kernel
+// delivers the guest's DNAT-to-127.0.0.1 egress instead of dropping it as a
+// martian. Like enableIPForward it reads first and skips the write when already
+// enabled: under docker the controller sets it via --sysctl (the container's
+// /proc/sys is read-only), so this no-ops; under a privileged k8s pod /proc/sys
+// is writable, so sandboxd sets it here and no pod sysctl / node allowlist is
+// needed. Cloud nodes (e.g. GKE) often default it to 1 already.
+func enableRouteLocalnet() error {
+	const proc = "/proc/sys/net/ipv4/conf/all/route_localnet"
+	v, err := os.ReadFile(proc)
+	if err == nil && strings.TrimSpace(string(v)) == "1" {
+		return nil
+	}
+	if err := os.WriteFile(proc, []byte("1"), 0); err != nil {
+		return fmt.Errorf("enable route_localnet: %w", err)
 	}
 	return nil
 }

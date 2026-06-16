@@ -103,7 +103,7 @@ class Sandbox:
     ) -> None:
         self.id = ref.id
         self.key = ref.key
-        self.api_server_url = f"{gateway_url.rstrip('/')}/sandbox/{ref.key}"
+        self.api_server_url = f"{gateway_url.rstrip('/')}/sandbox/{ref.id}"
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=_FETCH_TIMEOUT)
 

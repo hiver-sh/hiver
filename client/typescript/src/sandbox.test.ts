@@ -4,7 +4,7 @@ import type { ApplyResult, SandboxConfig } from "./schemas";
 
 const GATEWAY = "http://gateway:10000";
 const REF = { id: "11111111-1111-1111-1111-111111111111", key: "sb-1" };
-const SANDBOX_BASE = `${GATEWAY}/sandbox/sb-1`;
+const SANDBOX_BASE = `${GATEWAY}/sandbox/${REF.id}`;
 
 function makeSandbox(mockFetch: ReturnType<typeof vi.fn>): Sandbox {
   return new Sandbox(REF, {

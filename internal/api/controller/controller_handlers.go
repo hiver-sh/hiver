@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -17,10 +18,50 @@ import (
 )
 
 type ControllerHandlers struct {
-	// mu serializes container lifecycle operations so two requests for the
-	// same key can't both decide "not running" and race on docker create.
-	mu      sync.Mutex
+	// keys serializes lifecycle operations per sandbox key so two requests for
+	// the same key can't both decide "not running" and race on create, while
+	// letting different keys proceed concurrently — important now that a create
+	// blocks until the sandbox is reachable.
+	keys    keyedMutex
 	runtime SandboxRuntime
+}
+
+// keyedMutex hands out one lock per key, reclaiming a key's lock once no caller
+// holds or waits on it so the map can't grow without bound.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*refLock
+}
+
+type refLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lock blocks until the caller holds key's lock, returning the unlock func.
+func (k *keyedMutex) lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = make(map[string]*refLock)
+	}
+	rl := k.locks[key]
+	if rl == nil {
+		rl = &refLock{}
+		k.locks[key] = rl
+	}
+	rl.refs++
+	k.mu.Unlock()
+
+	rl.mu.Lock()
+	return func() {
+		rl.mu.Unlock()
+		k.mu.Lock()
+		rl.refs--
+		if rl.refs == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
 }
 
 func NewControllerHandlers() *ControllerHandlers {
@@ -40,7 +81,7 @@ func NewControllerHandlers() *ControllerHandlers {
 
 // ListSandboxes returns all currently running sandboxes.
 func (h *ControllerHandlers) ListSandboxes(c *gin.Context) {
-	sandboxes, err := h.runtime.List()
+	sandboxes, err := h.runtime.List(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
 		return
@@ -52,14 +93,21 @@ func (h *ControllerHandlers) ListSandboxes(c *gin.Context) {
 // running its existing endpoint is returned (200); otherwise a new sandbox
 // is booted from the request body (201).
 func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, key string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// handlerStart bounds everything the controller does for this request, so the
+	// gap between it and Start's own timing (the lock wait, Lookup, body bind, and
+	// response) is attributable; the gap between it and the client-observed time
+	// is then pure network/gateway.
+	handlerStart := time.Now()
+	defer h.keys.lock(key)()
 
-	running, sb, err := h.runtime.Lookup(key)
+	ctx := c.Request.Context()
+	lookupStart := time.Now()
+	running, sb, err := h.runtime.Lookup(ctx, key)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
 		return
 	}
+	log.Printf("sandbox %q: lookup in %s (running=%t)", key, time.Since(lookupStart).Round(time.Millisecond), running)
 	if running {
 		c.JSON(http.StatusOK, sb)
 		return
@@ -71,11 +119,12 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, key string) {
 		return
 	}
 
-	sb, err = h.runtime.Start(key, api.NormalizeConfig(cfg))
+	sb, err = h.runtime.Start(ctx, key, api.NormalizeConfig(cfg))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
 		return
 	}
+	log.Printf("sandbox %q: get-or-create handler total %s", key, time.Since(handlerStart).Round(time.Millisecond))
 	c.JSON(http.StatusCreated, sb)
 }
 
@@ -113,10 +162,9 @@ func (h *ControllerHandlers) StreamSandboxEvents(c *gin.Context) {
 // ShutdownSandbox stops and removes the sandbox for key. An already-exited
 // container is simply removed; a missing sandbox returns 404.
 func (h *ControllerHandlers) ShutdownSandbox(c *gin.Context, key string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	defer h.keys.lock(key)()
 
-	if err := h.runtime.Shutdown(key); err != nil {
+	if err := h.runtime.Shutdown(c.Request.Context(), key); err != nil {
 		if errors.Is(err, ErrSandboxNotFound) {
 			c.JSON(http.StatusNotFound, sandboxgen.Error{Error: fmt.Sprintf("sandbox %q does not exist", key)})
 			return

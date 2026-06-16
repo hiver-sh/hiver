@@ -92,7 +92,7 @@ export class Sandbox {
   constructor(ref: SandboxRef, opts: SandboxOptions) {
     this.id = ref.id;
     this.key = ref.key;
-    this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.key)}`;
+    this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.id)}`;
     this.proxyUrl = (port) => `${this.apiServerUrl}/v1/proxy/${port}`;
     this.fetchImpl = opts.fetch ?? fetch;
   }

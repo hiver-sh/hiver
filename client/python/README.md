@@ -102,14 +102,14 @@ sandbox = await hiver.get_or_create_sandbox(
     "my-sandbox",
     config,
     gateway_url="http://localhost:10000",  # default
-    timeout_s=30.0,                        # default; pass 0 to skip readiness wait
+    timeout_s=60.0,                        # default; pass 0 to skip readiness wait
 )
 ```
 
 | Parameter     | Type    | Default                  | Description                                                              |
 | ------------- | ------- | ------------------------ | ------------------------------------------------------------------------ |
 | `gateway_url` | `str`   | `http://localhost:10000` | Base URL of the gateway. Also exported as `DEFAULT_GATEWAY_URL`.         |
-| `timeout_s`   | `float` | `30.0`                   | Timeout for each request and the readiness poll. Pass `0` to skip waits. |
+| `timeout_s`   | `float` | `60.0`                   | Timeout for each request and the readiness poll. Pass `0` to skip waits. |
 
 ---
 

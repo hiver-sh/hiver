@@ -5,11 +5,6 @@
 // The spec carries everything sandboxd needs: the agent binary + args, the
 // workspace's host-side backend and FUSE mount point, the FUSE ACLs, the
 // proxy's egress allowlist, and where to write audit logs.
-//
-// Scope (T47, T50): launch the three processes in the right order
-// (proxy + FUSE first, then agent — DESIGN.md §3.3), wire env vars, prefix-
-// stream stdio. Out of scope: real namespace/cgroup isolation (T49), CSI
-// integration (T82), preflight checks (T51), credential broker (T60).
 package main
 
 import (
@@ -69,11 +64,17 @@ const (
 	// anyway, so a wedged guest can't block teardown past the controller's
 	// shutdown grace period.
 	agentFlushTimeout = 10 * time.Second
+
+	// soMark stamps proxy-originated upstream sockets so the iptables REDIRECT
+	// rule can skip them (-m mark) and avoid an infinite loop; it also tags the
+	// API server's reverse-proxy dialer. Any non-zero value works — we pick a
+	// distinctive one for grep-ability.
+	soMark = 0x5b1
 )
 
 func main() {
+	phase := &bootPhase{last: time.Now()}
 	var (
-		specPath      = flag.String("spec", "", "path to the sandbox spec JSON (required)")
 		proxyBin      = flag.String("proxy-bin", "sbxproxy", "path to sbxproxy binary")
 		fuseBin       = flag.String("fuse-bin", "sbxfuse", "path to sbxfuse binary")
 		apiServerPort = flag.String("api-server-port", "8099", "port of the API server")
@@ -82,14 +83,20 @@ func main() {
 	)
 	flag.Parse()
 
-	if *specPath == "" {
-		flag.Usage()
-		log.Fatal("--spec is required")
-	}
-	sp, err := spec.Load(*specPath)
+	// The spec is delivered as JSON in the HIVE_SPEC env var (injected by the
+	// runtime), not a mounted file.
+	sp, err := spec.LoadEnv()
 	if err != nil {
 		log.Fatalf("spec: %v", err)
 	}
+
+	// Construct the API server and start serving immediately — before any
+	// subsystem exists — so the sandbox binds its port the instant the process
+	// starts, rather than after the multi-second proxy/FUSE/image/agent boot.
+	// Its dependencies are injected via the SetX methods below as boot creates
+	// them; until all are wired the server answers every request with 500.
+	s := api.NewSandboxServer(*apiServerPort, soMark)
+	go s.ListenAndServe()
 
 	if err := os.MkdirAll(*workDir, 0o755); err != nil {
 		log.Fatalf("create work dir %s: %v", *workDir, err)
@@ -121,6 +128,8 @@ func main() {
 		log.Fatalf("isolation: %v", err)
 	}
 	log.Printf("sandboxd: isolation = %s", iso.Kind())
+	s.SetIsolation(iso)
+	phase.mark("isolation init")
 
 	// Persist the parsed spec as the API's source-of-truth config so
 	// GET/PUT /v1/config have something to read/diff against from the
@@ -141,6 +150,8 @@ func main() {
 	// Publish'd here; api.NewSandboxServer hands subscribers to the SSE handler.
 	broker := events.New(events.DefaultCapacity, 0)
 	store := api.NewConfigStore(configPath)
+	s.SetBroker(broker)
+	s.SetStore(store)
 
 	// Lifetime expires the sandbox if /v1/ping isn't called within
 	// SandboxConfig.Ttl seconds. ttlFn samples the current config on
@@ -164,6 +175,12 @@ func main() {
 	// Any broker event (except resource.usage, which uses PublishSilent)
 	// counts as sandbox activity and resets the inactivity timer.
 	broker.SetActivityHook(lifetime.Reset)
+	// Inject lifetime last of the four core subsystems: this completes the wiring
+	// and flips the server out of its 500 "still starting" state. The TTL
+	// countdown starts here rather than at agent launch so image unpacking can't
+	// eat into the client's ping window.
+	s.SetLifetime(lifetime)
+	go lifetime.Run(ctx)
 	for i := range sp.FS {
 		f := &sp.FS[i]
 		// sbxfuse mounts onto f.Mount on the host (both backends); both dirs
@@ -188,59 +205,72 @@ func main() {
 		log.Fatalf("free dns port: %v", err)
 	}
 	dnsAddr := fmt.Sprintf("127.0.0.1:%d", dnsPort)
-	// soMark stamps proxy-originated upstream sockets; the iptables
-	// REDIRECT rule we install below uses `-m mark` to skip them and
-	// avoid an infinite loop. Any non-zero value works; we pick a
-	// distinctive one for grep-ability.
-	const soMark = 0x5b1
 
 	var children sync.WaitGroup
 
-	// 1. sbxproxy in transparent mode. iptables (set up below) will
-	// REDIRECT all outbound TCP from agent processes here; sbxproxy
-	// recovers the original destination via SO_ORIGINAL_DST and
-	// dispatches by protocol sniff. The agent itself is unaware of
-	// the proxy — no HTTP_PROXY env, no opt-in cooperation required.
+	// sbxproxy (egress) and sbxfuse (workspace) are independent subsystems whose
+	// startup is dominated by waiting for each child to boot — the proxy to
+	// listen, the FUSE daemons to mount. Bring them up concurrently so those
+	// waits overlap rather than sum; both must be ready before the agent launches
+	// below. The handful of isolation-backend mutations they make (RedirectEgress,
+	// ExportWorkspace) are serialized via isoMu, since the backend isn't
+	// guaranteed concurrency-safe — only the boot waits actually overlap.
 	rulesTmp := filepath.Join(*workDir, "egress-rules.json")
-	if err := writeJSON(rulesTmp, sp.Egress); err != nil {
-		log.Fatalf("write rules: %v", err)
-	}
-
 	caCertPath := filepath.Join(*workDir, "sandbox-ca.crt")
 	caKeyPath := filepath.Join(*workDir, "sandbox-ca.key")
+	fsSidecars := map[string]fsSidecar{}
+	var (
+		setupWG  sync.WaitGroup
+		isoMu    sync.Mutex
+		proxyCmd *exec.Cmd
+	)
 
-	// Generate the per-pod CA (written to caCertPath/caKeyPath). sbxproxy
-	// uses it to mint leaf certs; the backend later installs the cert PEM
-	// into the workload trust store via InstallCA.
-	sandboxd.GenerateCaCert(caCertPath, caKeyPath)
-	proxyArgs := []string{
-		"-transparent",
-		"-addr", proxyAddr,
-		"-dns-addr", dnsAddr,
-		"-rules", rulesTmp,
-		"-mark", fmt.Sprintf("%d", soMark),
-		"-ca-cert", caCertPath,
-		"-ca-key", caKeyPath,
-	}
-	proxyCmd, err := startSidecar(ctx, &children, "sbxproxy", *proxyBin, proxyArgs, nil,
-		sidecarOnEvent(formatProxyEvent, newProxyTranslator(broker).handle))
-	if err != nil {
-		log.Fatalf("start proxy: %v", err)
-	}
-	if err := waitForListen(ctx, proxyAddr, 5*time.Second); err != nil {
-		_ = proxyCmd.Process.Kill()
-		log.Fatalf("proxy did not become ready: %v", err)
-	}
-
-	// 1b. Install iptables OUTPUT REDIRECT rules so the agent's
-	// outbound TCP (in the shared netns) lands on sbxproxy. The mark
-	// rule MUST come first so the proxy's own upstream traffic isn't
-	// looped back; the loopback rule keeps in-pod localhost traffic
-	// (e.g. unit tests, future control sockets) untouched.
-	if err := iso.RedirectEgress(ctx, proxyPort, dnsPort, soMark); err != nil {
-		log.Fatalf("install egress redirect: %v", err)
-	}
-	log.Printf("sandboxd: iptables OUTPUT nat redirect → %s installed (mark=0x%x)", proxyAddr, soMark)
+	// 1. sbxproxy in transparent mode. iptables (set up below) will REDIRECT all
+	// outbound TCP from agent processes here; sbxproxy recovers the original
+	// destination via SO_ORIGINAL_DST and dispatches by protocol sniff. The agent
+	// itself is unaware of the proxy — no HTTP_PROXY env, no opt-in required.
+	setupWG.Add(1)
+	go func() {
+		defer setupWG.Done()
+		if err := writeJSON(rulesTmp, sp.Egress); err != nil {
+			log.Fatalf("write rules: %v", err)
+		}
+		// Generate the per-pod CA (written to caCertPath/caKeyPath). sbxproxy
+		// uses it to mint leaf certs; the backend later installs the cert PEM
+		// into the workload trust store via InstallCA.
+		sandboxd.GenerateCaCert(caCertPath, caKeyPath)
+		proxyArgs := []string{
+			"-transparent",
+			"-addr", proxyAddr,
+			"-dns-addr", dnsAddr,
+			"-rules", rulesTmp,
+			"-mark", fmt.Sprintf("%d", soMark),
+			"-ca-cert", caCertPath,
+			"-ca-key", caKeyPath,
+		}
+		cmd, err := startSidecar(ctx, &children, "sbxproxy", *proxyBin, proxyArgs, nil,
+			sidecarOnEvent(formatProxyEvent, newProxyTranslator(broker).handle))
+		if err != nil {
+			log.Fatalf("start proxy: %v", err)
+		}
+		if err := waitForListen(ctx, proxyAddr, 5*time.Second); err != nil {
+			_ = cmd.Process.Kill()
+			log.Fatalf("proxy did not become ready: %v", err)
+		}
+		// 1b. Install iptables OUTPUT REDIRECT rules so the agent's outbound TCP
+		// (in the shared netns) lands on sbxproxy. The mark rule MUST come first
+		// so the proxy's own upstream traffic isn't looped back; the loopback
+		// rule keeps in-pod localhost traffic (e.g. unit tests, future control
+		// sockets) untouched.
+		isoMu.Lock()
+		err = iso.RedirectEgress(ctx, proxyPort, dnsPort, soMark)
+		isoMu.Unlock()
+		if err != nil {
+			log.Fatalf("install egress redirect: %v", err)
+		}
+		log.Printf("sandboxd: iptables OUTPUT nat redirect → %s installed (mark=0x%x)", proxyAddr, soMark)
+		proxyCmd = cmd
+	}()
 
 	// 2. sbxfuse — one daemon per fs entry, always on the host. Each gets its
 	// own ACL file, audit log, mount point, and backend dir; remote backends
@@ -250,59 +280,71 @@ func main() {
 	// The backend then exposes the host mount to the workload: a no-op bind
 	// for the container (shared mount namespace), or a 9p-over-vsock export
 	// for the microvm (the guest mounts it). Either way sbxfuse — with its
-	// ACLs, audit events, and remote backends — stays host-side.
-	fsSidecars := map[string]fsSidecar{}
-	for i := range sp.FS {
-		f := &sp.FS[i]
-		aclTmp := filepath.Join(*workDir, "acls-"+f.Slug()+".json")
-		if err := writeACLs(aclTmp, f.ACLs); err != nil {
-			log.Fatalf("write ACLs (%s): %v", f.Mount, err)
-		}
-		fuseArgs := []string{
-			"-mount", f.Mount,
-			"-backend", f.BackendPath(),
-			"-acls", aclTmp,
-		}
-		// Remote backends: forward the backend name + a JSON-encoded
-		// config blob to sbxfuse, which constructs the [remotefs.Store]
-		// via a switch and stands up an Oplog. FS.BackendConfigJSON
-		// produces the right shape for the active backend (e.g. the
-		// fields that map onto [remotefs.GoogleDriveConfig] for gdrive).
-		if f.Backend.IsRemote() {
-			blob, err := f.BackendConfigJSON()
-			if err != nil {
-				log.Fatalf("backend %q config (%s): %v", f.Backend, f.Mount, err)
+	// ACLs, audit events, and remote backends — stays host-side. Remote
+	// backends do their bootstrap fetch unredirected if the egress goroutine
+	// hasn't installed iptables yet, which is harmless: their sockets carry
+	// soMark and would bypass the REDIRECT anyway.
+	setupWG.Add(1)
+	go func() {
+		defer setupWG.Done()
+		for i := range sp.FS {
+			f := &sp.FS[i]
+			aclTmp := filepath.Join(*workDir, "acls-"+f.Slug()+".json")
+			if err := writeACLs(aclTmp, f.ACLs); err != nil {
+				log.Fatalf("write ACLs (%s): %v", f.Mount, err)
 			}
-			fuseArgs = append(fuseArgs,
-				"-remote", string(f.Backend),
-				"-remote-config", string(blob),
-				// Same SO_MARK we hand sbxproxy: sbxfuse's outbound TLS to
-				// the cloud API needs to escape the OUTPUT REDIRECT too,
-				// otherwise its traffic ends up at sbxproxy and gets
-				// allowlist-checked against the workload's egress rules.
-				"-mark", fmt.Sprintf("%d", soMark),
-			)
+			fuseArgs := []string{
+				"-mount", f.Mount,
+				"-backend", f.BackendPath(),
+				"-acls", aclTmp,
+			}
+			// Remote backends: forward the backend name + a JSON-encoded
+			// config blob to sbxfuse, which constructs the [remotefs.Store]
+			// via a switch and stands up an Oplog. FS.BackendConfigJSON
+			// produces the right shape for the active backend (e.g. the
+			// fields that map onto [remotefs.GoogleDriveConfig] for gdrive).
+			if f.Backend.IsRemote() {
+				blob, err := f.BackendConfigJSON()
+				if err != nil {
+					log.Fatalf("backend %q config (%s): %v", f.Backend, f.Mount, err)
+				}
+				fuseArgs = append(fuseArgs,
+					"-remote", string(f.Backend),
+					"-remote-config", string(blob),
+					// Same SO_MARK we hand sbxproxy: sbxfuse's outbound TLS to
+					// the cloud API needs to escape the OUTPUT REDIRECT too,
+					// otherwise its traffic ends up at sbxproxy and gets
+					// allowlist-checked against the workload's egress rules.
+					"-mark", fmt.Sprintf("%d", soMark),
+				)
+			}
+			fuseCmd, err := startSidecar(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil,
+				sidecarOnEvent(formatFuseEvent, newFuseTranslator(broker, f.Mount, gen.Backend(f.Backend)).handle))
+			if err != nil {
+				log.Fatalf("start fuse (%s): %v", f.Mount, err)
+			}
+			// Cloud-bootstrapped backends (gdrive) have to fetch a directory
+			// listing before they can mount; sbxfuse caps that bootstrap at
+			// 30s. Wait long enough to cover it plus a small buffer — local
+			// backends still return in <100ms so this isn't a slowdown.
+			if err := waitForMountReady(ctx, f.Mount, mountReadTimout); err != nil {
+				_ = fuseCmd.Process.Kill()
+				log.Fatalf("fuse did not mount %s: %v", f.Mount, err)
+			}
+			fsSidecars[f.Mount] = fsSidecar{pid: fuseCmd.Process.Pid, aclPath: aclTmp}
+			// Expose the now-ready host mount to the workload (bind for container,
+			// 9p-over-vsock export for microvm).
+			isoMu.Lock()
+			err = iso.ExportWorkspace(ctx, f.Mount)
+			isoMu.Unlock()
+			if err != nil {
+				log.Fatalf("export workspace %s: %v", f.Mount, err)
+			}
 		}
-		fuseCmd, err := startSidecar(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil,
-			sidecarOnEvent(formatFuseEvent, newFuseTranslator(broker, f.Mount, gen.Backend(f.Backend)).handle))
-		if err != nil {
-			log.Fatalf("start fuse (%s): %v", f.Mount, err)
-		}
-		// Cloud-bootstrapped backends (gdrive) have to fetch a directory
-		// listing before they can mount; sbxfuse caps that bootstrap at
-		// 30s. Wait long enough to cover it plus a small buffer — local
-		// backends still return in <100ms so this isn't a slowdown.
-		if err := waitForMountReady(ctx, f.Mount, mountReadTimout); err != nil {
-			_ = fuseCmd.Process.Kill()
-			log.Fatalf("fuse did not mount %s: %v", f.Mount, err)
-		}
-		fsSidecars[f.Mount] = fsSidecar{pid: fuseCmd.Process.Pid, aclPath: aclTmp}
-		// Expose the now-ready host mount to the workload (bind for container,
-		// 9p-over-vsock export for microvm).
-		if err := iso.ExportWorkspace(ctx, f.Mount); err != nil {
-			log.Fatalf("export workspace %s: %v", f.Mount, err)
-		}
-	}
+	}()
+
+	setupWG.Wait()
+	phase.mark("proxy + fuse startup")
 
 	// Reconcile sidecar policy whenever the API publishes a
 	// config.apply event: re-derive egress rules + per-mount ACLs from
@@ -324,13 +366,7 @@ func main() {
 	if sp.Cwd != "" {
 		imgCfg.WorkingDir = sp.Cwd
 	}
-
-	// Seed each FUSE backend from the agent image's own rootfs: any content
-	// the image carries at the mount path (e.g. `COPY inputs/
-	// /workspace/inputs/` in the Dockerfile) gets moved into the host backend
-	// dir so the agent sees it through the FUSE mount. sbxfuse is host-side
-	// for both backends, so this is a plain host-side move.
-	log.Printf("sandboxd: agent image unpacked to %s", runc.RootfsDir)
+	phase.mark("image unpack")
 
 	for i := range sp.FS {
 		f := &sp.FS[i]
@@ -344,7 +380,7 @@ func main() {
 	if err := iso.MountRoot(); err != nil {
 		log.Fatalf("mount agent root filesystem: %v", err)
 	}
-	log.Printf("sandboxd: root filesystem assembled")
+	phase.mark("seed + root filesystem assembly")
 
 	// Restore snapshot before the workload starts so the agent sees the
 	// previously snapshotted state on its first access.
@@ -459,6 +495,28 @@ func main() {
 		}
 		agentCmd, agentStdioDone = cmd, done
 	}
+	// The API server is already serving (started above); publish the entrypoint
+	// pty now that it exists so exec-stream attach requests can reach it.
+	if entrypointTTY != nil {
+		s.SetEntrypointTTY(entrypointTTY)
+	}
+	// Covers snapshot restore + CA install + agent launch (everything between
+	// the rootfs mark and here); the workload's own boot is timed below.
+	phase.mark("agent launch")
+
+	// Wait for the inner sandbox to come up, then notify the API — this flips it
+	// out of its "still starting" state (500, or 503 on /v1/ping) into serving
+	// real requests. WaitReady polls the runtime; doing it once here, off the
+	// request path, and broadcasting beats re-probing on every keepalive ping.
+	go func() {
+		if err := iso.WaitReady(ctx); err != nil {
+			log.Printf("sandboxd: wait for sandbox ready: %v", err)
+			return
+		}
+		phase.mark("sandbox ready")
+		s.NotifyReady()
+	}()
+
 	children.Go(func() {
 		<-ctx.Done()
 		flushCtx, cancelFlush := context.WithTimeout(context.Background(), agentFlushTimeout)
@@ -470,21 +528,6 @@ func main() {
 	})
 
 	go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
-
-	s := api.NewSandboxServer(
-		*apiServerPort,
-		broker,
-		store,
-		lifetime,
-		iso,
-		soMark,
-		entrypointTTY)
-
-	// Start the TTL countdown from when the API is reachable, not from
-	// sandboxd startup. Image unpacking can take several seconds, which
-	// would otherwise eat into the client's ping window.
-	go lifetime.Run(ctx)
-	go s.ListenAndServe()
 
 	// Graceful shutdown chain triggered by the agent exiting:
 	//   1. wait for the audit pipeline to settle and SSE subscribers

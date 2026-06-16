@@ -12,7 +12,6 @@ const SANDBOX = {
 const ARGS = {
   sandbox: SANDBOX,
   serverUrl: "http://localhost:3001",
-  onShutdown: () => {},
 };
 
 const meta: Meta<typeof SandboxDetail> = {

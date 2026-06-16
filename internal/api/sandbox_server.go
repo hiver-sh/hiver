@@ -12,23 +12,58 @@ import (
 	"github.com/hiver-sh/hiver/internal/pty"
 )
 
-// NewSandboxServer builds the per-sandbox HTTP API. entrypointTTY is the pty
-// wrapping the entrypoint when the config sets tty: true (nil otherwise);
-// it backs `/v1/exec-stream` attach requests with an empty command.
-func NewSandboxServer(port string, broker *events.Broker, store *ConfigStore, lifetime *Lifetime, iso isolation.Isolation, netMark int, entrypointTTY *pty.Session) *http.Server {
+// SandboxServer is the per-sandbox HTTP API. It can be started before the
+// workload exists — it refuses requests (500, or 503 on /v1/ping) until
+// NotifyReady fires — so the sandbox binds its port while it boots. Subsystems
+// and the entrypoint pty are wired in via the SetX methods as boot creates them.
+type SandboxServer struct {
+	*http.Server
+	handlers *handlers.SandboxHandlers
+}
+
+// NewSandboxServer builds the per-sandbox HTTP API. netMark (the reverse-proxy
+// dialer's SO_MARK) is a fixed constant known up front; the remaining subsystems
+// are injected via the SetX methods as boot creates them.
+func NewSandboxServer(port string, netMark int) *SandboxServer {
+	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
+	hs := handlers.NewSandboxHandlers(netMark)
 	r.Use(func(c *gin.Context) {
-		// Any request to the API server resets the lifetime of the sandbox.
-		lifetime.Reset()
+		if c.FullPath() != "/v1/ping" && !hs.Ready() {
+			c.JSON(http.StatusInternalServerError, gen.Error{Error: "sandbox is still starting"})
+			c.Abort()
+			return
+		}
+		hs.ResetLifetime()
 		c.Next()
 	})
 
-	hs := handlers.NewSandboxHandlers(broker, store, lifetime, iso, netMark, entrypointTTY)
 	gen.RegisterHandlers(r, hs)
 
-	s := &http.Server{
-		Handler: r,
-		Addr:    net.JoinHostPort("0.0.0.0", port),
+	return &SandboxServer{
+		Server: &http.Server{
+			Handler: r,
+			Addr:    net.JoinHostPort("0.0.0.0", port),
+		},
+		handlers: hs,
 	}
-	return s
+}
+
+// The setters below inject sandboxd's subsystems into the running server as boot
+// creates them; the server answers 500 until NotifyReady fires.
+func (s *SandboxServer) SetBroker(b *events.Broker)           { s.handlers.SetBroker(b) }
+func (s *SandboxServer) SetStore(store *ConfigStore)          { s.handlers.SetStore(store) }
+func (s *SandboxServer) SetLifetime(l *Lifetime)              { s.handlers.SetLifetime(l) }
+func (s *SandboxServer) SetIsolation(iso isolation.Isolation) { s.handlers.SetIsolation(iso) }
+
+// NotifyReady signals that the inner sandbox is up and running, flipping the
+// server from refusing requests to serving them. Called once readiness is
+// observed (see cmd/sandboxd).
+func (s *SandboxServer) NotifyReady() { s.handlers.NotifyReady() }
+
+// SetEntrypointTTY wires the entrypoint's pty session into the API so
+// exec-stream attach requests can reach it. Called once the entrypoint
+// launches; backs `/v1/exec-stream` attach requests with an empty command.
+func (s *SandboxServer) SetEntrypointTTY(sess *pty.Session) {
+	s.handlers.SetEntrypointTTY(sess)
 }

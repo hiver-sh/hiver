@@ -235,7 +235,7 @@ export interface ConfigProposal {
 type Mode = "diff" | "editor";
 
 interface Props {
-  sandboxKey: string;
+  sandboxId: string;
   serverUrl: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -243,7 +243,7 @@ interface Props {
 }
 
 export function SandboxConfigDialog({
-  sandboxKey,
+  sandboxId,
   serverUrl,
   open,
   onOpenChange,
@@ -261,7 +261,7 @@ export function SandboxConfigDialog({
   useEffect(() => {
     if (!open) return;
     const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxKey)}/config`,
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`,
     );
     transport
       .fetch(url)
@@ -271,7 +271,7 @@ export function SandboxConfigDialog({
         setSavedConfig(str);
         setEditedConfig(proposal?.proposed ?? str);
       });
-  }, [open, sandboxKey, serverUrl, proposal, transport]);
+  }, [open, sandboxId, serverUrl, proposal, transport]);
 
   useEffect(() => {
     if (open) setMode(proposal ? "diff" : "editor");
@@ -281,7 +281,7 @@ export function SandboxConfigDialog({
     setSaving(true);
     try {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxKey)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`,
       );
       await transport.fetch(url, {
         method: "PUT",

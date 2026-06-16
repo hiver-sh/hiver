@@ -37,7 +37,7 @@ interface Preview {
 }
 
 interface Props {
-  sandboxKey: string;
+  sandboxId: string;
   serverUrl: string;
   events: Extract<SandboxEvent, { type: "fs.request" }>[];
 }
@@ -100,7 +100,7 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
   });
 }
 
-export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
+export function FileExplorer({ sandboxId, serverUrl, events }: Props) {
   const { transport } = useTransport();
   const { prefs, toggleExpandedPath } = useUserPreferences();
   const [roots, setRoots] = useState<TreeNode[]>([]);
@@ -111,32 +111,32 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const rootsRef = useRef<TreeNode[]>([]);
   const expandedPathsPrefRef = useRef<string[]>(
-    prefs.expandedPaths[sandboxKey] ?? [],
+    prefs.expandedPaths[sandboxId] ?? [],
   );
   const lastProcessedIdxRef = useRef(0);
   const pendingDirsRef = useRef<Set<string>>(new Set());
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    expandedPathsPrefRef.current = prefs.expandedPaths[sandboxKey] ?? [];
-  }, [prefs.expandedPaths, sandboxKey]);
+    expandedPathsPrefRef.current = prefs.expandedPaths[sandboxId] ?? [];
+  }, [prefs.expandedPaths, sandboxId]);
 
   const fileUrl = useCallback(
     (path: string) => {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxKey)}/file`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/file`,
       );
       url.searchParams.set("path", path);
 
       return url;
     },
-    [sandboxKey, serverUrl],
+    [sandboxId, serverUrl],
   );
 
   const fetchChildren = useCallback(
     async (path: string): Promise<TreeNode[]> => {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxKey)}/directories`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/directories`,
       );
       url.searchParams.set("path", path);
 
@@ -151,7 +151,7 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
         .then((r) => r.json() as Promise<{ entries: DirEntry[] }>);
       return toNodes(data.entries);
     },
-    [sandboxKey, serverUrl, transport],
+    [sandboxId, serverUrl, transport],
   );
 
   const loadMounts = useCallback(async () => {
@@ -170,7 +170,7 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
       collectExpanded(rootsRef.current);
 
       const configUrl = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxKey)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`,
       );
 
       const allPaths = [
@@ -285,13 +285,13 @@ export function FileExplorer({ sandboxKey, serverUrl, events }: Props) {
     if (!node || !node.is_dir) return;
 
     if (node.expanded) {
-      toggleExpandedPath(sandboxKey, path);
+      toggleExpandedPath(sandboxId, path);
       setRoots((prev) =>
         updateNode(prev, path, (n) => ({ ...n, expanded: false })),
       );
       return;
     }
-    toggleExpandedPath(sandboxKey, path);
+    toggleExpandedPath(sandboxId, path);
     if (node.children !== null) {
       setRoots((prev) =>
         updateNode(prev, path, (n) => ({ ...n, expanded: true })),

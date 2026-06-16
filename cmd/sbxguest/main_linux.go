@@ -405,6 +405,10 @@ func serveExec(port uint32) {
 		return
 	}
 	log.Printf("exec: listening on vsock port %d", port)
+	// The exec listener is up, so the host can now reach the agent: dial the
+	// host's readiness beacon to unblock its WaitReady (replaces host-side
+	// connect polling). Best-effort — the host falls back to its own timeout.
+	signalReady()
 	for {
 		nfd, _, err := unix.Accept(fd)
 		if err != nil {
@@ -418,6 +422,21 @@ func serveExec(port uint32) {
 				log.Printf("exec: session: %v", err)
 			}
 		}()
+	}
+}
+
+// signalReady dials the host's readiness beacon (firecracker.GuestReadyPort)
+// to tell the host the agent is up. The host listens on that port before boot,
+// so the connection is the "ready" edge; the byte stream itself is unused.
+func signalReady() {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		log.Printf("ready: vsock socket: %v", err)
+		return
+	}
+	defer unix.Close(fd)
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: firecracker.HostCID, Port: firecracker.GuestReadyPort}); err != nil {
+		log.Printf("ready: connect host port %d: %v", firecracker.GuestReadyPort, err)
 	}
 }
 

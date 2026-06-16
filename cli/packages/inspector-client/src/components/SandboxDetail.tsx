@@ -66,14 +66,12 @@ const MIN_PANEL_HEIGHT = 140;
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
   serverUrl: string;
-  onShutdown: () => void;
   onConnectedChange?: (connected: boolean) => void;
 }
 
 export function SandboxDetail({
   sandbox,
   serverUrl,
-  onShutdown,
   onConnectedChange,
 }: SandboxDetailProps) {
   const { transport, player } = useTransport();
@@ -84,6 +82,10 @@ export function SandboxDetail({
     onConnectedChange?.(connected);
   }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
   const [shutdownLoading, setShutdownLoading] = useState(false);
+  // Shutting down = either our request is in flight, or the lifecycle stream
+  // has reported the sandbox is no longer running.
+  const isShuttingDown =
+    shutdownLoading || sandbox.status === "stop" || sandbox.status === "die";
   const [ports, setPorts] = useState<number[]>([]);
   // null = dialog closed; { port } = open for that port (port null = no exposed ports).
   const [portDialog, setPortDialog] = useState<{ port: number | null } | null>(
@@ -197,7 +199,7 @@ export function SandboxDetail({
     let cancelled = false;
     setPorts([]);
     const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/ports`,
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/ports`,
     );
     transport
       .fetch(url)
@@ -211,14 +213,14 @@ export function SandboxDetail({
     return () => {
       cancelled = true;
     };
-  }, [sandbox.key, serverUrl, transport]);
+  }, [sandbox.id, serverUrl, transport]);
 
   const openFile = useCallback(
     async (path: string) => {
       const lang = langForPath(path);
       if (!lang) return;
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/file`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/file`,
       );
       url.searchParams.set("path", path);
 
@@ -229,7 +231,7 @@ export function SandboxDetail({
         /* ignore */
       }
     },
-    [sandbox.key, serverUrl, transport],
+    [sandbox.id, serverUrl, transport],
   );
 
   const proposePolicy = useCallback(
@@ -237,7 +239,7 @@ export function SandboxDetail({
       updater: (cfg: Record<string, unknown>) => Record<string, unknown>,
     ) => {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/config`,
       );
 
       const current = await transport
@@ -249,7 +251,7 @@ export function SandboxDetail({
       });
       setShowConfig(true);
     },
-    [sandbox.key, serverUrl, transport],
+    [sandbox.id, serverUrl, transport],
   );
 
   const fsWriteEvents = useMemo(
@@ -306,7 +308,7 @@ export function SandboxDetail({
       const run = async () => {
         if (ac.signal.aborted) return;
         const url = new URL(
-          `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/stream`,
+          `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/stream`,
         );
         if (resumeId !== undefined)
           url.searchParams.set("lastEventId", String(resumeId));
@@ -378,7 +380,7 @@ export function SandboxDetail({
       });
       void run();
     },
-    [sandbox.key, sandbox.id, serverUrl, transport, player],
+    [sandbox.id, serverUrl, transport, player],
   );
 
   useEffect(() => {
@@ -409,15 +411,19 @@ export function SandboxDetail({
 
   async function handleShutdown() {
     if (!confirm(`Shut down sandbox "${sandbox.key}"?`)) return;
+    // Gray the panel and show a "shutting down…" status instead of yanking the
+    // user back to the home view. We don't navigate or guess at timing here:
+    // useSandboxLifecycleEvents streams the sandbox's real status (stop/die)
+    // and drops it from the list once it's gone, which drives the UI below.
     setShutdownLoading(true);
     try {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.key)}/shutdown`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/shutdown`,
       );
       await transport.fetch(url, { method: "POST" });
       void clearEvents(sandbox.id);
-      onShutdown();
-    } finally {
+    } catch {
+      // Shutdown failed — drop the overlay so the panel is usable again.
       setShutdownLoading(false);
     }
   }
@@ -455,11 +461,23 @@ export function SandboxDetail({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className={cn(
+        "flex h-full flex-col transition-[filter,opacity] duration-300",
+        isShuttingDown && "pointer-events-none grayscale opacity-50",
+      )}
+      aria-busy={isShuttingDown}
+    >
       {/* Header */}
       <div className="flex h-[70px] items-center justify-between gap-4 p-4 pb-3">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-base font-semibold">{sandbox.key}</h2>
+          {isShuttingDown && (
+            <span className="flex shrink-0 items-center gap-1.5 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              shutting down…
+            </span>
+          )}
           <div className="flex shrink-0 items-center gap-1">
             {ports.length > 0 ? (
               ports.map((port) => (
@@ -520,9 +538,9 @@ export function SandboxDetail({
             size="sm"
             variant="ghost"
             onClick={handleShutdown}
-            disabled={shutdownLoading}
+            disabled={isShuttingDown}
           >
-            {shutdownLoading ? (
+            {isShuttingDown ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
               <Power className="h-4 w-4" />
@@ -774,7 +792,7 @@ export function SandboxDetail({
               }
             >
               <Terminal
-                sandboxKey={sandbox.key}
+                sandboxId={sandbox.id}
                 serverUrl={serverUrl}
                 subscribe={subscribeTerminal}
               />
@@ -827,7 +845,7 @@ export function SandboxDetail({
               }
             >
               <FileExplorer
-                sandboxKey={sandbox.key}
+                sandboxId={sandbox.id}
                 serverUrl={serverUrl}
                 events={fsWriteEvents}
               />
@@ -869,7 +887,7 @@ export function SandboxDetail({
       />
 
       <SandboxConfigDialog
-        sandboxKey={sandbox.key}
+        sandboxId={sandbox.id}
         serverUrl={serverUrl}
         open={showConfig}
         onOpenChange={(open) => {

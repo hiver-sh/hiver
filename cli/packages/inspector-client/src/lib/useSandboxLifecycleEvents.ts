@@ -24,45 +24,68 @@ export function useSandboxLifecycleEvents(
   const { transport, gatewayUrl } = useTransport();
   const { forgetSandbox } = useUserPreferences();
   useEffect(() => {
-    const url = new URL(`${serverUrl}/api/sandboxes/events`);
-    const es = transport.openEventSource(url);
+    let closed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let es: ReturnType<typeof transport.openEventSource>;
 
-    es.onmessage = (e) => {
-      try {
-        const event = JSON.parse(e.data) as {
-          id: string;
-          key: string;
-          status: string;
-        };
-        if (event.status === "destroy") {
-          forgetSandbox(event.key);
-          void clearEvents(event.id);
-        }
-        setSandboxes((prev) => {
-          switch (event.status) {
-            case "start":
-              return prev.find((s) => s.key === event.key)
-                ? prev
-                : [...prev, { id: event.id, key: event.key }];
-            case "stop":
-            case "die":
-              return prev.map((s) =>
-                s.key === event.key
-                  ? { ...s, status: event.status as SandboxRef["status"] }
-                  : s,
-              );
-            case "destroy":
-              return prev.filter((s) => s.key !== event.key);
-            default:
-              return prev;
+    const connect = () => {
+      const url = new URL(`${serverUrl}/api/sandboxes/events`);
+      es = transport.openEventSource(url);
+
+      es.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data) as {
+            id: string;
+            key: string;
+            status: string;
+          };
+          if (event.status === "destroy") {
+            forgetSandbox(event.key);
+            void clearEvents(event.id);
           }
-        });
-      } catch {
-        // ignore malformed frames
-      }
+          setSandboxes((prev) => {
+            switch (event.status) {
+              case "start":
+                return prev.find((s) => s.key === event.key)
+                  ? prev.map((s) =>
+                      s.key === event.key ? { ...s, status: "start" as const } : s,
+                    )
+                  : [...prev, { id: event.id, key: event.key, status: "start" as const }];
+              case "stop":
+              case "die":
+                return prev.map((s) =>
+                  s.key === event.key
+                    ? { ...s, status: event.status as SandboxRef["status"] }
+                    : s,
+                );
+              case "destroy":
+                return prev.filter((s) => s.key !== event.key);
+              default:
+                return prev;
+            }
+          });
+        } catch {
+          // ignore malformed frames
+        }
+      };
+
+      // Reconnect when the stream closes (e.g. k8s watch expiry terminates the
+      // SSE from the gateway side). FetchEventSource doesn't auto-reconnect the
+      // way the native EventSource API does, so we do it manually.
+      es.onerror = () => {
+        if (closed) return;
+        es.close();
+        reconnectTimer = setTimeout(connect, 2_000);
+      };
     };
 
-    return () => es.close();
+    connect();
+
+    return () => {
+      closed = true;
+      clearTimeout(reconnectTimer);
+      es.close();
+    };
     // gatewayUrl is included so the stream reconnects when the upstream
     // gateway changes (the transport stamps it as a request header).
   }, [serverUrl, gatewayUrl, transport, forgetSandbox, setSandboxes]);

@@ -304,6 +304,27 @@ func Load(path string) (*Spec, error) {
 	return s, nil
 }
 
+// EnvSpec is the environment variable sandboxd reads the spec JSON from.
+// The runtimes (docker, k8s) inject the marshalled SandboxConfig here
+// instead of mounting it as a file.
+const EnvSpec = "HIVE_SPEC"
+
+// LoadEnv reads and validates the spec from the EnvSpec environment variable.
+func LoadEnv() (*Spec, error) {
+	data := os.Getenv(EnvSpec)
+	if data == "" {
+		return nil, fmt.Errorf("spec: %s is empty", EnvSpec)
+	}
+	var s Spec
+	if err := json.Unmarshal([]byte(data), &s); err != nil {
+		return nil, fmt.Errorf("spec: parse %s: %w", EnvSpec, err)
+	}
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("spec: invalid %s: %w", EnvSpec, err)
+	}
+	return &s, nil
+}
+
 // Parse reads a spec file without validating it. Useful for tests that
 // load a fixture, fill in fields supplied at runtime (auth tokens
 // from env vars, ports from free-port lookup, …), then validate the

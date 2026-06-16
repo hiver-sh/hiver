@@ -145,18 +145,16 @@ interface LayoutProps {
   fetchError: string | null;
   fetchSandboxes: () => void;
   setGatewayUrl: (url: string) => void;
-  onConnectedChange: (key: string, connected: boolean) => void;
+  onConnectedChange: (id: string, connected: boolean) => void;
 }
 
 function SandboxDetailRoute({
   serverUrl,
   sandboxes,
-  fetchSandboxes,
   onConnectedChange,
 }: LayoutProps) {
-  const { key } = useParams<{ key: string }>();
-  const navigate = useNavigate();
-  const sandbox = sandboxes.find((s) => s.key === key);
+  const { id } = useParams<{ id: string }>();
+  const sandbox = sandboxes.find((s) => s.id === id);
 
   if (!sandbox) {
     return (
@@ -171,11 +169,7 @@ function SandboxDetailRoute({
       key={sandbox.id}
       sandbox={sandbox}
       serverUrl={serverUrl}
-      onShutdown={() => {
-        fetchSandboxes();
-        navigate("/");
-      }}
-      onConnectedChange={(c) => onConnectedChange(sandbox.key, c)}
+      onConnectedChange={(c) => onConnectedChange(sandbox.id, c)}
     />
   );
 }
@@ -192,11 +186,11 @@ function AppContent() {
   const [sandboxes, setSandboxes] = useState<SandboxRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [connectedKey, setConnectedKey] = useState<string | null>(null);
+  const [connectedId, setConnectedId] = useState<string | null>(null);
 
   const navigate = useNavigate();
-  const match = useMatch("/sandboxes/:key");
-  const selectedKey = match?.params.key ?? null;
+  const match = useMatch("/sandboxes/:id");
+  const selectedId = match?.params.id ?? null;
 
   const fetchSandboxes = useCallback(async () => {
     setLoading(true);
@@ -223,7 +217,7 @@ function AppContent() {
   }, [fetchSandboxes]);
 
   // Periodically evict stored events for sandboxes that no longer exist.
-  usePurgeOrphanEvents(serverUrl);
+  usePurgeOrphanEvents(sandboxes);
 
   // Subscribe to sandbox lifecycle events and keep the list in sync.
   useSandboxLifecycleEvents(serverUrl, setSandboxes);
@@ -237,7 +231,7 @@ function AppContent() {
     fetchError,
     fetchSandboxes,
     setGatewayUrl,
-    onConnectedChange: (key, c) => setConnectedKey(c ? key : null),
+    onConnectedChange: (id, c) => setConnectedId(c ? id : null),
   };
 
   const controllerDialog = (
@@ -298,31 +292,33 @@ function AppContent() {
           <CreateSandboxDialog
             compact
             serverUrl={serverUrl}
-            onCreated={(key) => {
+            onCreated={(id) => {
               fetchSandboxes();
-              navigate(`/sandboxes/${key}`);
+              navigate(`/sandboxes/${id}`);
             }}
           />
           <div className="flex flex-col items-center gap-1 mt-1">
             {sandboxes.map((sb) => (
               <button
                 key={sb.id}
-                onClick={() => navigate(`/sandboxes/${sb.key}`)}
+                onClick={() => navigate(`/sandboxes/${sb.id}`)}
                 title={sb.key}
                 className={cn(
                   "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent",
-                  selectedKey === sb.key && "bg-sidebar-accent",
+                  selectedId === sb.id && "bg-sidebar-accent",
                 )}
               >
                 <span
                   className={cn(
                     "block rounded-full transition-all",
-                    selectedKey === sb.key ? "h-2.5 w-2.5" : "h-2 w-2",
-                    connectedKey === sb.key
+                    selectedId === sb.id ? "h-2.5 w-2.5" : "h-2 w-2",
+                    connectedId === sb.id
                       ? "bg-green-400"
-                      : sb.status === "stop" || sb.status === "die"
-                        ? "bg-yellow-400/70"
-                        : "bg-muted-foreground/40",
+                      : sb.status === "start"
+                        ? "bg-green-400/50"
+                        : sb.status === "stop" || sb.status === "die"
+                          ? "bg-yellow-400/70"
+                          : "bg-muted-foreground/40",
                   )}
                 />
               </button>
@@ -373,14 +369,14 @@ function AppContent() {
 
           <SandboxList
             sandboxes={sandboxes}
-            selectedKey={selectedKey ?? null}
-            connectedKey={connectedKey}
+            selectedId={selectedId ?? null}
+            connectedId={connectedId}
             loading={loading}
-            onSelect={(key) => navigate(`/sandboxes/${key}`)}
+            onSelect={(id) => navigate(`/sandboxes/${id}`)}
             onRefresh={fetchSandboxes}
-            onCreated={(key) => {
+            onCreated={(id) => {
               fetchSandboxes();
-              navigate(`/sandboxes/${key}`);
+              navigate(`/sandboxes/${id}`);
             }}
             serverUrl={serverUrl}
           />
@@ -398,7 +394,7 @@ function AppContent() {
             element={<GettingStarted gatewayUrl={gatewayUrl} />}
           />
           <Route
-            path="/sandboxes/:key"
+            path="/sandboxes/:id"
             element={<SandboxDetailRoute {...layoutProps} />}
           />
         </Routes>

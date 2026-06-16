@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // BundleParams configure the OCI runtime spec sandboxd writes for the
@@ -34,6 +35,21 @@ type BundleParams struct {
 	// stdio (which the caller must supply as a pty slave), giving the
 	// entrypoint a controlling terminal. Used to back the sandbox's tty option.
 	Terminal bool
+	// ReadyFifo, if non-empty, installs a poststart hook that writes a byte to
+	// this fifo once the entrypoint is running, so the caller can block on a
+	// read instead of polling `runc state`. The path is interpreted in the
+	// runtime (host) mount namespace where runc executes hooks.
+	ReadyFifo string
+}
+
+// MakeFifo creates a named pipe at path, removing any stale node first. The
+// caller is expected to hold a read end open (see container.LaunchAgent) so a
+// poststart hook opening the write end never blocks and its byte is buffered.
+func MakeFifo(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return syscall.Mkfifo(path, 0o600)
 }
 
 // cpuQuotaPeriodUs is the CFS scheduling period (microseconds) the CPU quota is
@@ -154,6 +170,19 @@ func WriteConfig(p BundleParams) error {
 		"hostname": p.Hostname,
 		"mounts":   mounts,
 		"linux":    linux,
+	}
+
+	// poststart fires after the entrypoint is exec'd (the "running" edge
+	// sandboxd otherwise polls for). The hook runs in the runtime namespace,
+	// so it writes to the host-side fifo; keep it trivial — a hook that errors
+	// makes runc tear the container back down.
+	if p.ReadyFifo != "" {
+		spec["hooks"] = map[string]any{
+			"poststart": []map[string]any{{
+				"path": "/bin/sh",
+				"args": []string{"sh", "-c", "echo 1 > " + p.ReadyFifo},
+			}},
+		}
 	}
 
 	out, err := os.Create(filepath.Join(p.BundleDir, "config.json"))

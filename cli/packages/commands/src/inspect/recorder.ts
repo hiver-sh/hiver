@@ -119,13 +119,13 @@ export class EventRecorder {
     })();
   }
 
-  private trackDirectory(sandboxKey: string, dirPath: string): void {
-    const key = `${sandboxKey}:${dirPath}`;
+  private trackDirectory(sandboxId: string, dirPath: string): void {
+    const key = `${sandboxId}:${dirPath}`;
     if (this.knownDirs.has(key)) return;
     this.knownDirs.add(key);
 
-    const traceKey = `/api/sandboxes/${sandboxKey}/directories?path=${dirPath}`;
-    const url = this.buildUrl(`/api/sandboxes/${sandboxKey}/directories`, {
+    const traceKey = `/api/sandboxes/${sandboxId}/directories?path=${dirPath}`;
+    const url = this.buildUrl(`/api/sandboxes/${sandboxId}/directories`, {
       path: dirPath,
     });
     let lastPayload: string | undefined;
@@ -141,9 +141,9 @@ export class EventRecorder {
           for (const entry of entries) {
             const fullPath = entry.path;
             if (entry.is_dir) {
-              this.trackDirectory(sandboxKey, fullPath);
+              this.trackDirectory(sandboxId, fullPath);
             } else if (TEXT_EXTS.has(extname(fullPath))) {
-              this.trackFile(sandboxKey, fullPath);
+              this.trackFile(sandboxId, fullPath);
             }
           }
         }
@@ -156,12 +156,12 @@ export class EventRecorder {
     this.timers.push(setInterval(poll, 1000));
   }
 
-  private trackFile(sandboxKey: string, filePath: string): void {
-    const key = `${sandboxKey}:${filePath}`;
+  private trackFile(sandboxId: string, filePath: string): void {
+    const key = `${sandboxId}:${filePath}`;
     if (this.knownFiles.has(key)) return;
     this.knownFiles.add(key);
 
-    const url = this.buildUrl(`/api/sandboxes/${sandboxKey}/file`, {
+    const url = this.buildUrl(`/api/sandboxes/${sandboxId}/file`, {
       path: filePath,
     });
     this.pollEndpoint(url);
@@ -180,7 +180,7 @@ export class EventRecorder {
           id: string;
           key: string;
         }[];
-        for (const s of sandboxes) this.trackSandbox(s.key);
+        for (const s of sandboxes) this.trackSandbox(s.id);
       } catch (e) {
         console.error(e);
         this.timers.push(
@@ -194,8 +194,8 @@ export class EventRecorder {
     void fetchOnce();
   }
 
-  private trackSandbox(sandboxKey: string): void {
-    const configUrl = this.buildUrl(`/api/sandboxes/${sandboxKey}/config`);
+  private trackSandbox(sandboxId: string): void {
+    const configUrl = this.buildUrl(`/api/sandboxes/${sandboxId}/config`);
 
     // Fetch config once to discover volume mount paths, then start directory tracking.
     void (async () => {
@@ -207,15 +207,15 @@ export class EventRecorder {
       } catch (e) {
         console.error(e);
       }
-      this.trackDirectory(sandboxKey, "/");
-      for (const mount of mountPaths) this.trackDirectory(sandboxKey, mount);
+      this.trackDirectory(sandboxId, "/");
+      for (const mount of mountPaths) this.trackDirectory(sandboxId, mount);
     })();
 
     this.pollEndpoint(configUrl);
-    this.pollEndpoint(this.buildUrl(`/api/sandboxes/${sandboxKey}/ports`));
+    this.pollEndpoint(this.buildUrl(`/api/sandboxes/${sandboxId}/ports`));
     // The event feed and terminal output are multiplexed onto one SSE stream
     // (`feed` / `term` frames); recording it captures both at once.
-    this.streamEndpoint(this.buildUrl(`/api/sandboxes/${sandboxKey}/stream`));
+    this.streamEndpoint(this.buildUrl(`/api/sandboxes/${sandboxId}/stream`));
   }
 
   stop(): void {

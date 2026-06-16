@@ -10,9 +10,10 @@ import (
 	"testing"
 )
 
-// newTestSandbox returns a Sandbox whose API URL points at srv.
-func newTestSandbox(srv *httptest.Server, key string) *Sandbox {
-	return newSandbox(SandboxRef{ID: "test-id", Key: key}, srv.URL, &http.Client{})
+// newTestSandbox returns a Sandbox whose API URL points at srv. The routing
+// segment is the sandbox id, so id is what flows into /sandbox/<id>.
+func newTestSandbox(srv *httptest.Server, id string) *Sandbox {
+	return newSandbox(SandboxRef{ID: id, Key: "test-key"}, srv.URL, &http.Client{})
 }
 
 func writeSSEFrame(w http.ResponseWriter, v interface{}) {

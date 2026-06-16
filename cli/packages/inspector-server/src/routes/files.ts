@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import { sandboxFromReq } from "../lib/sandboxFromReq.js";
+import { waitForSandbox } from "../lib/waitForSandbox.js";
 
 const router = Router();
 
-router.get("/:key/directories", async (req: Request, res: Response) => {
+router.get("/:id/directories", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   const path = req.query.path as string | undefined;
   if (!path) {
@@ -11,6 +12,10 @@ router.get("/:key/directories", async (req: Request, res: Response) => {
     return;
   }
   try {
+    // Only the root listing races sandbox boot (it's the first call the file
+    // explorer makes); a request for a subdirectory means the tree already
+    // loaded, so the sandbox is known reachable — skip the extra ping.
+    if (path === "/") await waitForSandbox(sandbox);
     const entries = await sandbox.listDirectory(path);
     res.json({ entries });
   } catch (err) {
@@ -18,7 +23,7 @@ router.get("/:key/directories", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/:key/file", async (req: Request, res: Response) => {
+router.get("/:id/file", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   const path = req.query.path as string | undefined;
   if (!path) {

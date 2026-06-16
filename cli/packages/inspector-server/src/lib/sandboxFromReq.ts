@@ -3,10 +3,10 @@ import type { Request } from "express";
 import { gatewayUrl } from "./gatewayUrl.js";
 
 export function sandboxFromReq(req: Request): Sandbox {
-  // Per-sandbox routes only ever carry the key in the path; the uuid is
-  // never known here and is unused for routing, so leave it empty.
+  // Per-sandbox data-plane routes carry the sandbox id in the path; the gateway
+  // routes by id, so the caller-chosen key is unknown here and unused.
   return new Sandbox(
-    { id: "", key: req.params.key },
+    { id: req.params.id, key: "" },
     { gatewayUrl: gatewayUrl(req) },
   );
 }

@@ -10,8 +10,8 @@ from hiver.sandbox import Sandbox, SandboxError
 from hiver.schemas import SandboxRef
 
 GATEWAY = "http://gateway:10000"
-SANDBOX_BASE = f"{GATEWAY}/sandbox/sb-1"
 REF = SandboxRef(id="11111111-1111-1111-1111-111111111111", key="sb-1")
+SANDBOX_BASE = f"{GATEWAY}/sandbox/{REF.id}"
 
 MIN_CONFIG = {"fs": [{"backend": "local", "mount": "/workspace"}]}
 MIN_APPLY_RESULT = {

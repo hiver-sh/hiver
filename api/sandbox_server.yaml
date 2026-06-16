@@ -557,10 +557,28 @@ paths:
       tags: [Configuration]
       summary: Send a ping to the sandbox.
       operationId: Ping
-      description: Resets the sandbox shutdown timer.
+      description: |
+        Resets the sandbox shutdown timer and reports readiness. Returns 200
+        once the inner sandbox is up and running, or 503 while it is still
+        starting.
+      parameters:
+        - in: query
+          name: block
+          schema:
+            type: boolean
+            default: false
+          description: |
+            When `true`, wait for the sandbox to become ready before responding
+            rather than returning 503 immediately. The wait is bounded by the
+            request; if the connection is closed first the server gives up.
       responses:
         '200':
-          description: Ping received.
+          description: Ping received; the sandbox is ready.
+        '503':
+          description: The sandbox is not ready yet.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
 
 components:
   schemas:

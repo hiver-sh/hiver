@@ -44,23 +44,3 @@ func DialGuest(ctx context.Context, udsPath string, port uint32) (net.Conn, erro
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }
-
-// WaitGuestPort blocks until a vsock connection to port succeeds (the guest
-// agent is up and listening) or ctx is cancelled. The probe connection is
-// closed immediately.
-func WaitGuestPort(ctx context.Context, udsPath string, port uint32) error {
-	for {
-		probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		conn, err := DialGuest(probeCtx, udsPath, port)
-		cancel()
-		if err == nil {
-			conn.Close()
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-}

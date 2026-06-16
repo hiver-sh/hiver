@@ -17,7 +17,7 @@ const DefaultGatewayURL = "http://localhost:10000"
 
 var sandboxKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-const defaultTimeout = 30 * time.Second
+const defaultTimeout = 60 * time.Second
 
 // Client is the controller client. It provisions and manages sandboxes
 // through the Hive gateway.
@@ -36,7 +36,7 @@ func WithHTTPClient(hc *http.Client) Option {
 }
 
 // WithTimeout sets the default per-operation timeout applied to point
-// requests (non-streaming). Pass 0 to disable. Defaults to 30s.
+// requests (non-streaming). Pass 0 to disable. Defaults to 60s.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Client) { c.timeout = d }
 }
@@ -106,12 +106,6 @@ func (c *Client) GetOrCreateSandbox(ctx context.Context, key string, config Sand
 	}
 
 	sbx := newSandbox(ref, c.baseURL, c.http)
-
-	if c.timeout > 0 {
-		if err := waitUntilReachable(ctx, sbx, c.timeout); err != nil {
-			return nil, err
-		}
-	}
 
 	return sbx, nil
 }
@@ -240,23 +234,3 @@ func readAPIError(resp *http.Response) error {
 	return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
-func waitUntilReachable(ctx context.Context, s *Sandbox, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		err := s.Ping(pingCtx)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("GetOrCreateSandbox: sandbox %s did not become reachable within %s: %w",
-		s.ID, timeout, lastErr)
-}

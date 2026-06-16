@@ -23,10 +23,15 @@ import (
 // Host/guest vsock parameters. The host CID is always 2 (VMADDR_CID_HOST);
 // the guest CID is assigned by us and must be >= 3. The guest agent listens
 // on GuestExecPort for exec sessions.
+//
+// GuestReadyPort is the reverse direction: a host-listening port (mapped to
+// the unix socket ${uds}_<port>) that the guest dials once its exec listener
+// is up, so the host's WaitReady blocks on Accept instead of polling.
 const (
-	HostCID       uint32 = 2
-	GuestCID      uint32 = 3
-	GuestExecPort uint32 = 1024
+	HostCID        uint32 = 2
+	GuestCID       uint32 = 3
+	GuestExecPort  uint32 = 1024
+	GuestReadyPort uint32 = 1026
 )
 
 // Client talks to a running Firecracker process over its API unix socket

@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"log"
 	"os/exec"
-	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
@@ -34,16 +34,16 @@ func newDockerRuntime() *DockerRuntime {
 	return &DockerRuntime{}
 }
 
-func (r *DockerRuntime) Lookup(key string) (bool, gen.Sandbox, error) {
+func (r *DockerRuntime) Lookup(ctx context.Context, key string) (bool, gen.Sandbox, error) {
 	name := containerNameFor(key)
-	_, running, err := containerState(name)
+	_, running, err := containerState(ctx, name)
 	if err != nil {
 		return false, gen.Sandbox{}, err
 	}
 	if !running {
 		return false, gen.Sandbox{}, nil
 	}
-	idStr, err := containerLabel(name, labelSandboxID)
+	idStr, err := containerLabel(ctx, name, labelSandboxID)
 	if err != nil {
 		return false, gen.Sandbox{}, err
 	}
@@ -54,9 +54,9 @@ func (r *DockerRuntime) Lookup(key string) (bool, gen.Sandbox, error) {
 	return true, gen.Sandbox{Id: id, Key: key}, nil
 }
 
-func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
+func (r *DockerRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
 	format := `{{.Label "` + labelSandboxKey + `"}} {{.Label "` + labelSandboxID + `"}}`
-	out, err := exec.Command("docker", "ps", "--filter", "label="+labelSandboxKey, "--format", format).Output()
+	out, err := exec.CommandContext(ctx, "docker", "ps", "--filter", "label="+labelSandboxKey, "--format", format).Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker ps: %w", err)
 	}
@@ -76,23 +76,18 @@ func (r *DockerRuntime) List() ([]gen.Sandbox, error) {
 	return sandboxes, nil
 }
 
-func (r *DockerRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
+func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	id := uuid.New()
 	specBytes, err := json.Marshal(cfg)
 	if err != nil {
 		return gen.Sandbox{}, fmt.Errorf("marshal spec: %w", err)
 	}
-	specPath := filepath.Join(os.TempDir(), "hive-spec-"+key+".yaml")
-	if err := os.WriteFile(specPath, specBytes, 0o644); err != nil {
-		return gen.Sandbox{}, fmt.Errorf("write spec: %w", err)
-	}
-	defer os.Remove(specPath)
 
 	containerName := containerNameFor(key)
 	// Clear any lingering container of the same name (e.g. one that exited
 	// but wasn't auto-removed) so `docker create --name` below doesn't fail
 	// with a name conflict. No-op if nothing matches.
-	_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	_ = exec.CommandContext(ctx, "docker", "rm", "-f", containerName).Run()
 
 	var image = defaultSandboxImage
 	if cfg.Image != nil && *cfg.Image != "" {
@@ -108,6 +103,10 @@ func (r *DockerRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.San
 		"--label", labelSandboxKey + "=" + key,
 		"--label", labelSandboxID + "=" + id.String(),
 		"--network", composeProject + "_default",
+		// The container keeps its key-derived --name (the atomic per-key lock),
+		// but the gateway routes by id, so expose an id-named DNS alias on the
+		// shared network for it to resolve as hiver-sandbox-<id>.
+		"--network-alias", containerNameFor(id.String()),
 		"--device", "/dev/fuse",
 		// The caps runc needs to set up the inner container (MKNOD, SYS_CHROOT,
 		// SET*, FOWNER, CHOWN) are already in Docker's default set; only the three
@@ -172,6 +171,9 @@ func (r *DockerRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.San
 			createArgs = append(createArgs, "-e", k+"="+v)
 		}
 	}
+	// The spec is delivered as JSON in an env var rather than a mounted file;
+	// sandboxd reads it via spec.LoadEnv.
+	createArgs = append(createArgs, "-e", spec.EnvSpec+"="+string(specBytes))
 	if cfg.ExtraHosts != nil {
 		for _, h := range *cfg.ExtraHosts {
 			createArgs = append(createArgs, "--add-host", h)
@@ -191,30 +193,40 @@ func (r *DockerRuntime) Start(key string, cfg sandboxgen.SandboxConfig) (gen.San
 
 	createArgs = append(createArgs,
 		image,
-		"--spec", "/mnt/spec.json",
 		"--snapshot-dir", "/snapshots",
 	)
-	if out, err := exec.Command("docker", createArgs...).CombinedOutput(); err != nil {
+	createStart := time.Now()
+	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("docker create %s: %v: %s", image, err, out)
 	}
+	log.Printf("sandbox %s: container created (image pulled if absent) in %s", containerName, time.Since(createStart).Round(time.Millisecond))
 
-	if out, err := exec.Command("docker", "cp", specPath, containerName+":/mnt/spec.json").CombinedOutput(); err != nil {
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
-		return gen.Sandbox{}, fmt.Errorf("docker cp spec: %v: %s", err, out)
-	}
-
-	if out, err := exec.Command("docker", "start", containerName).CombinedOutput(); err != nil {
-		startErr := withContainerLogs(fmt.Errorf("docker start %s: %v: %s", image, err, out), containerName)
+	startStart := time.Now()
+	if out, err := exec.CommandContext(ctx, "docker", "start", containerName).CombinedOutput(); err != nil {
+		startErr := withContainerLogs(ctx, fmt.Errorf("docker start %s: %v: %s", image, err, out), containerName)
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
 		return gen.Sandbox{}, startErr
 	}
+	log.Printf("sandbox %s: container started in %s", containerName, time.Since(startStart).Round(time.Millisecond))
+
+	// Block until sandboxd is actually serving, mirroring the k8s runtime's
+	// wait on the pod readiness probe: the container is started but sandboxd
+	// (and the workload) still need to boot, so a returned id isn't reachable
+	// yet. Leave the started container in place on failure — like the k8s
+	// anchor/pod, it's the durable reservation a retry can revive.
+	sandboxHost := containerNameFor(id.String())
+	readyStart := time.Now()
+	if err := waitSandboxReady(ctx, sandboxHost); err != nil {
+		return gen.Sandbox{}, withContainerLogs(ctx, fmt.Errorf("wait sandbox %s ready: %w", id, err), containerName)
+	}
+	log.Printf("sandbox %s: sandboxd ready in %s (total start %s)", containerName, time.Since(readyStart).Round(time.Millisecond), time.Since(createStart).Round(time.Millisecond))
 
 	return gen.Sandbox{Id: id, Key: key}, nil
 }
 
-func (r *DockerRuntime) Shutdown(key string) error {
+func (r *DockerRuntime) Shutdown(ctx context.Context, key string) error {
 	name := containerNameFor(key)
-	exists, running, err := containerState(name)
+	exists, running, err := containerState(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -225,23 +237,27 @@ func (r *DockerRuntime) Shutdown(key string) error {
 		// Allow 60 s for sandboxd to capture the snapshot before SIGKILL.
 		// `-t` (not `--timeout`) — the Debian Bookworm `docker.io` package
 		// ships CLI 20.10, which predates the `--timeout` long form.
-		if out, err := exec.Command("docker", "stop", "-t", "60", name).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(ctx, "docker", "stop", "-t", "60", name).CombinedOutput(); err != nil {
 			return fmt.Errorf("docker stop %s: %v: %s", name, err, out)
 		}
 	}
-	if out, err := exec.Command("docker", "rm", name).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, "docker", "rm", name).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker rm %s: %v: %s", name, err, out)
 	}
 	return nil
 }
 
-func containerNameFor(key string) string {
-	return composeProject + "-sandbox-" + key
+// containerNameFor builds the hiver-sandbox-<segment> DNS name. The segment is
+// the key for the docker container --name and the k8s anchor ConfigMap (the
+// per-key idempotency lock), and the id for the k8s Pod/Service and the docker
+// network alias the gateway routes to.
+func containerNameFor(segment string) string {
+	return composeProject + "-sandbox-" + segment
 }
 
 // containerLabel returns the value of a single label on the named container.
-func containerLabel(name, label string) (string, error) {
-	out, err := exec.Command("docker", "inspect", "-f", `{{index .Config.Labels "`+label+`"}}`, name).Output()
+func containerLabel(ctx context.Context, name, label string) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", `{{index .Config.Labels "`+label+`"}}`, name).Output()
 	if err != nil {
 		return "", fmt.Errorf("docker inspect %s label %s: %w", name, label, err)
 	}
@@ -250,8 +266,8 @@ func containerLabel(name, label string) (string, error) {
 
 // containerState returns whether the named container exists and whether it is
 // running. A missing container is (false, false, nil) rather than an error.
-func containerState(name string) (exists, running bool, err error) {
-	cmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name)
+func containerState(ctx context.Context, name string) (exists, running bool, err error) {
+	cmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", name)
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
@@ -265,14 +281,14 @@ func containerState(name string) (exists, running bool, err error) {
 
 // containerLogs returns recent log output for a container, or empty string if
 // unavailable (e.g. the container was already removed).
-func containerLogs(name string) string {
-	out, _ := exec.Command("docker", "logs", "--tail", "100", name).CombinedOutput()
+func containerLogs(ctx context.Context, name string) string {
+	out, _ := exec.CommandContext(ctx, "docker", "logs", "--tail", "100", name).CombinedOutput()
 	return strings.TrimSpace(string(out))
 }
 
 // withContainerLogs appends the container's recent logs to err, if any exist.
-func withContainerLogs(err error, container string) error {
-	logs := containerLogs(container)
+func withContainerLogs(ctx context.Context, err error, container string) error {
+	logs := containerLogs(ctx, container)
 	return fmt.Errorf("%w\n\ncontainer logs:\n%s\n", err, logs)
 }
 

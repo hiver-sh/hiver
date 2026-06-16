@@ -3,6 +3,9 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"time"
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
 	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
@@ -11,23 +14,67 @@ import (
 // ErrSandboxNotFound is returned when an operation targets a sandbox that does not exist.
 var ErrSandboxNotFound = errors.New("sandbox not found")
 
+const (
+	readyProbeInterval  = 250 * time.Millisecond
+	sandboxReadyTimeout = 120 * time.Second
+)
+
+// waitSandboxReady blocks until the sandboxd at host:sandboxdPort reports ready
+// or ctx/timeout expires. It long-polls /v1/ping?block=true: sandboxd serves
+// that endpoint before the workload is up (returning 503 until NotifyReady
+// fires), and ?block=true makes it wait for readiness and return 200 the moment
+// it flips — so once the port is listening a single request usually suffices.
+// The connect is retried because the sandbox has just started and sandboxd may
+// not have bound :sandboxdPort yet. host is the container's id-derived network
+// alias under docker (shared hiver_default network) or the pod IP under k8s,
+// both reachable from the controller. Shared by both SandboxRuntime backends.
+func waitSandboxReady(ctx context.Context, host string) error {
+	ctx, cancel := context.WithTimeout(ctx, sandboxReadyTimeout)
+	defer cancel()
+
+	url := fmt.Sprintf("http://%s:%d/v1/ping?block=true", host, sandboxdPort)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		// Connection refused (sandboxd not listening yet) or a non-200 (its
+		// long-poll was cut short): back off and retry while time remains.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("sandbox did not become ready within %s", sandboxReadyTimeout)
+		case <-time.After(readyProbeInterval):
+		}
+	}
+}
+
 // SandboxRuntime abstracts how sandboxes are provisioned and torn down,
 // keeping the HTTP layer independent of the container platform.
 type SandboxRuntime interface {
 	// Lookup reports whether the sandbox for key is running and returns its
 	// descriptor. Returns (false, gen.Sandbox{}, nil) when no sandbox exists.
-	Lookup(key string) (running bool, sandbox gen.Sandbox, err error)
+	// ctx bounds any wait for the sandbox to become reachable.
+	Lookup(ctx context.Context, key string) (running bool, sandbox gen.Sandbox, err error)
 
 	// Start creates and starts a new sandbox for key from cfg, assigning it a
-	// server-generated id and returning its descriptor.
-	Start(key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error)
+	// server-generated id and returning its descriptor. ctx bounds the wait for
+	// the sandbox to become reachable; the durable key reservation is created
+	// regardless so it survives ctx cancellation.
+	Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error)
 
 	// List returns all currently running sandboxes.
-	List() ([]gen.Sandbox, error)
+	List(ctx context.Context) ([]gen.Sandbox, error)
 
 	// Shutdown stops and removes the sandbox for key.
 	// Returns ErrSandboxNotFound if no sandbox exists for key.
-	Shutdown(key string) error
+	Shutdown(ctx context.Context, key string) error
 
 	// Events streams sandbox lifecycle events until ctx is cancelled.
 	// The returned channel is closed when the stream ends.

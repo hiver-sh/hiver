@@ -1,0 +1,24 @@
+# Control-plane namespace: controller + gateway. These run as root but are
+# not privileged, so "baseline" enforcement fits (and "restricted" would reject
+# the root-running controller/gateway images).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hiver
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+---
+# Sandbox namespace: the k8s runtime launches sandbox Pods with privileged: true
+# (internal/api/controller/k8s_runtime.go), so this namespace must allow the
+# "privileged" Pod Security Standard. Keeping it separate from the control plane
+# limits privileged execution to sandboxes only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hiver-sandbox
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

@@ -59,7 +59,7 @@ func newSandbox(ref SandboxRef, gatewayURL string, hc *http.Client) *Sandbox {
 	return &Sandbox{
 		ID:     ref.ID,
 		Key:    ref.Key,
-		apiURL: fmt.Sprintf("%s/sandbox/%s", base, ref.Key),
+		apiURL: fmt.Sprintf("%s/sandbox/%s", base, ref.ID),
 		http:   hc,
 	}
 }

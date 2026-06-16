@@ -24,7 +24,7 @@ const DEFAULT_CONFIG = {
 
 interface Props {
   serverUrl: string;
-  onCreated: (key: string) => void;
+  onCreated: (id: string) => void;
 }
 
 export function CreateSandboxDialog({
@@ -74,8 +74,10 @@ export function CreateSandboxDialog({
         setError((body as { error?: string }).error ?? res.statusText);
         return;
       }
+      // Created by key, but routing is by id: navigate using the assigned id.
+      const created = (await res.json()) as { id: string; key: string };
       setOpen(false);
-      onCreated(key);
+      onCreated(created.id);
     } catch (err) {
       setError(String(err));
     } finally {

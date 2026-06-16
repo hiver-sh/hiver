@@ -9,6 +9,7 @@ import (
 )
 
 func NewControllerServer(port string) *http.Server {
+	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
 	h := NewControllerHandlers()

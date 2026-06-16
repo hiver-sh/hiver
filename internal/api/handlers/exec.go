@@ -77,16 +77,14 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context, id string) {
 		return
 	}
 	// An empty command attaches to the entrypoint TTY rather than running a
-	// new command. No WaitReady: the entrypoint session only exists once the
-	// agent has started, so reaching execStreamAttach already implies it.
+	// new command. No readiness check: the server gates every handler behind
+	// NotifyReady, so reaching execStreamAttach already implies the agent is up.
 	if req.Command == nil || *req.Command == "" {
 		h.execStreamAttach(c, id, flusher)
 		return
 	}
-	if err := h.iso.WaitReady(c.Request.Context()); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gen.Error{Error: "container not ready: " + err.Error()})
-		return
-	}
+	// Readiness is guaranteed by /v1/ping (which blocks until the workload is
+	// running), so exec doesn't re-check it here.
 	// TTY sessions are interactive terminals; their byte stream is not
 	// meaningful log output, so the exec request/response and stdio events are
 	// published only for the non-tty (pipes) path.
@@ -143,7 +141,7 @@ func (h *SandboxHandlers) execStreamTTY(c *gin.Context, id, command string, req 
 // concurrently; each gets the recent scrollback followed by live output. The
 // stream stays open until the client disconnects or the entrypoint exits.
 func (h *SandboxHandlers) execStreamAttach(c *gin.Context, id string, flusher http.Flusher) {
-	sess := h.entrypointTTY
+	sess := h.entrypointTTY.Load()
 	if sess == nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "no entrypoint tty: sandbox is not configured with tty: true"})
 		return

@@ -52,8 +52,8 @@ wheels = [
 ]
 
 [[package]]
-name = "hive"
-version = "0.0.1"
+name = "hiver-py"
+version = "0.1.18"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

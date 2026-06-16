@@ -48,7 +48,7 @@ async def test_get_or_create_sandbox_returns_sandbox_with_correct_id_and_endpoin
     assert isinstance(sandbox, Sandbox)
     assert sandbox.id == SANDBOX_ID
     assert sandbox.key == "test-sandbox"
-    assert sandbox.api_server_url == f"{DEFAULT_GATEWAY_URL}/sandbox/test-sandbox"
+    assert sandbox.api_server_url == f"{DEFAULT_GATEWAY_URL}/sandbox/{SANDBOX_ID}"
 
 
 @pytest.mark.asyncio
@@ -104,22 +104,6 @@ async def test_get_or_create_sandbox_raises_sandbox_error_on_connection_refused(
         await get_or_create_sandbox("test-sandbox", BASE_CONFIG, timeout_s=0)
     assert exc.value.status == 0
     assert "connection refused" in str(exc.value).lower()
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_get_or_create_sandbox_polls_ping_before_resolving() -> None:
-    respx.put(f"{DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox").mock(
-        return_value=httpx.Response(200, json=SANDBOX_REF)
-    )
-    ping_route = respx.get(f"{DEFAULT_GATEWAY_URL}/sandbox/test-sandbox/v1/ping").mock(
-        return_value=httpx.Response(200)
-    )
-    sandbox = await get_or_create_sandbox(
-        "test-sandbox", BASE_CONFIG, timeout_s=2.0
-    )
-    assert isinstance(sandbox, Sandbox)
-    assert ping_route.called
 
 
 # shutdown

@@ -21,6 +21,12 @@ const (
 	UpperDir   = ScratchDir + "/upper"
 	WorkDir    = ScratchDir + "/work"
 	MergedDir  = MntDir + "/merged"
+	// ReadyFifoPath is a named pipe on the scratch tmpfs that the agent
+	// container's poststart hook writes to once its entrypoint is running.
+	// It lives in the runtime (host) mount namespace — where runc executes
+	// hooks — not inside the container's root (MergedDir), so the hook and
+	// sandboxd's WaitReady both see it. See WriteConfig's poststart hook.
+	ReadyFifoPath = ScratchDir + "/ready.fifo"
 )
 
 // ImageConfig is the subset of the Docker / OCI image config that

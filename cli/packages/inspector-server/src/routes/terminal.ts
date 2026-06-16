@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { Sandbox } from "@hiver.sh/client";
 import { gatewayUrl } from "../lib/gatewayUrl.js";
 import { sandboxFromReq } from "../lib/sandboxFromReq.js";
+import { waitForSandbox } from "../lib/waitForSandbox.js";
 
 const router = Router();
 
@@ -50,12 +51,15 @@ const termPending = new Map<string, TermInput[]>();
 
 async function openExecStreamSession(
   gw: string,
-  sandboxKey: string,
+  sandboxId: string,
   onData: (buf: Buffer) => void,
   onExit: () => void,
 ): Promise<TermSession> {
   const ac = new AbortController();
-  const sandbox = new Sandbox({ id: "", key: sandboxKey }, { gatewayUrl: gw });
+  const sandbox = new Sandbox({ id: sandboxId, key: "" }, { gatewayUrl: gw });
+  // Don't open the terminal until the sandbox's server answers — attaching to a
+  // sandbox that's still booting just fails the exec.
+  await waitForSandbox(sandbox, { signal: ac.signal });
   const config = await sandbox.getConfig().catch(() => null);
 
   // When the sandbox runs its entrypoint on a TTY (config `tty: true`), attach
@@ -107,14 +111,14 @@ async function openExecStreamSession(
 // namespaced multiplexed frames), so this stays transport-agnostic.
 export function attachTerminal(
   gw: string,
-  key: string,
+  id: string,
   handle: ClientHandle,
 ): () => void {
   // The first client for this sandbox opens the single shared upstream
   // terminal; every later client fans out from it. Reserve the session
   // synchronously so two clients connecting at once don't each open a
   // duplicate upstream — both find this entry and await its `ready`.
-  let ps = sessions.get(key);
+  let ps = sessions.get(id);
   if (!ps) {
     const created: PersistentSession = {
       tty: null,
@@ -123,7 +127,7 @@ export function attachTerminal(
       scrollbackBytes: 0,
       clients: new Set(),
     };
-    sessions.set(key, created);
+    sessions.set(id, created);
 
     const onData = (buf: Buffer) => {
       // O(1) append; drop whole chunks off the front once over the cap. Never
@@ -142,7 +146,7 @@ export function attachTerminal(
     };
 
     const onExit = () => {
-      sessions.delete(key);
+      sessions.delete(id);
       for (const c of created.clients) {
         c.sendCtrl("close", {});
         c.end();
@@ -150,13 +154,13 @@ export function attachTerminal(
       created.clients.clear();
     };
 
-    created.ready = openExecStreamSession(gw, key, onData, onExit)
+    created.ready = openExecStreamSession(gw, id, onData, onExit)
       .then((tty) => {
         created.tty = tty;
         // Drain input that arrived while the upstream was still opening.
-        const pending = termPending.get(key);
+        const pending = termPending.get(id);
         if (pending) {
-          termPending.delete(key);
+          termPending.delete(id);
           for (const msg of pending) {
             if (msg.type === "resize") tty.resize(msg.cols, msg.rows);
             else tty.write(msg.data);
@@ -164,7 +168,7 @@ export function attachTerminal(
         }
       })
       .catch((err) => {
-        sessions.delete(key);
+        sessions.delete(id);
         throw err;
       });
     ps = created;
@@ -174,7 +178,7 @@ export function attachTerminal(
   let detached = false;
   const detach = () => {
     detached = true;
-    sessions.get(key)?.clients.delete(handle);
+    sessions.get(id)?.clients.delete(handle);
     // Keep the TTY alive — the next connection replays scrollback and resumes.
   };
 
@@ -206,8 +210,8 @@ export function attachTerminal(
 // Terminal input still arrives via POST /terminal/input. Folding the two
 // streams together keeps the browser under its ~6-per-origin HTTP/1.1
 // connection cap with multiple tabs open.
-router.get("/:key/stream", (req: Request, res: Response) => {
-  const key = req.params.key;
+router.get("/:id/stream", (req: Request, res: Response) => {
+  const id = req.params.id;
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -219,7 +223,7 @@ router.get("/:key/stream", (req: Request, res: Response) => {
   };
 
   // Terminal channel: reuse the shared session, framed under `term`.
-  const detach = attachTerminal(gatewayUrl(req), key, {
+  const detach = attachTerminal(gatewayUrl(req), id, {
     sendData: (buf) => write("term", buf.toString("base64")),
     sendCtrl: (ev, d) => write(`term:${ev}`, JSON.stringify(d)),
     end: () => {
@@ -235,6 +239,9 @@ router.get("/:key/stream", (req: Request, res: Response) => {
   const lastEventId = lastEventIdParam ? parseInt(lastEventIdParam) : undefined;
   (async () => {
     try {
+      // Wait for the sandbox to be reachable before opening its event stream;
+      // the abort signal bails out if the client disconnects while we wait.
+      await waitForSandbox(sandbox, { signal: ac.signal });
       for await (const event of sandbox.getEventsStream({
         signal: ac.signal,
         lastEventId,
@@ -252,17 +259,17 @@ router.get("/:key/stream", (req: Request, res: Response) => {
   });
 });
 
-router.post("/:key/terminal/input", (req: Request, res: Response) => {
-  const key = req.params.key;
+router.post("/:id/terminal/input", (req: Request, res: Response) => {
+  const id = req.params.id;
   const msg = req.body as TermInput;
-  const ps = sessions.get(key);
+  const ps = sessions.get(id);
 
   // No session yet, or one that's reserved but still opening its upstream:
   // buffer the input; it's drained once the terminal is ready.
   if (!ps || !ps.tty) {
-    const q = termPending.get(key) ?? [];
+    const q = termPending.get(id) ?? [];
     q.push(msg);
-    termPending.set(key, q);
+    termPending.set(id, q);
     res.status(202).send();
     return;
   }

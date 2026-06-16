@@ -56,10 +56,12 @@ router.put("/:key", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/:key/shutdown", async (req: Request, res: Response) => {
+router.post("/:id/shutdown", async (req: Request, res: Response) => {
   try {
+    // The detail page identifies the sandbox by id; resolve it back to its
+    // record so shutdown (a control-plane, key-keyed operation) can run.
     const [sandbox] = await listSandboxes({ gatewayUrl: gatewayUrl(req) }).then(
-      (list) => list.filter((s) => s.key === req.params.key),
+      (list) => list.filter((s) => s.id === req.params.id),
     );
     if (!sandbox) {
       res.status(404).json({ error: "sandbox not found" });

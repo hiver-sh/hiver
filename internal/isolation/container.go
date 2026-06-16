@@ -3,7 +3,6 @@ package isolation
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +39,10 @@ type container struct {
 	// agent via the runc bundle's linux.resources (CPU quota + memory limit).
 	vcpuCount  int
 	memSizeMib int
+	// readyFifo is the read end of runc.ReadyFifoPath, opened O_RDWR by
+	// LaunchAgent so the container's poststart hook never blocks writing to it.
+	// WaitReady reads the hook's byte from here. nil until LaunchAgent runs.
+	readyFifo *os.File
 }
 
 func newContainer(cfg Config) *container {
@@ -147,11 +150,12 @@ func (c *container) InstallCA(certPEM []byte) error {
 // dropped here. This matters because the workload holds CAP_NET_RAW, which
 // would otherwise let it open a raw socket and tunnel data out over ICMP
 // (or any other IP protocol) around the proxy entirely. The DROP exempts
-// loopback (the DNS query, post-REDIRECT, is delivered locally to the sink on
-// lo; the redirected workload TCP also lands on lo) and our own marked sockets
-// (the proxy's real resolver UDP/53 and its TCP upstream). Unmarked infra TCP
-// on a real interface falls through and is accepted, so only non-TCP workload
-// traffic is actually dropped.
+// loopback — both the lo out-interface and 127.0.0.0/8 destinations, since a
+// DNS query REDIRECTed to the sink is rerouted onto lo only after this chain
+// runs (so an off-loopback resolver like a kube-dns ClusterIP still shows its
+// original out-interface here) — and our own marked sockets (the proxy's real
+// resolver UDP/53 and its TCP upstream). Unmarked infra TCP on a real interface
+// falls through and is accepted, so only non-TCP workload traffic is dropped.
 //
 // IPv6 egress is dropped separately (ip6tables, via dropIPv6Egress): the whole
 // egress model above is IPv4-only — there is no v6 proxy or DNS-sink path — so
@@ -182,6 +186,16 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark
 		// interface falls through past the drop and is accepted.
 		{"-t", "filter", "-A", "OUTPUT", "-o", "lo", "-j", "RETURN"},
 		{"-t", "filter", "-A", "OUTPUT", "-m", "mark", "--mark", markHex, "-j", "RETURN"},
+		// Exempt loopback *destinations*, not just the lo out-interface. A DNS
+		// query REDIRECTed to the sink has its destination rewritten to
+		// 127.0.0.1 in nat OUTPUT, but the reroute onto lo happens only AFTER
+		// filter OUTPUT — so here the packet still carries its original
+		// out-interface. When the resolver is off-loopback (a Kubernetes
+		// kube-dns ClusterIP, unlike docker's loopback 127.0.0.11) `-o lo`
+		// misses and the redirected DNS would hit the DROP below. Matching the
+		// post-REDIRECT loopback destination catches it; loopback traffic can't
+		// leave the box, so this doesn't widen egress.
+		{"-t", "filter", "-A", "OUTPUT", "-d", "127.0.0.0/8", "-j", "RETURN"},
 		{"-t", "filter", "-A", "OUTPUT", "!", "-p", "tcp", "-j", "DROP"},
 	}
 	for _, args := range rules {
@@ -229,13 +243,21 @@ func (c *container) snapshotMounts() []snapshot.MountSource {
 	return out
 }
 
-// --- management file API ---
-
 func (c *container) Files() FileBridge { return containerFiles{upperDir: runc.UpperDir} }
 
-// --- capability 4: exec / run ---
-
 func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
+	// Create the readiness fifo and hold its read end open *before* runc
+	// starts, so the poststart hook's O_WRONLY open returns immediately and
+	// its byte is buffered even if WaitReady hasn't read yet.
+	if err := runc.MakeFifo(runc.ReadyFifoPath); err != nil {
+		return "", nil, fmt.Errorf("create ready fifo: %w", err)
+	}
+	f, err := os.OpenFile(runc.ReadyFifoPath, os.O_RDWR, 0)
+	if err != nil {
+		return "", nil, fmt.Errorf("open ready fifo: %w", err)
+	}
+	c.readyFifo = f
+
 	if err := runc.WriteConfig(runc.BundleParams{
 		BundleDir:   runc.MntDir,
 		RootPath:    "merged",
@@ -247,31 +269,37 @@ func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		VcpuCount:   c.vcpuCount,
 		MemoryMiB:   c.memSizeMib,
 		Terminal:    cfg.TTY,
+		ReadyFifo:   runc.ReadyFifoPath,
 	}); err != nil {
+		c.readyFifo.Close()
+		c.readyFifo = nil
 		return "", nil, fmt.Errorf("write bundle config: %w", err)
 	}
 	return "runc", []string{"run", "-b", runc.MntDir, c.containerID}, nil
 }
 
-// WaitReady polls `runc state` until the container is running or ctx is
-// cancelled.
+// WaitReady blocks until the container's poststart hook signals that the
+// entrypoint is running (a byte on the ready fifo) or ctx is cancelled.
 func (c *container) WaitReady(ctx context.Context) error {
-	type runcState struct {
-		Status string `json:"status"`
+	if c.readyFifo == nil {
+		return fmt.Errorf("ready fifo not initialized; LaunchAgent must run first")
 	}
-	for {
-		out, err := exec.CommandContext(ctx, "runc", "state", c.containerID).Output()
-		if err == nil {
-			var s runcState
-			if json.Unmarshal(out, &s) == nil && s.Status == "running" {
-				return nil
-			}
+	defer c.readyFifo.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.readyFifo.Read(make([]byte, 1))
+		done <- err
+	}()
+	select {
+	case <-ctx.Done():
+		c.readyFifo.Close() // unblock the Read above
+		return ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("read ready fifo: %w", err)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-		}
+		return nil
 	}
 }
 

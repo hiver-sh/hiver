@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: controller
+  namespace: hiver
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: controller
+  # Sandboxes live in their own namespace, so the runtime needs these rights
+  # there — not in the control-plane namespace.
+  namespace: hiver-sandbox
+rules:
+  # The k8s runtime provisions each sandbox as a single privileged Pod, named by
+  # key so Pod creation is the atomic per-key lock — see
+  # internal/api/controller/k8s_runtime.go. The spec is delivered inline via the
+  # HIVE_SPEC env var, so no per-sandbox ConfigMap is created; the configmaps
+  # verbs remain only so Shutdown can clean up legacy anchor ConfigMaps left by
+  # older controllers across a rollout.
+  - apiGroups: [""]
+    resources: ["pods", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: controller
+  namespace: hiver-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: controller
+subjects:
+  # The controller Pod's ServiceAccount lives in the control-plane namespace;
+  # this binding grants it the Role above in hiver-sandbox.
+  - kind: ServiceAccount
+    name: controller
+    namespace: hiver
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller
+  namespace: hiver
+  labels:
+    app: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: controller
+  template:
+    metadata:
+      labels:
+        app: controller
+    spec:
+      serviceAccountName: controller
+      containers:
+        - name: controller
+          image: hiversh/controller@sha256:5fadb485e123fe33efb2c92dd9f6795dd84f8c6e725000bcb4a783fd3c60f08a
+          args: ["--server-port=9000"]
+          env:
+            # Selects the Kubernetes backend in NewControllerHandlers();
+            # anything else falls through to the Docker (docker.sock) runtime.
+            - name: HIVE_RUNTIME
+              value: "k8s"
+            - name: HIVE_NAMESPACE
+              value: "hiver-sandbox"
+          ports:
+            - name: http
+              containerPort: 9000
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # Name must stay "controller": the gateway's envoy config forwards the
+  # /controller/ route to the cluster address "controller:9000".
+  name: controller
+  namespace: hiver
+  labels:
+    app: controller
+spec:
+  type: ClusterIP
+  selector:
+    app: controller
+  ports:
+    - name: http
+      port: 9000
+      targetPort: 9000

@@ -13,15 +13,13 @@ export interface GatewayOptions {
   /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
   /**
-   * Timeout in milliseconds for controller operations, and the maximum time
-   * `getOrCreateSandbox` waits for a new sandbox to become ready. Defaults to
-   * 30s. Pass `0` to disable timeouts and skip the readiness wait.
+   * Timeout in milliseconds for controller operations. Defaults to 60s. Pass
+   * `0` to disable timeouts.
    */
   timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const READINESS_POLL_INTERVAL_MS = 200;
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
  * Create a sandbox, or fetch the existing one when `key` is already in use.
@@ -108,34 +106,7 @@ async function provisionSandbox(
     );
   }
   const ref = SandboxRef.parse(await res.json());
-  const sandbox = new Sandbox(ref, { gatewayUrl: base, fetch: fetchImpl });
-  if (timeout > 0) await waitUntilReachable(sandbox, timeout);
-  return sandbox;
-}
-
-// waitUntilReachable polls /v1/ping until it returns 200 or the
-// deadline passes.
-async function waitUntilReachable(
-  sandbox: Sandbox,
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    try {
-      await sandbox.ping();
-      return;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, READINESS_POLL_INTERVAL_MS));
-  }
-  const detail = lastErr instanceof Error ? `: ${lastErr.message}` : "";
-  throw new SandboxError(
-    "getOrCreateSandbox",
-    0,
-    `sandbox ${sandbox.id} did not become reachable at ${sandbox.apiServerUrl} within ${timeoutMs}ms${detail}`,
-  );
+  return new Sandbox(ref, { gatewayUrl: base, fetch: fetchImpl });
 }
 
 /**

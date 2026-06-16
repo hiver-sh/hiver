@@ -55,7 +55,7 @@ it("getOrCreateSandbox returns Sandbox with correct id, key and apiServerUrl on 
   expect(sandbox.id).toBe(SANDBOX_ID);
   expect(sandbox.key).toBe("test-sandbox");
   expect(sandbox.apiServerUrl).toBe(
-    `${DEFAULT_GATEWAY_URL}/sandbox/test-sandbox`,
+    `${DEFAULT_GATEWAY_URL}/sandbox/${SANDBOX_ID}`,
   );
 });
 
@@ -118,25 +118,6 @@ it("getOrCreateSandbox throws SandboxError with 'connection refused' on ECONNREF
     status: 0,
     message: expect.stringContaining("connection refused"),
   });
-});
-
-it("getOrCreateSandbox polls /v1/ping before resolving when timeoutMs > 0", async () => {
-  const mockFetch = vi
-    .fn()
-    .mockResolvedValueOnce(jsonResp(SANDBOX_REF))
-    .mockResolvedValue(new Response(null, { status: 200 }));
-
-  const sandbox = await getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
-    fetch: mockFetch as unknown as typeof fetch,
-    timeoutMs: 2000,
-  });
-
-  expect(sandbox).toBeInstanceOf(Sandbox);
-  expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
-  const pingCall = mockFetch.mock.calls.find((args) =>
-    (args[0] as string).includes("/v1/ping"),
-  );
-  expect(pingCall).toBeDefined();
 });
 
 // shutdown

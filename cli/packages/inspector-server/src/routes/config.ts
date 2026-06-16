@@ -1,12 +1,14 @@
 import { Router, type Request, type Response } from "express";
 import type { SandboxConfig } from "@hiver.sh/client";
 import { sandboxFromReq } from "../lib/sandboxFromReq.js";
+import { waitForSandbox } from "../lib/waitForSandbox.js";
 
 const router = Router();
 
-router.get("/:key/config", async (req: Request, res: Response) => {
+router.get("/:id/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
+    await waitForSandbox(sandbox);
     const config = await sandbox.getConfig();
     res.json(config);
   } catch (err) {
@@ -14,9 +16,10 @@ router.get("/:key/config", async (req: Request, res: Response) => {
   }
 });
 
-router.put("/:key/config", async (req: Request, res: Response) => {
+router.put("/:id/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
+    await waitForSandbox(sandbox);
     await sandbox.applyConfig(req.body as SandboxConfig);
     res.json({ ok: true });
   } catch (err) {

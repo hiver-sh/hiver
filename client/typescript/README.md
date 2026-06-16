@@ -98,7 +98,7 @@ Returns a `Sandbox` handle once the sandbox is ready to accept requests.
 ```ts
 const sandbox = await hiver.getOrCreateSandbox("my-sandbox", config, {
   gatewayUrl: "http://localhost:10000", // default
-  timeoutMs: 30_000, // default; pass 0 to skip the readiness wait
+  timeoutMs: 60_000, // default; pass 0 to skip the readiness wait
 });
 ```
 
@@ -108,7 +108,7 @@ const sandbox = await hiver.getOrCreateSandbox("my-sandbox", config, {
 | ------------ | -------------- | ------------------------ | ------------------------------------------------------------------------------------------------------- |
 | `gatewayUrl` | `string`       | `http://localhost:10000` | Base URL of the gateway. Also exported as `DEFAULT_GATEWAY_URL`.                                        |
 | `fetch`      | `typeof fetch` | global `fetch`           | Override for testing or custom transports.                                                              |
-| `timeoutMs`  | `number`       | `30000`                  | Timeout applied to each controller fetch and to the readiness poll. Pass `0` to disable and skip waits. |
+| `timeoutMs`  | `number`       | `60000`                  | Timeout applied to each controller fetch and to the readiness poll. Pass `0` to disable and skip waits. |
 
 ---
 

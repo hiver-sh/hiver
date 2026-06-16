@@ -1,0 +1,173 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-envoy
+  namespace: hiver
+data:
+  # Mirrors docker/gateway/envoy.yaml, with one deployment-specific change:
+  # the sandbox :authority is rewritten to a fully-qualified cross-namespace
+  # DNS name (…​.hiver-sandbox.svc.cluster.local) so the gateway in the "hiver"
+  # namespace can reach sandbox Services in the "hiver-sandbox" namespace.
+  envoy.yaml: |
+    static_resources:
+      listeners:
+        - name: main
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 10000
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: gateway
+                    http_filters:
+                      - name: envoy.filters.http.lua
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                          inline_code: |
+                            function envoy_on_request(request_handle)
+                              local path = request_handle:headers():get(":path")
+                              local id = path:match("^/sandbox/([^/?#]+)")
+                              if not id then
+                                return
+                              end
+                              -- The id is a UUID whose first 4 bytes are the
+                              -- sandbox pod's IPv4 address (assigned by the
+                              -- controller at creation). Decode it and dial the
+                              -- pod directly, bypassing the per-sandbox Service
+                              -- DNS name — kube-dns negatively caches a fresh
+                              -- sandbox's record for ~10s, which used to gate
+                              -- time-to-route.
+                              local hex = id:gsub("-", "")
+                              local ip = string.format("%d.%d.%d.%d",
+                                tonumber(hex:sub(1, 2), 16),
+                                tonumber(hex:sub(3, 4), 16),
+                                tonumber(hex:sub(5, 6), 16),
+                                tonumber(hex:sub(7, 8), 16))
+                              request_handle:headers():replace(":authority", ip .. ":8099")
+                            end
+                      - name: envoy.filters.http.dynamic_forward_proxy
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                          dns_cache_config:
+                            name: dynamic_forward_proxy_cache_config
+                            dns_lookup_family: V4_ONLY
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                    route_config:
+                      name: main
+                      virtual_hosts:
+                        - name: gateway
+                          domains: ["*"]
+                          routes:
+                            - match:
+                                prefix: "/controller/"
+                              route:
+                                cluster: controller
+                                prefix_rewrite: "/"
+                                timeout: 0s
+                            - match:
+                                prefix: "/sandbox/"
+                              route:
+                                cluster: dynamic_forward_proxy
+                                regex_rewrite:
+                                  pattern:
+                                    regex: "^/sandbox/[^/]+"
+                                  substitution: ""
+                                timeout: 0s
+
+      clusters:
+        - name: controller
+          connect_timeout: 30s
+          type: STRICT_DNS
+          load_assignment:
+            cluster_name: controller
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: controller
+                          port_value: 9000
+
+        - name: dynamic_forward_proxy
+          connect_timeout: 30s
+          lb_policy: CLUSTER_PROVIDED
+          cluster_type:
+            name: envoy.clusters.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+              dns_cache_config:
+                name: dynamic_forward_proxy_cache_config
+                dns_lookup_family: V4_ONLY
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: hiver
+  labels:
+    app: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
+          # overridden by the gateway-envoy ConfigMap mounted below so sandboxes
+          # resolve across namespaces.
+          image: hiversh/gateway:latest
+          ports:
+            - name: http
+              containerPort: 10000
+          readinessProbe:
+            tcpSocket:
+              port: 10000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 10000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: gateway-envoy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: hiver
+  labels:
+    app: gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: 10000

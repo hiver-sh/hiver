@@ -15,8 +15,7 @@ DEFAULT_GATEWAY_URL = "http://localhost:10000"
 
 _SANDBOX_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_DEFAULT_TIMEOUT_S = 30.0
-_READINESS_POLL_INTERVAL_S = 0.2
+_DEFAULT_TIMEOUT_S = 60.0
 
 
 async def get_or_create_sandbox(
@@ -85,10 +84,7 @@ async def get_or_create_sandbox(
             )
 
         ref = SandboxRef.model_validate(res.json())
-        sandbox = Sandbox(ref, base, client=http if not owns_client else None)
-        if timeout_s > 0:
-            await _wait_until_reachable(sandbox, timeout_s)
-        return sandbox
+        return Sandbox(ref, base, client=http if not owns_client else None)
     except Exception:
         if owns_client:
             await http.aclose()
@@ -204,28 +200,6 @@ async def watch_sandbox_events(
     finally:
         if owns_client:
             await http.aclose()
-
-
-async def _wait_until_reachable(sandbox: Sandbox, timeout_s: float) -> None:
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout_s
-    last_err: Optional[Exception] = None
-
-    while loop.time() < deadline:
-        try:
-            await sandbox.ping()
-            return
-        except Exception as err:
-            last_err = err
-        await asyncio.sleep(_READINESS_POLL_INTERVAL_S)
-
-    detail = f": {last_err}" if last_err else ""
-    raise SandboxError(
-        "get_or_create_sandbox",
-        0,
-        f"sandbox {sandbox.id} did not become reachable at {sandbox.api_server_url} "
-        f"within {timeout_s:.0f}s{detail}",
-    )
 
 
 def _is_connection_refused(err: httpx.ConnectError) -> bool:
