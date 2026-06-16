@@ -9,6 +9,15 @@ export function dockerAvailable(): boolean {
   return spawnSync("docker", ["--version"], { stdio: "ignore" }).status === 0;
 }
 
+/**
+ * Whether the docker daemon is reachable. `docker --version` only proves the
+ * CLI is installed; `docker info` round-trips to the daemon, which is the part
+ * that's actually down when Docker Desktop is installed but not started.
+ */
+export function dockerRunning(): boolean {
+  return spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
+}
+
 interface Installer {
   label: string;
   cmd: string;
@@ -77,7 +86,12 @@ function bail(message: string): never {
  * platform; on accept, run the installer and re-check. Exits otherwise.
  */
 export async function requireDocker(): Promise<void> {
-  if (dockerAvailable()) return;
+  if (dockerAvailable()) {
+    // CLI is installed — make sure the daemon is actually up before proceeding,
+    // otherwise the next docker call fails with a raw connection error.
+    if (dockerRunning()) return;
+    bail("Docker is installed but not running — start Docker, then retry.");
+  }
 
   console.error(`\n  ${red("✖")} Docker not found.`);
 
@@ -99,6 +113,10 @@ export async function requireDocker(): Promise<void> {
   // Docker Desktop (macOS/Windows) often needs a first launch before the CLI works.
   if (!dockerAvailable()) {
     bail("Docker installed but not ready yet — start Docker, then retry.");
+  }
+  // Freshly installed: the daemon may still be spinning up.
+  if (!dockerRunning()) {
+    bail("Docker installed but the daemon isn't ready yet — start Docker, then retry.");
   }
 
   console.log(`  ${bright("✔")} Docker ready\n`);
