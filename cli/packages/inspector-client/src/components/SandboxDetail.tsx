@@ -74,7 +74,7 @@ export function SandboxDetail({
   serverUrl,
   onConnectedChange,
 }: SandboxDetailProps) {
-  const { transport, player } = useTransport();
+  const { transport, player, gatewayUrl } = useTransport();
   const { prefs, setPref } = useUserPreferences();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -87,6 +87,7 @@ export function SandboxDetail({
   const isShuttingDown =
     shutdownLoading || sandbox.status === "stop" || sandbox.status === "die";
   const [ports, setPorts] = useState<number[]>([]);
+  const [isolation, setIsolation] = useState<string | null>(null);
   // null = dialog closed; { port } = open for that port (port null = no exposed ports).
   const [portDialog, setPortDialog] = useState<{ port: number | null } | null>(
     null,
@@ -206,6 +207,29 @@ export function SandboxDetail({
       .then((r) => r.json() as Promise<{ ports?: number[] }>)
       .then((data) => {
         if (!cancelled) setPorts(data.ports ?? []);
+      })
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sandbox.id, serverUrl, transport]);
+
+  // Load the sandbox's isolation mechanism (container/microvm) for the header.
+  // Isolation is determined at boot from the image, not configured, so it comes
+  // from the sandbox's /info endpoint rather than its config.
+  useEffect(() => {
+    let cancelled = false;
+    setIsolation(null);
+    const url = new URL(
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/info`,
+    );
+    transport
+      .fetch(url)
+      .then((r) => r.json() as Promise<{ isolation?: string }>)
+      .then((info) => {
+        if (!cancelled) setIsolation(info.isolation ?? "container");
       })
       .catch(() => {
         /* ignore */
@@ -472,6 +496,14 @@ export function SandboxDetail({
       <div className="flex h-[70px] items-center justify-between gap-4 p-4 pb-3">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-base font-semibold">{sandbox.key}</h2>
+          {isolation && (
+            <span
+              title={`Isolation: ${isolation}`}
+              className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+            >
+              {isolation}
+            </span>
+          )}
           {isShuttingDown && (
             <span className="flex shrink-0 items-center gap-1.5 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -879,6 +911,7 @@ export function SandboxDetail({
 
       <PortUsageDialog
         sandboxKey={sandbox.key}
+        gatewayUrl={gatewayUrl}
         open={portDialog !== null}
         port={portDialog?.port ?? null}
         onOpenChange={(open) => {

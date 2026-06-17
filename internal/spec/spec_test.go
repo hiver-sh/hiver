@@ -49,6 +49,53 @@ func TestLoadValid(t *testing.T) {
 	}
 }
 
+func TestLoadEntrypoint(t *testing.T) {
+	// entrypoint accepts both a JSON array and a single string (split on
+	// whitespace), normalizing both to the same argv slice.
+	cases := []struct {
+		name string
+		json string
+		want []string
+	}{
+		{"array", `{"entrypoint": ["tail", "-f", "/dev/null"], "fs": []}`, []string{"tail", "-f", "/dev/null"}},
+		{"string", `{"entrypoint": "tail -f /dev/null", "fs": []}`, []string{"tail", "-f", "/dev/null"}},
+		{"string extra spaces", `{"entrypoint": "  sleep   3600 ", "fs": []}`, []string{"sleep", "3600"}},
+		{"omitted", `{"fs": []}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := spec.Load(writeSpec(t, tc.json))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if len(s.Entrypoint) != len(tc.want) {
+				t.Fatalf("entrypoint: got %+v, want %+v", s.Entrypoint, tc.want)
+			}
+			for i := range tc.want {
+				if s.Entrypoint[i] != tc.want[i] {
+					t.Errorf("entrypoint[%d]: got %q, want %q", i, s.Entrypoint[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestLoadNoFS(t *testing.T) {
+	// fs is optional: a prewarm sandbox boots with only an image and
+	// receives its mounts later via PUT /v1/config, so an absent or empty fs
+	// must validate.
+	for _, body := range []string{`{}`, `{"fs":[]}`} {
+		p := writeSpec(t, body)
+		s, err := spec.Load(p)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", body, err)
+		}
+		if len(s.FS) != 0 {
+			t.Errorf("fs: want empty, got %+v", s.FS)
+		}
+	}
+}
+
 func TestLoadMultipleMounts(t *testing.T) {
 	p := writeSpec(t, `{
 		"fs": [
@@ -86,8 +133,6 @@ func TestLoadMissingRequired(t *testing.T) {
 		body string
 		want string
 	}{
-		{"no fs", `{}`, "fs is required"},
-		{"empty fs", `{"fs":[]}`, "fs is required"},
 		{"no backend", `{"fs":[{"mount":"/m"}]}`, "backend"},
 		{"unknown backend", `{"fs":[{"backend":"s3","mount":"/m"}]}`, "backend"},
 		{"no mount", `{"fs":[{"backend":"local"}]}`, "mount"},
@@ -160,6 +205,53 @@ func TestOverrideHostValidation(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := spec.Load(writeSpec(t, mk(c.rule)))
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("Load: got %v, want error containing %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestSnapshotMountValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string // empty means must load
+	}{
+		{
+			"mount references a declared fs",
+			`{"fs": [{"backend": "external", "mount": "/snapshots", "host": "https://h", "internal": true}],
+			  "snapshot": {"restore_key": "k", "mount": "/snapshots"}}`,
+			"",
+		},
+		{
+			"omitted mount is fine",
+			`{"fs": [{"backend": "local", "mount": "/work"}],
+			  "snapshot": {"restore_key": "k"}}`,
+			"",
+		},
+		{
+			"relative mount rejected",
+			`{"fs": [{"backend": "local", "mount": "/work"}],
+			  "snapshot": {"restore_key": "k", "mount": "snapshots"}}`,
+			"snapshot.mount",
+		},
+		{
+			"mount with no matching fs rejected",
+			`{"fs": [{"backend": "local", "mount": "/work"}],
+			  "snapshot": {"restore_key": "k", "mount": "/snapshots"}}`,
+			"does not match any fs",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := spec.Load(writeSpec(t, c.body))
 			if c.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Load: unexpected error: %v", err)

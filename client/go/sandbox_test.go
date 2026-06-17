@@ -190,7 +190,7 @@ func TestSandbox_ListDirectory(t *testing.T) {
 	}
 }
 
-func TestSandbox_DownloadFile(t *testing.T) {
+func TestSandbox_ReadFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertPath(t, r, "/sandbox/k/v1/file")
 		if r.URL.Query().Get("path") != "/workspace/data.csv" {
@@ -201,7 +201,7 @@ func TestSandbox_DownloadFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	data, err := newTestSandbox(srv, "k").DownloadFile(context.Background(), "/workspace/data.csv")
+	data, err := newTestSandbox(srv, "k").ReadFile(context.Background(), "/workspace/data.csv")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestSandbox_DownloadFile(t *testing.T) {
 	}
 }
 
-func TestSandbox_UploadFile(t *testing.T) {
+func TestSandbox_WriteFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
 		assertPath(t, r, "/sandbox/k/v1/file")
@@ -223,7 +223,7 @@ func TestSandbox_UploadFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result, err := newTestSandbox(srv, "k").UploadFile(context.Background(), "/workspace", "hello.txt", []byte("hello"))
+	result, err := newTestSandbox(srv, "k").WriteFile(context.Background(), "/workspace", "hello.txt", []byte("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}

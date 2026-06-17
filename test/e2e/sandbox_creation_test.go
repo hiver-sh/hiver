@@ -31,7 +31,7 @@ func TestSandboxCreationE2E(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-ep-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
 			Image:      "hiversh/python:3.13-alpine",
-			Entrypoint: "sleep 3600",
+			Entrypoint: []string{"sleep", "3600"},
 		}
 		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
@@ -63,7 +63,7 @@ func TestSandboxCreationE2E(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-cwd-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
 			Image:      "hiversh/python:3.13-alpine",
-			Entrypoint: "tail -f /dev/null",
+			Entrypoint: []string{"tail", "-f", "/dev/null"},
 			CWD:        "/tmp",
 		}
 		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
@@ -92,7 +92,7 @@ func TestSandboxCreationE2E(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-env-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
 			Image:      "hiversh/python:3.13-alpine",
-			Entrypoint: "tail -f /dev/null",
+			Entrypoint: []string{"tail", "-f", "/dev/null"},
 			Env: map[string]string{
 				"MY_VAR":    "hello",
 				"OTHER_VAR": "world",
@@ -131,7 +131,7 @@ func TestSandboxCreationE2E(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-tty-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
 			Image:      "hiversh/python:3.13-alpine",
-			Entrypoint: "sleep 3600",
+			Entrypoint: []string{"sleep", "3600"},
 			TTY:        true,
 		}
 		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })

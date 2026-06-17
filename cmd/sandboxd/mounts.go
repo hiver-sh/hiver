@@ -60,6 +60,10 @@ type mountManager struct {
 	// pre-launch restore happens at most once (CAS in maybeRestore).
 	rootMounted atomic.Bool
 	restored    atomic.Bool
+	// workloadLive is set once the agent is running, after which a reconcile must
+	// inject any newly-added workspace into the live workload (the launch-time
+	// bundle/resume can't cover a mount added by a runtime config-apply).
+	workloadLive atomic.Bool
 
 	mu   sync.Mutex
 	live map[string]fsSidecar // keyed by agent mount path
@@ -83,7 +87,15 @@ func newMountManager(ctx context.Context, children *sync.WaitGroup, broker *even
 // defaultedACLs returns f.ACLs, falling back to a single read-write rule over
 // the whole mount when none are set — matching spec.Validate, which the reconcile
 // path (fed from on-disk config) doesn't run.
+//
+// Internal mounts are never exposed to the agent, so an ACL policy governing
+// agent access is meaningless; the only accessor is sandboxd itself (e.g.
+// snapshot capture/restore). They always get full read-write so that I/O is
+// never blocked, regardless of any configured rules.
 func defaultedACLs(f spec.FS) []fusefs.Rule {
+	if f.Internal {
+		return []fusefs.Rule{{Path: f.Mount + "/**", Access: fusefs.AccessRW}}
+	}
 	if len(f.ACLs) > 0 {
 		return f.ACLs
 	}
@@ -104,9 +116,12 @@ func (m *mountManager) start(f spec.FS) error {
 	// mount path into the FUSE backend so the agent sees them. Done here, in the
 	// reconciler, so a mount added by a later config change is seeded too. It must
 	// precede iso.MountRoot (which the caller runs after the reconcile) — the seed
-	// empties these paths out of the overlay lower.
-	if err := isolation.SeedWorkspace(f.BackendPath(), filepath.Join(runc.RootfsDir, f.Mount)); err != nil {
-		return fmt.Errorf("seed workspace %s: %w", f.Mount, err)
+	// empties these paths out of the overlay lower. Internal mounts are never
+	// exposed to the agent and the image carries no content for them, so skip it.
+	if !f.Internal {
+		if err := isolation.SeedWorkspace(f.BackendPath(), filepath.Join(runc.RootfsDir, f.Mount)); err != nil {
+			return fmt.Errorf("seed workspace %s: %w", f.Mount, err)
+		}
 	}
 
 	aclPath := filepath.Join(m.workDir, "acls-"+f.Slug()+".json")
@@ -137,12 +152,18 @@ func (m *mountManager) start(f spec.FS) error {
 		return fmt.Errorf("fuse did not mount %s: %w", f.Mount, err)
 	}
 
-	m.isoMu.Lock()
-	err = m.iso.ExportWorkspace(m.ctx, f.Mount)
-	m.isoMu.Unlock()
-	if err != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("export workspace %s: %w", f.Mount, err)
+	// Internal mounts stay host-side only: the sbxfuse daemon is mounted on the
+	// sandbox host (so sandboxd can read/write it — e.g. as a snapshot target)
+	// but it is never exported into the agent workload, so the agent never sees
+	// it. Everything else is exported into the workload's mount namespace.
+	if !f.Internal {
+		m.isoMu.Lock()
+		err = m.iso.ExportWorkspace(m.ctx, f.Mount)
+		m.isoMu.Unlock()
+		if err != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("export workspace %s: %w", f.Mount, err)
+		}
 	}
 
 	m.mu.Lock()

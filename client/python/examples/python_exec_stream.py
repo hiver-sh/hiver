@@ -25,7 +25,7 @@ async def main() -> None:
         "hive-python-exec-stream",
         hiver.SandboxConfig(
             image="hiversh/python:3.13-alpine",
-            entrypoint="tail -f /dev/null",
+            entrypoint=["tail", "-f", "/dev/null"],
             fs=[
                 hiver.LocalFileSystem(
                     backend="local",

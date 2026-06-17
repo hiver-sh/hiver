@@ -17,7 +17,8 @@ resource "google_container_cluster" "this" {
   networking_mode = "VPC_NATIVE"
   ip_allocation_policy {}
 
-  // Avoid accidental deletion of a running cluster via terraform.
+  // Guards against accidental `terraform destroy`. Set false, apply, then
+  // destroy when intentionally tearing the cluster down.
   deletion_protection = true
 }
 
@@ -43,6 +44,37 @@ resource "google_container_node_pool" "primary" {
     min_cpu_platform = var.min_cpu_platform
     disk_size_gb     = var.disk_size_gb
     disk_type        = var.disk_type
+
+    // Consume a specific reservation that holds n2 + Local SSD capacity in this
+    // zone. Local SSD was exhausted on-demand across us-west1 and us-west2; the
+    // reservation (deployment probe / `gcloud compute reservations create`)
+    // guarantees the node schedules. The reservation's hardware (n2-standard-4,
+    // 1x NVMe Local SSD, Cascade Lake) must match this node_config to be consumed.
+    dynamic "reservation_affinity" {
+      for_each = var.node_reservation != "" ? [1] : []
+      content {
+        consume_reservation_type = "SPECIFIC_RESERVATION"
+        key                      = "compute.googleapis.com/reservation-name"
+        values                   = [var.node_reservation]
+      }
+    }
+
+    // GKE-managed ephemeral storage on Local SSD (NVMe). GKE formats the disks
+    // and backs node ephemeral storage with them: emptyDir volumes and the
+    // container writable/image layers all land on NVMe with no app changes.
+    // This keeps the Firecracker prewarm fast path (snapshot/mem at
+    // /run/firecracker, the container writable layer) on fast local flash, and
+    // the sandbox snapshot dir (/snapshots, a pod-local emptyDir) on NVMe too —
+    // ephemeral, not durable across pods. Each disk is a fixed 375 GiB (GCP
+    // constant); total = count x 375 GiB. Local SSD is ephemeral (lost on node
+    // stop/repair/upgrade) and only attachable at node creation, so changing the
+    // count recreates the node pool.
+    dynamic "ephemeral_storage_local_ssd_config" {
+      for_each = var.local_nvme_ssd_count > 0 ? [1] : []
+      content {
+        local_ssd_count = var.local_nvme_ssd_count
+      }
+    }
 
     // Nested virtualization requires the Ubuntu node image (KVM is not
     // available on Container-Optimized OS).

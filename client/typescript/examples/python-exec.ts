@@ -5,10 +5,9 @@ import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-python-exec", {
   image: "hiversh/python:3.13-alpine",
-  entrypoint: "tail -f /dev/null",
 });
 
-const result = await sandbox.exec(`python3 -c "print('Hello, world!')"`, {
+const result = await sandbox.exec(["python3", "-c", "print('Hello, world!')"], {
   cwd: "/workspace",
 });
 

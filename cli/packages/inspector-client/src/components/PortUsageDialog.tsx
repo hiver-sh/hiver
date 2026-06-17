@@ -1,18 +1,23 @@
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { CodeTabs } from "@/components/CodeTabs";
+import { DEFAULT_GATEWAY_URL } from "@/types";
 
 export interface PortUsageDialogProps {
   sandboxKey: string;
+  /** The gateway the inspector is pointed at; surfaced in the snippet when non-default. */
+  gatewayUrl: string;
   open: boolean;
   /** The exposed port to document, or null when the sandbox exposes none. */
   port: number | null;
   onOpenChange: (open: boolean) => void;
 }
 
-function tsSnippet(key: string, port: number | null): string {
-  const head = `import * as hive from "hive-runtime/client";
+function tsSnippet(key: string, port: number | null, gateway: string | null): string {
+  const opts = gateway ? `, {}, { gatewayUrl: ${JSON.stringify(gateway)} }` : "";
+  const head = `// npm install --save @hiver.sh/client
+import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hive.getOrCreateSandbox(${JSON.stringify(key)});`;
+const sandbox = await hiver.getOrCreateSandbox(${JSON.stringify(key)}${opts});`;
   if (port === null) return head;
   return `${head}
 
@@ -22,23 +27,40 @@ const res = await fetch(\`\${sandbox.proxyUrl(${port})}/\`);
 console.log(res.status, await res.text());`;
 }
 
-function pySnippet(key: string, port: number | null): string {
-  const head = `import hive_runtime as hive
+function pySnippet(key: string, port: number | null, gateway: string | null): string {
+  const opts = gateway ? `, gateway_url=${JSON.stringify(gateway)}` : "";
+  if (port === null) {
+    return `# pip install hiver-py
+import asyncio
+import hiver
 
-sandbox = hive.get_or_create_sandbox(${JSON.stringify(key)})`;
-  if (port === null) return head;
-  return `${head}
+async def main():
+    sandbox = await hiver.get_or_create_sandbox(${JSON.stringify(key)}${opts})
 
-# proxy_url(port) returns the base URL that proxies to port ${port}
-# inside the sandbox. Append a path to reach a specific endpoint.
-res = hive.get(sandbox.proxy_url(${port}) + "/")
-print(res.status_code, res.text)`;
+asyncio.run(main())`;
+  }
+  return `# pip install hiver-py
+import asyncio
+import httpx
+import hiver
+
+async def main():
+    sandbox = await hiver.get_or_create_sandbox(${JSON.stringify(key)}${opts})
+
+    # proxy_url(port) returns the base URL that proxies to port ${port}
+    # inside the sandbox. Append a path to reach a specific endpoint.
+    res = httpx.get(sandbox.proxy_url(${port}) + "/")
+    print(res.status_code, res.text)
+
+asyncio.run(main())`;
 }
 
-function goSnippet(key: string, port: number | null): string {
-  const head = `import "github.com/hive-run/hive-runtime/client"
+function goSnippet(key: string, port: number | null, gateway: string): string {
+  const head = `// go get github.com/hiver-sh/hiver/client
+import "github.com/hiver-sh/hiver/client"
 
-sandbox, _ := hive.GetOrCreateSandbox(${JSON.stringify(key)}, hive.SandboxConfig{})`;
+c := client.NewClient(${JSON.stringify(gateway)})
+sandbox, _ := c.GetOrCreateSandbox(context.Background(), ${JSON.stringify(key)}, client.SandboxConfig{})`;
   if (port === null) return head;
   return `${head}
 
@@ -57,10 +79,15 @@ fmt.Println(res.StatusCode, string(body))`;
  */
 export function PortUsageDialog({
   sandboxKey,
+  gatewayUrl,
   open,
   port,
   onOpenChange,
 }: PortUsageDialogProps) {
+  // Only thread the gateway through the TS/Python snippets when it differs from
+  // the SDK default — otherwise the extra argument is just noise. The Go client
+  // always takes the gateway explicitly, so it gets the effective URL.
+  const gateway = gatewayUrl === DEFAULT_GATEWAY_URL ? null : gatewayUrl;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
@@ -71,9 +98,9 @@ export function PortUsageDialog({
         </DialogTitle>
         <CodeTabs
           examples={{
-            ts: tsSnippet(sandboxKey, port),
-            py: pySnippet(sandboxKey, port),
-            go: goSnippet(sandboxKey, port),
+            ts: tsSnippet(sandboxKey, port, gateway),
+            py: pySnippet(sandboxKey, port, gateway),
+            go: goSnippet(sandboxKey, port, gatewayUrl),
           }}
         />
       </DialogContent>

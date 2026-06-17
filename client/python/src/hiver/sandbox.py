@@ -12,6 +12,7 @@ from .schemas import (
     SandboxConfig,
     SandboxEvent,
     SandboxEventAdapter,
+    SandboxInfo,
     SandboxRef,
 )
 from .sse import parse_sse
@@ -141,6 +142,17 @@ class Sandbox:
             raise _to_error(res, "get_ports")
         return res.json()
 
+    async def get_info(self) -> SandboxInfo:
+        """
+        Read internal runtime info about the sandbox — currently the isolation
+        mechanism in use, which is selected automatically from the image (a
+        microvm image ships a guest root filesystem) rather than configured.
+        """
+        res = await self._client.get(f"{self.api_server_url}/v1/info")
+        if not res.is_success:
+            raise _to_error(res, "get_info")
+        return SandboxInfo.model_validate(res.json())
+
     async def get_config(self) -> SandboxConfig:
         """Read the current SandboxConfig."""
         res = await self._client.get(f"{self.api_server_url}/v1/config")
@@ -165,13 +177,17 @@ class Sandbox:
 
     async def exec(
         self,
-        command: str,
+        command: Union[str, list[str]],
         cwd: Optional[str] = None,
         env: Optional[dict[str, str]] = None,
     ) -> dict[str, object]:
         """
         Run `command` inside the sandbox and return buffered stdout, stderr,
         and exit_code once the process finishes.
+
+        `command` may be a string (passed to a shell via ``sh -c``) or a list of
+        strings (executed directly as argv, each element a literal argument with
+        no shell, word-splitting, or expansion).
 
         `env` is merged on top of the sandbox config's environment, overriding
         entries with the same name. When omitted, the sandbox config
@@ -192,7 +208,7 @@ class Sandbox:
 
     async def exec_stream(
         self,
-        command: str = "",
+        command: Union[str, list[str]] = "",
         cwd: Optional[str] = None,
         tty: bool = False,
         env: Optional[dict[str, str]] = None,
@@ -201,6 +217,10 @@ class Sandbox:
         Run `command` inside the sandbox and return an ExecProcess handle for
         interactive use: stream output via ``exec.pipes``, send input via
         ``exec.write_stdin()``, and await the result via ``exec.exit_code``.
+
+        `command` may be a string (passed to a shell via ``sh -c``) or a list of
+        strings (executed directly as argv, each element a literal argument with
+        no shell, word-splitting, or expansion).
 
         Pass an empty `command` to attach to the sandbox entrypoint's terminal
         instead of running a new command — this requires the sandbox to have
@@ -307,7 +327,7 @@ class Sandbox:
             raise _to_error(res, "list_directory")
         return res.json()["entries"]
 
-    async def download_file(self, path: str) -> bytes:
+    async def read_file(self, path: str) -> bytes:
         """
         Download a file from a sandbox mount. `path` is the agent-visible
         absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
@@ -317,10 +337,10 @@ class Sandbox:
             params={"path": path},
         )
         if not res.is_success:
-            raise _to_error(res, "download_file")
+            raise _to_error(res, "read_file")
         return res.content
 
-    async def upload_file(
+    async def write_file(
         self,
         destination: str,
         filename: str,
@@ -340,8 +360,20 @@ class Sandbox:
             files={"file": (filename, content)},
         )
         if not res.is_success:
-            raise _to_error(res, "upload_file")
+            raise _to_error(res, "write_file")
         return res.json()
+
+    async def delete_file(self, path: str) -> None:
+        """
+        Delete a file or empty directory at `path` inside a sandbox mount.
+        `path` is the agent-visible absolute path (e.g. `/workspace/data.csv`).
+        """
+        res = await self._client.delete(
+            f"{self.api_server_url}/v1/file",
+            params={"path": path},
+        )
+        if not res.is_success:
+            raise _to_error(res, "delete_file")
 
     async def get_events_stream(
         self,

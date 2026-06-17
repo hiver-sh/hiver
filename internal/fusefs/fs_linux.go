@@ -118,6 +118,14 @@ type Server struct {
 	// the pre-rename backend path — causing ENOENT on the new name.
 	nodesMu   sync.Mutex
 	liveNodes map[string]*node // virt-path → live node
+
+	// writtenMu guards written: virt-paths that have been written since the
+	// last Flush and so owe an upload. The OpPut is enqueued once, on Flush
+	// (close), not per Write — a multi-write file (e.g. a snapshot tarball)
+	// would otherwise have the uploader flush+evict its buffer mid-write,
+	// truncating the upload (see Write/Flush).
+	writtenMu sync.Mutex
+	written   map[string]struct{}
 }
 
 // SetACLs atomically replaces the live ACL policy. Safe to call from
@@ -157,7 +165,7 @@ func Mount(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fusefs: mount %s: %w", cfg.MountPoint, err)
 	}
-	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit), liveNodes: make(map[string]*node)}
+	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit), liveNodes: make(map[string]*node), written: make(map[string]struct{})}
 	s.SetACLs(cfg.ACLs)
 	if cfg.Remote != nil {
 		ttl := cfg.RemoteStatTTL
@@ -331,6 +339,32 @@ func (s *Server) enqueueMove(srcAbs, dstAbs string) {
 		return
 	}
 	s.cfg.Oplog.Enqueue(OplogEntry{Type: OpMove, Path: srcAbs, NewPath: dstAbs})
+}
+
+// markWritten records that virt has unflushed content owing an upload. Called
+// from Write; the matching upload is enqueued once on Flush. No-op without a
+// journal (pure-local mounts write straight through, no oplog).
+func (s *Server) markWritten(virt string) {
+	if s.cfg.Oplog == nil {
+		return
+	}
+	s.writtenMu.Lock()
+	s.written[virt] = struct{}{}
+	s.writtenMu.Unlock()
+}
+
+// takeWritten clears virt's written mark and reports whether it was set, so a
+// Flush enqueues the upload exactly once and a read-only handle's Flush is a
+// no-op.
+func (s *Server) takeWritten(virt string) bool {
+	if s.cfg.Oplog == nil {
+		return false
+	}
+	s.writtenMu.Lock()
+	_, ok := s.written[virt]
+	delete(s.written, virt)
+	s.writtenMu.Unlock()
+	return ok
 }
 
 // fileSystem is the bazil/fuse FS impl.
@@ -759,7 +793,22 @@ func (n *node) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.Wri
 	resp.Size = nWritten
 	ac.response()
 	n.s.statCache.invalidate(n.absPath())
-	n.s.enqueuePut(n.virtPath(), n.hostPath())
+	// Don't enqueue the upload here: a file written in many small writes (a
+	// snapshot tarball, say) would have the uploader flush and evict its buffer
+	// between writes, truncating the upload. Just record that it owes an upload;
+	// Flush enqueues the complete buffer once, on close.
+	n.s.markWritten(n.virtPath())
+	return nil
+}
+
+// Flush runs on each close(2) of a handle. It enqueues the single OpPut for a
+// file that was written through this mount, reading the now-complete local
+// buffer — see Write for why the upload is deferred to here rather than done
+// per write. A close with no preceding write (a read-only handle) is a no-op.
+func (n *node) Flush(ctx context.Context, req *fuse.FlushRequest) error {
+	if n.s.takeWritten(n.virtPath()) {
+		n.s.enqueuePut(n.virtPath(), n.hostPath())
+	}
 	return nil
 }
 

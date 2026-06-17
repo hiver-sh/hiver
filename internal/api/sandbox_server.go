@@ -29,7 +29,16 @@ func NewSandboxServer(port string, netMark int) *SandboxServer {
 	r := gin.Default()
 	hs := handlers.NewSandboxHandlers(netMark)
 	r.Use(func(c *gin.Context) {
-		if c.FullPath() != "/v1/ping" && !hs.Ready() {
+		// Two routes are served before the sandbox is ready: /v1/ping (the
+		// readiness probe itself) and PUT /v1/config. The latter is how a
+		// --prewarm sandbox is bootstrapped — the first config-apply is what
+		// launches the workload and ultimately fires NotifyReady — so gating it
+		// on Ready would deadlock the very request that makes the sandbox ready.
+		// Its dependencies (store, broker) are wired before the prewarm park, and
+		// ResetLifetime tolerates the not-yet-wired lifetime.
+		exempt := c.FullPath() == "/v1/ping" ||
+			(c.Request.Method == http.MethodPut && c.FullPath() == "/v1/config")
+		if !exempt && !hs.Ready() {
 			c.JSON(http.StatusInternalServerError, gen.Error{Error: "sandbox is still starting"})
 			c.Abort()
 			return

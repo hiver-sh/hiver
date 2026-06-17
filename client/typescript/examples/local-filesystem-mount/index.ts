@@ -24,7 +24,7 @@ const sandboxConfig: hiver.SandboxConfig = {
 const sandbox = await hiver.getOrCreateSandbox("hive-example", sandboxConfig);
 
 const readFile = async (file: string) => {
-  const bytes = await sandbox.downloadFile(file);
+  const bytes = await sandbox.readFile(file);
   console.log("\n");
   console.log(`reading file: ${file}`);
   console.log(new TextDecoder().decode(bytes));

@@ -31,7 +31,7 @@ router.get("/:id/file", async (req: Request, res: Response) => {
     return;
   }
   try {
-    const bytes = await sandbox.downloadFile(path);
+    const bytes = await sandbox.readFile(path);
     const filename = path.split("/").pop() ?? "file";
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.setHeader("Content-Type", "application/octet-stream");

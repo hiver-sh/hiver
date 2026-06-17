@@ -28,6 +28,7 @@ TypeScript client for Hiver runtime. Works in Node.js (≥18) and Bun.
   - [Filesystems](#filesystems)
   - [Snapshots](#snapshots)
   - [Utils](#utils)
+- [🖥️ Exec](#️-exec)
 - [🧪 Examples](#-examples)
 
 ## 📦 Installation
@@ -349,11 +350,10 @@ optional.
 
 | Field        | Type                       | Default            | Notes                                                            |
 | ------------ | -------------------------- | ------------------ | ---------------------------------------------------------------- |
-| `image`      | `string`                   | —                  | Agent image to launch. Immutable after init.                     |
-| `isolation`  | `"container" \| "microvm"` | `container`        | Isolation mechanism. Immutable after init.                       |
+| `image`      | `string`                   | —                  | Agent image to launch. Immutable after init. Determines isolation (a microvm image ships a guest rootfs). |
 | `cpu`        | `number`                   | `1`                | Virtual CPUs. Immutable after init.                              |
 | `memory`     | `number`                   | `512`              | Memory in MiB. Immutable after init.                             |
-| `entrypoint` | `string`                   | image default      | Override the container entrypoint.                               |
+| `entrypoint` | `string \| string[]`       | image default      | Override the container entrypoint (argv array or whitespace-split string). |
 | `env`        | `Record<string, string>`   | —                  | Extra environment variables. Immutable after init.               |
 | `ttl`        | `number`                   | `1800`             | Idle TTL in seconds. Reset with `ping()`. `0` disables shutdown. |
 | `fs`         | `FileSystem[]`             | local `/workspace` | See [Filesystems](#filesystems).                                 |
@@ -499,7 +499,6 @@ host-backed mount. Configure it with `snapshot`:
 ```ts
 const config: hiver.SandboxConfig = {
   image: "hiversh/node:alpine",
-  isolation: "microvm",
   snapshot: {
     restore_key: "session-42", // restored on start
     write_key: "session-42", // saved on shutdown; defaults to restore_key
@@ -549,6 +548,55 @@ unlisted package is blocked by the egress policy.
 
 ---
 
+## 🖥️ Exec
+
+There are two ways to run code in a sandbox.
+
+**One-shot** — `exec()` runs a command, waits for it to finish, and returns the
+buffered output. Best for quick, self-contained commands.
+
+```ts
+const { stdout } = await sandbox.exec('node -e "console.log(6 * 7)"');
+console.log(stdout.trim()); // 42
+```
+
+**Sessions** — `execStream()` keeps a process alive: you stream its output via
+`exec.pipes` and feed it more input via `exec.writeStdin()`. Because the process
+stays running, its in-memory state persists across writes — so expensive setup
+(a launched browser, a loaded model, an open DB connection) happens **once** and
+is reused by every later command.
+
+The simplest version of this is an interactive interpreter. Here a single Python
+session imports a library once, then reuses it across several writes while
+keeping a running total in memory:
+
+```ts
+const exec = await sandbox.execStream(["python3", "-iq"], { cwd: "/workspace" });
+
+const commands = [
+  "import math; total = 0", // setup runs once...
+  "total += math.factorial(5); print(total)", // ...and is reused
+  "total += math.factorial(6); print(total)",
+  "exit()",
+];
+for (const cmd of commands) await exec.writeStdin(cmd + "\n");
+
+for await (const pipe of exec.pipes) {
+  if (pipe.stdout) process.stdout.write(pipe.stdout); // 120, then 840
+}
+```
+
+Same idea, bigger payoff: [`examples/playwright-exec-stream.ts`](examples/playwright-exec-stream.ts)
+launches Chromium once and reuses that one browser to scrape multiple pages,
+instead of paying the browser startup cost per scrape. Pass `tty: true` for a
+real PTY (stderr merges into stdout, and a `CSI 8` sequence on stdin resizes it)
+— see [`examples/terminal-attach.ts`](examples/terminal-attach.ts).
+
+See [`sandbox.exec()`](#sandboxexeccommand-opts) and
+[`sandbox.execStream()`](#sandboxexecstreamcommand-opts) for the full options.
+
+---
+
 ## 🧪 Examples
 
 Run any example with `npx tsx examples/<name>`.
@@ -562,6 +610,7 @@ Run any example with `npx tsx examples/<name>`.
 | `node-exec.ts` / `python-exec.ts`               | Run a command and read the buffered result.                          |
 | `node-exec-stream.ts` / `python-exec-stream.ts` | Stream command output over SSE.                                      |
 | `node-exec-tty.ts` / `python-exec-tty.ts`       | Drive an interactive REPL over a TTY exec stream.                    |
+| `playwright-exec-stream.ts`                      | Launch Chromium once in a REPL session and reuse it across scrapes.  |
 | `terminal-attach.ts`                            | Attach your local terminal to an interactive shell in the sandbox.   |
 | `node-internal-service.ts`                      | Start deny-all, then `applyConfig` to allow an internal host.        |
 | `http-server`                                   | Proxy HTTP requests to a service running inside the sandbox.         |

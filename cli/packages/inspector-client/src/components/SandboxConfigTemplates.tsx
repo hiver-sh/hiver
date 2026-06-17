@@ -30,7 +30,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "claude-code",
         apply: () => ({
           image: sandboxImages["agent-cli"],
-          entrypoint: "claude",
+          entrypoint: ["claude"],
           cwd: "/workspace",
           tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -47,7 +47,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "codex",
         apply: () => ({
           image: sandboxImages["agent-cli"],
-          entrypoint: "codex",
+          entrypoint: ["codex"],
           cwd: "/workspace",
           tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -64,7 +64,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "gemini",
         apply: () => ({
           image: sandboxImages["agent-cli"],
-          entrypoint: "gemini",
+          entrypoint: ["gemini"],
           cwd: "/workspace",
           tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -81,7 +81,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "copilot",
         apply: () => ({
           image: sandboxImages["agent-cli"],
-          entrypoint: "copilot",
+          entrypoint: ["copilot"],
           cwd: "/workspace",
           tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -94,11 +94,24 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
+        label: "Chromium (Web Browser)",
+        idPrefix: "chromium",
+        apply: () => ({
+          image: sandboxImages["playwright"],
+          entrypoint: ["node"],
+          cwd: "/workspace",
+          tty: true,
+          fs: [{ backend: "local", mount: "/workspace" }],
+          egress: [{ host: "*", access: "allow" }],
+          ttl: 0,
+        }),
+      },
+      {
         label: "Node.js",
         idPrefix: "nodejs",
         apply: () => ({
           image: sandboxImages["node"],
-          entrypoint: "node",
+          entrypoint: ["node"],
           cwd: "/workspace",
           tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],
@@ -111,7 +124,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "python",
         apply: () => ({
           image: sandboxImages["python"],
-          entrypoint: "python",
+          entrypoint: ["python"],
           cwd: "/workspace",
           tty: true,
           fs: [{ backend: "local", mount: "/workspace" }],

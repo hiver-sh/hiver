@@ -1,11 +1,14 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,27 +18,56 @@ import (
 	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
 	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/spec"
+	"github.com/hiver-sh/hiver/internal/warmpool"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-const sandboxdPort = 8099
+const (
+	sandboxdPort = 8099
 
-// podIPTimeout bounds how long Start/Lookup wait for the scheduler to assign the
-// pod an IP. This covers scheduling and image pull on a cold node; sandboxd boot
-// is waited for separately by waitSandboxReady (the /v1/ping?block=true call).
-const podIPTimeout = 120 * time.Second
+	// podIPTimeout bounds how long Start/Lookup wait for the scheduler to assign the
+	// pod an IP. This covers scheduling and image pull on a cold node; sandboxd boot
+	// is waited for separately by waitSandboxReady (the /v1/ping?block=true call).
+	podIPTimeout = 120 * time.Second
+)
+
+// sandboxHTTPClient talks to sandboxd over the pod network. A claim hits the
+// same pod IP twice back to back — applyConfig's PUT /v1/config then
+// waitSandboxReady's GET /v1/ping — so a keep-alive transport lets the GET reuse
+// the PUT's TCP connection, saving a connect+handshake on the latency path. (The
+// callers must drain response bodies for the connection to return to the pool.)
+var sandboxHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
+// drainAndClose empties then closes a response body so its connection is
+// returned to sandboxHTTPClient's idle pool for reuse rather than discarded.
+func drainAndClose(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+}
 
 // K8sRuntime implements SandboxRuntime using the Kubernetes API.
 type K8sRuntime struct {
 	client    kubernetes.Interface
 	namespace string
+	// warm is the warm-pool manager: it pre-boots prewarm pods (leader-elected)
+	// and lets Start adopt one instead of cold-booting. nil if warm pooling
+	// failed to initialise, in which case Start always cold-boots.
+	warm *warmpool.Manager
 }
 
 func newK8sRuntime() (*K8sRuntime, error) {
@@ -58,7 +90,54 @@ func newK8sRuntime() (*K8sRuntime, error) {
 	if ns == "" {
 		ns = "default"
 	}
-	return &K8sRuntime{client: client, namespace: ns}, nil
+	r := &K8sRuntime{client: client, namespace: ns}
+	r.startWarmPool(config)
+	r.startRecycler(context.Background())
+	return r, nil
+}
+
+// startWarmPool wires up and launches the warm-pool manager. Failure to build
+// the dynamic client is logged and tolerated: the controller still serves
+// requests, just always cold-booting (r.warm stays nil).
+func (r *K8sRuntime) startWarmPool(config *rest.Config) {
+	dyn, err := dynamic.NewForConfig(config)
+	if err != nil {
+		log.Printf("warmpool: dynamic client: %v; warm pooling disabled", err)
+		return
+	}
+	r.warm = warmpool.NewManager(warmpool.Config{
+		Kube:      r.client,
+		Dynamic:   dyn,
+		ControlNS: controlNamespace(),
+		SandboxNS: r.namespace,
+		KeyLabel:  labelSandboxKey,
+		Identity:  leaderIdentity(),
+		BuildWarm: r.buildWarmPod,
+	})
+	go r.warm.Run(context.Background())
+}
+
+// controlNamespace is where WarmPool CRs and the leader-election Lease live: the
+// controller's own namespace. It's read from the ServiceAccount token (the
+// in-cluster source of truth), then HIVE_CONTROL_NAMESPACE, falling back to the
+// deployment's "hiver".
+func controlNamespace() string {
+	if b, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		if ns := strings.TrimSpace(string(b)); ns != "" {
+			return ns
+		}
+	}
+	if ns := os.Getenv("HIVE_CONTROL_NAMESPACE"); ns != "" {
+		return ns
+	}
+	return "hiver"
+}
+
+// leaderIdentity is a per-replica leader-election identity: hostname (the pod
+// name under k8s) plus a random suffix so two replicas can never collide.
+func leaderIdentity() string {
+	host, _ := os.Hostname()
+	return host + "_" + uuid.NewString()
 }
 
 // podTerminated reports whether a pod has finished running. A Pending pod is
@@ -246,6 +325,13 @@ func (r *K8sRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
 }
 
 func (r *K8sRuntime) Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
+	// Fast path: adopt a pre-booted warm pod whose image matches this
+	// request. A miss (no pool, empty buffer, or delivery failure) falls through
+	// to the cold-boot path below, so warm pooling is a pure optimisation.
+	if sb, ok := r.claimWarm(ctx, key, cfg); ok {
+		return sb, nil
+	}
+
 	// The Pod is created on a detached context so a client that disconnects
 	// mid-request still leaves a running sandbox behind; only the readiness wait
 	// in bootPod honors ctx.
@@ -302,55 +388,116 @@ func (r *K8sRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sandb
 // docker runtime passes it — so the Pod is self-contained and needs no
 // companion ConfigMap.
 func (r *K8sRuntime) buildPod(podName, key string, cfg sandboxgen.SandboxConfig, specBytes []byte) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: r.namespace,
+			Labels:    map[string]string{labelSandboxKey: key},
+		},
+		Spec: r.sandboxPodSpec(cfg, specBytes, false),
+	}
+}
+
+// sandboxPodSpec builds the PodSpec shared by cold-boot and warm (prewarm) pods.
+// When prewarm is true sandboxd is launched with --prewarm: it brings up its API
+// and parks without a workload until the first PUT /v1/config supplies the real
+// spec (see cmd/sandboxd prewarm path).
+func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []byte, prewarm bool) corev1.PodSpec {
 	privileged := true
+	// Provision the local snapshot volume only when snapshots aren't routed to a
+	// FUSE drive (snapshot.mount); otherwise it's unnecessary and would collide
+	// with a FUSE mount at the same path. A prewarm pod has no config yet, so it
+	// keeps the default volume and only relinquishes it once a non-prewarm spec
+	// is known.
+	localSnapshots := !usesSnapshotMount(cfg)
+	// Always pass --snapshot-dir so Args is non-empty and overrides the image's
+	// default `--help` CMD; the dir is empty (local snapshots disabled) when
+	// snapshots route to a FUSE drive instead.
+	snapDir := "/snapshots"
+	if !localSnapshots {
+		snapDir = ""
+	}
+	args := []string{"--snapshot-dir", snapDir}
+	if prewarm {
+		args = append(args, "--prewarm")
+	}
 	// No route_localnet sysctl is set here: for microvm isolation sandboxd
 	// enables it from inside the privileged pod (isolation.enableRouteLocalnet),
 	// so no unsafe-sysctl node allowlist is required.
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: r.namespace, Labels: map[string]string{labelSandboxKey: key}},
-		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
-			HostAliases:   hostAliasesFor(cfg),
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: r.imageFor(cfg),
-					// Default to IfNotPresent so a node with the image already
-					// pulled skips the registry round-trip — k8s otherwise forces
-					// Always for a :latest tag, adding seconds to every cold pod.
-					// Relies on images being pushed under a stable tag/digest.
-					ImagePullPolicy: corev1.PullIfNotPresent,
-					Args:            []string{"--snapshot-dir", "/snapshots"},
-					Ports: []corev1.ContainerPort{
-						{ContainerPort: sandboxdPort},
-					},
-					Env: append(r.envVars(cfg), corev1.EnvVar{Name: spec.EnvSpec, Value: string(specBytes)}),
-					// No readiness probe: nothing gates on the pod's Ready
-					// condition (there's no per-sandbox Service — the gateway
-					// decodes the pod IP from the id and dials it directly).
-					// Start and Lookup confirm sandboxd is serving with their own
-					// /v1/ping?block=true call (waitSandboxReady), so a kubelet
-					// probe would only duplicate that and spam the sandbox log.
-					SecurityContext: &corev1.SecurityContext{
-						Privileged: &privileged,
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "snapshots", MountPath: "/snapshots"},
-					},
+	ps := corev1.PodSpec{
+		RestartPolicy: corev1.RestartPolicyNever,
+		HostAliases:   hostAliasesFor(cfg),
+		Containers: []corev1.Container{
+			{
+				Name:  "sandbox",
+				Image: r.imageFor(cfg),
+				// Default to IfNotPresent so a node with the image already
+				// pulled skips the registry round-trip — k8s otherwise forces
+				// Always for a :latest tag, adding seconds to every cold pod.
+				// Relies on images being pushed under a stable tag/digest.
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Args:            args,
+				Ports: []corev1.ContainerPort{
+					{ContainerPort: sandboxdPort},
 				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					// sandboxd requires --snapshot-dir for snapshot support. This is
-					// pod-local and ephemeral; durable, cross-pod snapshots need an
-					// RWX PersistentVolume (e.g. Filestore) mounted here instead.
-					Name: "snapshots",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
+				Env: append(r.envVars(cfg), corev1.EnvVar{Name: spec.EnvSpec, Value: string(specBytes)}),
+				// No readiness probe: nothing gates on the pod's Ready
+				// condition (there's no per-sandbox Service — the gateway
+				// decodes the pod IP from the id and dials it directly).
+				// Start and Lookup confirm sandboxd is serving with their own
+				// /v1/ping?block=true call (waitSandboxReady), so a kubelet
+				// probe would only duplicate that and spam the sandbox log.
+				SecurityContext: &corev1.SecurityContext{
+					Privileged: &privileged,
 				},
 			},
 		},
+	}
+	if localSnapshots {
+		ps.Containers[0].VolumeMounts = []corev1.VolumeMount{
+			{Name: "snapshots", MountPath: "/snapshots"},
+		}
+		ps.Volumes = []corev1.Volume{r.snapshotVolume()}
+	}
+	return ps
+}
+
+// snapshotVolume returns the /snapshots volume backing sandboxd's --snapshot-dir.
+// It is a pod-local ephemeral emptyDir: on the GKE node pool that is GKE-managed
+// Local SSD (NVMe), so snapshots land on fast local flash but do not survive the
+// Pod. Durable, cross-pod snapshots would need an external store mounted here
+// instead. The Firecracker prewarm fast path is unaffected — it snapshots to
+// /run/firecracker (the container's NVMe-backed writable layer), not /snapshots.
+func (r *K8sRuntime) snapshotVolume() corev1.Volume {
+	return corev1.Volume{
+		Name:         "snapshots",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+}
+
+// buildWarmPod constructs an unclaimed warm pod for one of a WarmPool's image
+// buffers: a prewarm sandboxd carrying only that image (the field frozen at
+// boot), parked until a claim delivers the rest via PUT /v1/config. The image
+// also fixes the isolation, which sandboxd derives from it at boot. It is named
+// by GenerateName and labelled for the warm-pool machinery — deliberately
+// without a sandbox-key label, so the runtime's key-based Lookup/List/Events
+// don't surface it as a sandbox until Claim adds the key. Passed as the
+// BuildWarm factory to the warmpool.Manager.
+func (r *K8sRuntime) buildWarmPod(wp warmpool.WarmPool, img warmpool.WarmPoolImage) *corev1.Pod {
+	image := img.Image
+	cfg := sandboxgen.SandboxConfig{Image: &image}
+	specBytes, _ := json.Marshal(cfg)
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "warm-" + wp.Name + "-",
+			Namespace:    r.namespace,
+			Labels: map[string]string{
+				warmpool.LabelPool:  wp.Name,
+				warmpool.LabelSpec:  warmpool.SpecHash(image),
+				warmpool.LabelState: warmpool.StateWarm,
+			},
+		},
+		Spec: r.sandboxPodSpec(cfg, specBytes, true),
 	}
 }
 
@@ -525,6 +672,86 @@ func (r *K8sRuntime) Shutdown(ctx context.Context, key string) error {
 		return fmt.Errorf("delete anchor configmap %s: %w", anchorName, err)
 	}
 	return nil
+}
+
+// claimWarm tries to satisfy the request from the warm pool: adopt a matching
+// prewarm pod for key, deliver the real config to its sandboxd, and wait for the
+// workload to come up. It returns ok=false on any miss or failure so Start falls
+// back to a normal cold boot — never surfacing a warm-pool problem to the caller.
+func (r *K8sRuntime) claimWarm(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, bool) {
+	if r.warm == nil {
+		return gen.Sandbox{}, false
+	}
+	image := r.imageFor(cfg)
+	pod, ok, err := r.warm.Claim(ctx, image, key)
+	if err != nil {
+		log.Printf("sandbox %q: warm claim failed, cold-booting: %v", key, err)
+		return gen.Sandbox{}, false
+	}
+	if !ok {
+		return gen.Sandbox{}, false
+	}
+
+	claimStart := time.Now()
+	ip := pod.Status.PodIP
+	// Deliver the real config: a prewarm sandboxd is parked awaiting its first
+	// PUT /v1/config, which latches the workload launch. The image was frozen by
+	// the warm pod's boot env (and fixes the isolation), so this only supplies
+	// the rest.
+	if err := r.applyConfig(ctx, ip, cfg); err != nil {
+		log.Printf("sandbox %q: warm pod %s config delivery failed: %v", key, pod.Name, err)
+		// The pod is already claimed (labelled with key); tear it down so the
+		// cold-boot Create below can take the key cleanly and we don't leak it.
+		_ = r.client.CoreV1().Pods(r.namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{})
+		return gen.Sandbox{}, false
+	}
+	if err := waitSandboxReady(ctx, ip); err != nil {
+		log.Printf("sandbox %q: warm pod %s not ready after config: %v", key, pod.Name, err)
+		_ = r.client.CoreV1().Pods(r.namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{})
+		return gen.Sandbox{}, false
+	}
+	id, err := ipID(ip)
+	if err != nil {
+		return gen.Sandbox{}, false
+	}
+	log.Printf("sandbox %q: claimed warm pod %s in %s", key, pod.Name, time.Since(claimStart).Round(time.Millisecond))
+	return gen.Sandbox{Id: id, Key: key}, true
+}
+
+// applyConfig delivers cfg to the prewarm sandboxd at ip via PUT /v1/config. The
+// PUT is retried while the connection is refused: a just-Running warm pod may
+// not have sandboxd bound yet (the same reason waitSandboxReady retries its GET).
+func (r *K8sRuntime) applyConfig(ctx context.Context, ip string, cfg sandboxgen.SandboxConfig) error {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, sandboxReadyTimeout)
+	defer cancel()
+
+	url := fmt.Sprintf("http://%s:%d/v1/config", ip, sandboxdPort)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := sandboxHTTPClient.Do(req)
+		if err == nil {
+			status := resp.StatusCode
+			drainAndClose(resp) // return the connection to the pool for the ready GET
+			if status == http.StatusOK {
+				return nil
+			}
+			return fmt.Errorf("config PUT returned %s", resp.Status)
+		}
+		// sandboxd not listening yet: back off and retry while time remains.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("config PUT to %s: %w", ip, ctx.Err())
+		case <-time.After(readyProbeInterval):
+		}
+	}
 }
 
 func (r *K8sRuntime) imageFor(cfg sandboxgen.SandboxConfig) string {

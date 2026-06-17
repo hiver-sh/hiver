@@ -22,6 +22,7 @@ from .schemas import (
     ResourceUsageEvent,
     SandboxConfig,
     SandboxEvent,
+    SandboxInfo,
     SandboxRef,
     StdioEvent,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "ResourceUsageEvent",
     "SandboxConfig",
     "SandboxEvent",
+    "SandboxInfo",
     "SandboxRef",
     "StdioEvent",
     # utils

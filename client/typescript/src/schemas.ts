@@ -42,10 +42,19 @@ export interface FileSystemBase {
   mount: string;
   /** Access control rules for paths under `mount`. */
   acls?: ACLRule[];
+  /**
+   * When true, the file system is mounted inside the sandbox runtime but
+   * hidden from the agent workload. Use it for storage the sandbox needs but
+   * the agent must not see, e.g. a remote-backed snapshot target referenced by
+   * `Snapshot.mount`. Because the agent cannot reach the mount, `acls` are
+   * ignored for internal file systems.
+   */
+  internal?: boolean;
 }
 const FileSystemBase = z.object({
   mount: z.string().regex(/^\/.+/, "mount must be an absolute path"),
   acls: z.array(ACLRule).optional(),
+  internal: z.boolean().optional(),
 });
 
 /** Sandbox-local storage with no external dependency. */
@@ -247,6 +256,13 @@ export interface Snapshot {
   write_key?: string;
   /** Glob patterns specifying which paths to include in the snapshot (e.g. `/home/user/*`). */
   include?: string[];
+  /**
+   * Mount path of a file system (see `SandboxConfig.fs`) where snapshot
+   * tarballs are written and read, instead of the host's local snapshot
+   * directory. Point it at an `internal`, remote-backed file system to persist
+   * and restore snapshots through a FUSE drive.
+   */
+  mount?: string;
 }
 export const Snapshot = z.object({
   restore_key: z
@@ -258,6 +274,10 @@ export const Snapshot = z.object({
     .regex(/^[A-Za-z0-9_-]{1,64}$/)
     .optional(),
   include: z.array(z.string()).min(1).optional(),
+  mount: z
+    .string()
+    .regex(/^\/.+/)
+    .optional(),
 });
 type _AssertSnapshot = Expect<Equal<z.infer<typeof Snapshot>, Snapshot>>;
 
@@ -265,8 +285,6 @@ type _AssertSnapshot = Expect<Equal<z.infer<typeof Snapshot>, Snapshot>>;
 export interface SandboxConfig {
   /** Reference to the agent image to launch. This cannot be changed after the sandbox is initialized. */
   image?: string;
-  /** The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized. */
-  isolation?: "container" | "microvm";
   /**
    * Number of virtual CPUs allocated to the sandbox (microvm: guest vCPU count;
    * container: enforced as a CPU quota). Defaults to 1.
@@ -279,8 +297,8 @@ export interface SandboxConfig {
    * This cannot be changed after the sandbox is initialized.
    */
   memory?: number;
-  /** Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. */
-  entrypoint?: string;
+  /** Override the entrypoint used when the container is run. Accepts either an argv array (each element a separate argument) or a single string, which the sandbox splits on whitespace into arguments. When omitted, the image's default entrypoint is used. */
+  entrypoint?: string | string[];
   /**
    * Working directory for the entrypoint. When set, the entrypoint is launched
    * with this as its current working directory, overriding the image's default
@@ -319,10 +337,9 @@ export interface SandboxConfig {
 }
 export const SandboxConfig = z.object({
   image: z.string().optional(),
-  isolation: z.enum(["container", "microvm"]).optional(),
   cpu: z.number().int().min(1).optional(),
   memory: z.number().int().min(128).optional(),
-  entrypoint: z.string().optional(),
+  entrypoint: z.union([z.string(), z.array(z.string())]).optional(),
   cwd: z.string().optional(),
   tty: z.boolean().optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -334,6 +351,21 @@ export const SandboxConfig = z.object({
 });
 type _AssertSandboxConfig = Expect<
   Equal<z.infer<typeof SandboxConfig>, SandboxConfig>
+>;
+
+/** Internal runtime information about a sandbox, determined at boot rather than configured. */
+export interface SandboxInfo {
+  /**
+   * The isolation mechanism the sandbox is running with. Selected automatically
+   * from the image — a microvm image ships a guest root filesystem — not from config.
+   */
+  isolation: "container" | "microvm";
+}
+export const SandboxInfo = z.object({
+  isolation: z.enum(["container", "microvm"]),
+});
+type _AssertSandboxInfo = Expect<
+  Equal<z.infer<typeof SandboxInfo>, SandboxInfo>
 >;
 
 /**

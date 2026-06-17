@@ -8,35 +8,34 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
-func iso(v string) *gen.SandboxConfigIsolation {
-	x := gen.SandboxConfigIsolation(v)
-	return &x
+// entrypointArgv builds the generated union type from an argv slice.
+func entrypointArgv(argv []string) *gen.SandboxConfig_Entrypoint {
+	var e gen.SandboxConfig_Entrypoint
+	if err := e.FromSandboxConfigEntrypoint1(argv); err != nil {
+		panic(err)
+	}
+	return &e
 }
 
 func TestFreezeImmutable(t *testing.T) {
-	// image and isolation are frozen whenever already set: an apply can't change
-	// them, only set them when unset.
-	t.Run("image/isolation frozen once set", func(t *testing.T) {
-		current := gen.SandboxConfig{Image: ptr("base"), Isolation: iso("microvm")}
-		desired := gen.SandboxConfig{Image: ptr("other"), Isolation: iso("container")}
+	// image is frozen whenever already set: an apply can't change it, only set
+	// it when unset. (Isolation is no longer a config field — it's derived from
+	// the image at boot.)
+	t.Run("image frozen once set", func(t *testing.T) {
+		current := gen.SandboxConfig{Image: ptr("base")}
+		desired := gen.SandboxConfig{Image: ptr("other")}
 		got := freezeImmutable(current, desired, false)
 		if *got.Image != "base" {
 			t.Errorf("image = %q, want base (frozen)", *got.Image)
 		}
-		if *got.Isolation != "microvm" {
-			t.Errorf("isolation = %q, want microvm (frozen)", *got.Isolation)
-		}
 	})
 
-	t.Run("image/isolation settable when unset", func(t *testing.T) {
+	t.Run("image settable when unset", func(t *testing.T) {
 		current := gen.SandboxConfig{}
-		desired := gen.SandboxConfig{Image: ptr("base"), Isolation: iso("microvm")}
+		desired := gen.SandboxConfig{Image: ptr("base")}
 		got := freezeImmutable(current, desired, false)
 		if got.Image == nil || *got.Image != "base" {
 			t.Errorf("image = %v, want base (settable)", got.Image)
-		}
-		if got.Isolation == nil || *got.Isolation != "microvm" {
-			t.Errorf("isolation = %v, want microvm (settable)", got.Isolation)
 		}
 	})
 
@@ -55,10 +54,11 @@ func TestFreezeImmutable(t *testing.T) {
 	})
 
 	t.Run("boot-time fields frozen after start", func(t *testing.T) {
-		current := gen.SandboxConfig{Cpu: ptr(1), Memory: ptr(512), Entrypoint: ptr("sh"), Tty: ptr(true), Env: &map[string]string{"A": "1"}}
-		desired := gen.SandboxConfig{Cpu: ptr(4), Memory: ptr(1024), Entrypoint: ptr("bash"), Tty: ptr(false), Env: &map[string]string{"A": "2"}}
+		current := gen.SandboxConfig{Cpu: ptr(1), Memory: ptr(512), Entrypoint: entrypointArgv([]string{"sh"}), Tty: ptr(true), Env: &map[string]string{"A": "1"}}
+		desired := gen.SandboxConfig{Cpu: ptr(4), Memory: ptr(1024), Entrypoint: entrypointArgv([]string{"bash"}), Tty: ptr(false), Env: &map[string]string{"A": "2"}}
 		got := freezeImmutable(current, desired, true)
-		if *got.Cpu != 1 || *got.Memory != 512 || *got.Entrypoint != "sh" || *got.Tty != true || (*got.Env)["A"] != "1" {
+		gotArgv, _ := got.Entrypoint.AsSandboxConfigEntrypoint1()
+		if *got.Cpu != 1 || *got.Memory != 512 || len(gotArgv) != 1 || gotArgv[0] != "sh" || *got.Tty != true || (*got.Env)["A"] != "1" {
 			t.Errorf("boot-time fields not frozen after start: %+v", got)
 		}
 	})

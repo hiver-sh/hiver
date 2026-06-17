@@ -10,10 +10,7 @@ const gatewayUrl = process.env.HIVER_GATEWAY_URL ?? "http://localhost:10000";
 const RUNS = Number(process.env.BENCH_RUNS ?? "3");
 
 const sandboxConfig: hiver.SandboxConfig = {
-  ttl: 120,
-  image: "hiversh/node:microvm-alpine5",
-  isolation: "microvm",
-  entrypoint: "tail -f /dev/null",
+  image: "hiversh/node:alpine",
 };
 
 interface Run {
@@ -51,7 +48,7 @@ for (let i = 1; i <= RUNS; i++) {
 }
 
 console.info("\n--- shutting down sandboxes ---");
-// await Promise.all(sandboxes.map((s) => hiver.shutdown(s, { gatewayUrl })));
+await Promise.all(sandboxes.map((s) => hiver.shutdown(s, { gatewayUrl })));
 console.info("done.");
 
 const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;

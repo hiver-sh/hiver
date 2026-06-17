@@ -144,6 +144,41 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
+    delete:
+      tags: [Files]
+      summary: Delete a file or empty directory from a sandbox mount.
+      operationId: deleteFile
+      description: |
+        Removes a single file or empty directory at the given agent-visible
+        path. The path must resolve inside one of the configured
+        `SandboxConfig.fs` mounts. Non-empty directories are rejected with
+        400. Like the other file operations, this bypasses the mount's ACLs.
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+          description: |
+            Agent-visible absolute path to delete. Must be inside one of
+            the configured `fs[].mount` directories.
+          example: /workspace/data.csv
+      responses:
+        '204':
+          description: File or empty directory deleted.
+        '400':
+          description: The request is malformed or path is a non-empty directory.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+        '404':
+          description: |
+            `path` is not under any configured mount, or nothing exists at
+            the resolved location.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
     post:
       tags: [Files]
       summary: Upload a file into a sandbox mount.
@@ -552,6 +587,24 @@ paths:
                   type: integer
                 example: [8080, 9000]
 
+  /v1/info:
+    get:
+      tags: [Configuration]
+      summary: Read internal runtime info about the sandbox.
+      operationId: getInfo
+      description: |
+        Returns internal runtime information about the sandbox that is
+        determined at boot rather than configured — currently the
+        isolation mechanism actually in use. Isolation is selected
+        automatically: a sandbox image that ships a guest root filesystem
+        runs as a `microvm`, otherwise as a `container`.
+      responses:
+        '200':
+          description: The sandbox's runtime info.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxInfo' }
+
   /v1/ping:
     get:
       tags: [Configuration]
@@ -582,14 +635,36 @@ paths:
 
 components:
   schemas:
+    SandboxInfo:
+      type: object
+      description: Internal runtime information about the sandbox.
+      required: [isolation]
+      additionalProperties: false
+      properties:
+        isolation:
+          type: string
+          enum: [container, microvm]
+          description: >
+            The isolation mechanism the sandbox is running with, determined
+            automatically at boot from the image: `microvm` when the image
+            ships a guest root filesystem, otherwise `container`.
+          example: container
+
     ExecRequest:
       type: object
       required: [command]
       additionalProperties: false
       properties:
         command:
-          type: string
-          description: Command to run, passed to a shell.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: >
+            Command to run. A string is passed to a shell (`sh -c`); an array
+            is executed directly as argv, with each element a literal argument
+            (no shell, no word-splitting or expansion).
           example: python3 script.py
         cwd:
           type: string
@@ -612,10 +687,16 @@ components:
       additionalProperties: false
       properties:
         command:
-          type: string
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
           description: >
-            Command to run, passed to a shell. When empty or omitted, the
-            request attaches to the entrypoint's TTY instead of running a
+            Command to run. A string is passed to a shell (`sh -c`); an array
+            is executed directly as argv, with each element a literal argument
+            (no shell, no word-splitting or expansion). When empty or omitted,
+            the request attaches to the entrypoint's TTY instead of running a
             new command — this requires the sandbox to have been configured
             with `tty: true`, otherwise the request fails.
           example: python3 script.py

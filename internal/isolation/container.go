@@ -3,15 +3,18 @@ package isolation
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,6 +46,14 @@ type container struct {
 	// LaunchAgent so the container's poststart hook never blocks writing to it.
 	// WaitReady reads the hook's byte from here. nil until LaunchAgent runs.
 	readyFifo *os.File
+
+	// mu guards workspaces/bound. workspaces is every mount ExportWorkspace has
+	// recorded; bound marks the ones the agent can already see (runc bind-mounts
+	// them at launch). MountWorkspacesLive injects the difference — workspaces
+	// added by a runtime config-apply — into the running container.
+	mu         sync.Mutex
+	workspaces []string
+	bound      map[string]bool
 }
 
 func newContainer(cfg Config) *container {
@@ -90,9 +101,15 @@ func SeedWorkspace(backendDir, rootfsMount string) error {
 	return nil
 }
 
-// ExportWorkspace is a no-op: the agent shares the pod mount namespace, so
-// runc bind-mounts the host sbxfuse mount straight into the container.
-func (c *container) ExportWorkspace(ctx context.Context, mount string) error { return nil }
+// ExportWorkspace records the workspace. runc bind-mounts the ones present at
+// launch from the bundle (see LaunchAgent); one added later by a config-apply is
+// injected into the running container by MountWorkspacesLive.
+func (c *container) ExportWorkspace(ctx context.Context, mount string) error {
+	c.mu.Lock()
+	c.workspaces = append(c.workspaces, mount)
+	c.mu.Unlock()
+	return nil
+}
 
 // UnexportWorkspace is a no-op: the bind into the container is established by
 // runc at launch and lives in the agent's mount namespace, so there is no
@@ -118,7 +135,40 @@ func (c *container) InstallCA(certPEM []byte) error {
 	if err := os.MkdirAll(filepath.Dir(node), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(node, certPEM, 0o644)
+	if err := os.WriteFile(node, certPEM, 0o644); err != nil {
+		return err
+	}
+	// NSS clients (Chromium/Playwright) consult neither the system bundle nor
+	// NODE_EXTRA_CA_CERTS — they read the per-user db at $HOME/.pki/nssdb. We
+	// build that db host-side (certutil ships in the core image) and copy it into
+	// the merged rootfs, so the agent image needs no NSS tooling. Best-effort: a
+	// failure here only affects NSS clients, and most images don't run any.
+	if files, err := buildNSSDB(certPEM); err != nil {
+		log.Printf("install NSS CA: %v (NSS clients won't trust the sandbox CA)", err)
+	} else {
+		nssdb := filepath.Join(merged, workloadHome(merged), ".pki", "nssdb")
+		if err := writeNSSDB(nssdb, files); err != nil {
+			log.Printf("install NSS CA: write %s: %v", nssdb, err)
+		}
+	}
+	return nil
+}
+
+// workloadHome returns the home directory of uid 0 from the rootfs's
+// /etc/passwd, defaulting to /root when it can't be determined.
+func workloadHome(merged string) string {
+	data, err := os.ReadFile(filepath.Join(merged, "etc/passwd"))
+	if err != nil {
+		return "/root"
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Split(line, ":")
+		// name:passwd:uid:gid:gecos:home:shell
+		if len(f) >= 6 && f[2] == "0" && f[5] != "" {
+			return f[5]
+		}
+	}
+	return "/root"
 }
 
 // RedirectEgress installs the OUTPUT-chain nat REDIRECT rules that make
@@ -273,6 +323,17 @@ func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		c.readyFifo = nil
 		return "", nil, fmt.Errorf("write bundle config: %w", err)
 	}
+	// The workspaces recorded so far are in the bundle (cfg.Mounts), so runc
+	// makes them visible to the agent itself — mark them bound so a later
+	// MountWorkspacesLive only injects ones added after launch.
+	c.mu.Lock()
+	if c.bound == nil {
+		c.bound = map[string]bool{}
+	}
+	for _, m := range c.workspaces {
+		c.bound[m] = true
+	}
+	c.mu.Unlock()
 	return "runc", []string{"run", "-b", runc.MntDir, c.containerID}, nil
 }
 
@@ -299,6 +360,81 @@ func (c *container) WaitReady(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+// PrewarmSnapshot is a no-op: the container backend has no fast-resume path, so
+// a prewarm sandbox cold-starts the workload on its first config like any other.
+func (c *container) PrewarmSnapshot(ctx context.Context) error { return nil }
+
+// HasPrewarmSnapshot is always false: the container backend never produces a
+// resume snapshot, so sandboxd always takes the cold-start path for it.
+func (c *container) HasPrewarmSnapshot() bool { return false }
+
+// ResumeAgent is unreachable (HasPrewarmSnapshot is false) but completes the
+// interface; it errors defensively if ever called.
+func (c *container) ResumeAgent() (string, []string, error) {
+	return "", nil, fmt.Errorf("container backend has no snapshot resume")
+}
+
+// ResumeReady is unreachable for the container backend (no resume path).
+func (c *container) ResumeReady(ctx context.Context) error { return nil }
+
+// ApplyResumeState injects any workspace recorded since launch into the running
+// agent container's mount namespace, so a mount added by a runtime PUT
+// /v1/config becomes visible to the workload (launch-time ones are already bound
+// by runc). Idempotent: each is bound at most once. The injection runs in a
+// re-exec'd helper because it leaves a thread in the container's mount ns. The
+// env argument is ignored: the container backend has no snapshot/resume, so the
+// workload already launched with its full environment via runc.
+func (c *container) ApplyResumeState(ctx context.Context, _ []string) error {
+	c.mu.Lock()
+	if c.bound == nil {
+		c.bound = map[string]bool{}
+	}
+	var todo []string
+	for _, m := range c.workspaces {
+		if !c.bound[m] {
+			todo = append(todo, m)
+		}
+	}
+	c.mu.Unlock()
+	if len(todo) == 0 {
+		return nil
+	}
+
+	pid, err := c.agentPID()
+	if err != nil {
+		return err
+	}
+	for _, m := range todo {
+		if err := bindWorkspaceIntoContainer(pid, m); err != nil {
+			return fmt.Errorf("inject workspace %s: %w", m, err)
+		}
+		c.mu.Lock()
+		c.bound[m] = true
+		c.mu.Unlock()
+		log.Printf("isolation: bound workspace %s into running container (pid %d)", m, pid)
+	}
+	return nil
+}
+
+// agentPID returns the host PID of the running agent container's init process,
+// needed to enter its mount namespace.
+func (c *container) agentPID() (int, error) {
+	out, err := exec.Command("runc", "state", c.containerID).Output()
+	if err != nil {
+		return 0, fmt.Errorf("runc state %s: %w", c.containerID, err)
+	}
+	var st struct {
+		Pid int `json:"pid"`
+	}
+	if err := json.Unmarshal(out, &st); err != nil {
+		return 0, fmt.Errorf("parse runc state: %w", err)
+	}
+	if st.Pid <= 0 {
+		return 0, fmt.Errorf("runc state %s: no pid", c.containerID)
+	}
+	return st.Pid, nil
 }
 
 func (c *container) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, func(), error) {
@@ -520,6 +656,10 @@ func (f containerFiles) Stat(agentPath string, mounts []MountRoute) (FileEntry, 
 		size = info.Size()
 	}
 	return FileEntry{Name: filepath.Base(host), IsDir: info.IsDir(), Size: size}, nil
+}
+
+func (f containerFiles) Delete(agentPath string, mounts []MountRoute) error {
+	return os.Remove(f.hostPath(agentPath, mounts))
 }
 
 func (f containerFiles) Save(agentDir, name string, mounts []MountRoute, r io.Reader) (int64, error) {

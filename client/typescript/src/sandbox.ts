@@ -3,6 +3,7 @@ import {
   ApplyResult,
   SandboxConfig,
   SandboxEvent,
+  SandboxInfo,
   type SandboxRef,
 } from "./schemas";
 import { parseSSE } from "./sse";
@@ -120,6 +121,20 @@ export class Sandbox {
     });
     if (!res.ok) throw await toError(res, "getPorts");
     return (await res.json()) as number[];
+  }
+
+  /**
+   * Read internal runtime info about the sandbox — currently the isolation
+   * mechanism in use, which is selected automatically from the image (a microvm
+   * image ships a guest root filesystem) rather than configured.
+   */
+  async getInfo(opts?: RequestOptions): Promise<SandboxInfo> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/info`, {
+      signal,
+    });
+    if (!res.ok) throw await toError(res, "getInfo");
+    return SandboxInfo.parse(await res.json());
   }
 
   /** Read the current `SandboxConfig`. */
@@ -255,8 +270,15 @@ export class Sandbox {
   /**
    * Run `command` inside the sandbox and return buffered stdout, stderr,
    * and exit code once the process finishes.
+   *
+   * `command` may be a string (passed to a shell via `sh -c`) or a string
+   * array (executed directly as argv, each element a literal argument with no
+   * shell, word-splitting, or expansion).
    */
-  async exec(command: string, opts?: ExecOptions): Promise<ExecResult> {
+  async exec(
+    command: string | string[],
+    opts?: ExecOptions,
+  ): Promise<ExecResult> {
     const body: Record<string, unknown> = { command };
     if (opts?.cwd !== undefined) body.cwd = opts.cwd;
     if (opts?.env !== undefined) body.env = opts.env;
@@ -275,6 +297,10 @@ export class Sandbox {
    * interactive use: stream output via `exec.pipes`, send input via
    * `exec.writeStdin()`, and await the result via `exec.exitCode`.
    *
+   * `command` may be a string (passed to a shell via `sh -c`) or a string
+   * array (executed directly as argv, each element a literal argument with no
+   * shell, word-splitting, or expansion).
+   *
    * Pass an empty (or omitted) `command` to attach to the sandbox
    * entrypoint's terminal instead of running a new command — this requires
    * the sandbox to have been created with `tty: true`. The stream stays open
@@ -283,7 +309,7 @@ export class Sandbox {
    * Resolves once the process is ready, so `writeStdin` is safe to call.
    */
   async execStream(
-    command?: string,
+    command?: string | string[],
     opts?: ExecStreamOptions,
   ): Promise<ExecProcess> {
     const id = crypto.randomUUID();
@@ -291,7 +317,9 @@ export class Sandbox {
     const stdinUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}/stdin`;
 
     const body: Record<string, unknown> = {};
-    if (command) body.command = command;
+    // A non-empty string or array runs a command; "" / [] / undefined attaches
+    // to the entrypoint terminal, so omit the field in that case.
+    if (command && command.length > 0) body.command = command;
     if (opts?.cwd !== undefined) body.cwd = opts.cwd;
     if (opts?.env !== undefined) body.env = opts.env;
     if (opts?.tty !== undefined) body.tty = opts.tty;
@@ -398,12 +426,12 @@ export class Sandbox {
    * Download a file from a sandbox mount. `path` is the agent-visible
    * absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
    */
-  async downloadFile(path: string, opts?: RequestOptions): Promise<Uint8Array> {
+  async readFile(path: string, opts?: RequestOptions): Promise<Uint8Array> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const url = new URL(`${this.apiServerUrl}/v1/file`);
     url.searchParams.set("path", path);
     const res = await this.fetchImpl(url, { signal });
-    if (!res.ok) throw await toError(res, "downloadFile");
+    if (!res.ok) throw await toError(res, "readFile");
     return new Uint8Array(await res.arrayBuffer());
   }
 
@@ -413,7 +441,7 @@ export class Sandbox {
    * basename written under `destination`. Returns the agent-visible
    * path and byte count the server reports.
    */
-  async uploadFile(
+  async writeFile(
     destination: string,
     filename: string,
     content: Blob | Uint8Array | ArrayBuffer | string,
@@ -428,9 +456,21 @@ export class Sandbox {
       body: form,
       signal,
     });
-    if (!res.ok) throw await toError(res, "uploadFile");
+    if (!res.ok) throw await toError(res, "writeFile");
     const body = (await res.json()) as { path: string; bytes: number };
     return body;
+  }
+
+  /**
+   * Delete a file or empty directory at `path` inside a sandbox mount.
+   * `path` is the agent-visible absolute path (e.g. `/workspace/data.csv`).
+   */
+  async deleteFile(path: string, opts?: RequestOptions): Promise<void> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const url = new URL(`${this.apiServerUrl}/v1/file`);
+    url.searchParams.set("path", path);
+    const res = await this.fetchImpl(url, { method: "DELETE", signal });
+    if (!res.ok) throw await toError(res, "deleteFile");
   }
 }
 

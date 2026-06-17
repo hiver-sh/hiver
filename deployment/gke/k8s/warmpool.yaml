@@ -1,0 +1,18 @@
+apiVersion: hiver.sh/v1alpha1
+kind: WarmPool
+metadata:
+  name: default
+  # WarmPool CRs live in the control-plane namespace alongside the controller
+  # (see the Role in controller.yaml); the warm pods they manage are created in
+  # the hiver-sandbox namespace.
+  namespace: hiver
+spec:
+  # Each image is an independent warm buffer with its own sizing. The image also
+  # fixes the isolation, which sandboxd derives from it at boot.
+  images:
+    - image: hiversh/node:alpine-microvm
+      readyReplicas: 1
+      maxReplicas: 10
+    - image: hiversh/playwright:microvm
+      readyReplicas: 1
+      maxReplicas: 10

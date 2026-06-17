@@ -148,16 +148,16 @@ it("applyConfig throws SandboxError on non-200", async () => {
   });
 });
 
-// downloadFile
+// readFile
 
-it("downloadFile sends GET /v1/file?path=<encoded> and returns Uint8Array", async () => {
+it("readFile sends GET /v1/file?path=<encoded> and returns Uint8Array", async () => {
   const content = new Uint8Array([104, 101, 108, 108, 111]);
   const mockFetch = vi
     .fn()
     .mockResolvedValue(
       new Response(content.buffer as ArrayBuffer, { status: 200 }),
     );
-  const result = await makeSandbox(mockFetch).downloadFile(
+  const result = await makeSandbox(mockFetch).readFile(
     "/workspace/hello.txt",
   );
   const [url] = mockFetch.mock.calls[0] as [URL];
@@ -168,26 +168,26 @@ it("downloadFile sends GET /v1/file?path=<encoded> and returns Uint8Array", asyn
   expect(result).toEqual(content);
 });
 
-it("downloadFile throws SandboxError on non-200", async () => {
+it("readFile throws SandboxError on non-200", async () => {
   const mockFetch = vi
     .fn()
     .mockResolvedValue(jsonResp({ error: "not found" }, 404));
   await expect(
-    makeSandbox(mockFetch).downloadFile("/workspace/missing.txt"),
+    makeSandbox(mockFetch).readFile("/workspace/missing.txt"),
   ).rejects.toMatchObject({
     name: "SandboxError",
     status: 404,
-    operation: "downloadFile",
+    operation: "readFile",
   });
 });
 
-// uploadFile
+// writeFile
 
-it("uploadFile sends POST /v1/file with multipart form containing destination and file", async () => {
+it("writeFile sends POST /v1/file with multipart form containing destination and file", async () => {
   const mockFetch = vi
     .fn()
     .mockResolvedValue(jsonResp({ path: "/workspace/hello.txt", bytes: 5 }));
-  const result = await makeSandbox(mockFetch).uploadFile(
+  const result = await makeSandbox(mockFetch).writeFile(
     "/workspace",
     "hello.txt",
     "hello",
@@ -204,16 +204,16 @@ it("uploadFile sends POST /v1/file with multipart form containing destination an
   expect(result).toEqual({ path: "/workspace/hello.txt", bytes: 5 });
 });
 
-it("uploadFile throws SandboxError on non-200", async () => {
+it("writeFile throws SandboxError on non-200", async () => {
   const mockFetch = vi
     .fn()
     .mockResolvedValue(jsonResp({ error: "destination not mounted" }, 400));
   await expect(
-    makeSandbox(mockFetch).uploadFile("/workspace", "f.txt", "data"),
+    makeSandbox(mockFetch).writeFile("/workspace", "f.txt", "data"),
   ).rejects.toMatchObject({
     name: "SandboxError",
     status: 400,
-    operation: "uploadFile",
+    operation: "writeFile",
   });
 });
 

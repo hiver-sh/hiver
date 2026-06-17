@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
@@ -157,6 +158,35 @@ func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filepath.Base(cleaned)))
 	c.Header("Content-Length", strconv.FormatInt(size, 10))
 	c.DataFromReader(http.StatusOK, size, "application/octet-stream", rc, nil)
+}
+
+// DeleteFile removes a file or empty directory at the given agent-visible path.
+func (h *SandboxHandlers) DeleteFile(c *gin.Context, params gen.DeleteFileParams) {
+	if params.Path == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
+		return
+	}
+	cleaned := filepath.Clean(params.Path)
+	if !strings.HasPrefix(cleaned, "/") {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must be absolute"})
+		return
+	}
+
+	cfg, err := h.store.Get()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+
+	if err := h.iso.Files().Delete(cleaned, h.mountRoutes(cfg)); err != nil {
+		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
+			c.JSON(http.StatusBadRequest, gen.Error{Error: "directory not empty"})
+			return
+		}
+		c.JSON(fileErrStatus(err), gen.Error{Error: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // fileErrStatus maps a FileBridge error to an HTTP status, surfacing

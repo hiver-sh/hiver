@@ -5,8 +5,6 @@ import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-node-exec-stream", {
   image: "hiversh/node:alpine",
-  entrypoint: "tail -f /dev/null",
-  ttl: 0,
 });
 
 async function greet(name: string): Promise<void> {
@@ -22,11 +20,11 @@ async function greet(name: string): Promise<void> {
 function execFunction(
   fn: (...args: any[]) => unknown,
   ...args: unknown[]
-): string {
+): string[] {
   const serializedFn = fn.toString();
   const serializedArgs = args.map((a) => JSON.stringify(a)).join(", ");
   const script = `(async () => { const fn = ${serializedFn}; await fn(${serializedArgs}); })()`;
-  return `node -e '${script}'`;
+  return ["node", "-e", script];
 }
 
 const exec = await sandbox.execStream(execFunction(greet, "world"), {

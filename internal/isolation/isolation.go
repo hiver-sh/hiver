@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 
 	"github.com/hiver-sh/hiver/internal/runc"
@@ -51,18 +52,48 @@ const (
 	DefaultMemoryMiB = 512 // MiB
 )
 
-// Parse maps a config string (SandboxConfig.isolation) to a Kind. The
-// empty string selects KindContainer so existing configs that predate the
-// field keep their behaviour.
-func Parse(s string) (Kind, error) {
-	switch Kind(s) {
-	case "", KindContainer:
-		return KindContainer, nil
-	case KindMicroVM:
+// kvmDevice is the host device a microVM needs: the KVM hypervisor interface.
+// Its presence (and openability) is what makes microvm isolation possible.
+const kvmDevice = "/dev/kvm"
+
+// Detect selects the isolation backend automatically from the image contents,
+// rather than from any config field. A microvm image ships a guest root
+// filesystem image at [bundledRootfsImg]; its presence selects KindMicroVM,
+// which additionally requires KVM — so when the rootfs image is present but KVM
+// is unavailable, Detect returns a user-facing error rather than silently
+// downgrading. Any image without that rootfs runs as a plain KindContainer.
+func Detect() (Kind, error) {
+	info, err := os.Stat(bundledRootfsImg)
+	switch {
+	case err == nil && info.Size() > 0:
+		// microvm image — confirm the host can actually run a guest.
+		if err := checkKVM(); err != nil {
+			return "", err
+		}
 		return KindMicroVM, nil
+	case err == nil:
+		// A present-but-empty rootfs image is not a usable microvm image; treat
+		// it as a container so a malformed bundle fails later with a clearer error.
+		return KindContainer, nil
+	case os.IsNotExist(err):
+		return KindContainer, nil
 	default:
-		return "", fmt.Errorf("unknown isolation %q (want %q or %q)", s, KindContainer, KindMicroVM)
+		return "", fmt.Errorf("detect isolation: stat %s: %w", bundledRootfsImg, err)
 	}
+}
+
+// checkKVM reports whether the host exposes a usable KVM device, returning a
+// user-friendly error when it doesn't. A microvm image cannot boot without it.
+func checkKVM() error {
+	f, err := os.OpenFile(kvmDevice, os.O_RDWR, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("this sandbox image requires microVM isolation, which needs hardware virtualization via %s, but that device is not present. Run the sandbox on a host with KVM enabled (bare metal or a VM with nested virtualization), or use a container-isolation image", kvmDevice)
+		}
+		return fmt.Errorf("this sandbox image requires microVM isolation via %s, but it could not be opened (%v). Ensure the sandbox has access to %s", kvmDevice, err, kvmDevice)
+	}
+	_ = f.Close()
+	return nil
 }
 
 // Config carries the per-sandbox parameters a backend needs at
@@ -154,6 +185,8 @@ type FileBridge interface {
 	// Stat reports a single entry; Name is the base name. Used by the MCP
 	// file tools to distinguish files from directories.
 	Stat(agentPath string, mounts []MountRoute) (FileEntry, error)
+	// Delete removes a single file or empty directory at agentPath.
+	Delete(agentPath string, mounts []MountRoute) error
 }
 
 // Isolation is the polymorphic runtime boundary. A single instance is
@@ -225,6 +258,39 @@ type Isolation interface {
 
 	// WaitReady blocks until the workload is running or ctx is cancelled.
 	WaitReady(ctx context.Context) error
+
+	// PrewarmSnapshot boots an idle guest (no workload entrypoint), waits for it
+	// to become ready, pauses it, writes a full VM snapshot, and stops the
+	// transient guest — leaving the writable drive + snapshot for a later resume.
+	// It is the microvm prewarm fast path: the costly guest kernel boot + root
+	// assembly happen here, off the claim path, so the first config pays only for
+	// a snapshot load. The container backend has no fast-resume path and returns
+	// nil. Call after MountRoot/InstallCA and before awaiting the first config.
+	PrewarmSnapshot(ctx context.Context) error
+
+	// HasPrewarmSnapshot reports whether a usable prewarm snapshot exists (a
+	// PrewarmSnapshot succeeded). Always false for the container backend, so the
+	// resume methods below are reached only on the microvm fast path.
+	HasPrewarmSnapshot() bool
+
+	// ResumeAgent returns the command that starts a fresh VMM for a snapshot
+	// resume (no boot config — the machine state comes from the snapshot,
+	// loaded by ResumeReady once the VMM's API socket is up). sandboxd
+	// supervises it like LaunchAgent's command. Only valid after a successful
+	// PrewarmSnapshot.
+	ResumeAgent() (bin string, args []string, err error)
+
+	// ResumeReady loads the prewarm snapshot into the VMM started by ResumeAgent
+	// and resumes the guest, blocking until it is serving. It is the resume-path
+	// analogue of WaitReady.
+	ResumeReady(ctx context.Context) error
+
+	// ApplyResumeState delivers post-resume setup to the restored guest over the
+	// control channel: the workload environment (so the guest's process PATH
+	// resolves the entrypoint and execs) and the config's workspaces (their
+	// 9p-over-vsock mounts don't survive a snapshot/restore). Both are unknown
+	// when the prewarm snapshot is taken. No-op for the container backend.
+	ApplyResumeState(ctx context.Context, env []string) error
 
 	// FlushAgent flushes the running workload's filesystem so its recent
 	// writes are durable before the workload is stopped and a snapshot

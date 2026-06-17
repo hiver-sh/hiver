@@ -14,11 +14,7 @@ import * as hiver from "@hiver.sh/client";
 const gatewayUrl = process.env.HIVER_GATEWAY_URL ?? "http://localhost:10000";
 
 const sandboxConfig: hiver.SandboxConfig = {
-  ttl: 600,
-  image: "hiversh/node:microvm-alpine5",
-  // image: "hiversh/node@sha256:0d880c4dae21453dde25f217ef0d7b9cf54896aaa53620e7f4b20f93785424ba",
-  isolation: 'microvm',
-  entrypoint: "tail -f /dev/null",
+  image: "hiversh/node:alpine-microvm",
   // Allow GET to example.com; everything else (e.g. example.org below) is
   // denied by default and should surface as an `egress.request` with
   // access: "denied".
@@ -29,7 +25,7 @@ const sandboxConfig: hiver.SandboxConfig = {
       methods: ["GET"],
       paths: ["/*"],
     },
-  ],
+  ]
 };
 
 const start = performance.now();

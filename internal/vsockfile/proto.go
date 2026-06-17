@@ -34,10 +34,11 @@ const GuestPort uint32 = 1025
 type Op string
 
 const (
-	OpList  Op = "list"  // children of a directory
-	OpStat  Op = "stat"  // metadata for a single entry
-	OpRead  Op = "read"  // stream a regular file's bytes back
-	OpWrite Op = "write" // create Path/Name from streamed bytes
+	OpList   Op = "list"   // children of a directory
+	OpStat   Op = "stat"   // metadata for a single entry
+	OpRead   Op = "read"   // stream a regular file's bytes back
+	OpWrite  Op = "write"  // create Path/Name from streamed bytes
+	OpDelete Op = "delete" // remove a file or empty directory at Path
 )
 
 // Request is the opening frame (FrameRequest) the host sends.

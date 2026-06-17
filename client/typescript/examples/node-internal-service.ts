@@ -7,7 +7,6 @@ import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-node-internal-service", {
   image: "hiversh/node:alpine",
-  entrypoint: "tail -f /dev/null",
   egress: [{ access: "deny", host: "*" }],
 });
 
@@ -23,7 +22,7 @@ const sandboxes = await res.json();
 console.log(JSON.stringify(sandboxes, null, 2));
 `;
 
-await sandbox.uploadFile("/workspace", "list-sandboxes.mjs", script);
+await sandbox.writeFile("/workspace", "list-sandboxes.mjs", script);
 
 async function fetchSandboxes(label: string) {
   console.info(`\n--- ${label} ---`);

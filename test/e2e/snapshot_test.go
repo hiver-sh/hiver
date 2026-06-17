@@ -69,7 +69,7 @@ func TestSnapshotE2E(t *testing.T) {
 
 		sbx, err := c.GetOrCreateSandbox(ctx, wKey, hiverclient.SandboxConfig{
 			Image:      "hiversh/python:3.13-alpine",
-			Entrypoint: "tail -f /dev/null",
+			Entrypoint: []string{"tail", "-f", "/dev/null"},
 			Snapshot:   &hiverclient.Snapshot{WriteKey: tc.key},
 		})
 		if err != nil {
@@ -104,7 +104,7 @@ func TestSnapshotE2E(t *testing.T) {
 
 			sbx, err := c.GetOrCreateSandbox(ctx, rKey, hiverclient.SandboxConfig{
 				Image:      "hiversh/python:3.13-alpine",
-				Entrypoint: "tail -f /dev/null",
+				Entrypoint: []string{"tail", "-f", "/dev/null"},
 				Snapshot:   &hiverclient.Snapshot{RestoreKey: tc.key},
 			})
 			if err != nil {

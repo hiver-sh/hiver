@@ -20,10 +20,9 @@ spec:
         # spec edits (separate write path, own resourceVersion semantics).
         status: {}
       additionalPrinterColumns:
-        - { name: Image, type: string, jsonPath: .spec.image }
+        - { name: Images, type: string, jsonPath: ".spec.images[*].image" }
         - { name: Ready, type: integer, jsonPath: .status.readyReplicas }
         - { name: Claimed, type: integer, jsonPath: .status.claimedReplicas }
-        - { name: Max, type: integer, jsonPath: .spec.maxReplicas }
         - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
       schema:
         openAPIV3Schema:
@@ -32,32 +31,46 @@ spec:
           properties:
             spec:
               type: object
-              required: [image]
-              # The warm buffer can never push the pool past its hard ceiling.
-              x-kubernetes-validations:
-                - rule: "self.maxReplicas >= self.readyReplicas"
-                  message: maxReplicas must be >= readyReplicas
+              required: [images]
               properties:
-                image:
-                  type: string
+                images:
+                  type: array
+                  minItems: 1
                   description: >-
-                    Sandbox image to keep pre-booted. A GetOrCreate request only
-                    claims a warm pod when its requested image matches this.
-                readyReplicas:
-                  type: integer
-                  minimum: 0
-                  default: 1
-                  description: >-
-                    Target number of warm (unclaimed, ready) pods to keep on
-                    standby for instant hand-out.
-                maxReplicas:
-                  type: integer
-                  minimum: 1
-                  default: 1
-                  description: >-
-                    Hard ceiling on total pods (warm + claimed) this pool may
-                    hold. The warm buffer shrinks as claims grow so the total
-                    never exceeds this.
+                    Independent per-image warm buffers. Each entry keeps its own
+                    standby pods, sized by its own readyReplicas/maxReplicas, and a
+                    GetOrCreate only claims a warm pod when its requested image
+                    matches one of these entries.
+                  items:
+                    type: object
+                    required: [image]
+                    # A buffer can never push its image past its own hard ceiling.
+                    x-kubernetes-validations:
+                      - rule: "self.maxReplicas >= self.readyReplicas"
+                        message: maxReplicas must be >= readyReplicas
+                    properties:
+                      image:
+                        type: string
+                        description: >-
+                          Sandbox image to keep pre-booted. The claim key: a
+                          GetOrCreate request only claims a warm pod when its
+                          requested image matches this. The image also fixes the
+                          isolation, which sandboxd derives from it at boot.
+                      readyReplicas:
+                        type: integer
+                        minimum: 0
+                        default: 1
+                        description: >-
+                          Target number of warm (unclaimed, ready) pods to keep on
+                          standby for this image for instant hand-out.
+                      maxReplicas:
+                        type: integer
+                        minimum: 1
+                        default: 1
+                        description: >-
+                          Hard ceiling on total pods (warm + claimed) for this
+                          image. Its warm buffer shrinks as claims grow so
+                          warm+claimed never exceeds this.
             status:
               type: object
               properties:

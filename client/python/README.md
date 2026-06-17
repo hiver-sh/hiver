@@ -337,11 +337,10 @@ optional.
 
 | Field        | Type                       | Default            | Notes                                                            |
 | ------------ | -------------------------- | ------------------ | ---------------------------------------------------------------- |
-| `image`      | `str`                      | —                  | Agent image to launch. Immutable after init.                     |
-| `isolation`  | `"container" \| "microvm"` | `container`        | Isolation mechanism. Immutable after init.                       |
+| `image`      | `str`                      | —                  | Agent image to launch. Immutable after init. Determines isolation (a microvm image ships a guest rootfs). |
 | `cpu`        | `int`                      | `1`                | Virtual CPUs. Immutable after init.                              |
 | `memory`     | `int`                      | `512`              | Memory in MiB. Immutable after init.                             |
-| `entrypoint` | `str`                      | image default      | Override the container entrypoint.                               |
+| `entrypoint` | `str \| list[str]`         | image default      | Override the container entrypoint (argv list or whitespace-split string). |
 | `env`        | `dict[str, str]`           | —                  | Extra environment variables. Immutable after init.               |
 | `ttl`        | `int`                      | `1800`             | Idle TTL in seconds. Reset with `ping()`. `0` disables shutdown. |
 | `fs`         | `list[FileSystem]`         | local `/workspace` | See [Filesystems](#filesystems).                                 |
@@ -481,7 +480,6 @@ host-backed mount.
 ```python
 config = hiver.SandboxConfig(
     image="hiversh/python:3.13-alpine",
-    isolation="microvm",
     snapshot=hiver.Snapshot(
         restore_key="session-42",   # restored on start
         write_key="session-42",     # saved on shutdown; defaults to restore_key

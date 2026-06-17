@@ -49,7 +49,7 @@ func TestFSGDriveE2E(t *testing.T) {
 	key := fmt.Sprintf("e2e-fs-gdrive-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
 		Image:      "hiversh/python:3.13-alpine",
-		Entrypoint: "tail -f /dev/null",
+		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		FS: []hiverclient.FileSystem{{
 			Mount:              "/workspace",
 			Backend:            "gdrive",

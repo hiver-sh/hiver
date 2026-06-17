@@ -14,6 +14,15 @@ import (
 // ErrSandboxNotFound is returned when an operation targets a sandbox that does not exist.
 var ErrSandboxNotFound = errors.New("sandbox not found")
 
+// usesSnapshotMount reports whether the config routes snapshots to a FUSE drive
+// (snapshot.mount) rather than the runtime's local snapshot directory. When it
+// does, the runtime skips provisioning the local /snapshots volume entirely:
+// the volume would be unnecessary and, if the FUSE drive is mounted at the same
+// path, would be shadowed by it.
+func usesSnapshotMount(cfg sandboxgen.SandboxConfig) bool {
+	return cfg.Snapshot != nil && cfg.Snapshot.Mount != nil && *cfg.Snapshot.Mount != ""
+}
+
 const (
 	readyProbeInterval  = 250 * time.Millisecond
 	sandboxReadyTimeout = 120 * time.Second
@@ -38,10 +47,11 @@ func waitSandboxReady(ctx context.Context, host string) error {
 		if err != nil {
 			return err
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := sandboxHTTPClient.Do(req)
 		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			status := resp.StatusCode
+			drainAndClose(resp)
+			if status == http.StatusOK {
 				return nil
 			}
 		}

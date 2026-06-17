@@ -53,12 +53,9 @@ func main() {
 	}
 
 	// Apply the workload environment to this process so that LookPath and
-	// os.Environ() (used in exec sessions) resolve binaries correctly.
-	for _, kv := range params.Env {
-		if idx := strings.IndexByte(kv, '='); idx > 0 {
-			_ = os.Setenv(kv[:idx], kv[idx+1:])
-		}
-	}
+	// os.Environ() (used in exec sessions) resolve binaries correctly, with a
+	// guaranteed default PATH so bare commands resolve even when none is set.
+	applyWorkloadEnv(params.Env)
 
 	// Record the workspace mounts so the file API routes their paths to the
 	// live 9p mounts and every other path to the overlay upper layer.
@@ -74,6 +71,18 @@ func main() {
 	// reaching into host-side backend dirs.
 	go serveExec(firecracker.GuestExecPort)
 	go serveFiles(vsockfile.GuestPort)
+	go serveControl(firecracker.GuestControlPort)
+
+	// Prewarm idle mode: no entrypoint means this guest was booted only to be
+	// snapshotted. Park serving exec/files/control forever (do NOT power off) so
+	// the host can snapshot a ready VM, resume it later, mount the first config's
+	// workspaces over the control channel, and run the entrypoint as an exec
+	// session. The host powers the guest off (by stopping firecracker) when that
+	// session ends.
+	if len(params.Entrypoint) == 0 && len(params.Cmd) == 0 {
+		log.Printf("no entrypoint; parking idle for snapshot/resume")
+		select {}
+	}
 
 	code := runWorkload(params)
 	log.Printf("workload exited with code %d", code)
@@ -178,6 +187,12 @@ func applyTrustAndResolver(p firecracker.GuestParams) {
 			}
 		}
 	}
+	// NSS clients (Chromium/Playwright) read neither the system bundle nor
+	// NODE_EXTRA_CA_CERTS — they trust the per-user NSS db at $HOME/.pki/nssdb.
+	// The host builds that db with certutil (the guest has no NSS tooling) and
+	// ships the files in params.NSSDB; here we just drop them into the workload's
+	// home, which lives in the writable overlay.
+	installNSSDB(p.NSSDB)
 	if len(p.EtcHosts) > 0 {
 		if err := os.WriteFile("/etc/hosts", p.EtcHosts, 0o644); err != nil {
 			log.Printf("write /etc/hosts: %v", err)
@@ -188,6 +203,45 @@ func applyTrustAndResolver(p firecracker.GuestParams) {
 			log.Printf("write /etc/resolv.conf: %v", err)
 		}
 	}
+}
+
+// installNSSDB writes the host-built NSS database (files keyed by base name)
+// into the workload's $HOME/.pki/nssdb so NSS clients (Chromium/Playwright)
+// trust sbxproxy's minted leaf certs. The db is built host-side and shipped in
+// params.NSSDB, so the guest needs no certutil of its own. HOME is uid 0's home
+// from /etc/passwd, defaulting to /root. Best-effort: empty when the host had no
+// certutil, or skipped for images that don't ship an NSS trust store.
+func installNSSDB(files map[string][]byte) {
+	if len(files) == 0 {
+		return
+	}
+	nssdb := filepath.Join(workloadHome(), ".pki", "nssdb")
+	if err := os.MkdirAll(nssdb, 0o700); err != nil {
+		log.Printf("install NSS CA: mkdir %s: %v", nssdb, err)
+		return
+	}
+	for name, b := range files {
+		if err := os.WriteFile(filepath.Join(nssdb, name), b, 0o600); err != nil {
+			log.Printf("install NSS CA: write %s: %v", name, err)
+		}
+	}
+}
+
+// workloadHome returns the home directory of uid 0 from /etc/passwd, defaulting
+// to /root when it can't be determined.
+func workloadHome() string {
+	data, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return "/root"
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Split(line, ":")
+		// name:passwd:uid:gid:gecos:home:shell
+		if len(f) >= 6 && f[2] == "0" && f[5] != "" {
+			return f[5]
+		}
+	}
+	return "/root"
 }
 
 // mountPseudoFS mounts the kernel pseudo-filesystems the rest of bootstrap
@@ -425,6 +479,64 @@ func serveExec(port uint32) {
 	}
 }
 
+// serveControl listens on the guest vsock control port and handles host-issued
+// control RPCs — currently mounting workspaces into the running guest after a
+// snapshot resume (their 9p-over-vsock connections cannot survive the snapshot,
+// so they are added live here). One request/response per connection.
+func serveControl(port uint32) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		log.Printf("control: vsock socket: %v", err)
+		return
+	}
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+		log.Printf("control: vsock bind: %v", err)
+		_ = unix.Close(fd)
+		return
+	}
+	if err := unix.Listen(fd, 16); err != nil {
+		log.Printf("control: vsock listen: %v", err)
+		_ = unix.Close(fd)
+		return
+	}
+	log.Printf("control: listening on vsock port %d", port)
+	for {
+		nfd, _, err := unix.Accept(fd)
+		if err != nil {
+			log.Printf("control: accept: %v", err)
+			continue
+		}
+		conn := os.NewFile(uintptr(nfd), "vsock-control")
+		go func() {
+			defer conn.Close()
+			if err := handleControl(conn); err != nil && err != io.EOF {
+				log.Printf("control: session: %v", err)
+			}
+		}()
+	}
+}
+
+// handleControl runs one control RPC: decode the request, apply it, and reply.
+// Workspace mounting is best-effort (per-mount failures are logged in
+// mountWorkspaces), so a successful round-trip reports OK.
+func handleControl(conn io.ReadWriter) error {
+	var req firecracker.ControlRequest
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		return err
+	}
+	// Apply the workload env before anything else so the resumed guest's process
+	// PATH resolves the entrypoint and every subsequent exec — a prewarm guest
+	// booted with none.
+	if len(req.Env) > 0 {
+		applyWorkloadEnv(req.Env)
+	}
+	if len(req.MountWorkspaces) > 0 {
+		log.Printf("control: mounting %d workspace(s) post-resume", len(req.MountWorkspaces))
+		mountWorkspaces(req.MountWorkspaces)
+	}
+	return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: true})
+}
+
 // signalReady dials the host's readiness beacon (firecracker.GuestReadyPort)
 // to tell the host the agent is up. The host listens on that port before boot,
 // so the connection is the "ready" edge; the byte stream itself is unused.
@@ -463,6 +575,30 @@ func handleExec(conn io.ReadWriter) error {
 		return execTTY(conn, cmd, start)
 	}
 	return execPipes(conn, cmd)
+}
+
+// defaultPath is applied when the workload environment defines no PATH, so bare
+// commands (e.g. "tail") resolve against the standard binary locations even when
+// neither the image nor the config ever sets PATH. Matches Docker's container
+// default.
+const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// applyWorkloadEnv sets each "KEY=VALUE" entry into this process's environment so
+// exec.LookPath and os.Environ() (read by exec sessions) see the workload's env,
+// then guarantees a PATH. A prewarm guest boots with an empty environment, and an
+// image/config may omit PATH, so without this the entrypoint and every exec would
+// fail to resolve their command. Called at boot from params.Env and again at
+// resume with the first config's env (delivered over the control channel), so a
+// restored guest matches a normally-booted one. Idempotent.
+func applyWorkloadEnv(env []string) {
+	for _, kv := range env {
+		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			_ = os.Setenv(kv[:idx], kv[idx+1:])
+		}
+	}
+	if os.Getenv("PATH") == "" {
+		_ = os.Setenv("PATH", defaultPath)
+	}
 }
 
 func execPipes(conn io.ReadWriter, cmd *exec.Cmd) error {
@@ -644,6 +780,8 @@ func handleFile(conn io.ReadWriter) error {
 		return fileRead(conn, req.Path)
 	case vsockfile.OpWrite:
 		return fileWrite(conn, req.Path, req.Name)
+	case vsockfile.OpDelete:
+		return fileDelete(conn, req.Path)
 	default:
 		return fileErr(conn, fmt.Errorf("unknown op %q", req.Op))
 	}
@@ -857,6 +995,14 @@ func fileWrite(conn io.ReadWriter, dir, name string) error {
 		return fileErr(conn, err)
 	}
 	return vsockfile.WriteJSON(conn, vsockfile.FrameResult, vsockfile.Result{Size: written})
+}
+
+func fileDelete(conn io.Writer, path string) error {
+	err := os.Remove(path)
+	if err != nil {
+		return fileErr(conn, err)
+	}
+	return vsockfile.WriteJSON(conn, vsockfile.FrameResult, vsockfile.Result{})
 }
 
 // --- small helpers ---

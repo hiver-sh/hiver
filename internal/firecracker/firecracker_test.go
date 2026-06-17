@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,6 +58,99 @@ func TestCommand(t *testing.T) {
 	want := []string{"--api-sock", "/run/api.sock", "--config-file", "/run/config.json"}
 	if strings.Join(args, " ") != strings.Join(want, " ") {
 		t.Errorf("args = %v, want %v", args, want)
+	}
+}
+
+func TestCommandNoConfig(t *testing.T) {
+	bin, args := CommandNoConfig("", "/run/api.sock")
+	if bin != "firecracker" {
+		t.Errorf("bin = %q, want firecracker", bin)
+	}
+	want := []string{"--api-sock", "/run/api.sock"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+	// A snapshot resume must not pass a --config-file (the snapshot supplies the
+	// machine state); the boot-config flag belongs only to Command.
+	for _, a := range args {
+		if a == "--config-file" {
+			t.Errorf("CommandNoConfig must not include --config-file: %v", args)
+		}
+	}
+}
+
+// TestSnapshotRequests verifies CreateSnapshot/LoadSnapshot hit the right paths
+// with the JSON shape Firecracker's snapshot API expects.
+func TestSnapshotRequests(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "api.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	type capture struct {
+		method string
+		path   string
+		body   map[string]json.RawMessage
+	}
+	got := make(chan capture, 2)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got <- capture{method: r.Method, path: r.URL.Path, body: body}
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	c := NewClient(sock)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := c.CreateSnapshot(ctx, "/snap/state", "/snap/mem"); err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	create := <-got
+	if create.method != http.MethodPut || create.path != "/snapshot/create" {
+		t.Errorf("create = %s %s, want PUT /snapshot/create", create.method, create.path)
+	}
+	assertJSONField(t, create.body, "snapshot_type", `"Full"`)
+	assertJSONField(t, create.body, "snapshot_path", `"/snap/state"`)
+	assertJSONField(t, create.body, "mem_file_path", `"/snap/mem"`)
+
+	if err := c.LoadSnapshot(ctx, "/snap/state", "/snap/mem", true); err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	load := <-got
+	if load.method != http.MethodPut || load.path != "/snapshot/load" {
+		t.Errorf("load = %s %s, want PUT /snapshot/load", load.method, load.path)
+	}
+	assertJSONField(t, load.body, "snapshot_path", `"/snap/state"`)
+	assertJSONField(t, load.body, "resume_vm", `true`)
+	// Guest memory is addressed via the mem_backend object, not the legacy flat
+	// mem_file_path field.
+	mb, ok := load.body["mem_backend"]
+	if !ok {
+		t.Fatalf("load body missing mem_backend; got %v", keys(load.body))
+	}
+	for _, want := range []string{`"backend_type":"File"`, `"backend_path":"/snap/mem"`} {
+		if !strings.Contains(string(mb), want) {
+			t.Errorf("mem_backend %s missing %s", mb, want)
+		}
+	}
+}
+
+func assertJSONField(t *testing.T, body map[string]json.RawMessage, key, want string) {
+	t.Helper()
+	got, ok := body[key]
+	if !ok {
+		t.Errorf("body missing %q; got keys %v", key, keys(body))
+		return
+	}
+	if strings.TrimSpace(string(got)) != want {
+		t.Errorf("%s = %s, want %s", key, got, want)
 	}
 }
 

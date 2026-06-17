@@ -135,6 +135,19 @@ func (f microvmGuestFiles) Open(agentPath string, _ []MountRoute) (io.ReadCloser
 	return io.NopCloser(&buf), res.Size, nil
 }
 
+func (f microvmGuestFiles) Delete(agentPath string, _ []MountRoute) error {
+	conn, err := f.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := vsockfile.WriteJSON(conn, vsockfile.FrameRequest, vsockfile.Request{Op: vsockfile.OpDelete, Path: agentPath}); err != nil {
+		return err
+	}
+	_, err = readResult(conn)
+	return err
+}
+
 func (f microvmGuestFiles) Save(agentDir, name string, _ []MountRoute, r io.Reader) (int64, error) {
 	conn, err := f.dial()
 	if err != nil {

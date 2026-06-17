@@ -21,6 +21,7 @@ export {
   LocalFileSystem,
   SandboxConfig,
   SandboxEvent,
+  SandboxInfo,
   SandboxRef,
   StdioEvent,
 } from "./schemas";

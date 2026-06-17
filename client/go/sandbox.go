@@ -108,6 +108,29 @@ func (s *Sandbox) GetConfig(ctx context.Context) (*SandboxConfig, error) {
 	return &cfg, nil
 }
 
+// GetInfo reads internal runtime information about the sandbox — currently the
+// isolation mechanism in use, which sandboxd selects automatically from the
+// image rather than from config.
+func (s *Sandbox) GetInfo(ctx context.Context) (*SandboxInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/info", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GetInfo: %w", err)
+	}
+	defer resp.Body.Close()
+	if !isSuccess(resp.StatusCode) {
+		return nil, fmt.Errorf("GetInfo: %w", readAPIError(resp))
+	}
+	var info SandboxInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("GetInfo: decode: %w", err)
+	}
+	return &info, nil
+}
+
 // ApplyConfig applies a desired SandboxConfig. The result's Applied field
 // reports whether the change was committed or rolled back.
 func (s *Sandbox) ApplyConfig(ctx context.Context, config SandboxConfig) (*ApplyResult, error) {
@@ -302,9 +325,9 @@ func (s *Sandbox) ListDirectory(ctx context.Context, path string) ([]DirEntry, e
 	return result.Entries, nil
 }
 
-// DownloadFile returns the raw bytes of the file at path.
+// ReadFile returns the raw bytes of the file at path.
 // path is the agent-visible absolute path (e.g. /workspace/data.csv).
-func (s *Sandbox) DownloadFile(ctx context.Context, path string) ([]byte, error) {
+func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/file", nil)
 	if err != nil {
 		return nil, err
@@ -315,23 +338,23 @@ func (s *Sandbox) DownloadFile(ctx context.Context, path string) ([]byte, error)
 
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("DownloadFile: %w", err)
+		return nil, fmt.Errorf("ReadFile: %w", err)
 	}
 	defer resp.Body.Close()
 	if !isSuccess(resp.StatusCode) {
-		return nil, fmt.Errorf("DownloadFile: %w", readAPIError(resp))
+		return nil, fmt.Errorf("ReadFile: %w", readAPIError(resp))
 	}
 	return io.ReadAll(resp.Body)
 }
 
-// UploadFile writes content as filename under destination inside the sandbox.
+// WriteFile writes content as filename under destination inside the sandbox.
 // destination must match one of the configured fs[].mount paths exactly.
-func (s *Sandbox) UploadFile(ctx context.Context, destination, filename string, content []byte) (*UploadResult, error) {
+func (s *Sandbox) WriteFile(ctx context.Context, destination, filename string, content []byte) (*UploadResult, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
 	if err := mw.WriteField("destination", destination); err != nil {
-		return nil, fmt.Errorf("UploadFile: build form: %w", err)
+		return nil, fmt.Errorf("WriteFile: build form: %w", err)
 	}
 
 	h := make(textproto.MIMEHeader)
@@ -339,10 +362,10 @@ func (s *Sandbox) UploadFile(ctx context.Context, destination, filename string, 
 	h.Set("Content-Type", "application/octet-stream")
 	part, err := mw.CreatePart(h)
 	if err != nil {
-		return nil, fmt.Errorf("UploadFile: build form: %w", err)
+		return nil, fmt.Errorf("WriteFile: build form: %w", err)
 	}
 	if _, err := part.Write(content); err != nil {
-		return nil, fmt.Errorf("UploadFile: build form: %w", err)
+		return nil, fmt.Errorf("WriteFile: build form: %w", err)
 	}
 	mw.Close()
 
@@ -354,17 +377,39 @@ func (s *Sandbox) UploadFile(ctx context.Context, destination, filename string, 
 
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("UploadFile: %w", err)
+		return nil, fmt.Errorf("WriteFile: %w", err)
 	}
 	defer resp.Body.Close()
 	if !isSuccess(resp.StatusCode) {
-		return nil, fmt.Errorf("UploadFile: %w", readAPIError(resp))
+		return nil, fmt.Errorf("WriteFile: %w", readAPIError(resp))
 	}
 	var result UploadResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("UploadFile: decode: %w", err)
+		return nil, fmt.Errorf("WriteFile: decode: %w", err)
 	}
 	return &result, nil
+}
+
+// DeleteFile removes the file or empty directory at path inside the sandbox.
+// path is the agent-visible absolute path (e.g. /workspace/data.csv).
+func (s *Sandbox) DeleteFile(ctx context.Context, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.apiURL+"/v1/file", nil)
+	if err != nil {
+		return err
+	}
+	q := req.URL.Query()
+	q.Set("path", path)
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("DeleteFile: %w", err)
+	}
+	defer resp.Body.Close()
+	if !isSuccess(resp.StatusCode) {
+		return fmt.Errorf("DeleteFile: %w", readAPIError(resp))
+	}
+	return nil
 }
 
 // WatchEvents streams the sandbox's activity events (egress, filesystem, exec,

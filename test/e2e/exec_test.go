@@ -22,7 +22,7 @@ func TestExecE2E(t *testing.T) {
 	key := fmt.Sprintf("e2e-exec-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
 		Image:      "hiversh/python:3.13-alpine",
-		Entrypoint: "tail -f /dev/null",
+		Entrypoint: []string{"tail", "-f", "/dev/null"},
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
@@ -82,6 +82,47 @@ func TestExecE2E(t *testing.T) {
 		}
 		if !strings.Contains(res.Stdout, "injected-value") {
 			t.Errorf("stdout=%q, want 'injected-value'", res.Stdout)
+		}
+	})
+
+	t.Run("exec_argv_array", func(t *testing.T) {
+		// An array command is executed as literal argv (no shell), so the
+		// "$HOME" token is printed verbatim rather than expanded.
+		res, err := sbx.Exec(ctx, hiverclient.ExecRequest{
+			Command: []string{"echo", "$HOME not-expanded"},
+		})
+		if err != nil {
+			t.Fatalf("Exec: %v", err)
+		}
+		if res.ExitCode != 0 {
+			t.Errorf("exit_code=%d, want 0", res.ExitCode)
+		}
+		if !strings.Contains(res.Stdout, "$HOME not-expanded") {
+			t.Errorf("stdout=%q, want literal '$HOME not-expanded'", res.Stdout)
+		}
+	})
+
+	t.Run("exec_stream_argv_array", func(t *testing.T) {
+		proc, err := sbx.ExecStream(ctx, hiverclient.ExecStreamRequest{
+			Command: []string{"echo", "argv stream"},
+		})
+		if err != nil {
+			t.Fatalf("ExecStream: %v", err)
+		}
+		var got strings.Builder
+		for frame := range proc.Output {
+			got.WriteString(frame.Stdout)
+			got.WriteString(frame.Stderr)
+		}
+		code, err := proc.Wait()
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		if code != 0 {
+			t.Errorf("exit_code=%d, want 0", code)
+		}
+		if !strings.Contains(got.String(), "argv stream") {
+			t.Errorf("output=%q, want 'argv stream'", got.String())
 		}
 	})
 

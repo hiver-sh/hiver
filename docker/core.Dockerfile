@@ -68,6 +68,11 @@ FROM debian:bookworm-slim
 #              cooperation from the workload.
 #   ca-certs:  outbound TLS from sbxproxy.
 #   procps:    sysctl (ip_forward for the microvm tap) + ps.
+#   libnss3-tools: certutil, used by the container backend's InstallCA to add
+#              the sandbox CA to the workload's NSS database so NSS-based clients
+#              (Chromium/Playwright) trust the leaf certs sbxproxy mints. Run
+#              host-side against the merged rootfs, so the agent image needs no
+#              NSS tooling of its own.
 #
 # container backend (isolation=container, the default):
 #   runc:      launches the agent as its own container — sandboxd unpacks the
@@ -92,6 +97,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         e2fsprogs \
         iproute2 \
         curl \
+        libnss3-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Firecracker VMM binary, pinned by version and per-arch.

@@ -5,10 +5,9 @@ import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-node-exec", {
   image: "hiversh/node:alpine",
-  entrypoint: "tail -f /dev/null",
 });
 
-const result = await sandbox.exec(`node -e "console.log('Hello, world!')"`, {
+const result = await sandbox.exec(["node", "-e", "console.log('Hello, world!')"], {
   cwd: "/workspace",
 });
 

@@ -47,6 +47,18 @@ func Command(bin, apiSock, configPath string) (string, []string) {
 	return bin, []string{"--api-sock", apiSock, "--config-file", configPath}
 }
 
+// CommandNoConfig returns the binary and args that start a VMM with only an API
+// socket and no boot config. This is the required starting point for a snapshot
+// resume: PUT /snapshot/load supplies the entire machine description, so the
+// process must not have been pre-configured or booted from a --config-file. The
+// caller drives the load + resume over the API socket.
+func CommandNoConfig(bin, apiSock string) (string, []string) {
+	if bin == "" {
+		bin = "firecracker"
+	}
+	return bin, []string{"--api-sock", apiSock}
+}
+
 // DefaultBootArgs is the kernel command line for a minimal guest whose init is
 // the in-guest agent. ip=... hands the guest its static address on the tap link
 // so it needs no in-guest DHCP. The agent receives its runtime parameters

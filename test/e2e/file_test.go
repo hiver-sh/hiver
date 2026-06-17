@@ -12,7 +12,7 @@ import (
 	"github.com/hiver-sh/hiver/test/e2e/setup"
 )
 
-// TestFileE2E exercises UploadFile, DownloadFile, and ListDirectory against a
+// TestFileE2E exercises WriteFile, ReadFile, and ListDirectory against a
 // hiversh/python:3.13-alpine sandbox. It covers the upload/download round-trip,
 // exec-side verification that uploads land on the FUSE mount, directory listing,
 // binary content fidelity, and the error path for a missing file.
@@ -23,7 +23,7 @@ func TestFileE2E(t *testing.T) {
 	key := fmt.Sprintf("e2e-file-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
 		Image:      "hiversh/python:3.13-alpine",
-		Entrypoint: "tail -f /dev/null",
+		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		FS: []hiverclient.FileSystem{
 			{Mount: "/workspace", Backend: "local", ACLs: []hiverclient.ACLRule{{Path: "/**", Access: "rw"}}},
 		},
@@ -42,9 +42,9 @@ func TestFileE2E(t *testing.T) {
 
 	t.Run("upload_then_download", func(t *testing.T) {
 		content := []byte("hello from upload")
-		res, err := sbx.UploadFile(ctx, "/workspace", "greeting.txt", content)
+		res, err := sbx.WriteFile(ctx, "/workspace", "greeting.txt", content)
 		if err != nil {
-			t.Fatalf("UploadFile: %v", err)
+			t.Fatalf("WriteFile: %v", err)
 		}
 		if res.Path != "/workspace/greeting.txt" {
 			t.Errorf("path=%q, want /workspace/greeting.txt", res.Path)
@@ -53,9 +53,9 @@ func TestFileE2E(t *testing.T) {
 			t.Errorf("bytes=%d, want %d", res.Bytes, len(content))
 		}
 
-		got, err := sbx.DownloadFile(ctx, "/workspace/greeting.txt")
+		got, err := sbx.ReadFile(ctx, "/workspace/greeting.txt")
 		if err != nil {
-			t.Fatalf("DownloadFile: %v", err)
+			t.Fatalf("ReadFile: %v", err)
 		}
 		if !bytes.Equal(got, content) {
 			t.Errorf("downloaded content=%q, want %q", got, content)
@@ -64,8 +64,8 @@ func TestFileE2E(t *testing.T) {
 
 	t.Run("exec_verifies_upload", func(t *testing.T) {
 		content := []byte("exec-check-content")
-		if _, err := sbx.UploadFile(ctx, "/workspace", "exec-check.txt", content); err != nil {
-			t.Fatalf("UploadFile: %v", err)
+		if _, err := sbx.WriteFile(ctx, "/workspace", "exec-check.txt", content); err != nil {
+			t.Fatalf("WriteFile: %v", err)
 		}
 		res, err := sbx.Exec(ctx, hiverclient.ExecRequest{Command: "cat /workspace/exec-check.txt"})
 		if err != nil {
@@ -81,8 +81,8 @@ func TestFileE2E(t *testing.T) {
 
 	t.Run("list_directory", func(t *testing.T) {
 		for _, name := range []string{"alpha.txt", "beta.txt"} {
-			if _, err := sbx.UploadFile(ctx, "/workspace", name, []byte(name)); err != nil {
-				t.Fatalf("UploadFile(%s): %v", name, err)
+			if _, err := sbx.WriteFile(ctx, "/workspace", name, []byte(name)); err != nil {
+				t.Fatalf("WriteFile(%s): %v", name, err)
 			}
 		}
 		entries, err := sbx.ListDirectory(ctx, "/workspace")
@@ -128,12 +128,12 @@ func TestFileE2E(t *testing.T) {
 		for i := range content {
 			content[i] = byte(i)
 		}
-		if _, err := sbx.UploadFile(ctx, "/workspace", "binary.bin", content[:]); err != nil {
-			t.Fatalf("UploadFile: %v", err)
+		if _, err := sbx.WriteFile(ctx, "/workspace", "binary.bin", content[:]); err != nil {
+			t.Fatalf("WriteFile: %v", err)
 		}
-		got, err := sbx.DownloadFile(ctx, "/workspace/binary.bin")
+		got, err := sbx.ReadFile(ctx, "/workspace/binary.bin")
 		if err != nil {
-			t.Fatalf("DownloadFile: %v", err)
+			t.Fatalf("ReadFile: %v", err)
 		}
 		if !bytes.Equal(got, content[:]) {
 			t.Errorf("binary content mismatch: got %d bytes, want %d", len(got), len(content))
@@ -141,9 +141,30 @@ func TestFileE2E(t *testing.T) {
 	})
 
 	t.Run("download_missing_file_error", func(t *testing.T) {
-		_, err := sbx.DownloadFile(ctx, "/workspace/does-not-exist.bin")
+		_, err := sbx.ReadFile(ctx, "/workspace/does-not-exist.bin")
 		if err == nil {
-			t.Error("DownloadFile: expected error for missing file, got nil")
+			t.Error("ReadFile: expected error for missing file, got nil")
+		}
+	})
+
+	t.Run("delete_file", func(t *testing.T) {
+		content := []byte("to be deleted")
+		if _, err := sbx.WriteFile(ctx, "/workspace", "delete-me.txt", content); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if err := sbx.DeleteFile(ctx, "/workspace/delete-me.txt"); err != nil {
+			t.Fatalf("DeleteFile: %v", err)
+		}
+		_, err := sbx.ReadFile(ctx, "/workspace/delete-me.txt")
+		if err == nil {
+			t.Error("ReadFile after delete: expected error, got nil")
+		}
+	})
+
+	t.Run("delete_missing_file_error", func(t *testing.T) {
+		err := sbx.DeleteFile(ctx, "/workspace/does-not-exist.txt")
+		if err == nil {
+			t.Error("DeleteFile: expected error for missing file, got nil")
 		}
 	})
 }

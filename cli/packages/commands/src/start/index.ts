@@ -95,6 +95,8 @@ try {
 // Only forward flags the caller actually set, so the controller's defaults
 // apply otherwise.
 const config: SandboxConfig = { image: resolvedImage };
+// entrypoint accepts a string (the sandbox splits it on whitespace) or an
+// argv array; the flag and agent picker both yield a string, so pass it as-is.
 if (resolvedEntrypoint !== undefined) config.entrypoint = resolvedEntrypoint;
 if (ttl !== undefined) config.ttl = ttl;
 if (tty) config.tty = true;

@@ -24,10 +24,9 @@ const BackendSuffix = "-backend"
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
 	Image      string             `json:"image,omitempty"`
-	Isolation  Isolation          `json:"isolation,omitempty"`
 	CPU        *int               `json:"cpu,omitempty"`
 	Memory     *int               `json:"memory,omitempty"`
-	Entrypoint string             `json:"entrypoint,omitempty"`
+	Entrypoint Entrypoint         `json:"entrypoint,omitempty"`
 	Cwd        string             `json:"cwd,omitempty"`
 	Tty        *bool              `json:"tty,omitempty"`
 	Ttl        *int               `json:"ttl,omitempty"`
@@ -37,25 +36,34 @@ type Spec struct {
 	Snapshot   *Snapshot          `json:"snapshot,omitempty"`
 }
 
-// Isolation selects how the agent workload is confined. It mirrors
-// SandboxConfig.isolation in the API schema; the matching backends live in
-// [internal/isolation]. The empty value means "container" (runc) so configs
-// that predate the field keep their behaviour.
-type Isolation string
+// Entrypoint is an argv override for the workload. On the wire it accepts
+// either a JSON array of strings (each element a separate argument) or a
+// single JSON string, which is split on whitespace into arguments. Both forms
+// normalize to the same []string, so the rest of sandboxd treats it uniformly.
+type Entrypoint []string
 
-const (
-	IsolationContainer Isolation = "container"
-	IsolationMicroVM   Isolation = "microvm"
-)
-
-// Valid reports whether the isolation is one sandboxd knows how to wire up.
-// The empty string is valid and resolves to [IsolationContainer].
-func (i Isolation) Valid() bool {
-	switch i {
-	case "", IsolationContainer, IsolationMicroVM:
-		return true
+// UnmarshalJSON accepts either a string ("tail -f /dev/null") or an array of
+// strings (["tail", "-f", "/dev/null"]) and normalizes to argv form.
+func (e *Entrypoint) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		*e = nil
+		return nil
 	}
-	return false
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return fmt.Errorf("entrypoint: %w", err)
+		}
+		*e = strings.Fields(s)
+		return nil
+	}
+	var argv []string
+	if err := json.Unmarshal(data, &argv); err != nil {
+		return fmt.Errorf("entrypoint: %w", err)
+	}
+	*e = argv
+	return nil
 }
 
 // Snapshot controls how the sandbox upper layer is persisted and restored.
@@ -69,6 +77,12 @@ type Snapshot struct {
 	// Include is a list of absolute container paths or glob patterns
 	// (e.g. /home/user/*) whose parent directories are snapshotted.
 	Include []string `json:"include,omitempty"`
+	// Mount is the mount path of an FS entry where snapshot tarballs are
+	// written and read, instead of the host's local snapshot directory.
+	// Point it at an internal, remote-backed FS to persist and restore
+	// snapshots through a FUSE drive. When empty, the host's local snapshot
+	// directory is used.
+	Mount string `json:"mount,omitempty"`
 }
 
 // EffectiveWriteKey returns the key to use when saving the snapshot.
@@ -99,6 +113,12 @@ type FS struct {
 	Mount   string        `json:"mount"`
 	Backend Backend       `json:"backend"`
 	ACLs    []fusefs.Rule `json:"acls"`
+
+	// Internal, when true, mounts the FUSE workspace on the sandbox host but
+	// does not export it into the agent workload — the agent never sees Mount.
+	// Used for storage the sandbox needs but the agent must not access, e.g. a
+	// remote-backed snapshot target referenced by Snapshot.Mount.
+	Internal bool `json:"internal,omitempty"`
 
 	// Per-backend extras live inline with a backend-name prefix so it's
 	// obvious from the YAML which backend a field belongs to. Only the
@@ -343,18 +363,15 @@ func Parse(path string) (*Spec, error) {
 
 // Validate enforces required-field invariants.
 func (s *Spec) Validate() error {
-	if !s.Isolation.Valid() {
-		return fmt.Errorf("isolation: unknown value %q (supported: %q, %q)", s.Isolation, IsolationContainer, IsolationMicroVM)
-	}
 	if s.CPU != nil && *s.CPU < 1 {
 		return fmt.Errorf("cpu: must be >= 1, got %d", *s.CPU)
 	}
 	if s.Memory != nil && *s.Memory < 128 {
 		return fmt.Errorf("memory: must be >= 128 (MiB), got %d", *s.Memory)
 	}
-	if len(s.FS) == 0 {
-		return errors.New("fs is required (at least one mount)")
-	}
+	// fs is optional: a prewarm sandbox boots with only an image and no
+	// mounts, then receives its real filesystem via the first PUT /v1/config.
+	// Any entries that are present must still be well-formed.
 	for i := range s.FS {
 		f := &s.FS[i]
 		ctx := fmt.Sprintf("fs[%d]", i)
@@ -433,6 +450,23 @@ func (s *Spec) Validate() error {
 		}
 		if sn.WriteKey != "" && !snapshotKeyRE.MatchString(sn.WriteKey) {
 			return fmt.Errorf("snapshot.write_key: must match %s", snapshotKeyRE)
+		}
+		if sn.Mount != "" {
+			if !strings.HasPrefix(sn.Mount, "/") {
+				return fmt.Errorf("snapshot.mount: must be an absolute path, got %q", sn.Mount)
+			}
+			// Must name a declared FS mount so the tarball lands on a real
+			// FUSE drive rather than a stray host directory.
+			found := false
+			for i := range s.FS {
+				if s.FS[i].Mount == sn.Mount {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("snapshot.mount %q does not match any fs[].mount", sn.Mount)
+			}
 		}
 	}
 	return nil

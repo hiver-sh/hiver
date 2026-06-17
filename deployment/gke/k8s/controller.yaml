@@ -94,7 +94,7 @@ spec:
       serviceAccountName: controller
       containers:
         - name: controller
-          image: hiversh/controller@sha256:5fadb485e123fe33efb2c92dd9f6795dd84f8c6e725000bcb4a783fd3c60f08a
+          image: hiversh/controller@sha256:2ae4926a772bdf51f3fcdb3d37705281a15e3e31b944166d0e36569cbfadccea
           args: ["--server-port=9000"]
           env:
             # Selects the Kubernetes backend in NewControllerHandlers();
@@ -103,6 +103,10 @@ spec:
               value: "k8s"
             - name: HIVE_NAMESPACE
               value: "hiver-sandbox"
+            # How long a completed (Succeeded/Failed) sandbox pod is held before
+            # the recycler deletes it and reclaims its resources. "0" disables.
+            - name: HIVE_COMPLETED_POD_TTL
+              value: "5m"
           ports:
             - name: http
               containerPort: 9000

@@ -16,14 +16,6 @@ export const SANDBOX_CONFIG_SCHEMA = {
             "The Docker image to run. Cannot be changed after the sandbox is initialized.",
           examples: ["my-agent:latest"],
         },
-        isolation: {
-          type: "string",
-          enum: ["container", "microvm"],
-          default: "container",
-          description:
-            "The isolation mechanism used to run the sandbox. Cannot be changed after the sandbox is initialized.",
-          examples: ["container"],
-        },
         cpu: {
           type: "integer",
           minimum: 1,
@@ -41,10 +33,11 @@ export const SANDBOX_CONFIG_SCHEMA = {
           examples: [512],
         },
         entrypoint: {
-          type: "string",
+          type: "array",
+          items: { type: "string" },
           description:
-            'Override the entrypoint used when the container is run. When omitted, the image\'s default entrypoint is used. e.g. "tail -f /dev/null" blocks indefinitely with near-zero CPU.',
-          examples: ["tail -f /dev/null"],
+            'Override the entrypoint used when the container is run, as an argv array (each element is a separate argument, not shell-split). When omitted, the image\'s default entrypoint is used. e.g. ["tail", "-f", "/dev/null"] blocks indefinitely with near-zero CPU.',
+          examples: [["tail", "-f", "/dev/null"]],
         },
         cwd: {
           type: "string",
@@ -117,6 +110,13 @@ export const SANDBOX_CONFIG_SCHEMA = {
           items: { type: "string" },
           examples: [["/home/user/*", "/workspace/data"]],
         },
+        mount: {
+          type: "string",
+          pattern: "^/.+",
+          description:
+            "Mount path of a file system (see fs) where snapshot tarballs are written and read, instead of the host's local snapshot directory. Point it at an internal, remote-backed file system to persist and restore snapshots through a FUSE drive.",
+          examples: ["/snapshots"],
+        },
       },
     },
 
@@ -148,6 +148,12 @@ export const SANDBOX_CONFIG_SCHEMA = {
           description:
             'Access control rules for paths under `mount`, evaluated longest-prefix-first. Deny by default when no rule matches. When omitted, a default rule `{ path: "<mount>/**", access: "rw" }` is applied.',
           items: { $ref: "#/definitions/ACLRule" },
+        },
+        internal: {
+          type: "boolean",
+          default: false,
+          description:
+            "When true, the file system is mounted inside the sandbox runtime but hidden from the agent workload. Use it for storage the sandbox needs but the agent must not access, e.g. a remote-backed snapshot target referenced by snapshot.mount. Because the agent cannot reach the mount, acls are ignored for internal file systems.",
         },
       },
     },

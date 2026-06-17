@@ -67,7 +67,7 @@ func TestEgressRequestOverridesE2E(t *testing.T) {
 	key := fmt.Sprintf("e2e-egress-overrides-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
 		Image:      "hiversh/python:3.13-alpine",
-		Entrypoint: "tail -f /dev/null",
+		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		// Expose the host-side capture server hostname inside the Docker network.
 		ExtraHosts: []string{
 			hostAlias + ":host-gateway",
@@ -187,7 +187,7 @@ func TestEgressOverrideHostE2E(t *testing.T) {
 	key := fmt.Sprintf("e2e-egress-override-host-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
 		Image:      "hiversh/python:3.13-alpine",
-		Entrypoint: "tail -f /dev/null",
+		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		// The redirect alias is for the proxy's own resolution of the
 		// override target; the agent never sees it. The agent host maps to
 		// host-gateway only so the connect() succeeds — port 80 there has no

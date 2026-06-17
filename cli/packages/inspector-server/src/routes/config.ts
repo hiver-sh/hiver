@@ -16,6 +16,19 @@ router.get("/:id/config", async (req: Request, res: Response) => {
   }
 });
 
+// Internal runtime info (currently the isolation mechanism, which the sandbox
+// derives from its image rather than from config). Proxied to /v1/info.
+router.get("/:id/info", async (req: Request, res: Response) => {
+  const sandbox = sandboxFromReq(req);
+  try {
+    await waitForSandbox(sandbox);
+    const info = await sandbox.getInfo();
+    res.json(info);
+  } catch (err) {
+    res.status(502).json({ error: String(err) });
+  }
+});
+
 router.put("/:id/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {

@@ -132,6 +132,74 @@ jobs:
               --latest=false
           fi
 
+  # Build and push the runtime images (controller/core/gateway). The bundler
+  # (`FROM hiversh/core`) pulls hiversh/core, so this is the only prerequisite for
+  # sandbox bundling — it runs in parallel with the package publishing in `publish`.
+  push-runtime-images:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.current }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          CURRENT=$(jq -r .version cli/package.json)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push runtime images
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          make buildx-builder && make publish-images PLATFORMS=linux/amd64,linux/arm64
+          for img in controller core gateway; do
+            docker buildx imagetools create \
+              --tag hiversh/$img:$VERSION \
+              hiversh/$img:latest
+          done
+
+  # Bundle each sandbox image in its own job so they build in parallel. The bundler
+  # pulls hiversh/core, so the only prerequisite is push-runtime-images (the core
+  # image built for this release) — not the package publishing in `publish`.
+  bundle-sandbox-images:
+    needs: [build-cli, push-runtime-images]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source: ./docker/agent-cli
+            tag: hiversh/agent-cli
+          - source: ./docker/playwright
+            tag: hiversh/playwright
+          - source: python:3.13-alpine
+            tag: hiversh/python:3.13-alpine
+          - source: node:alpine
+            tag: hiversh/node:alpine
+          - source: ./docker/agent-cli
+            tag: hiversh/agent-cli:microvm
+            bundler-flags: "--microvm"
+          - source: ./docker/playwright
+            tag: hiversh/playwright:microvm
+            bundler-flags: "--microvm"
+          - source: python:3.13-alpine
+            tag: hiversh/python:3.13-alpine-microvm
+            bundler-flags: "--microvm"
+          - source: node:alpine
+            tag: hiversh/node:alpine-microvm
+            bundler-flags: "--microvm"
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -155,30 +223,54 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Push runtime images
-        env:
-          VERSION: ${{ steps.version.outputs.current }}
+      - name: Bundle and push ${{ matrix.tag }}
         run: |
-          make buildx-builder && make publish-images PLATFORMS=linux/amd64,linux/arm64
-          for img in controller core gateway; do
-            docker buildx imagetools create \
-              --tag hiversh/$img:$VERSION \
-              hiversh/$img:latest
-          done
+          hiver bundle ${{ matrix.source }} \
+            --entrypoint="tail -f /dev/null" \
+            ${{ matrix.bundler-flags }} \
+            --tag ${{ matrix.tag }} \
+            --push \
+            --platform linux/amd64,linux/arm64
 
-      - name: Push sandbox images
-        run: make bundle-sandbox-images PLATFORMS=linux/amd64,linux/arm64
+  # Versioned tags reference the unversioned manifests pushed by the matrix above,
+  # so this must wait for every bundle job to finish.
+  tag-sandbox-images:
+    needs: [push-runtime-images, bundle-sandbox-images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Tag versioned sandbox images
         env:
-          VERSION: ${{ steps.version.outputs.current }}
+          VERSION: ${{ needs.push-runtime-images.outputs.version }}
         run: |
           docker buildx imagetools create \
             --tag hiversh/agent-cli:$VERSION \
-            hiversh/agent-cli:latest
+            hiversh/agent-cli:latest \
+          docker buildx imagetools create \
+            --tag hiversh/playwright:$VERSION \
+            hiversh/playwright:latest \
           docker buildx imagetools create \
             --tag hiversh/python:$VERSION-3.13-alpine \
-            hiversh/python:3.13-alpine
+            hiversh/python:3.13-alpine \
           docker buildx imagetools create \
             --tag hiversh/node:$VERSION-alpine \
-            hiversh/node:alpine
+            hiversh/node:alpine \
+          docker buildx imagetools create \
+            --tag hiversh/agent-cli:$VERSION-microvm \
+            hiversh/agent-cli:microvm \
+          docker buildx imagetools create \
+            --tag hiversh/playwright:$VERSION-microvm \
+            hiversh/playwright:microvm \
+          docker buildx imagetools create \
+            --tag hiversh/python:$VERSION-3.13-alpine-microvm \
+            hiversh/python:3.13-alpine-microvm \
+          docker buildx imagetools create \
+            --tag hiversh/node:$VERSION-alpine-microvm \
+            hiversh/node:alpine-microvm

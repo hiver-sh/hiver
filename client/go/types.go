@@ -57,6 +57,12 @@ type FileSystem struct {
 	Backend string `json:"backend"`
 	// ACLs are access control rules for paths under Mount.
 	ACLs []ACLRule `json:"acls,omitempty"`
+	// Internal, when true, mounts the file system inside the sandbox runtime
+	// but hides it from the agent workload. Use it for storage the sandbox
+	// needs but the agent must not see, e.g. a remote-backed snapshot target
+	// referenced by Snapshot.Mount. Because the agent cannot reach the mount,
+	// ACLs are ignored for internal file systems.
+	Internal bool `json:"internal,omitempty"`
 
 	// Origin (local backend) is the local path to mount into this sandbox.
 	// Supported only with the local Docker runtime — helpful for development,
@@ -106,6 +112,11 @@ type Snapshot struct {
 	WriteKey string `json:"write_key,omitempty"`
 	// Include are glob patterns for the paths to capture (e.g. "/home/user/*").
 	Include []string `json:"include,omitempty"`
+	// Mount is the mount path of a FileSystem (see SandboxConfig.FS) where
+	// snapshot tarballs are written and read, instead of the host's local
+	// snapshot directory. Point it at an Internal, remote-backed file system
+	// to persist and restore snapshots through a FUSE drive.
+	Mount string `json:"mount,omitempty"`
 }
 
 // SandboxConfig is the configuration for a sandbox.
@@ -113,18 +124,17 @@ type SandboxConfig struct {
 	// Image references the agent image to launch. Cannot be changed after the
 	// sandbox is initialized.
 	Image string `json:"image,omitempty"`
-	// Isolation is the mechanism used to run the sandbox: "container" or
-	// "microvm". Cannot be changed after the sandbox is initialized.
-	Isolation string `json:"isolation,omitempty"`
 	// CPU is the number of virtual CPUs allocated to the sandbox. Defaults to 1.
 	// Cannot be changed after the sandbox is initialized.
 	CPU int `json:"cpu,omitempty"`
 	// Memory allocated to the sandbox, in MiB. Defaults to 512. Cannot be
 	// changed after the sandbox is initialized.
 	Memory int `json:"memory,omitempty"`
-	// Entrypoint overrides the entrypoint used when the sandbox is run. When
+	// Entrypoint overrides the entrypoint used when the sandbox is run. Accepts
+	// either a []string argv (each element a separate argument) or a single
+	// string, which the sandbox splits on whitespace into arguments. When
 	// omitted, the image's default entrypoint is used.
-	Entrypoint string `json:"entrypoint,omitempty"`
+	Entrypoint any `json:"entrypoint,omitempty"`
 	// CWD is the working directory for the entrypoint. When omitted, the
 	// image's working directory is used. Cannot be changed after the sandbox
 	// is initialized.
@@ -152,6 +162,15 @@ type SandboxConfig struct {
 	Egress []EgressRule `json:"egress,omitempty"`
 	// Snapshot configures automatic snapshots for this sandbox.
 	Snapshot *Snapshot `json:"snapshot,omitempty"`
+}
+
+// SandboxInfo is internal runtime information about a sandbox, determined at
+// boot rather than configured. Read via Sandbox.GetInfo.
+type SandboxInfo struct {
+	// Isolation is the mechanism the sandbox is running with: "container" or
+	// "microvm". It is selected automatically from the image — a microvm image
+	// ships a guest root filesystem — not from config.
+	Isolation string `json:"isolation"`
 }
 
 // SandboxRef is a provisioned sandbox handle returned by the controller.
@@ -211,8 +230,10 @@ type ApplyResult struct {
 
 // ExecRequest runs a command inside the sandbox and buffers its output.
 type ExecRequest struct {
-	// Command is the command line to run.
-	Command string `json:"command"`
+	// Command is the command to run. A string is passed to a shell (sh -c); a
+	// []string is executed directly as argv, with each element a literal
+	// argument (no shell, no word-splitting or expansion).
+	Command any `json:"command"`
 	// CWD is the working directory to run in. When empty, the sandbox's
 	// working directory is used.
 	CWD string `json:"cwd,omitempty"`
@@ -235,8 +256,10 @@ type ExecResult struct {
 // attach to the sandbox entrypoint's terminal (requires the sandbox to have
 // been created with TTY true).
 type ExecStreamRequest struct {
-	// Command is the command line to run; empty attaches to the entrypoint terminal.
-	Command string `json:"command"`
+	// Command is the command to run; empty/nil attaches to the entrypoint
+	// terminal. A string is passed to a shell (sh -c); a []string is executed
+	// directly as argv, with each element a literal argument (no shell).
+	Command any `json:"command,omitempty"`
 	// CWD is the working directory to run in. When empty, the sandbox's
 	// working directory is used.
 	CWD string `json:"cwd,omitempty"`

@@ -8,6 +8,7 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - warmpool-crd.yaml
+  - warmpool.yaml
   - controller.yaml
   - gateway.yaml
 

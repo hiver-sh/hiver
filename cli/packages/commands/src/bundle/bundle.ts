@@ -31,6 +31,10 @@ const MULTIARCH_BUILDER = "hiver-multiarch";
 export interface BundleOptions {
   /** Resulting image tag. Defaults to `<image>-bundled`. */
   tag?: string;
+  /**
+   * Override the source image's entrypoint.
+   */
+  entrypoint?: string;
   /** Bundle for the microvm backend (pre-builds the guest rootfs.ext4). */
   microvm?: boolean;
   /**
@@ -148,6 +152,49 @@ function run(
   });
 }
 
+/**
+ * Split a command string into argv tokens, shell-style: whitespace separates
+ * tokens, and single/double quotes group spaces into one token (the quotes
+ * themselves are stripped). Enough to turn `--entrypoint` into an exec-form
+ * Entrypoint array. Throws on an unterminated quote.
+ */
+export function splitCommand(input: string): string[] {
+  const tokens: string[] = [];
+  let cur: string | null = null;
+  let quote: '"' | "'" | null = null;
+  for (const c of input) {
+    if (quote) {
+      if (c === quote) quote = null;
+      else cur = (cur ?? "") + c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      cur = cur ?? "";
+    } else if (c === " " || c === "\t" || c === "\n") {
+      if (cur !== null) {
+        tokens.push(cur);
+        cur = null;
+      }
+    } else {
+      cur = (cur ?? "") + c;
+    }
+  }
+  if (quote) throw new Error(`unterminated ${quote} quote in entrypoint`);
+  if (cur !== null) tokens.push(cur);
+  return tokens;
+}
+
+/**
+ * Returns `--build-arg ENTRYPOINT_OVERRIDE=<json argv>` when an entrypoint
+ * override is set, else []. The value is a JSON array so the Dockerfile can set
+ * the image's exec-form Entrypoint directly (no `/bin/sh` wrapper).
+ */
+function entrypointArgs(entrypoint?: string): string[] {
+  if (!entrypoint) return [];
+  const argv = splitCommand(entrypoint);
+  if (argv.length === 0) throw new Error("--entrypoint is empty");
+  return ["--build-arg", `ENTRYPOINT_OVERRIDE=${JSON.stringify(argv)}`];
+}
+
 /** Returns `--cache-from` / `--cache-to` args for a GHA scope, or [] outside CI. */
 function ghaCacheArgs(scope: string): string[] {
   if (process.env.GITHUB_ACTIONS !== "true") return [];
@@ -210,6 +257,7 @@ export async function bundleImage(
       target,
       platforms,
       push: Boolean(opts.push),
+      entrypoint: opts.entrypoint,
     });
   }
 
@@ -273,6 +321,7 @@ export async function bundleImage(
         `sandbox-tar=${ctx}`,
         "--target",
         target,
+        ...entrypointArgs(opts.entrypoint),
         "-t",
         tag,
         __dirname,
@@ -295,6 +344,7 @@ interface MultiArchArgs {
   target: string;
   platforms: string[];
   push: boolean;
+  entrypoint?: string;
 }
 
 /**
@@ -316,7 +366,8 @@ interface MultiArchArgs {
  * resolve.
  */
 async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
-  const { image, isDir, resolvedArg, tag, target, platforms, push } = args;
+  const { image, isDir, resolvedArg, tag, target, platforms, push, entrypoint } =
+    args;
 
   if (!push && platforms.length > 1) {
     throw new Error(
@@ -379,6 +430,7 @@ async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
           "--builder",
           MULTIARCH_BUILDER,
           "--load",
+          ...entrypointArgs(entrypoint),
           "-t",
           tag,
           ...ghaCacheArgs(scope),
@@ -455,6 +507,7 @@ async function bundleMultiArch(args: MultiArchArgs): Promise<string> {
           `type=image,name=${repo},push=true,push-by-digest=true,name-canonical=true`,
           "--metadata-file",
           metaFile,
+          ...entrypointArgs(entrypoint),
           ...ghaCacheArgs(scope),
           __dirname,
         ],

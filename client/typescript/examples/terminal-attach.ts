@@ -14,7 +14,7 @@ import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-terminal-attach", {
   image: "hiversh/node:alpine",
-  entrypoint: "tail -f /dev/null",
+  entrypoint: ["tail", "-f", "/dev/null"],
   ttl: 0,
 });
 

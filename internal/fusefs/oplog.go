@@ -173,6 +173,15 @@ func (o *Oplog) drainOnShutdown() {
 // when we deleted Bootstrap). Subsequent reads consult the remote
 // directly via [Config.Remote].
 func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
+	// Detach the remote operation from ctx's cancellation. ctx is the uploader's
+	// lifecycle context: it is cancelled at shutdown, which is exactly when an
+	// upload may be in flight (e.g. a snapshot tarball written through a FUSE
+	// drive moments before teardown). Cancelling mid-request would abort that
+	// upload and dead-letter it, silently losing a write the FUSE Write already
+	// acked. The request stays bounded by the remote HTTP client's own per-call
+	// timeout (and, on shutdown, by sandboxd's SIGKILL grace), so detaching can't
+	// hang teardown indefinitely.
+	opCtx := context.WithoutCancel(ctx)
 	var err error
 	switch e.Type {
 	case OpPut:
@@ -196,13 +205,13 @@ func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
 				return
 			}
 		} else {
-			err = o.store.Put(ctx, e.Path, f)
+			err = o.store.Put(opCtx, e.Path, f)
 			f.Close()
 		}
 	case OpDelete:
-		err = o.store.Delete(ctx, e.Path)
+		err = o.store.Delete(opCtx, e.Path)
 	case OpMove:
-		err = o.store.Move(ctx, e.Path, e.NewPath)
+		err = o.store.Move(opCtx, e.Path, e.NewPath)
 	default:
 		err = fmt.Errorf("unknown op %q", e.Type)
 	}

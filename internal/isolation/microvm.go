@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -90,11 +91,23 @@ type microvm struct {
 	proxyPort    int
 	mark         int
 	caCertPEM    []byte
+	// nssDB is the pre-built NSS database (cert9.db/key9.db/pkcs11.txt keyed by
+	// base name) trusting the sandbox CA, built host-side in InstallCA and handed
+	// to the guest via the params drive so Chromium/Playwright trust sbxproxy.
+	nssDB map[string][]byte
 
 	// readyLn is the host-side listener for the guest's readiness beacon
 	// (firecracker.GuestReadyPort). LaunchAgent opens it before boot; WaitReady
 	// blocks on Accept. nil until LaunchAgent runs.
 	readyLn net.Listener
+
+	// Prewarm snapshot-resume state. snapFile/memFile hold the full VM snapshot
+	// PrewarmSnapshot writes (device/vCPU state and guest memory respectively);
+	// haveSnapshot gates the resume path. All under jailDir, so UnmountRoot's
+	// RemoveAll reclaims them.
+	snapFile     string
+	memFile      string
+	haveSnapshot bool
 }
 
 func newMicroVM(cfg Config) *microvm {
@@ -110,6 +123,8 @@ func newMicroVM(cfg Config) *microvm {
 		rootfsImg:   filepath.Join(jail, "rootfs.ext4"),
 		overlayImg:  filepath.Join(jail, "overlay.ext4"),
 		paramsImg:   filepath.Join(jail, "metadata.ext4"),
+		snapFile:    filepath.Join(jail, "snapshot.bin"),
+		memFile:     filepath.Join(jail, "mem.bin"),
 		vcpuCount:   cfg.VcpuCount,
 		memSizeMib:  cfg.MemoryMiB,
 		fcBin:       envOr("FIRECRACKER_BIN", "firecracker"),
@@ -220,10 +235,19 @@ func (m *microvm) UnexportWorkspace(ctx context.Context, mount string) error {
 }
 
 // InstallCA stashes the sandbox CA so LaunchAgent embeds it in the params
-// drive; the guest agent splices it into the workload trust store at boot.
+// drive; the guest agent splices it into the workload trust store at boot. It
+// also builds the NSS database host-side (certutil ships in the core image, the
+// guest has no NSS tooling) so the guest can drop it into $HOME/.pki/nssdb for
+// Chromium/Playwright. NSS build failures are non-fatal — they only affect NSS
+// clients, and most images run none.
 func (m *microvm) InstallCA(certPEM []byte) error {
+	nssDB, err := buildNSSDB(certPEM)
+	if err != nil {
+		log.Printf("install NSS CA: %v (NSS clients won't trust the sandbox CA)", err)
+	}
 	m.mu.Lock()
 	m.caCertPEM = append([]byte(nil), certPEM...)
+	m.nssDB = nssDB
 	m.mu.Unlock()
 	return nil
 }
@@ -429,6 +453,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		EtcHosts:       etcHosts,
 		EtcResolvConf:  etcResolv,
 		NodeCACertPath: NodeCACertPath,
+		NSSDB:          m.nssDB,
 	}
 	m.mu.Unlock()
 
@@ -475,31 +500,42 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	m.readyLn = readyLn
 
 	bin, args := firecracker.Command(m.fcBin, m.apiSock, m.configFile)
-	// Place the firecracker process in the sandbox cgroup before exec so its
-	// CPU/memory (the guest runs as VMM threads) are accounted under
-	// CgroupPath, then hand off via exec so the PID — already in the cgroup —
-	// is preserved as the supervised agent process.
+	wbin, wargs := m.cgroupWrap(bin, args)
+	return wbin, wargs, nil
+}
+
+// cgroupWrap wraps a firecracker invocation in an `sh -c` that places the
+// process in the sandbox cgroup before exec'ing it, so its CPU/memory (the
+// guest runs as VMM threads) are accounted under CgroupPath while the PID —
+// already in the cgroup — survives the exec as the supervised agent process.
+//
+// firecracker's stdout/stderr only ever carry the VMM banner ("Running
+// Firecracker ...") and the few early guest-kernel boot lines the serial console
+// emits before the cmdline disables it — all real workload I/O (exec, file ops,
+// TTYs) runs over vsock. That boot noise would otherwise surface on the
+// published sandbox log stream, so drop it. Gated by the same
+// FIRECRACKER_DEBUG_CONSOLE toggle as the serial console (DefaultBootArgs) so it
+// stays visible when you need to watch a boot failure.
+func (m *microvm) cgroupWrap(bin string, args []string) (string, []string) {
 	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
-	// firecracker's stdout/stderr only ever carry the VMM banner ("Running
-	// Firecracker ...") and the few early guest-kernel boot lines the serial
-	// console emits before the cmdline disables it — all real workload I/O
-	// (exec, file ops, TTYs) runs over vsock. That boot noise would otherwise
-	// surface on the published sandbox log stream, so drop it. Gated by the
-	// same FIRECRACKER_DEBUG_CONSOLE toggle as the serial console (DefaultBootArgs)
-	// so it stays visible when you need to watch a boot failure.
 	redirect := ">/dev/null 2>&1"
 	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
 		redirect = ""
 	}
 	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s %s %s",
 		shellQuote(cgDir), shellQuote(cgDir), shellQuote(bin), shellJoin(args), redirect)
-	return "sh", []string{"-c", shell}, nil
+	return "sh", []string{"-c", shell}
 }
 
 // WaitReady blocks until the in-guest agent dials the readiness beacon (it
 // does so right after its exec listener is up, i.e. once the workload root is
 // assembled) or ctx is cancelled.
-func (m *microvm) WaitReady(ctx context.Context) error {
+func (m *microvm) WaitReady(ctx context.Context) error { return m.acceptReady(ctx) }
+
+// acceptReady blocks on a single connection to the readiness-beacon listener
+// (the guest dialing GuestReadyPort once its exec listener is up). Shared by the
+// cold-boot WaitReady and PrewarmSnapshot, which both wait for the same edge.
+func (m *microvm) acceptReady(ctx context.Context) error {
 	if m.readyLn == nil {
 		return fmt.Errorf("ready listener not initialized; LaunchAgent must run first")
 	}
@@ -525,6 +561,139 @@ func (m *microvm) WaitReady(ctx context.Context) error {
 		r.conn.Close()
 		return nil
 	}
+}
+
+// PrewarmSnapshot boots an idle guest from the eagerly-prepared overlay (no
+// workload entrypoint, no workspaces — neither is known yet), waits for it to
+// signal ready, pauses it, writes a full VM snapshot, and stops the transient
+// VMM. The overlay drive and snapshot/mem files are left in place for a later
+// ResumeAgent. See the Isolation interface for how this fits the prewarm path.
+func (m *microvm) PrewarmSnapshot(ctx context.Context) error {
+	// Reuse the normal boot path with an empty image config: the guest comes up,
+	// assembles its root, and parks serving exec/control without running a
+	// workload or powering off (see cmd/sbxguest's idle branch). This also opens
+	// the readiness-beacon listener (m.readyLn).
+	bin, args, err := m.LaunchAgent(AgentConfig{ImageConfig: &runc.ImageConfig{}})
+	if err != nil {
+		return fmt.Errorf("prepare prewarm boot: %w", err)
+	}
+
+	proc := exec.CommandContext(ctx, bin, args...)
+	proc.Stdout, proc.Stderr = os.Stderr, os.Stderr
+	if err := proc.Start(); err != nil {
+		return fmt.Errorf("start prewarm vm: %w", err)
+	}
+	// Always tear the transient VM down and clear the API socket + vsock UDS so
+	// ResumeAgent's fresh VMM can bind them. Idempotent (callable on the success
+	// path and via defer).
+	var stopOnce bool
+	stop := func() {
+		if stopOnce {
+			return
+		}
+		stopOnce = true
+		_ = proc.Process.Kill()
+		_ = proc.Wait()
+		_ = os.Remove(m.apiSock)
+		_ = os.Remove(m.vsockUDS)
+		if m.readyLn != nil {
+			m.readyLn.Close()
+			m.readyLn = nil
+		}
+	}
+	defer stop()
+
+	client := firecracker.NewClient(m.apiSock)
+	if err := client.WaitAPIReady(ctx); err != nil {
+		return fmt.Errorf("prewarm vm api: %w", err)
+	}
+	if err := m.acceptReady(ctx); err != nil {
+		return fmt.Errorf("prewarm vm ready: %w", err)
+	}
+	// Pause quiesces guest memory so the snapshot is consistent; CreateSnapshot
+	// rejects a running VM.
+	if err := client.Pause(ctx); err != nil {
+		return fmt.Errorf("pause prewarm vm: %w", err)
+	}
+	if err := client.CreateSnapshot(ctx, m.snapFile, m.memFile); err != nil {
+		return fmt.Errorf("create snapshot: %w", err)
+	}
+	stop()
+
+	m.mu.Lock()
+	m.haveSnapshot = true
+	m.mu.Unlock()
+	return nil
+}
+
+// HasPrewarmSnapshot reports whether PrewarmSnapshot produced a snapshot.
+func (m *microvm) HasPrewarmSnapshot() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.haveSnapshot
+}
+
+// ResumeAgent prepares a snapshot resume: it returns a cgroup-wrapped firecracker
+// command started with only an API socket (no --config-file), into which
+// ResumeReady loads the snapshot. The same overlay/tap/cgroup/vsock UDS from the
+// prewarm boot are reused (the resume stays in-pod), so only the snapshot's
+// machine + memory state needs restoring.
+func (m *microvm) ResumeAgent() (string, []string, error) {
+	// Firecracker opens the log file for appending rather than creating it.
+	if err := os.WriteFile(m.logFile, nil, 0o644); err != nil {
+		return "", nil, fmt.Errorf("create log file: %w", err)
+	}
+	bin, args := firecracker.CommandNoConfig(m.fcBin, m.apiSock)
+	wbin, wargs := m.cgroupWrap(bin, args)
+	return wbin, wargs, nil
+}
+
+// ResumeReady loads the prewarm snapshot into the VMM started by ResumeAgent and
+// resumes the guest (resume_vm=true). The resumed guest is already past its
+// readiness beacon, so a successful load is the ready edge — there is no beacon
+// to wait on as on the cold path.
+func (m *microvm) ResumeReady(ctx context.Context) error {
+	client := firecracker.NewClient(m.apiSock)
+	if err := client.WaitAPIReady(ctx); err != nil {
+		return fmt.Errorf("resume vm api: %w", err)
+	}
+	if err := client.LoadSnapshot(ctx, m.snapFile, m.memFile, true); err != nil {
+		return fmt.Errorf("load snapshot: %w", err)
+	}
+	return nil
+}
+
+// ApplyResumeState delivers the post-resume setup the prewarm snapshot could not
+// carry, in a single guest control RPC: the workload environment (env, so the
+// guest's process PATH resolves the entrypoint and execs) and the config's
+// workspaces (m.fuse, populated by ExportWorkspace during the post-resume
+// reconcile). Both are unknown when the snapshot is taken; see ControlRequest.
+func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
+	m.mu.Lock()
+	fuse := append([]firecracker.GuestFuse(nil), m.fuse...)
+	m.mu.Unlock()
+	if len(env) == 0 && len(fuse) == 0 {
+		return nil
+	}
+	conn, err := firecracker.DialGuest(ctx, m.vsockUDS, firecracker.GuestControlPort)
+	if err != nil {
+		return fmt.Errorf("dial guest control: %w", err)
+	}
+	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+	if err := json.NewEncoder(conn).Encode(firecracker.ControlRequest{Env: env, MountWorkspaces: fuse}); err != nil {
+		return fmt.Errorf("send control request: %w", err)
+	}
+	var resp firecracker.ControlResponse
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return fmt.Errorf("read control response: %w", err)
+	}
+	if !resp.OK {
+		return fmt.Errorf("guest resume setup: %s", resp.Error)
+	}
+	return nil
 }
 
 // FlushAgent runs `sync` inside the guest so the agent's writes reach the

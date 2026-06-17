@@ -5,7 +5,6 @@ import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-python-exec-stream", {
   image: "hiversh/python:3.13-alpine",
-  entrypoint: "tail -f /dev/null",
 });
 
 const script = `

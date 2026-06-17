@@ -12,21 +12,28 @@ Run agents autonomously with controlled network access, auditable file operation
 <img src="./docs/devtools.png">
 </p>
 
+## What is Hiver?
+
+Hiver is a runtime for running AI agents as untrusted workloads, with full visibility and control over everything they do. It has two parts:
+
+- **The runtime** boots each agent into an isolated sandbox with its own file systems, network egress policy, and path-level ACLs. Choose **MicroVM isolation** to confine fully untrusted code behind a hardware-virtualization boundary with its own kernel, or lightweight container isolation for faster, trusted workloads; both sit behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
+
+- **The inspector** is a live, DevTools-style UI over a running sandbox. It decodes the agent's LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit the sandbox's policy on the fly, all over the same event stream and API the SDKs use.
+
+Hiver has first-class support for both local development and deployment to the cloud: the same client library and runtime work whether you run `hiver start` on your machine or deploy to a cluster. You can bring your own Docker image with no changes and run it in Hiver.
+
 ## 🚀 Getting Started
 
-Install the CLI for the agent runtime:
+Install the Hiver CLI:
 
 ```sh
 npm install --global @hiver.sh/cli
 
-# Or just use:
-npx -y @hiver.sh/cli
-
 # If you don't have NPM:
-curl -fsSL https://hiver.sh/install.sh | sh
+curl -fsSL https://hiver.sh/install | sh
 ```
 
-Use the CLI to manage sandboxes, stream live events, and launch the inspector — against a local stack or a remote deployment:
+Use the CLI to manage sandboxes, stream live events, and launch the inspector:
 
 ```sh
 ⬢ Hiver · Agent Runtime v0.1.15
@@ -47,39 +54,31 @@ Use the CLI to manage sandboxes, stream live events, and launch the inspector �
   Run hiver <command> --help for command details.
 ```
 
-### Launch first agent
+### Client Support
+
+Hiver ships first-party clients for **TypeScript**, **Python**, and **Go**. Launch your first agent with any of them:
 
 #### TypeScript
 
-Add dependency:
-```sh
-npm install --save @hiver.sh/client
-```
-
-First agent:
 ```ts
+// npm install --save @hiver.sh/client
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1");
-const result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'");
+const result = await sandbox.exec(["claude", "-p", "Write a poem and save it as pdf"]);
 console.log(result.stdout);
 ```
 
 #### Python
 
-Add dependency:
-```sh
-pip install hiver-py
-```
-
-First agent:
 ```python
+# pip install hiver-py
 import asyncio
 import hiver
 
 async def main():
     sandbox = await hiver.get_or_create_sandbox("agent-1")
-    result = await sandbox.exec("claude -p 'Write a poem and save it as pdf'")
+    result = await sandbox.exec(["claude", "-p", "Write a poem and save it as pdf"])
     print(result["stdout"])
 
 asyncio.run(main())
@@ -87,20 +86,15 @@ asyncio.run(main())
 
 #### Go
 
-Add dependency:
-```sh
-go get github.com/hiver-sh/hiver/client
-```
-
-First agent:
 ```go
+// go get github.com/hiver-sh/hiver/client
 import "github.com/hiver-sh/hiver/client"
 
 c := client.NewClient("http://localhost:10000")
 sandbox, _ := c.GetOrCreateSandbox(context.Background(), "agent-1", client.SandboxConfig{})
 
 result, _ := sandbox.Exec(context.Background(),
-    client.ExecRequest{Command: "claude -p 'Write a poem and save it as pdf'"})
+    client.ExecRequest{Command: []string{"claude", "-p", "Write a poem and save it as pdf"} })
 fmt.Println(result.Stdout)
 ```
 
@@ -109,7 +103,7 @@ fmt.Println(result.Stdout)
 The inspector is the fastest way to understand what your agent is *actually* doing. Launch it with a single command:
 
 ```sh
-hiver inspect agent-1
+hiver inspect
 ```
 
 It opens a live, DevTools-style UI over a running sandbox. In one place you get:
@@ -124,44 +118,93 @@ It opens a live, DevTools-style UI over a running sandbox. In one place you get:
 
 Because the inspector is just a client over the same event stream and API the SDKs use, anything you see in the UI you can also script.
 
-## Events & Loop Engineering
+## Events
 
-Every sandbox emits a structured, ordered, replayable stream of audit events: `egress.request`, `fs.request`, `exec.request`, `resource.usage`, and more, each tagged with whether the action was **allowed** or **denied**. Stream them live from the CLI:
+
+Every sandbox emits a structured, ordered, replayable stream of audit events. Stream them live from the CLI:
 
 ```sh
 hiver events agent-1 --follow
 ```
 
-Pipe the event backlog into an LLM to get a plain-English summary of what the agent did:
+Then, pipe the event backlog into an LLM to get a plain-English summary of what the agent did:
 
 ```sh
 hiver events claude-code-an \
   | jq -c 'select(.type | IN("exec.request","egress.request","fs.request","stdio"))' \
-  | claude -p "what did the agent did?"
+  | claude -p "what did the agent do?"
 ```
 
-Result:
-```txt
-**22:55 UTC — Idle hook fired**
-- Ran a `Notification:idle_prompt` hook after 1 command
-- Tried to show a notification but found no available notification method (`no_method_available` — expected since it's a headless container with no desktop)
+## Isolation
 
-**23:14 UTC — ~20 minutes idle**
-- Showed a "Max/RC upsell" tip notification (`tengu_rc_upsell_notification_shown`, `idleMinutes: 20`)
-- Ran background maintenance: `job_sweep_drafts` (cleared draft jobs) and `native_cleanup_versions` (pruned old native binaries)
+Every sandbox runs the agent as an untrusted workload, but you can pick *how* it's confined. Both backends sit behind the same API, file systems, ACLs, egress policy, and audit stream; only the boundary around the workload differs:
 
-**23:24 UTC — ~30 minutes idle**
-- Checked npm registry for a Claude Code update (`GET registry.npmjs.org/@anthropic-ai/claude-code`)
-- Logged `update_check` — this is the periodic version check Claude Code runs in the background
+* **Container** (the default): the lightest option, fastest to start and lowest overhead, ideal for development and trusted images.
 
-All of this is **routine background telemetry and housekeeping** — no user-initiated work happened. The agent was sitting idle and these are the automated maintenance tasks it runs on timers (hook notification, upsell tips, cleanup, update check). All events were mirrored to both `api.anthropic.com` and Datadog.
+* **MicroVM**: runs the agent behind a hardware-virtualization boundary with its own kernel, the stronger choice for fully untrusted code. Requires KVM on the host; in a virtualized environment (cloud VM, CI runner) that means **nested virtualization** must be enabled.
+
+You choose which one you get when you bundle your Docker image into a Hiver runtime image with `hiver bundle`:
+
+```sh
+# Container isolation — the default.
+hiver bundle my-agent:latest --tag my-agent-runtime
+
+# MicroVM isolation.
+hiver bundle my-agent:latest --tag my-agent-runtime --microvm
+
+# Build for multiple architectures and push to the registry.
+hiver bundle my-agent:latest --tag my-agent-runtime \
+  --platform linux/amd64,linux/arm64 --push
 ```
 
-## File Systems
+Point a sandbox at the bundled image and the runtime boots it under the matching backend. Read back which one it chose via `GetInfo`:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "my-agent-runtime",
+});
+const info = await sandbox.getInfo();
+console.log(info.isolation); // "container" or "microvm"
+```
+
+## API overview
+
+### Exec
+
+Run commands inside the sandbox, from a single shell command to a long-running process, with every invocation audited as an `exec.request` event. There are two execution modes:
+
+**One-shot**: `exec()` runs a command, waits for it to finish, and returns the buffered output:
+
+```ts
+const { stdout } = await sandbox.exec(["node", "-e", "console.log(6 * 7)"]);
+console.log(stdout.trim()); // 42
+```
+
+**Sessions**: `execStream()` keeps a process alive: you stream its output via `exec.pipes` and feed it more input via `exec.writeStdin()`. Because the process stays running, its in-memory state persists across writes, so expensive setup (a launched browser, a loaded model, an open DB connection) happens **once** and is reused by every later command.
+
+The simplest version is an interactive interpreter:
+
+```ts
+const exec = await sandbox.execStream(["python3", "-iq"], { cwd: "/workspace" });
+
+const commands = [
+  "import math; total = 0",                    // setup runs once...
+  "total += math.factorial(5); print(total)",  // ...and is reused
+  "total += math.factorial(6); print(total)",
+  "exit()",
+];
+for (const cmd of commands) await exec.writeStdin(cmd + "\n");
+
+for await (const pipe of exec.pipes) {
+  if (pipe.stdout) process.stdout.write(pipe.stdout); // 120, then 840
+}
+```
+
+### File Systems
 
 A sandbox's filesystem is assembled from mounts you declare, each backed by local storage, Google Drive, Google Cloud Storage, OneDrive, S3, or Azure Blob. Every mount is FUSE-backed by `sbxfuse`, so the agent sees ordinary files and directories, but every read and write passes through the runtime, where it's checked against **path-level ACLs** and emitted as an auditable `fs.request` event.
-
-This is what lets you safely put real data in front of an agent. Mount **organization knowledge** like skills, runbooks, docs, and design specs **read-only**, so the agent can ground its work in it but can never corrupt the source of truth. Mount the user's **personal data** read-write in a scratch area for the agent to produce output. Lock everything else down with `deny`. Each ACL rule is just a `path` and an access level of `ro`, `rw`, or `deny`, evaluated most-specific-first, so you can open a tree and carve exceptions out of it:
 
 ```typescript
 import * as hiver from "@hiver.sh/client";
@@ -189,11 +232,9 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
 });
 ```
 
-Because the ACL is enforced by the runtime rather than the agent, a misbehaving or jailbroken agent still can't write to a read-only mount or read a denied path, and every attempt, allowed or denied, shows up in the event stream and the inspector's **Files** view.
+#### Network File System
 
-### Network File System
-
-Point a mount at any HTTP host that implements the [file system interface](api/external_file_system.yaml) and the runtime turns every read and write into a call against it — bring your own storage without a built-in backend:
+Point a mount at any HTTP host that implements the [file system interface](api/external_file_system.yaml) and the runtime turns every read and write into a call against it, letting you bring your own storage without a built-in backend:
 
 ```typescript
 import * as hiver from "@hiver.sh/client";
@@ -203,9 +244,61 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
 });
 ```
 
-## Request Overrides
+### Snapshots
 
-The egress proxy doesn't just allow or deny requests. It can **rewrite** them on the way out. Attach an `override` to an egress rule and the proxy can inject **headers** and **query parameters**, redirect the request to a different **upstream host**, and prepend a **path prefix** — all on every matching request, overwriting whatever the agent set. This is how you give an agent authenticated access to an API while the agent itself never holds the credential:
+A snapshot is the sandbox's working tree captured to a tarball on shutdown and restored on start. Point `snapshot.mount` at an **internal**, remote-backed file system and the tarball is persisted to blob storage instead of local disk, so a fresh sandbox can resume from where a previous one left off:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  fs: [
+    // The snapshot target, backed by GCS. `internal` keeps it out of the
+    // agent's view — it exists only for the runtime to read/write snapshots.
+    {
+      backend: "gcs",
+      mount: "/snapshots",
+      internal: true,
+      gcs_bucket: "acme-snapshots",
+      gcs_service_account_json: SA_JSON,
+    },
+  ],
+  snapshot: {
+    restore_key: "agent-1",      // tarball to restore on start
+    mount: "/snapshots",         // pull it from the GCS-backed mount
+    include: ["/workspace/**"],  // paths to capture on shutdown
+  },
+});
+```
+
+### Files
+
+The file API lets you move files in and out of a sandbox's from outside the workload. Operations bypass the mount's ACLs; the API is a higher-privilege control surface than the workload.
+
+```ts
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/**", access: "rw" }] }],
+});
+
+// Seed an input file before the agent runs.
+await sandbox.writeFile("/workspace", "data.csv", csvContent);
+
+// List a directory to see what the agent produced.
+const entries = await sandbox.listDirectory("/workspace");
+// entries: [{ name, path, is_dir, size }, ...]
+
+// Pull a specific file out of the sandbox.
+const report = await sandbox.readFile("/workspace/report.pdf");
+
+// Remove a file.
+await sandbox.deleteFile("/workspace/data.csv");
+```
+
+### Request Overrides
+
+The egress proxy can **rewrite** requests on the way out. Attach an `override` to an egress rule and the proxy can inject **headers** and **query parameters**, redirect the request to a different **upstream host**, and prepend a **path prefix**, all on every matching request, overwriting whatever the agent set:
 
 ```typescript
 import * as hiver from "@hiver.sh/client";
@@ -226,9 +319,7 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
 });
 ```
 
-The agent makes a plain request to `api.internal.acme.com`; the proxy adds the `Authorization` header and the `tenant` / `api-version` query params before the request leaves the sandbox. Because the secret is bound to the rule and applied outside the untrusted workload, a prompt-injected or compromised agent can spend the token against the allowed host but can never read, exfiltrate, or reuse it elsewhere. Combined with a default-deny egress policy, this lets you hand an agent exactly one authenticated integration and nothing more, and every rewritten request still shows up in the inspector's **Network** view.
-
-### Redirecting to a mock server
+#### Redirecting to a mock server
 
 `host` and `prefix_path` rewrite *where* the request goes, so you can transparently point an agent at a local mock or stub server without touching its code:
 
@@ -252,44 +343,38 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
 });
 ```
 
-The agent issues a normal `https://api.openai.com/v1/models` request; the proxy dials `mockserver.internal:8080` and forwards it as `/openai/v1/models`, while the agent still sees `api.openai.com` as the host. This is ideal for deterministic tests, replaying recorded fixtures, or injecting faults without the agent ever knowing the traffic was diverted.
+The agent issues a normal `https://api.openai.com/v1/models` request; the proxy dials `mockserver.internal:8080` and forwards it as `/openai/v1/models`.
 
-### Gating a request behind user consent
+### Events
 
-Start from a default-deny policy and treat each blocked host as a prompt for human approval. The event stream surfaces the `egress.request` denial; your harness pauses, asks the user, and only then opens the host — turning policy denials into an interactive allow-list the user builds up as the agent runs:
+Subscribe to a sandbox's audit stream from any client and react to events as they happen:
 
 ```typescript
 import * as hiver from "@hiver.sh/client";
-import { confirm } from "./prompt"; // your UI: returns a Promise<boolean>
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1");
-const approved = new Set<string>();
-const ac = new AbortController();
 
-const agent = sandbox
-  .exec("claude -p 'Research the topic and post a summary to our CRM'")
-  .then((result) => { ac.abort(); return result; });
-
-for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
-  if (event.type === "egress.request" && event.access === "denied") {
-    if (approved.has(event.host)) continue;
-    approved.add(event.host);
-
-    // Ask the user before letting the agent reach a new host.
-    const ok = await confirm(`Agent wants to reach ${event.host}. Allow?`);
-    if (!ok) continue; // leave the host blocked; the agent sees the denial
-
-    await sandbox.applyConfig({
-      egress: [{ access: "allow", host: event.host }],
-    });
-  }
+for await (const event of sandbox.getEventsStream()) {
+  console.log(event.type, event.access ?? "");
 }
-
-console.log((await agent).stdout);
 ```
 
-The first request to each host is denied and the agent stalls there; the user decides, and an approval flips the rule to `allow` so the agent's retry succeeds.
+Each event is structured, ordered, and tagged with whether the action was allowed or denied:
 
+```txt
+exec.request    allowed
+egress.request  allowed
+fs.request      denied
+stdio
+```
+
+## Cloud Deployment
+
+Run the full stack (controller, gateway, and sandboxes) on a managed Kubernetes cluster, and drive it from the same client library you use locally.
+
+### GKE
+
+[`deployment/gke`](deployment/gke/README.md) provisions a GKE cluster with Terraform and deploys the control plane to it. The node pool is configured for microVM isolation out of the box: nested virtualization is enabled so KVM works inside the nodes, and nodes are backed by Local SSD for fast snapshot and prewarm I/O. See the [GKE deployment guide](deployment/gke/README.md) for prerequisites and `terraform apply` steps.
 
 ## Documentation
 
@@ -298,7 +383,7 @@ The first request to each host is denied and the agent stalls there; the user de
 * [Examples](https://hiver.sh/docs/examples)
 
 ### Isolation Modes
-Container-level isolation using [`runc`](https://github.com/opencontainers/runc) and kernel-level isolation using [`firecracker`](https://github.com/firecracker-microvm/firecracker).
+Container-level isolation and microVM (kernel-level) isolation.
 
 ### File Systems
 Local, External over HTTP, Google Drive, Google Cloud Storage, Microsoft OneDrive, Amazon S3,Azure Blob Storage.
@@ -309,7 +394,7 @@ Docker, k8s.
 
 ### Architecture
 
-The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together — serving the client API, reconciling sidecar policy, and streaming telemetry events.
+The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together, serving the client API, reconciling sidecar policy, and streaming telemetry events.
 
 <p align="center">
 <img src="./docs/hiver-arch.svg" width="500">
@@ -321,7 +406,11 @@ A typical deployment also includes a controller for sandbox lifecycle management
 
 Hiver is unopinionated about orchestration: the agent CLI or SDK can run entirely inside the sandbox or in a separate deployment. Because everything inside the sandbox is treated as untrusted, agents can call private APIs and access files without ever seeing auth tokens or secrets.
 
-Getting started is straightforward — just run `hiver start` locally or deploy to the cloud using the same client library.
+Getting started is straightforward: just run `hiver start` locally or deploy to the cloud using the same client library.
+
+## Status
+
+Hiver is under active development. The local runtime, inspector, audit stream, filesystem ACLs, and egress controls are usable today; APIs and deployment manifests may change before v1.
 
 ## License
 

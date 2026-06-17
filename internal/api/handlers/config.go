@@ -12,6 +12,21 @@ import (
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
+// GetInfo reports internal runtime facts about the sandbox that are determined
+// at boot rather than configured — currently the isolation mechanism actually
+// in use, which sandboxd selects automatically from the image (see
+// isolation.Detect). This route is gated behind readiness, so the isolation
+// backend is always wired by the time it is reachable.
+func (h *SandboxHandlers) GetInfo(c *gin.Context) {
+	if h.iso == nil {
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: "isolation backend not initialized"})
+		return
+	}
+	c.JSON(http.StatusOK, gen.SandboxInfo{
+		Isolation: gen.SandboxInfoIsolation(h.iso.Kind()),
+	})
+}
+
 func (h *SandboxHandlers) GetConfig(c *gin.Context) {
 	cfg, err := h.store.Get()
 	if err != nil {
@@ -29,10 +44,11 @@ func (h *SandboxHandlers) GetConfig(c *gin.Context) {
 // current on-disk values, so applying a config that touches them is a silent
 // no-op rather than a write that misrepresents the running sandbox.
 //
-//   - image and isolation define the rootfs/VM and are fixed the moment the
-//     sandbox boots (a prewarm sandbox receives them via env before its first
-//     apply). They are frozen whenever already set, so an apply can only ever
-//     set them when unset, never change them.
+//   - image defines the rootfs/VM and is fixed the moment the sandbox boots (a
+//     prewarm sandbox receives it via env before its first apply). It is frozen
+//     whenever already set, so an apply can only ever set it when unset, never
+//     change it. (Isolation is no longer a config field — sandboxd derives it
+//     from the image at boot; see isolation.Detect.)
 //   - cpu, memory, entrypoint, cwd, tty and env are committed when the workload
 //     launches, so they stay settable while the sandbox is still prewarm (not
 //     started) and freeze afterward.
@@ -41,9 +57,6 @@ func (h *SandboxHandlers) GetConfig(c *gin.Context) {
 func freezeImmutable(current, desired gen.SandboxConfig, started bool) gen.SandboxConfig {
 	if current.Image != nil && *current.Image != "" {
 		desired.Image = current.Image
-	}
-	if current.Isolation != nil && *current.Isolation != "" {
-		desired.Isolation = current.Isolation
 	}
 	if started {
 		desired.Cpu = current.Cpu
@@ -91,8 +104,8 @@ func (h *SandboxHandlers) ApplyConfig(c *gin.Context) {
 		return
 	}
 
-	// Coerce fields that can't change back to their current values: image and
-	// isolation are fixed at boot; cpu/memory/entrypoint/cwd/tty/env stay settable
+	// Coerce fields that can't change back to their current values: image is
+	// fixed at boot; cpu/memory/entrypoint/cwd/tty/env stay settable
 	// only while the sandbox is still prewarm (not started). This is what lets a
 	// --prewarm sandbox receive its full config from the first PUT /v1/config
 	// while making a later change to a committed field a silent no-op.

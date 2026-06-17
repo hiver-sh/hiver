@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,9 +39,15 @@ func (h *SandboxHandlers) Exec(c *gin.Context) {
 		return
 	}
 
-	reqEventID := h.publishExecRequest(req)
+	command, err := resolveCommand(req.Command)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
+		return
+	}
 
-	stdout, stderr, exitCode, err := h.execCommand(c.Request.Context(), req.Command, req.Cwd, req.Env)
+	reqEventID := h.publishExecRequest(command, req.Cwd)
+
+	stdout, stderr, exitCode, err := h.execCommand(c.Request.Context(), command, req.Cwd, req.Env)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -76,10 +83,15 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context, id string) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
+	command, err := resolveCommandOpt(req.Command)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
+		return
+	}
 	// An empty command attaches to the entrypoint TTY rather than running a
 	// new command. No readiness check: the server gates every handler behind
 	// NotifyReady, so reaching execStreamAttach already implies the agent is up.
-	if req.Command == nil || *req.Command == "" {
+	if command == "" {
 		h.execStreamAttach(c, id, flusher)
 		return
 	}
@@ -89,9 +101,9 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context, id string) {
 	// meaningful log output, so the exec request/response and stdio events are
 	// published only for the non-tty (pipes) path.
 	if req.Tty != nil && *req.Tty {
-		h.execStreamTTY(c, id, *req.Command, req, flusher)
+		h.execStreamTTY(c, id, command, req, flusher)
 	} else {
-		h.execStreamPipes(c, id, req, flusher)
+		h.execStreamPipes(c, id, command, req, flusher)
 	}
 }
 
@@ -198,9 +210,8 @@ func streamSession(w gin.ResponseWriter, flusher http.Flusher, replay [][]byte, 
 	}
 }
 
-func (h *SandboxHandlers) execStreamPipes(c *gin.Context, id string, req gen.ExecStreamRequest, flusher http.Flusher) {
-	command := derefString(req.Command)
-	reqEventID := h.publishExecRequest(gen.ExecRequest{Command: command, Cwd: req.Cwd})
+func (h *SandboxHandlers) execStreamPipes(c *gin.Context, id, command string, req gen.ExecStreamRequest, flusher http.Flusher) {
+	reqEventID := h.publishExecRequest(command, req.Cwd)
 	w := c.Writer
 
 	cmd, cleanup, err := h.iso.ExecCmd(c.Request.Context(), isolation.ExecConfig{
@@ -342,18 +353,71 @@ func waitExitCode(cmd *exec.Cmd) int {
 	return 0
 }
 
-func derefString(p *string) string {
-	if p == nil {
-		return ""
+// resolveCommand turns an ExecRequest's command union into the single shell
+// command string the exec transport runs via `sh -c`. A JSON string is used
+// verbatim (shell-interpreted); a JSON array is treated as argv and shell-quoted
+// so each element reaches the program as one literal argument, with no
+// word-splitting or expansion.
+func resolveCommand(u gen.ExecRequest_Command) (string, error) {
+	data, err := u.MarshalJSON()
+	if err != nil {
+		return "", err
 	}
-	return *p
+	return commandFromJSON(data)
+}
+
+// resolveCommandOpt is resolveCommand for the optional command on
+// ExecStreamRequest; a nil/absent command resolves to "" (the TTY-attach case).
+func resolveCommandOpt(u *gen.ExecStreamRequest_Command) (string, error) {
+	if u == nil {
+		return "", nil
+	}
+	data, err := u.MarshalJSON()
+	if err != nil {
+		return "", err
+	}
+	return commandFromJSON(data)
+}
+
+// commandFromJSON normalizes a command encoded as either a JSON string or a
+// JSON array of strings into a single `sh -c` command line.
+func commandFromJSON(data []byte) (string, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return "", nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return "", fmt.Errorf("command: %w", err)
+		}
+		return s, nil
+	}
+	var argv []string
+	if err := json.Unmarshal(data, &argv); err != nil {
+		return "", fmt.Errorf("command: %w", err)
+	}
+	return shellJoin(argv), nil
+}
+
+// shellJoin single-quotes each argument and joins them with spaces so an argv
+// array can be handed to `sh -c` and reach the program unchanged — no
+// word-splitting, globbing, or variable expansion of the elements.
+func shellJoin(argv []string) string {
+	parts := make([]string, len(argv))
+	for i, a := range argv {
+		parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(parts, " ")
 }
 
 // publishExecRequest publishes an ExecRequestEvent and returns its assigned id.
-func (h *SandboxHandlers) publishExecRequest(req gen.ExecRequest) int64 {
+// command is the resolved `sh -c` command line (an argv array is reported in
+// its shell-quoted form).
+func (h *SandboxHandlers) publishExecRequest(command string, reqCwd *string) int64 {
 	cwd := "/"
-	if req.Cwd != nil && *req.Cwd != "" {
-		cwd = *req.Cwd
+	if reqCwd != nil && *reqCwd != "" {
+		cwd = *reqCwd
 	}
 	return h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
@@ -361,7 +425,7 @@ func (h *SandboxHandlers) publishExecRequest(req gen.ExecRequest) int64 {
 			Id:        int(id),
 			Timestamp: ts,
 			Cwd:       cwd,
-			Command:   req.Command,
+			Command:   command,
 		})
 		return ev
 	})

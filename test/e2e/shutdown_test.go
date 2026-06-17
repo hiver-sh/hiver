@@ -20,7 +20,7 @@ func TestShutdownE2E(t *testing.T) {
 	key := fmt.Sprintf("e2e-shutdown-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
 		Image:      "hiversh/python:3.13-alpine",
-		Entrypoint: "tail -f /dev/null",
+		Entrypoint: []string{"tail", "-f", "/dev/null"},
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))

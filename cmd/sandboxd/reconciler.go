@@ -54,6 +54,11 @@ func configFromSpec(sp *spec.Spec) (gen.SandboxConfig, error) {
 // restore a snapshot into the now-assembled overlay. Called once, after MountRoot.
 func (m *mountManager) SetRootMounted() { m.rootMounted.Store(true) }
 
+// SetWorkloadLive records that the agent is running, so a later Reconcile injects
+// newly-added workspaces into the live workload. Called once, after the workload
+// launches (cold or resume path).
+func (m *mountManager) SetWorkloadLive() { m.workloadLive.Store(true) }
+
 // planFsReconcile splits the desired mounts against the live set into the ones to
 // add (start), the mount paths to remove (stop), and the ones to keep (re-ACL).
 // Pure, so the decision logic is unit-testable without spawning sbxfuse.
@@ -116,6 +121,18 @@ func (m *mountManager) Reconcile(sp *spec.Spec) error {
 	}
 
 	m.maybeRestore(sp)
+
+	// If the workload is already running, the workspaces just started above must
+	// be injected into it live (runc/the guest only mount them at launch). No-op
+	// at boot (workloadLive is set after launch) and for backends/mounts already
+	// visible.
+	if m.workloadLive.Load() {
+		// nil env: a live config-apply only adds workspaces; the workload's
+		// environment was fixed at launch (env is delivered once, at resume).
+		if err := m.iso.ApplyResumeState(m.ctx, nil); err != nil {
+			errs = append(errs, fmt.Errorf("mount workspaces live: %w", err))
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -131,10 +148,20 @@ func (m *mountManager) maybeRestore(sp *spec.Spec) {
 	if !m.restored.CompareAndSwap(false, true) {
 		return
 	}
-	if sp.Snapshot == nil || sp.Snapshot.RestoreKey == "" || m.snapshotDir == "" {
+	if sp.Snapshot == nil || sp.Snapshot.RestoreKey == "" {
 		return
 	}
-	src := snapshot.SnapshotPath(m.snapshotDir, sp.Snapshot.RestoreKey)
+	// snapshot.mount points the tarball at a FUSE drive (e.g. an internal
+	// remote-backed mount started just above); otherwise fall back to the
+	// host's local snapshot directory.
+	dir := m.snapshotDir
+	if sp.Snapshot.Mount != "" {
+		dir = sp.Snapshot.Mount
+	}
+	if dir == "" {
+		return
+	}
+	src := snapshot.SnapshotPath(dir, sp.Snapshot.RestoreKey)
 	if _, err := os.Stat(src); err != nil {
 		log.Printf("sandboxd: snapshot: no snapshot found at %s, starting fresh", src)
 		return

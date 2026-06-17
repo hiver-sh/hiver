@@ -7,7 +7,6 @@ import { createShutdown } from "./utils/index.js";
 import * as hiver from "@hiver.sh/client";
 
 const sandboxConfig: hiver.SandboxConfig = {
-  ttl: 1800,
   egress: [
     {
       access: "allow",

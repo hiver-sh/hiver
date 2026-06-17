@@ -9,6 +9,10 @@ const cli = subcommand(
 )
   .argument("<image>", "Docker image or directory with a Dockerfile to bundle")
   .option("--tag <tag>", "runtime image tag (default: <image>-bundled)")
+  .option(
+    "--entrypoint <command>",
+    'override the source image entrypoint, e.g. --entrypoint="tail -f /dev/null"',
+  )
   .option("--microvm", "microvm isolation")
   .option(
     "--push",
@@ -36,6 +40,7 @@ await requireDocker();
 try {
   await bundleImage(arg, {
     tag: opts.tag,
+    entrypoint: opts.entrypoint ? String(opts.entrypoint) : undefined,
     microvm: Boolean(opts.microvm),
     push: Boolean(opts.push),
     platforms,

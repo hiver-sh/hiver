@@ -193,6 +193,55 @@ func (c *Client) Resume(ctx context.Context) error {
 	return c.do(ctx, http.MethodPatch, "/vm", map[string]string{"state": "Resumed"}, nil)
 }
 
+// SnapshotCreate is the body of PUT /snapshot/create.
+type SnapshotCreate struct {
+	SnapshotType string `json:"snapshot_type"`
+	SnapshotPath string `json:"snapshot_path"`
+	MemFilePath  string `json:"mem_file_path"`
+}
+
+// memBackend is the mem_backend object of PUT /snapshot/load — the current
+// Firecracker API addresses guest memory through a backend descriptor rather
+// than the legacy flat mem_file_path field.
+type memBackend struct {
+	BackendType string `json:"backend_type"`
+	BackendPath string `json:"backend_path"`
+}
+
+// SnapshotLoad is the body of PUT /snapshot/load.
+type SnapshotLoad struct {
+	SnapshotPath        string     `json:"snapshot_path"`
+	MemBackend          memBackend `json:"mem_backend"`
+	EnableDiffSnapshots bool       `json:"enable_diff_snapshots"`
+	ResumeVM            bool       `json:"resume_vm"`
+}
+
+// CreateSnapshot writes a full VM snapshot — guest memory to memFilePath and
+// device/vCPU state to snapshotPath. The VM must be Paused first (Firecracker
+// rejects snapshotting a running VM); the caller pauses, snapshots, then stops
+// the VM.
+func (c *Client) CreateSnapshot(ctx context.Context, snapshotPath, memFilePath string) error {
+	return c.put(ctx, "/snapshot/create", SnapshotCreate{
+		SnapshotType: "Full",
+		SnapshotPath: snapshotPath,
+		MemFilePath:  memFilePath,
+	})
+}
+
+// LoadSnapshot restores a VM from the snapshotPath/memFilePath pair produced by
+// CreateSnapshot. It must be the first state-changing call on a *fresh*
+// Firecracker process — one started with no --config-file and not yet booted.
+// When resume is true the guest is resumed as part of the load; otherwise it
+// stays Paused until Resume.
+func (c *Client) LoadSnapshot(ctx context.Context, snapshotPath, memFilePath string, resume bool) error {
+	return c.put(ctx, "/snapshot/load", SnapshotLoad{
+		SnapshotPath:        snapshotPath,
+		MemBackend:          memBackend{BackendType: "File", BackendPath: memFilePath},
+		EnableDiffSnapshots: false,
+		ResumeVM:            resume,
+	})
+}
+
 // InstanceInfo reads GET / for the current VM state.
 func (c *Client) InstanceInfo(ctx context.Context) (InstanceInfo, error) {
 	var info InstanceInfo

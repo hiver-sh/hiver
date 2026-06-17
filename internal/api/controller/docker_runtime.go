@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -26,6 +27,17 @@ const (
 	labelSandboxKey = "hiver.sandbox.key"
 	labelSandboxID  = "hiver.sandbox.id"
 )
+
+// hostHasKVM reports whether the Docker host exposes /dev/kvm, the device a
+// microvm image needs. The runtime grants the microvm devices to every sandbox
+// container when it's present (see Start): isolation is derived from the image
+// by sandboxd, not declared in the request, so the runtime can't tell a microvm
+// image from a container image up front. Passing `--device /dev/kvm` when the
+// host lacks it would fail docker create, so the grant is gated on its presence.
+func hostHasKVM() bool {
+	_, err := os.Stat("/dev/kvm")
+	return err == nil
+}
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.
 type DockerRuntime struct{}
@@ -146,13 +158,21 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// so it works identically under docker and k8s and keeps the control next to
 	// the v4 egress rules it mirrors.
 	//
-	// The microvm backend additionally needs /dev/kvm (the VMM) and
-	// /dev/net/tun (the tap device that carries guest egress). It also
-	// loop-mounts the guest's overlay image on the host to capture/restore
-	// snapshots; a container's /dev has no loop nodes and its device cgroup
-	// denies them, so grant the loop block major (7) and the loop-control char
-	// device (10:237). sandboxd mknod's the nodes on demand under these rules.
-	if cfg.Isolation != nil && *cfg.Isolation == sandboxgen.Microvm {
+	// A microvm image additionally needs /dev/kvm (the VMM) and /dev/net/tun
+	// (the tap device that carries guest egress). It also loop-mounts the guest's
+	// overlay image on the host to capture/restore snapshots; a container's /dev
+	// has no loop nodes and its device cgroup denies them, so grant the loop block
+	// major (7) and the loop-control char device (10:237). sandboxd mknod's the
+	// nodes on demand under these rules.
+	//
+	// Isolation is no longer a config field — sandboxd derives it from the image
+	// at boot — so the runtime can't know in advance whether this image is a
+	// microvm image. Instead, grant the microvm devices whenever the host exposes
+	// /dev/kvm: harmless for a container image (it simply ignores them), and the
+	// prerequisite for a microvm image to boot at all. On a host without KVM these
+	// are skipped (a `--device /dev/kvm` would otherwise fail docker create), and
+	// a microvm image then fails with sandboxd's friendly KVM error.
+	if hostHasKVM() {
 		createArgs = append(createArgs,
 			"--device", "/dev/kvm",
 			"--device", "/dev/net/tun",
@@ -189,12 +209,21 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 		createArgs = append(createArgs, "-v", *local.Origin+":"+local.Mount+spec.BackendSuffix)
 	}
 
-	createArgs = append(createArgs, "-v", composeProject+"_snapshots:/snapshots")
+	// Provision the local snapshot volume only when snapshots aren't routed to a
+	// FUSE drive (snapshot.mount); otherwise it's unnecessary and would collide
+	// with a FUSE mount at the same path.
+	if !usesSnapshotMount(cfg) {
+		createArgs = append(createArgs, "-v", composeProject+"_snapshots:/snapshots")
+	}
 
-	createArgs = append(createArgs,
-		image,
-		"--snapshot-dir", "/snapshots",
-	)
+	// Always pass --snapshot-dir so the container overrides the image's default
+	// `--help` CMD and sandboxd boots; the dir is empty (local snapshots
+	// disabled) when snapshots route to a FUSE drive instead.
+	snapDir := "/snapshots"
+	if usesSnapshotMount(cfg) {
+		snapDir = ""
+	}
+	createArgs = append(createArgs, image, "--snapshot-dir", snapDir)
 	createStart := time.Now()
 	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("docker create %s: %v: %s", image, err, out)

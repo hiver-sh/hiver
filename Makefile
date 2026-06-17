@@ -19,13 +19,17 @@ PLATFORMS ?= linux/amd64,linux/arm64
 
 # Build and push the default sandbox images as multi-arch manifest lists.
 # `hiver bundle --platform` pushes directly, so there's no separate push step.
-# The inputs (hiversh/core, hiversh/agent-cli-standalone) are pulled per-arch
-# from the registry, so run `make publish-images` first.
 bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
 	hiver bundle ./docker/agent-cli --tag hiversh/agent-cli --push --platform $(PLATFORMS)
-	hiver bundle python:3.13-alpine --tag hiversh/python:3.13-alpine --push --platform $(PLATFORMS)
-	hiver bundle node:alpine --tag hiversh/node:alpine --push --platform $(PLATFORMS)
+	hiver bundle ./docker/playwright --tag hiversh/playwright --push --platform $(PLATFORMS)
+	hiver bundle python:3.13-alpine --entrypoint="tail -f /dev/null" --tag hiversh/python:3.13-alpine --push --platform $(PLATFORMS)
+	hiver bundle node:alpine --entrypoint="tail -f /dev/null" --tag hiversh/node:alpine --push --platform $(PLATFORMS)
 
+bundle-microvm-sandbox-images: ## Bundle and push the microvm sandbox images (multi-arch)
+	hiver bundle ./docker/agent-cli --microvm --tag hiversh/agent-cli:microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/playwright --microvm --tag hiversh/playwright:microvm --push --platform $(PLATFORMS)
+	hiver bundle python:3.13-alpine --entrypoint="tail -f /dev/null" --microvm --tag hiversh/python:3.13-alpine-microvm --push --platform $(PLATFORMS)
+	hiver bundle node:alpine --entrypoint="tail -f /dev/null" --microvm --tag hiversh/node:alpine-microvm --push --platform $(PLATFORMS)
 
 # Multi-arch builds need a docker-container driver builder; the default `docker`
 # driver can't build+push a manifest list. Create one if it's missing.

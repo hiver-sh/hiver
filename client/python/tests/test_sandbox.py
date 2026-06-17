@@ -192,18 +192,18 @@ async def test_apply_config_raises_sandbox_error_on_non_200() -> None:
     assert exc.value.operation == "apply_config"
 
 
-# download_file
+# read_file
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_download_file_sends_get_with_path_param_and_returns_bytes() -> None:
+async def test_read_file_sends_get_with_path_param_and_returns_bytes() -> None:
     content = b"hello"
     route = respx.get(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(200, content=content)
     )
     async with httpx.AsyncClient() as client:
-        result = await make_sandbox(client).download_file("/workspace/hello.txt")
+        result = await make_sandbox(client).read_file("/workspace/hello.txt")
 
     assert result == content
     assert isinstance(result, bytes)
@@ -212,28 +212,28 @@ async def test_download_file_sends_get_with_path_param_and_returns_bytes() -> No
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_download_file_raises_sandbox_error_on_non_200() -> None:
+async def test_read_file_raises_sandbox_error_on_non_200() -> None:
     respx.get(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(404, json={"error": "not found"})
     )
     async with httpx.AsyncClient() as client:
         with pytest.raises(SandboxError) as exc:
-            await make_sandbox(client).download_file("/workspace/missing.txt")
+            await make_sandbox(client).read_file("/workspace/missing.txt")
     assert exc.value.status == 404
-    assert exc.value.operation == "download_file"
+    assert exc.value.operation == "read_file"
 
 
-# upload_file
+# write_file
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_upload_file_sends_post_with_multipart_form() -> None:
+async def test_write_file_sends_post_with_multipart_form() -> None:
     route = respx.post(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/hello.txt", "bytes": 5})
     )
     async with httpx.AsyncClient() as client:
-        result = await make_sandbox(client).upload_file("/workspace", "hello.txt", b"hello")
+        result = await make_sandbox(client).write_file("/workspace", "hello.txt", b"hello")
 
     req = route.calls[0].request
     assert req.method == "POST"
@@ -246,26 +246,26 @@ async def test_upload_file_sends_post_with_multipart_form() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_upload_file_accepts_str_content() -> None:
+async def test_write_file_accepts_str_content() -> None:
     respx.post(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/f.txt", "bytes": 4})
     )
     async with httpx.AsyncClient() as client:
-        result = await make_sandbox(client).upload_file("/workspace", "f.txt", "data")
+        result = await make_sandbox(client).write_file("/workspace", "f.txt", "data")
     assert result["bytes"] == 4
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_upload_file_raises_sandbox_error_on_non_200() -> None:
+async def test_write_file_raises_sandbox_error_on_non_200() -> None:
     respx.post(f"{SANDBOX_BASE}/v1/file").mock(
         return_value=httpx.Response(400, json={"error": "destination not mounted"})
     )
     async with httpx.AsyncClient() as client:
         with pytest.raises(SandboxError) as exc:
-            await make_sandbox(client).upload_file("/workspace", "f.txt", b"data")
+            await make_sandbox(client).write_file("/workspace", "f.txt", b"data")
     assert exc.value.status == 400
-    assert exc.value.operation == "upload_file"
+    assert exc.value.operation == "write_file"
 
 
 # get_events_stream

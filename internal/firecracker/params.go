@@ -43,6 +43,14 @@ type GuestParams struct {
 	EtcHosts       []byte `json:"etc_hosts,omitempty"`
 	EtcResolvConf  []byte `json:"etc_resolv_conf,omitempty"`
 	NodeCACertPath string `json:"node_ca_cert_path,omitempty"`
+
+	// NSSDB is a pre-built NSS database (cert9.db/key9.db/pkcs11.txt, keyed by
+	// base name) trusting the sandbox CA, so NSS clients (Chromium/Playwright)
+	// accept sbxproxy's minted leaf certs. The host builds it with certutil from
+	// the core image — the NSS sql db is host- and arch-independent — and the
+	// guest just writes the files into $HOME/.pki/nssdb, needing no NSS tooling
+	// of its own.
+	NSSDB map[string][]byte `json:"nssdb,omitempty"`
 }
 
 // GuestFuse describes one workspace the guest mounts over 9p. Port is the

@@ -121,4 +121,5 @@ export const DEFAULT_SANDBOX_IMAGES: Record<string, string> = {
   "agent-cli": "hiversh/agent-cli:latest",
   python: "hiversh/python:3.13-alpine",
   node: "hiversh/node:alpine",
+  playwright: "hiversh/playwright:latest",
 };

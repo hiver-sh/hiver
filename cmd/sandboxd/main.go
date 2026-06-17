@@ -44,13 +44,13 @@ const (
 
 	mountReadTimout = 35 * time.Second
 
-	// drainTimeout caps how long we'll wait for /v1/events subscribers
+	// eventDrainTimeout caps how long we'll wait for /v1/events subscribers
 	// to consume trailing events after the agent exits; drainQuietFor
 	// is the publish-quiet window the broker must see before declaring
 	// itself drained, sized to cover the sidecar→translator hop for
 	// last-moment audit events.
-	drainTimeout  = 5 * time.Second
-	drainQuietFor = 500 * time.Millisecond
+	eventDrainTimeout = 5 * time.Second
+	drainQuietFor     = 500 * time.Millisecond
 
 	// httpShutdownTimeout caps how long http.Server.Shutdown will
 	// wait for SSE handlers (and any other in-flight requests) to
@@ -59,11 +59,15 @@ const (
 	// every subscriber over the docker bridge.
 	httpShutdownTimeout = 3 * time.Second
 
-	// agentFlushTimeout caps how long we'll wait for the workload filesystem
+	// fsDrainTimeout caps how long we'll wait for the workload filesystem
 	// flush (microvm guest `sync`) on shutdown before stopping the workload
 	// anyway, so a wedged guest can't block teardown past the controller's
 	// shutdown grace period.
-	agentFlushTimeout = 10 * time.Second
+	fsDrainTimeout = 10 * time.Second
+
+	// snapshotResumeTimeout caps the microvm prewarm fast path's VMM-up +
+	// snapshot-load + resume; on timeout we abort rather than hang the claim.
+	snapshotResumeTimeout = 30 * time.Second
 
 	// soMark stamps proxy-originated upstream sockets so the iptables REDIRECT
 	// rule can skip them (-m mark) and avoid an infinite loop; it also tags the
@@ -80,7 +84,7 @@ func main() {
 	phase := &bootPhase{last: time.Now()}
 	var (
 		apiServerPort = flag.String("api-server-port", "8099", "port of the API server")
-		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored; required for snapshot support")
+		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored on local disk; optional — when unset, snapshots only work for configs that route them to a FUSE drive via snapshot.mount")
 		prewarm       = flag.Bool("prewarm", false, "boot in prewarm mode: bring up the API server and park without a spec, to be configured (and the workload launched) by the first PUT /v1/config")
 	)
 	flag.Parse()
@@ -116,8 +120,11 @@ func main() {
 	}
 	// The isolation backend abstracts the runtime boundary (container/runc
 	// vs. microvm/firecracker): overlayfs + FUSE assembly, egress firewall
-	// rules, the cgroup, and exec/launch all route through it.
-	isoKind, err := isolation.Parse(string(sp.Isolation))
+	// rules, the cgroup, and exec/launch all route through it. The backend is
+	// detected from the image — a microvm image ships a guest rootfs — not from
+	// any config field; Detect errors with a user-friendly message when a
+	// microvm image lands on a host without KVM.
+	isoKind, err := isolation.Detect()
 	if err != nil {
 		log.Fatalf("isolation: %v", err)
 	}
@@ -145,6 +152,18 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// The FUSE workspace sidecars run on their own context, not the lifecycle
+	// ctx. Shutdown begins by cancelling the lifecycle ctx (signal/TTL), which
+	// stops the workload; only after the workload drains does finalizeShutdown
+	// capture the snapshot — and a snapshot routed through a FUSE drive
+	// (snapshot.mount) must be written while that mount's daemon is still up.
+	// Tying the FUSE sidecars to the lifecycle ctx would tear them down at the
+	// very start of shutdown, before the capture runs, so the tarball would land
+	// on an unmounted (plain) directory and never reach the remote backend.
+	// finalizeShutdown cancels this after the capture (see teardownFS).
+	fsCtx, cancelFS := context.WithCancel(context.Background())
+	defer cancelFS()
 
 	// The broker is the single fan-out point for the SSE `/v1/events`
 	// stream. Sidecar audit events arrive over the per-child socketpair
@@ -178,11 +197,11 @@ func main() {
 	// counts as sandbox activity and resets the inactivity timer.
 	broker.SetActivityHook(lifetime.Reset)
 	// Inject lifetime last of the four core subsystems: this completes the wiring
-	// and flips the server out of its 500 "still starting" state. The TTL
-	// countdown starts here rather than at agent launch so image unpacking can't
-	// eat into the client's ping window.
+	// and flips the server out of its 500 "still starting" state. Wiring it here
+	// lets /v1/ping reset the timer, but the countdown itself only starts once the
+	// workload launches (see below): a pod sitting in prewarm — awaiting its first
+	// config — must not burn its TTL before any client can claim and ping it.
 	s.SetLifetime(lifetime)
-	go lifetime.Run(ctx)
 
 	proxyPort, err := freePort()
 	if err != nil {
@@ -215,8 +234,11 @@ func main() {
 		proxyCmd *exec.Cmd
 	)
 	// mountMgr owns the sbxfuse workspaces: it brings them up at boot and
-	// reconciles them (add/remove/re-ACL) when a later config is applied.
-	mountMgr := newMountManager(ctx, &children, broker, iso, &isoMu, fuseBin, workDir, *snapshotDir, soMark)
+	// reconciles them (add/remove/re-ACL) when a later config is applied. It runs
+	// on fsCtx (not the lifecycle ctx) so the FUSE daemons outlive the start of
+	// shutdown — finalizeShutdown captures the snapshot through them, then tears
+	// them down via cancelFS.
+	mountMgr := newMountManager(fsCtx, &children, broker, iso, &isoMu, fuseBin, workDir, *snapshotDir, soMark)
 
 	// 1. sbxproxy in transparent mode. iptables (set up below) will REDIRECT all
 	// outbound TCP from agent processes here; sbxproxy recovers the original
@@ -347,8 +369,8 @@ func main() {
 	// reconcile that precedes this call. It returns once the agent is running;
 	// main then waits on ctx below as before.
 	launchWorkload := func(sp *spec.Spec, imgCfg *runc.ImageConfig) {
-		if sp.Entrypoint != "" {
-			imgCfg.Entrypoint = strings.Fields(sp.Entrypoint)
+		if len(sp.Entrypoint) > 0 {
+			imgCfg.Entrypoint = sp.Entrypoint
 			imgCfg.Cmd = nil
 		}
 		if sp.Cwd != "" {
@@ -361,6 +383,14 @@ func main() {
 
 		mounts := make([]runc.BindMount, 0, len(sp.FS)+2)
 		for i := range sp.FS {
+			// Internal mounts stay host-side only (e.g. a remote-backed snapshot
+			// target sandboxd reads/writes for capture/restore): the agent must
+			// never see them, so they are not bind-mounted into the container. For
+			// the container backend this bundle list is the actual export path
+			// (ExportWorkspace is a no-op), so skipping here is what hides them.
+			if sp.FS[i].Internal {
+				continue
+			}
 			mounts = append(mounts, runc.BindMount{
 				Source: sp.FS[i].Mount, Destination: sp.FS[i].Mount, Options: []string{"rw"},
 			})
@@ -457,6 +487,9 @@ func main() {
 		// env become no-ops from here). In the prewarm flow this is the point the
 		// sandbox transitions from configurable to started.
 		s.SetStarted()
+		// The workload is running, so a later config-apply that adds a workspace
+		// must inject it into the live workload rather than rely on launch.
+		mountMgr.SetWorkloadLive()
 		phase.mark("agent launch")
 
 		// Wait for the inner sandbox to come up, then notify the API — this flips it
@@ -474,7 +507,7 @@ func main() {
 
 		children.Go(func() {
 			<-ctx.Done()
-			flushCtx, cancelFlush := context.WithTimeout(context.Background(), agentFlushTimeout)
+			flushCtx, cancelFlush := context.WithTimeout(context.Background(), fsDrainTimeout)
 			if err := iso.FlushAgent(flushCtx); err != nil {
 				log.Printf("sandboxd: flush agent before stop: %v", err)
 			}
@@ -498,52 +531,173 @@ func main() {
 			<-agentStdioDone
 			_ = agentCmd.Wait()
 			log.Println("sandboxd: agent finished")
+			finalizeShutdown(*snapshotDir, store, iso, broker, s, cancelFS, cancel)
+		})
+	}
 
-			// Capture snapshot before unmounting. Read the current config from
-			// the store so any runtime update to snapshot config is respected.
-			if *snapshotDir != "" {
-				if cfg, err := store.Get(); err != nil {
-					log.Printf("sandboxd: snapshot: read config: %v", err)
-				} else if sn := cfg.Snapshot; sn != nil {
-					writeKey := ""
-					if sn.WriteKey != nil && *sn.WriteKey != "" {
-						writeKey = *sn.WriteKey
-					} else if sn.RestoreKey != nil {
-						writeKey = *sn.RestoreKey
-					}
-					if writeKey != "" {
-						var include []string
-						if sn.Include != nil {
-							include = *sn.Include
-						}
-						dst := snapshot.SnapshotPath(*snapshotDir, writeKey)
-						log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
-						if err := iso.CaptureSnapshot(dst, include); err != nil {
-							log.Printf("sandboxd: snapshot capture: %v", err)
-						}
-					}
-				}
-			}
+	// resumeWorkload is the microvm prewarm fast path: instead of cold-booting,
+	// start a fresh VMM, load+resume the snapshot captured at prewarm, mount the
+	// first config's workspaces into the live guest, and run the entrypoint as a
+	// vsock exec session. The snapshot predates the config, so (unlike the cold
+	// path) the entrypoint is not guest init — it runs as an exec session and the
+	// host flushes + powers the guest off when that session exits.
+	resumeWorkload := func(sp *spec.Spec, imgCfg *runc.ImageConfig) {
+		vmBin, vmArgs, err := iso.ResumeAgent()
+		if err != nil {
+			log.Fatalf("prepare resume: %v", err)
+		}
+		// The VMM runs on its own context so teardown can flush the guest before
+		// the VM is stopped (mirrors the cold path's agentCtx). A nil onStdio
+		// supervises the firecracker process without publishing its boot noise.
+		vmCtx, stopVM := context.WithCancel(context.Background())
+		vmCmd, vmStdioDone, err := startChild(vmCtx, &children, "sandbox", vmBin, vmArgs, nil, nil, nil)
+		if err != nil {
+			stopVM()
+			log.Fatalf("start resume vm: %v", err)
+		}
+		resumeCtx, cancelResume := context.WithTimeout(ctx, snapshotResumeTimeout)
+		err = iso.ResumeReady(resumeCtx)
+		cancelResume()
+		if err != nil {
+			log.Fatalf("resume snapshot: %v", err)
+		}
+		phase.mark("snapshot resume")
 
-			if err := iso.UnmountRoot(); err != nil {
-				log.Printf("sandboxd: unmount overlayfs: %v", err)
+		// Resolve the workload environment from the image config + applied spec.
+		// The prewarm snapshot's guest booted with an empty environment, so this is
+		// the env it must run with: it's delivered to the guest below so its process
+		// PATH resolves the entrypoint and every exec — exactly as a cold boot's
+		// params.Env does — rather than only riding along on each exec session.
+		env := make(map[string]string, len(imgCfg.Env)+len(sp.Env)+1)
+		for _, kv := range imgCfg.Env {
+			if i := strings.IndexByte(kv, '='); i > 0 {
+				env[kv[:i]] = kv[i+1:]
 			}
-			if n := broker.SubscriberCount(); n > 0 {
-				log.Printf("sandboxd: waiting for %d event subscriber(s) to drain", n)
-				drainCtx, cancelDrain := context.WithTimeout(context.Background(), drainTimeout)
-				if err := broker.WaitDrained(drainCtx, drainQuietFor); err != nil {
-					log.Printf("sandboxd: event drain timed out: %v", err)
-				}
-				cancelDrain()
+		}
+		maps.Copy(env, sp.Env)
+		env["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
+		// tty: true runs the entrypoint exec under a pty in the guest so its stdin
+		// stays open (otherwise a REPL-style entrypoint like `node` reads EOF and
+		// exits immediately, powering the guest off). The microvm backend is the
+		// only one that reaches this resume path. Advertise a terminal via TERM/
+		// COLORTERM so the program enables colour/cursor control; user env wins.
+		ttyEnabled := sp.Tty != nil && *sp.Tty
+		if ttyEnabled {
+			if _, ok := env["TERM"]; !ok {
+				env["TERM"] = "xterm-256color"
 			}
-			broker.Close()
-			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), httpShutdownTimeout)
-			if err := s.Shutdown(shutdownCtx); err != nil {
-				log.Printf("sandboxd: http shutdown: %v", err)
+			if _, ok := env["COLORTERM"]; !ok {
+				env["COLORTERM"] = "truecolor"
 			}
-			cancelShutdown()
-			log.Println("sandboxd: shutting down sidecars")
-			cancel()
+		}
+		envSlice := make([]string, 0, len(env))
+		for k, v := range env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+
+		// Deliver the env and mount the first config's workspaces into the running
+		// guest in one control RPC — neither can be baked into the snapshot, which
+		// predates the config (workspace 9p connections also can't survive a
+		// snapshot/restore). The env must land before the entrypoint exec below.
+		if err := iso.ApplyResumeState(ctx, envSlice); err != nil {
+			log.Printf("sandboxd: apply resume state: %v", err)
+		}
+
+		argv := append(append([]string{}, imgCfg.Entrypoint...), imgCfg.Cmd...)
+		if len(sp.Entrypoint) > 0 {
+			argv = sp.Entrypoint
+		}
+		if len(argv) == 0 {
+			log.Fatalf("resume: config has no entrypoint to run")
+		}
+		cwd := imgCfg.WorkingDir
+		if sp.Cwd != "" {
+			cwd = sp.Cwd
+		}
+
+		// The entrypoint exec runs on its own context so teardown (ctx cancel) can
+		// SIGTERM it; killing the exec session ends the workload, after which the
+		// guest is flushed and the VM stopped.
+		agentCtx, stopAgent := context.WithCancel(context.Background())
+		var cwdPtr *string
+		if cwd != "" {
+			cwdPtr = &cwd
+		}
+		execCmd, cleanup, err := iso.ExecCmd(agentCtx, isolation.ExecConfig{
+			Command: shellJoinArgv(argv),
+			Cwd:     cwdPtr,
+			Env:     &env,
+			TTY:     ttyEnabled,
+		})
+		if err != nil {
+			stopAgent()
+			log.Fatalf("resume: build entrypoint exec: %v", err)
+		}
+		execCmd.Cancel = func() error { return execCmd.Process.Signal(syscall.SIGTERM) }
+		execCmd.WaitDelay = 10 * time.Second
+
+		// agentStdioDone closes once the entrypoint's output is drained. On the tty
+		// path the sbxvsock bridge runs attached to a host pty: its stdin is the pty
+		// slave, which never EOFs, so sbxvsock doesn't send StdinClose and the guest
+		// keeps the in-guest pty open — without this a REPL-style entrypoint (node)
+		// reads EOF on stdin and exits at once, powering the guest off. The pty
+		// master is fanned out through a Session so /v1/exec-stream attach can reach
+		// the entrypoint, mirroring the cold-boot startAgentTTY path.
+		var entrypointDone <-chan struct{}
+		if ttyEnabled {
+			master, ptyErr := pty.Start(execCmd)
+			if ptyErr != nil {
+				cleanup()
+				stopAgent()
+				log.Fatalf("resume: start entrypoint exec (tty): %v", ptyErr)
+			}
+			sess := pty.NewSession(master, nil)
+			entrypointDone = sess.Done()
+			s.SetEntrypointTTY(sess)
+			log.Printf("sandboxd: entrypoint (resume) attached to tty")
+		} else {
+			done, startErr := superviseStdio(&children, "sandbox", execCmd, publishAgentStdio(broker))
+			if startErr != nil {
+				cleanup()
+				stopAgent()
+				log.Fatalf("resume: start entrypoint exec: %v", startErr)
+			}
+			entrypointDone = done
+		}
+
+		// The workload is committed; freeze boot-time config fields, flip the
+		// server to started, and announce readiness (the guest is already up).
+		s.SetStarted()
+		mountMgr.SetWorkloadLive()
+		phase.mark("entrypoint exec (resume)")
+		s.NotifyReady()
+
+		go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
+
+		// On lifecycle cancel (signal/TTL) stop the entrypoint exec; the teardown
+		// goroutine below (keyed on the entrypoint exit) then flushes + stops the
+		// guest and runs the shared finalize chain.
+		children.Go(func() {
+			<-ctx.Done()
+			stopAgent()
+		})
+		children.Go(func() {
+			<-entrypointDone
+			_ = execCmd.Wait()
+			cleanup()
+			log.Println("sandboxd: entrypoint finished")
+			// Flush the guest fs and stop the VMM before capture: CaptureSnapshot
+			// loop-mounts the overlay image and needs the guest's writes durable and
+			// the VM quiescent.
+			flushCtx, cancelFlush := context.WithTimeout(context.Background(), fsDrainTimeout)
+			if err := iso.FlushAgent(flushCtx); err != nil {
+				log.Printf("sandboxd: flush agent before stop: %v", err)
+			}
+			cancelFlush()
+			stopVM()
+			<-vmStdioDone
+			_ = vmCmd.Wait()
+			finalizeShutdown(*snapshotDir, store, iso, broker, s, cancelFS, cancel)
 		})
 	}
 
@@ -555,6 +709,17 @@ func main() {
 	// the first PUT /v1/config supplies the config. Otherwise launch immediately
 	// from the boot spec.
 	if *prewarm {
+		// Microvm fast path: boot, snapshot, and stop an idle guest now — off the
+		// claim path — so the first config can resume it (tens of ms) instead of
+		// paying for a full guest cold boot. Best-effort: on any failure we fall
+		// back to cold boot on claim (HasPrewarmSnapshot stays false).
+		if iso.Kind() == isolation.KindMicroVM {
+			if err := iso.PrewarmSnapshot(ctx); err != nil {
+				log.Printf("sandboxd: prewarm snapshot failed, will cold-boot on claim: %v", err)
+			} else {
+				log.Println("sandboxd: prewarm snapshot captured; will resume on first config")
+			}
+		}
 		log.Println("sandboxd: prewarm — awaiting first PUT /v1/config to start the workload")
 		select {
 		case <-firstConfig:
@@ -581,10 +746,95 @@ func main() {
 	if err := mountMgr.Reconcile(sp); err != nil {
 		log.Printf("sandboxd: reconcile workspaces: %v", err)
 	}
-	launchWorkload(sp, imgCfg)
+	// Prefer the snapshot-resume fast path when a prewarm snapshot exists and the
+	// config doesn't request a filesystem snapshot restore — a pre-boot overlay
+	// restore is incompatible with a VM snapshot taken before the config arrived.
+	// Otherwise cold-boot as usual.
+	if iso.HasPrewarmSnapshot() && (sp.Snapshot == nil || sp.Snapshot.RestoreKey == "") {
+		resumeWorkload(sp, imgCfg)
+	} else {
+		launchWorkload(sp, imgCfg)
+	}
+
+	// The inner workload is now started, so begin the inactivity countdown. Both
+	// launch paths return once the workload is running; starting Run here (rather
+	// than at wiring) means prewarm idle time never counts against the TTL.
+	go lifetime.Run(ctx)
 
 	<-ctx.Done()
 	children.Wait()
+}
+
+// finalizeShutdown runs the post-workload teardown shared by every launch path
+// (cold boot and snapshot resume): capture the configured snapshot, tear down
+// the FUSE workspace daemons (teardownFS), unmount the overlay, drain SSE
+// subscribers, close the broker, shut down the HTTP server, and cancel the
+// lifecycle ctx. The caller must have already stopped the workload (and, for the
+// microvm, flushed + stopped the guest) so the snapshot capture reads a
+// quiescent, durable filesystem.
+//
+// teardownFS cancels the FUSE sidecars' context — and crucially runs AFTER the
+// capture, not before: a snapshot routed through a FUSE drive (snapshot.mount,
+// e.g. a remote-backed internal mount) must be written while that daemon is
+// still serving, then the cancel lets it drain its upload oplog and unmount.
+func finalizeShutdown(snapshotDir string, store *api.ConfigStore, iso isolation.Isolation, broker *events.Broker, s *api.SandboxServer, teardownFS, cancel context.CancelFunc) {
+	// Capture snapshot before unmounting. Read the current config from the store
+	// so any runtime update to snapshot config is respected.
+	if cfg, err := store.Get(); err != nil {
+		log.Printf("sandboxd: snapshot: read config: %v", err)
+	} else if sn := cfg.Snapshot; sn != nil {
+		writeKey := ""
+		if sn.WriteKey != nil && *sn.WriteKey != "" {
+			writeKey = *sn.WriteKey
+		} else if sn.RestoreKey != nil {
+			writeKey = *sn.RestoreKey
+		}
+		// snapshot.mount routes the tarball to a FUSE drive (still mounted — the
+		// FUSE sidecars are torn down by teardownFS below, after this capture);
+		// otherwise use the host's local snapshot directory.
+		dir := snapshotDir
+		if sn.Mount != nil && *sn.Mount != "" {
+			dir = *sn.Mount
+		}
+		if writeKey != "" && dir != "" {
+			var include []string
+			if sn.Include != nil {
+				include = *sn.Include
+			}
+			dst := snapshot.SnapshotPath(dir, writeKey)
+			log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
+			if err := iso.CaptureSnapshot(dst, include); err != nil {
+				log.Printf("sandboxd: snapshot capture: %v", err)
+			}
+		}
+	}
+
+	// Snapshot captured: now tear down the FUSE workspace daemons. Cancelling
+	// their context lets each drain its remote-upload oplog (so a snapshot just
+	// written through a FUSE drive finishes uploading) and unmount. Done here,
+	// after the capture, rather than via the lifecycle ctx that already fired at
+	// the start of shutdown.
+	teardownFS()
+
+	if err := iso.UnmountRoot(); err != nil {
+		log.Printf("sandboxd: unmount overlayfs: %v", err)
+	}
+	if n := broker.SubscriberCount(); n > 0 {
+		log.Printf("sandboxd: waiting for %d event subscriber(s) to drain", n)
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), eventDrainTimeout)
+		if err := broker.WaitDrained(drainCtx, drainQuietFor); err != nil {
+			log.Printf("sandboxd: event drain timed out: %v", err)
+		}
+		cancelDrain()
+	}
+	broker.Close()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), httpShutdownTimeout)
+	if err := s.Shutdown(shutdownCtx); err != nil {
+		log.Printf("sandboxd: http shutdown: %v", err)
+	}
+	cancelShutdown()
+	log.Println("sandboxd: shutting down sidecars")
+	cancel()
 }
 
 // startChild spawns name with the given args/env, prefix-streams its
@@ -625,16 +875,30 @@ func startChild(ctx context.Context,
 	if len(extraFiles) > 0 {
 		cmd.ExtraFiles = extraFiles
 	}
-	stdout, err := cmd.StdoutPipe()
+	done, err := superviseStdio(wg, name, cmd, onStdio)
 	if err != nil {
 		return nil, nil, err
+	}
+	return cmd, done, nil
+}
+
+// superviseStdio attaches prefix-streaming (and optional broker publishing via
+// onStdio) to an already-built command, starts it, and returns a channel that
+// closes once both stdio pipes have hit EOF — the stdioDone contract startChild
+// documents. It is the shared core of startChild and is also used directly by
+// callers that build their own *exec.Cmd, e.g. the snapshot-resume path, whose
+// "agent" is an exec session (iso.ExecCmd) rather than a freshly spawned binary.
+func superviseStdio(wg *sync.WaitGroup, name string, cmd *exec.Cmd, onStdio func(stream, line string)) (<-chan struct{}, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var outCb, errCb func(string)
 	if onStdio != nil {
@@ -659,7 +923,7 @@ func startChild(ctx context.Context,
 		stdioWg.Wait()
 		close(done)
 	}()
-	return cmd, done, nil
+	return done, nil
 }
 
 // startAgentTTY launches the agent attached to a pseudo-terminal and returns
@@ -745,6 +1009,18 @@ func waitForMountReady(ctx context.Context, mp string, d time.Duration) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout waiting for FUSE mount %s (statfs did not report fuse magic — sbxfuse likely failed during init)", mp)
+}
+
+// shellJoinArgv renders an argv slice as a single POSIX-sh command line,
+// single-quoting each word so spaces or shell metacharacters in the entrypoint
+// survive the guest's `sh -c` exec (the microvm exec path runs commands through
+// a shell, unlike the cold path which execs argv directly).
+func shellJoinArgv(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
 }
 
 func freePort() (int, error) {

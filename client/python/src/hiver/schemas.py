@@ -18,6 +18,8 @@ class _FileSystemBase(BaseModel):
     """Absolute path at which the file system appears to the agent."""
     acls: Optional[list[ACLRule]] = None
     """Access control rules for paths under ``mount``."""
+    internal: Optional[bool] = None
+    """When true, the file system is mounted inside the sandbox runtime but hidden from the agent workload. Use it for storage the sandbox needs but the agent must not see, e.g. a remote-backed snapshot target referenced by ``Snapshot.mount``. Because the agent cannot reach the mount, ``acls`` are ignored for internal file systems."""
 
     @field_validator("mount")
     @classmethod
@@ -124,6 +126,8 @@ class Snapshot(BaseModel):
     """Key under which the snapshot is saved on shutdown. When omitted, ``restore_key`` is used."""
     include: Optional[list[str]] = Field(None, min_length=1)
     """Glob patterns specifying which paths to include in the snapshot (e.g. ``/home/user/*``)."""
+    mount: Optional[str] = Field(None, pattern=r'^/.+')
+    """Mount path of a file system (see ``SandboxConfig.fs``) where snapshot tarballs are written and read, instead of the host's local snapshot directory. Point it at an ``internal``, remote-backed file system to persist and restore snapshots through a FUSE drive."""
 
 
 class SandboxConfig(BaseModel):
@@ -131,14 +135,12 @@ class SandboxConfig(BaseModel):
 
     image: Optional[str] = None
     """Reference to the agent image to launch. Cannot be changed after the sandbox is initialized."""
-    isolation: Optional[Literal["container", "microvm"]] = None
-    """The isolation mechanism used to run the sandbox. Cannot be changed after the sandbox is initialized."""
     cpu: Optional[int] = Field(None, ge=1)
     """Number of virtual CPUs allocated to the sandbox. Defaults to 1. Cannot be changed after the sandbox is initialized."""
     memory: Optional[int] = Field(None, ge=128)
     """Memory allocated to the sandbox, in MiB. Defaults to 512. Cannot be changed after the sandbox is initialized."""
-    entrypoint: Optional[str] = None
-    """Override the entrypoint used when the sandbox is run. When omitted, the image's default entrypoint is used."""
+    entrypoint: Optional[Union[str, list[str]]] = None
+    """Override the entrypoint used when the sandbox is run. Accepts either an argv list (each element a separate argument) or a single string, which the sandbox splits on whitespace into arguments. When omitted, the image's default entrypoint is used."""
     cwd: Optional[str] = None
     """Working directory for the entrypoint. When omitted, the image's working directory is used. Cannot be changed after the sandbox is initialized."""
     tty: Optional[bool] = None
@@ -155,6 +157,13 @@ class SandboxConfig(BaseModel):
     """Ordered list of egress rules. The first rule that matches a request decides the outcome; requests that match no rule are denied."""
     snapshot: Optional[Snapshot] = None
     """Snapshot configuration for this sandbox."""
+
+
+class SandboxInfo(BaseModel):
+    """Internal runtime information about a sandbox, determined at boot rather than configured."""
+
+    isolation: Literal["container", "microvm"]
+    """The isolation mechanism the sandbox is running with. Selected automatically from the image (a microvm image ships a guest root filesystem), not configured."""
 
 
 class _FSChanges(BaseModel):

@@ -165,24 +165,6 @@ func (e LocalFileSystemBackend) Valid() bool {
 	}
 }
 
-// Defines values for SandboxConfigIsolation.
-const (
-	Container SandboxConfigIsolation = "container"
-	Microvm   SandboxConfigIsolation = "microvm"
-)
-
-// Valid indicates whether the value is a known member of the SandboxConfigIsolation enum.
-func (e SandboxConfigIsolation) Valid() bool {
-	switch e {
-	case Container:
-		return true
-	case Microvm:
-		return true
-	default:
-		return false
-	}
-}
-
 // ACLRule One access control rule.
 type ACLRule struct {
 	// Access Read-write, read-only, or fully denied.
@@ -330,6 +312,14 @@ type ExternalFileSystem struct {
 	// trailing slash is ignored.
 	Host string `json:"host"`
 
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
+
 	// Mount Absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
 }
@@ -361,6 +351,14 @@ type FileSystemBase struct {
 	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 	Backend Backend `json:"backend"`
 
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
+
 	// Mount Absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
 }
@@ -386,6 +384,14 @@ type GCSFileSystem struct {
 	// env var, gcloud user credentials, or the GCE/GKE metadata
 	// server).
 	GcsServiceAccountJson string `json:"gcs_service_account_json"`
+
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
 
 	// Mount Absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
@@ -428,6 +434,14 @@ type GDriveFileSystem struct {
 	// the OAuth fields above.
 	GdriveServiceAccountJson *string `json:"gdrive_service_account_json,omitempty"`
 
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
+
 	// Mount Absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
 }
@@ -445,6 +459,14 @@ type LocalFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls    *[]ACLRule             `json:"acls,omitempty"`
 	Backend LocalFileSystemBackend `json:"backend"`
+
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
 
 	// Mount Absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
@@ -469,8 +491,8 @@ type SandboxConfig struct {
 	// are denied.
 	Egress *[]EgressRule `json:"egress,omitempty"`
 
-	// Entrypoint Override the entrypoint used when the container is run. When omitted, the image's default entrypoint is used. e.g. "tail -f /dev/null" blocks indefinitely with near-zero CPU.
-	Entrypoint *string `json:"entrypoint,omitempty"`
+	// Entrypoint Override the entrypoint used when the container is run. Accepts either an argv array (each element is a separate argument) or a single string, which is split on whitespace into arguments. When omitted, the image's default entrypoint is used. e.g. ["tail", "-f", "/dev/null"] or "tail -f /dev/null" blocks indefinitely with near-zero CPU.
+	Entrypoint *SandboxConfig_Entrypoint `json:"entrypoint,omitempty"`
 
 	// Env Additional environment variables as a key/value map. This cannot be changed after the sandbox is initialized.
 	Env *map[string]string `json:"env,omitempty"`
@@ -485,9 +507,6 @@ type SandboxConfig struct {
 
 	// Image The Docker image to run. This cannot be changed after the sandbox is initialized.
 	Image *string `json:"image,omitempty"`
-
-	// Isolation The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized.
-	Isolation *SandboxConfigIsolation `json:"isolation,omitempty"`
 
 	// Memory Memory allocated to the sandbox, in MiB. For the microvm isolation this is the guest RAM size; for the container isolation it is enforced as a cgroup memory limit. This cannot be changed after the sandbox is initialized.
 	Memory *int `json:"memory,omitempty"`
@@ -505,8 +524,16 @@ type SandboxConfig struct {
 	Tty *bool `json:"tty,omitempty"`
 }
 
-// SandboxConfigIsolation The isolation mechanism used to run the sandbox. This cannot be changed after the sandbox is initialized.
-type SandboxConfigIsolation string
+// SandboxConfigEntrypoint0 defines model for .
+type SandboxConfigEntrypoint0 = string
+
+// SandboxConfigEntrypoint1 defines model for .
+type SandboxConfigEntrypoint1 = []string
+
+// SandboxConfig_Entrypoint Override the entrypoint used when the container is run. Accepts either an argv array (each element is a separate argument) or a single string, which is split on whitespace into arguments. When omitted, the image's default entrypoint is used. e.g. ["tail", "-f", "/dev/null"] or "tail -f /dev/null" blocks indefinitely with near-zero CPU.
+type SandboxConfig_Entrypoint struct {
+	union json.RawMessage
+}
 
 // Snapshot Snapshot configuration. A snapshot is captured automatically before
 // the sandbox shuts down and restored before the sandbox starts.
@@ -515,6 +542,14 @@ type Snapshot struct {
 	// The directory containing each matched path is snapshotted (e.g.
 	// `/home/user/*` snapshots `/home/user`).
 	Include *[]string `json:"include,omitempty"`
+
+	// Mount Mount path of a file system (see `fs`) where snapshot tarballs are
+	// written and read, instead of the sandbox host's local snapshot
+	// directory. Point this at an `internal` file system backed by remote
+	// storage (e.g. `gcs` or `external`) to persist and restore snapshots
+	// through a FUSE drive. When omitted, the host's local snapshot
+	// directory is used.
+	Mount *string `json:"mount,omitempty"`
 
 	// RestoreKey Key identifying the snapshot to restore when the sandbox starts.
 	// When omitted, no snapshot is restored on start.
@@ -635,6 +670,68 @@ func (t FileSystem) MarshalJSON() ([]byte, error) {
 }
 
 func (t *FileSystem) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsSandboxConfigEntrypoint0 returns the union data inside the SandboxConfig_Entrypoint as a SandboxConfigEntrypoint0
+func (t SandboxConfig_Entrypoint) AsSandboxConfigEntrypoint0() (SandboxConfigEntrypoint0, error) {
+	var body SandboxConfigEntrypoint0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSandboxConfigEntrypoint0 overwrites any union data inside the SandboxConfig_Entrypoint as the provided SandboxConfigEntrypoint0
+func (t *SandboxConfig_Entrypoint) FromSandboxConfigEntrypoint0(v SandboxConfigEntrypoint0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSandboxConfigEntrypoint0 performs a merge with any union data inside the SandboxConfig_Entrypoint, using the provided SandboxConfigEntrypoint0
+func (t *SandboxConfig_Entrypoint) MergeSandboxConfigEntrypoint0(v SandboxConfigEntrypoint0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSandboxConfigEntrypoint1 returns the union data inside the SandboxConfig_Entrypoint as a SandboxConfigEntrypoint1
+func (t SandboxConfig_Entrypoint) AsSandboxConfigEntrypoint1() (SandboxConfigEntrypoint1, error) {
+	var body SandboxConfigEntrypoint1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSandboxConfigEntrypoint1 overwrites any union data inside the SandboxConfig_Entrypoint as the provided SandboxConfigEntrypoint1
+func (t *SandboxConfig_Entrypoint) FromSandboxConfigEntrypoint1(v SandboxConfigEntrypoint1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSandboxConfigEntrypoint1 performs a merge with any union data inside the SandboxConfig_Entrypoint, using the provided SandboxConfigEntrypoint1
+func (t *SandboxConfig_Entrypoint) MergeSandboxConfigEntrypoint1(v SandboxConfigEntrypoint1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t SandboxConfig_Entrypoint) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *SandboxConfig_Entrypoint) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

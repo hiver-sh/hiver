@@ -13,14 +13,14 @@ const sandbox = await hiver.getOrCreateSandbox("hive-files-example", {
 
 const { shutdown } = createShutdown(sandbox);
 
-const written = await sandbox.uploadFile(
+const written = await sandbox.writeFile(
   "/workspace",
   "greeting.txt",
   "hello from the host\n",
 );
 console.info(`uploaded ${written.bytes} bytes → ${written.path}`);
 
-const bytes = await sandbox.downloadFile("/workspace/greeting.txt");
+const bytes = await sandbox.readFile("/workspace/greeting.txt");
 console.info("downloaded:", new TextDecoder().decode(bytes));
 
 await shutdown();
