@@ -61,6 +61,11 @@ func (s *SandboxServer) SetIsolation(iso isolation.Isolation) { s.handlers.SetIs
 // observed (see cmd/sandboxd).
 func (s *SandboxServer) NotifyReady() { s.handlers.NotifyReady() }
 
+// SetStarted marks the workload as launched, freezing the boot-time-only config
+// fields (cpu, memory, entrypoint, cwd, tty, env) against further ApplyConfig
+// changes. Called when the agent is started.
+func (s *SandboxServer) SetStarted() { s.handlers.SetStarted() }
+
 // SetEntrypointTTY wires the entrypoint's pty session into the API so
 // exec-stream attach requests can reach it. Called once the entrypoint
 // launches; backs `/v1/exec-stream` attach requests with an empty command.

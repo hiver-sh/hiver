@@ -1,10 +1,12 @@
 // Command sandboxd is the runtime agent that wires together the
 // MITM proxy, FUSE daemon, and agent workload as a single sandbox "pod".
 //
-// sandboxd is configured by a single JSON spec file (see internal/spec).
-// The spec carries everything sandboxd needs: the agent binary + args, the
-// workspace's host-side backend and FUSE mount point, the FUSE ACLs, the
-// proxy's egress allowlist, and where to write audit logs.
+// sandboxd is configured by a single JSON spec (see internal/spec), delivered in
+// the HIVE_SPEC environment variable by the runtime — or, in prewarm mode,
+// supplied later via PUT /v1/config. The spec carries everything sandboxd needs:
+// the agent binary + args, the workspace's host-side backend and FUSE mount
+// point, the FUSE ACLs, the proxy's egress allowlist, and where to write audit
+// logs.
 package main
 
 import (
@@ -35,8 +37,6 @@ import (
 	"github.com/hiver-sh/hiver/internal/sandboxd"
 	"github.com/hiver-sh/hiver/internal/snapshot"
 	"github.com/hiver-sh/hiver/internal/spec"
-
-	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
 const (
@@ -70,21 +70,24 @@ const (
 	// API server's reverse-proxy dialer. Any non-zero value works — we pick a
 	// distinctive one for grep-ability.
 	soMark = 0x5b1
+
+	proxyBin = "sbxproxy"
+	fuseBin  = "sbxfuse"
+	workDir  = "/run/sandboxd"
 )
 
 func main() {
 	phase := &bootPhase{last: time.Now()}
 	var (
-		proxyBin      = flag.String("proxy-bin", "sbxproxy", "path to sbxproxy binary")
-		fuseBin       = flag.String("fuse-bin", "sbxfuse", "path to sbxfuse binary")
 		apiServerPort = flag.String("api-server-port", "8099", "port of the API server")
-		workDir       = flag.String("work-dir", "/run/sandboxd", "directory for sandboxd's internal scratch (CA cert, rules JSON, ACL files, persisted config)")
 		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored; required for snapshot support")
+		prewarm       = flag.Bool("prewarm", false, "boot in prewarm mode: bring up the API server and park without a spec, to be configured (and the workload launched) by the first PUT /v1/config")
 	)
 	flag.Parse()
 
 	// The spec is delivered as JSON in the HIVE_SPEC env var (injected by the
-	// runtime), not a mounted file.
+	// runtime), not a mounted file. In prewarm mode it may be absent: the sandbox
+	// parks until its first PUT /v1/config supplies the config.
 	sp, err := spec.LoadEnv()
 	if err != nil {
 		log.Fatalf("spec: %v", err)
@@ -98,10 +101,10 @@ func main() {
 	s := api.NewSandboxServer(*apiServerPort, soMark)
 	go s.ListenAndServe()
 
-	if err := os.MkdirAll(*workDir, 0o755); err != nil {
-		log.Fatalf("create work dir %s: %v", *workDir, err)
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		log.Fatalf("create work dir %s: %v", workDir, err)
 	}
-	log.Printf("sandboxd: work dir = %s", *workDir)
+	log.Printf("sandboxd: work dir = %s", workDir)
 
 	// Docker sets the container hostname to the container's short ID, which
 	// is unique per sandbox. os.Getpid() is always 1 in the pod's PID
@@ -131,14 +134,13 @@ func main() {
 	s.SetIsolation(iso)
 	phase.mark("isolation init")
 
-	// Persist the parsed spec as the API's source-of-truth config so
-	// GET/PUT /v1/config have something to read/diff against from the
-	// first request. The on-disk format is gen.SandboxConfig JSON; the
-	// spec's JSON shape already matches, so we round-trip through the
-	// generated type for type safety.
-	configPath := filepath.Join(*workDir, "config.json")
-	if err := writeInitialConfig(configPath, sp); err != nil {
-		log.Fatalf("write initial config %s: %v", configPath, err)
+	// Seed the in-memory config from the boot spec so GET/PUT /v1/config have
+	// something to read/diff against from the first request. The store holds a
+	// gen.SandboxConfig; the spec's JSON shape matches, so we round-trip through
+	// the generated type for type safety.
+	initialCfg, err := configFromSpec(sp)
+	if err != nil {
+		log.Fatalf("initial config: %v", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -149,7 +151,7 @@ func main() {
 	// (see startSidecar), get translated to SandboxEvent shape, and
 	// Publish'd here; api.NewSandboxServer hands subscribers to the SSE handler.
 	broker := events.New(events.DefaultCapacity, 0)
-	store := api.NewConfigStore(configPath)
+	store := api.NewConfigStore(initialCfg)
 	s.SetBroker(broker)
 	s.SetStore(store)
 
@@ -181,17 +183,6 @@ func main() {
 	// eat into the client's ping window.
 	s.SetLifetime(lifetime)
 	go lifetime.Run(ctx)
-	for i := range sp.FS {
-		f := &sp.FS[i]
-		// sbxfuse mounts onto f.Mount on the host (both backends); both dirs
-		// just need to exist.
-		if err := os.MkdirAll(f.Mount, 0o755); err != nil {
-			log.Fatalf("create mount point %s: %v", f.Mount, err)
-		}
-		if err := os.MkdirAll(f.BackendPath(), 0o755); err != nil {
-			log.Fatalf("create backend %s: %v", f.BackendPath(), err)
-		}
-	}
 
 	proxyPort, err := freePort()
 	if err != nil {
@@ -215,15 +206,17 @@ func main() {
 	// below. The handful of isolation-backend mutations they make (RedirectEgress,
 	// ExportWorkspace) are serialized via isoMu, since the backend isn't
 	// guaranteed concurrency-safe — only the boot waits actually overlap.
-	rulesTmp := filepath.Join(*workDir, "egress-rules.json")
-	caCertPath := filepath.Join(*workDir, "sandbox-ca.crt")
-	caKeyPath := filepath.Join(*workDir, "sandbox-ca.key")
-	fsSidecars := map[string]fsSidecar{}
+	rulesTmp := filepath.Join(workDir, "egress-rules.json")
+	caCertPath := filepath.Join(workDir, "sandbox-ca.crt")
+	caKeyPath := filepath.Join(workDir, "sandbox-ca.key")
 	var (
 		setupWG  sync.WaitGroup
 		isoMu    sync.Mutex
 		proxyCmd *exec.Cmd
 	)
+	// mountMgr owns the sbxfuse workspaces: it brings them up at boot and
+	// reconciles them (add/remove/re-ACL) when a later config is applied.
+	mountMgr := newMountManager(ctx, &children, broker, iso, &isoMu, fuseBin, workDir, *snapshotDir, soMark)
 
 	// 1. sbxproxy in transparent mode. iptables (set up below) will REDIRECT all
 	// outbound TCP from agent processes here; sbxproxy recovers the original
@@ -248,7 +241,7 @@ func main() {
 			"-ca-cert", caCertPath,
 			"-ca-key", caKeyPath,
 		}
-		cmd, err := startSidecar(ctx, &children, "sbxproxy", *proxyBin, proxyArgs, nil,
+		cmd, err := startSidecar(ctx, &children, "sbxproxy", proxyBin, proxyArgs, nil,
 			sidecarOnEvent(formatProxyEvent, newProxyTranslator(broker).handle))
 		if err != nil {
 			log.Fatalf("start proxy: %v", err)
@@ -287,309 +280,308 @@ func main() {
 	setupWG.Add(1)
 	go func() {
 		defer setupWG.Done()
-		for i := range sp.FS {
-			f := &sp.FS[i]
-			aclTmp := filepath.Join(*workDir, "acls-"+f.Slug()+".json")
-			if err := writeACLs(aclTmp, f.ACLs); err != nil {
-				log.Fatalf("write ACLs (%s): %v", f.Mount, err)
-			}
-			fuseArgs := []string{
-				"-mount", f.Mount,
-				"-backend", f.BackendPath(),
-				"-acls", aclTmp,
-			}
-			// Remote backends: forward the backend name + a JSON-encoded
-			// config blob to sbxfuse, which constructs the [remotefs.Store]
-			// via a switch and stands up an Oplog. FS.BackendConfigJSON
-			// produces the right shape for the active backend (e.g. the
-			// fields that map onto [remotefs.GoogleDriveConfig] for gdrive).
-			if f.Backend.IsRemote() {
-				blob, err := f.BackendConfigJSON()
-				if err != nil {
-					log.Fatalf("backend %q config (%s): %v", f.Backend, f.Mount, err)
-				}
-				fuseArgs = append(fuseArgs,
-					"-remote", string(f.Backend),
-					"-remote-config", string(blob),
-					// Same SO_MARK we hand sbxproxy: sbxfuse's outbound TLS to
-					// the cloud API needs to escape the OUTPUT REDIRECT too,
-					// otherwise its traffic ends up at sbxproxy and gets
-					// allowlist-checked against the workload's egress rules.
-					"-mark", fmt.Sprintf("%d", soMark),
-				)
-			}
-			fuseCmd, err := startSidecar(ctx, &children, "sbxfuse:"+f.Slug(), *fuseBin, fuseArgs, nil,
-				sidecarOnEvent(formatFuseEvent, newFuseTranslator(broker, f.Mount, gen.Backend(f.Backend)).handle))
-			if err != nil {
-				log.Fatalf("start fuse (%s): %v", f.Mount, err)
-			}
-			// Cloud-bootstrapped backends (gdrive) have to fetch a directory
-			// listing before they can mount; sbxfuse caps that bootstrap at
-			// 30s. Wait long enough to cover it plus a small buffer — local
-			// backends still return in <100ms so this isn't a slowdown.
-			if err := waitForMountReady(ctx, f.Mount, mountReadTimout); err != nil {
-				_ = fuseCmd.Process.Kill()
-				log.Fatalf("fuse did not mount %s: %v", f.Mount, err)
-			}
-			fsSidecars[f.Mount] = fsSidecar{pid: fuseCmd.Process.Pid, aclPath: aclTmp}
-			// Expose the now-ready host mount to the workload (bind for container,
-			// 9p-over-vsock export for microvm).
-			isoMu.Lock()
-			err = iso.ExportWorkspace(ctx, f.Mount)
-			isoMu.Unlock()
-			if err != nil {
-				log.Fatalf("export workspace %s: %v", f.Mount, err)
-			}
+		// Boot is just an initial reconcile from an empty set — the same mount
+		// manager path a later config-apply uses, so the two can't drift. This
+		// runs before MountRoot (so it seeds, doesn't restore); a snapshot is
+		// restored by the post-MountRoot reconcile below.
+		if err := mountMgr.Reconcile(sp); err != nil {
+			log.Fatalf("mount workspaces: %v", err)
 		}
 	}()
 
 	setupWG.Wait()
 	phase.mark("proxy + fuse startup")
 
+	// firstConfig latches closed when reconcileSidecars processes the first
+	// config.apply, signalling the prewarm path that the sandbox has been
+	// configured (and its workspaces + snapshot reconciled) and can launch.
+	firstConfig := make(chan struct{})
+
 	// Reconcile sidecar policy whenever the API publishes a
 	// config.apply event: re-derive egress rules + per-mount ACLs from
 	// the persisted config, rewrite the files each sidecar reads, and
 	// reload. Sidecars keep the current policy on read errors so a
 	// half-written file can't relax access by accident.
-	go reconcileSidecars(ctx, broker, proxyCmd.Process.Pid, configPath, rulesTmp, fsSidecars)
+	go reconcileSidecars(ctx, broker, proxyCmd.Process.Pid, store, rulesTmp, mountMgr, firstConfig)
 
-	// 3. Agent. Egress + workspace are now mediated.
+	// prepareWorkload runs the config-independent half of the bring-up: unpack
+	// the image config, seed the workspaces from the image, assemble the root
+	// filesystem, and install the sandbox CA. None of it depends on the applied
+	// config, so in prewarm mode it runs at boot — before waiting for the first
+	// PUT /v1/config — leaving only launchWorkload to pay for on claim. Returns
+	// the base image config for launchWorkload to apply overrides to.
+	prepareWorkload := func() *runc.ImageConfig {
+		// 3. Agent. Egress + workspace are now mediated.
 
-	imgCfg, err := runc.ExtractImageConfig()
-	if err != nil {
-		log.Fatalf("unpack sandbox config: %v", err)
-	}
-	if sp.Entrypoint != "" {
-		imgCfg.Entrypoint = strings.Fields(sp.Entrypoint)
-		imgCfg.Cmd = nil
-	}
-	if sp.Cwd != "" {
-		imgCfg.WorkingDir = sp.Cwd
-	}
-	phase.mark("image unpack")
-
-	for i := range sp.FS {
-		f := &sp.FS[i]
-		if err := isolation.SeedWorkspace(f.BackendPath(), filepath.Join(runc.RootfsDir, f.Mount)); err != nil {
-			log.Fatalf("seed fuse %s: %v", f.Mount, err)
+		imgCfg, err := runc.ExtractImageConfig()
+		if err != nil {
+			log.Fatalf("unpack sandbox config: %v", err)
 		}
-	}
+		phase.mark("image unpack")
 
-	// Assemble the agent root filesystem (overlay/drives). Must come after
-	// seeding so the seed reads clean image content.
-	if err := iso.MountRoot(); err != nil {
-		log.Fatalf("mount agent root filesystem: %v", err)
-	}
-	phase.mark("seed + root filesystem assembly")
+		// Assemble the agent root filesystem (overlay/drives). Must come after the
+		// workspaces are reconciled (the mount manager seeds them, moving image
+		// files out of these paths so the overlay lower reflects clean content).
+		if err := iso.MountRoot(); err != nil {
+			log.Fatalf("mount agent root filesystem: %v", err)
+		}
+		// The overlay is assembled, so the post-MountRoot reconcile may now restore
+		// a snapshot into it.
+		mountMgr.SetRootMounted()
+		phase.mark("seed + root filesystem assembly")
 
-	// Restore snapshot before the workload starts so the agent sees the
-	// previously snapshotted state on its first access.
-	if sp.Snapshot != nil && sp.Snapshot.RestoreKey != "" && *snapshotDir != "" {
-		src := snapshot.SnapshotPath(*snapshotDir, sp.Snapshot.RestoreKey)
-		if _, err := os.Stat(src); err == nil {
-			log.Printf("sandboxd: snapshot: restoring %s", src)
-			if err := iso.RestoreSnapshot(src); err != nil {
-				log.Fatalf("snapshot restore: %v", err)
+		// Install the sandbox CA into the workload trust store so sbxproxy can
+		// terminate TLS. The backend places it where the workload will see it
+		// (merged rootfs for container; the guest's trust store for microvm).
+		if caData, err := os.ReadFile(caCertPath); err == nil {
+			if err := iso.InstallCA(caData); err != nil {
+				log.Printf("sandboxd: install sandbox CA: %v", err)
 			}
+		}
+		return imgCfg
+	}
+
+	// launchWorkload runs the config-dependent half: apply the entrypoint/cwd
+	// overrides, then start the agent (runc/firecracker) and wire the readiness +
+	// graceful-shutdown goroutines. The snapshot has already been restored by the
+	// reconcile that precedes this call. It returns once the agent is running;
+	// main then waits on ctx below as before.
+	launchWorkload := func(sp *spec.Spec, imgCfg *runc.ImageConfig) {
+		if sp.Entrypoint != "" {
+			imgCfg.Entrypoint = strings.Fields(sp.Entrypoint)
+			imgCfg.Cmd = nil
+		}
+		if sp.Cwd != "" {
+			imgCfg.WorkingDir = sp.Cwd
+		}
+
+		agentEnv := make(map[string]string, len(sp.Env)+1)
+		maps.Copy(agentEnv, sp.Env)
+		agentEnv["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
+
+		mounts := make([]runc.BindMount, 0, len(sp.FS)+2)
+		for i := range sp.FS {
+			mounts = append(mounts, runc.BindMount{
+				Source: sp.FS[i].Mount, Destination: sp.FS[i].Mount, Options: []string{"rw"},
+			})
+		}
+		// /etc/hosts and /etc/resolv.conf are needed by the agent so
+		// hostnames resolve. With the legacy HTTP_PROXY model the
+		// agent dialed 127.0.0.1 and DNS was the proxy's problem;
+		// in transparent mode the agent does its own DNS, then the
+		// kernel redirects the resulting TCP. The parent's files
+		// already carry --add-host entries for upstream-allowed/denied.
+		mounts = append(mounts,
+			runc.BindMount{Source: "/etc/hosts", Destination: "/etc/hosts", Options: []string{"ro"}},
+			runc.BindMount{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
+		)
+
+		// tty: true wraps the entrypoint in a pseudo-terminal so clients can attach
+		// to it via /v1/exec-stream. Only the container backend supports it (the
+		// microvm runs the workload in a guest the host pty can't reach), so ignore
+		// it elsewhere rather than wrapping the wrong process.
+		ttyEnabled := sp.Tty != nil && *sp.Tty
+		if ttyEnabled && iso.Kind() != isolation.KindContainer {
+			log.Printf("sandboxd: tty: ignoring tty option (only supported for %q isolation, got %q)", isolation.KindContainer, iso.Kind())
+			ttyEnabled = false
+		}
+		if ttyEnabled {
+			// The entrypoint runs on a real terminal, so advertise one: without
+			// TERM, programs assume a dumb terminal and disable colour and cursor
+			// control. The interactive-exec path sets these per-session, but an
+			// attach inherits the entrypoint's own environment, so they must be set
+			// here at launch. User-supplied env wins.
+			if _, ok := agentEnv["TERM"]; !ok {
+				agentEnv["TERM"] = "xterm-256color"
+			}
+			if _, ok := agentEnv["COLORTERM"]; !ok {
+				agentEnv["COLORTERM"] = "truecolor"
+			}
+		}
+
+		// Hand the agent workload off to the isolation backend: it writes any
+		// runtime config it needs (the OCI bundle for runc) and returns the
+		// command that launches the workload, which we run through our own
+		// child supervisor for stdio streaming + lifecycle tracking.
+		agentBin, agentArgs, err := iso.LaunchAgent(isolation.AgentConfig{
+			ImageConfig: imgCfg,
+			Env:         agentEnv,
+			Mounts:      mounts,
+			Hostname:    podHostname,
+			TTY:         ttyEnabled,
+		})
+		if err != nil {
+			log.Fatalf("prepare agent: %v", err)
+		}
+		// The agent runs on its own context so that on shutdown we can flush the
+		// workload filesystem (sync the microvm guest) *before* the workload is
+		// stopped — otherwise the guest's recent writes never reach the overlay
+		// image and the captured snapshot is stale. The container backend's flush
+		// is a no-op.
+		agentCtx, stopAgent := context.WithCancel(context.Background())
+		// No defer here: launchWorkload returns while the agent keeps running. The
+		// flush goroutine below calls stopAgent on ctx cancel (signal, TTL, or the
+		// agent's own exit), which is the single stop path.
+
+		// agentStdioDone closes once the agent's output is fully drained (both
+		// stdio pipes EOF, or the tty master EOFs). entrypointTTY is non-nil only
+		// on the tty path; it backs exec-stream attach requests.
+		var (
+			agentCmd       *exec.Cmd
+			agentStdioDone <-chan struct{}
+			entrypointTTY  *pty.Session
+		)
+		if ttyEnabled {
+			cmd, sess, ttyErr := startAgentTTY(agentCtx, agentBin, agentArgs)
+			if ttyErr != nil {
+				log.Fatalf("start agent (tty): %v", ttyErr)
+			}
+			agentCmd, entrypointTTY, agentStdioDone = cmd, sess, sess.Done()
+			log.Printf("sandboxd: entrypoint attached to tty")
 		} else {
-			log.Printf("sandboxd: snapshot: no snapshot found at %s, starting fresh", src)
+			cmd, done, startErr := startChild(agentCtx, &children, "sandbox", agentBin,
+				agentArgs, nil, nil,
+				publishAgentStdio(broker))
+			if startErr != nil {
+				log.Fatalf("start agent: %v", startErr)
+			}
+			agentCmd, agentStdioDone = cmd, done
 		}
-	}
-
-	// Install the sandbox CA into the workload trust store so sbxproxy can
-	// terminate TLS. The backend places it where the workload will see it
-	// (merged rootfs for container; the guest's trust store for microvm).
-	if caData, err := os.ReadFile(caCertPath); err == nil {
-		if err := iso.InstallCA(caData); err != nil {
-			log.Printf("sandboxd: install sandbox CA: %v", err)
+		// The API server is already serving (started above); publish the entrypoint
+		// pty now that it exists so exec-stream attach requests can reach it.
+		if entrypointTTY != nil {
+			s.SetEntrypointTTY(entrypointTTY)
 		}
-	}
+		// The workload is now committed with its boot-time config, so freeze those
+		// fields against further ApplyConfig changes (cpu/memory/entrypoint/cwd/tty/
+		// env become no-ops from here). In the prewarm flow this is the point the
+		// sandbox transitions from configurable to started.
+		s.SetStarted()
+		phase.mark("agent launch")
 
-	agentEnv := make(map[string]string, len(sp.Env)+1)
-	maps.Copy(agentEnv, sp.Env)
-	agentEnv["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
+		// Wait for the inner sandbox to come up, then notify the API — this flips it
+		// out of its "still starting" state (500, or 503 on /v1/ping) into serving
+		// real requests. WaitReady polls the runtime; doing it once here, off the
+		// request path, and broadcasting beats re-probing on every keepalive ping.
+		go func() {
+			if err := iso.WaitReady(ctx); err != nil {
+				log.Printf("sandboxd: wait for sandbox ready: %v", err)
+				return
+			}
+			phase.mark("sandbox ready")
+			s.NotifyReady()
+		}()
 
-	mounts := make([]runc.BindMount, 0, len(sp.FS)+2)
-	for i := range sp.FS {
-		mounts = append(mounts, runc.BindMount{
-			Source: sp.FS[i].Mount, Destination: sp.FS[i].Mount, Options: []string{"rw"},
+		children.Go(func() {
+			<-ctx.Done()
+			flushCtx, cancelFlush := context.WithTimeout(context.Background(), agentFlushTimeout)
+			if err := iso.FlushAgent(flushCtx); err != nil {
+				log.Printf("sandboxd: flush agent before stop: %v", err)
+			}
+			cancelFlush()
+			stopAgent()
+		})
+
+		go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
+
+		// Graceful shutdown chain triggered by the agent exiting:
+		//   1. wait for the audit pipeline to settle and SSE subscribers
+		//      to consume trailing events (drain)
+		//   2. close the broker, which closes every subscriber channel and
+		//      lets the SSE handlers fall through their receive loop
+		//   3. http.Server.Shutdown, which waits for those handlers (and
+		//      any other in-flight requests) to return — that's the only
+		//      point at which the kernel has actually sent the trailing
+		//      SSE bytes and FIN'd the TCP connection cleanly
+		//   4. cancel the lifecycle ctx, which SIGTERMs the sidecars
+		children.Go(func() {
+			<-agentStdioDone
+			_ = agentCmd.Wait()
+			log.Println("sandboxd: agent finished")
+
+			// Capture snapshot before unmounting. Read the current config from
+			// the store so any runtime update to snapshot config is respected.
+			if *snapshotDir != "" {
+				if cfg, err := store.Get(); err != nil {
+					log.Printf("sandboxd: snapshot: read config: %v", err)
+				} else if sn := cfg.Snapshot; sn != nil {
+					writeKey := ""
+					if sn.WriteKey != nil && *sn.WriteKey != "" {
+						writeKey = *sn.WriteKey
+					} else if sn.RestoreKey != nil {
+						writeKey = *sn.RestoreKey
+					}
+					if writeKey != "" {
+						var include []string
+						if sn.Include != nil {
+							include = *sn.Include
+						}
+						dst := snapshot.SnapshotPath(*snapshotDir, writeKey)
+						log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
+						if err := iso.CaptureSnapshot(dst, include); err != nil {
+							log.Printf("sandboxd: snapshot capture: %v", err)
+						}
+					}
+				}
+			}
+
+			if err := iso.UnmountRoot(); err != nil {
+				log.Printf("sandboxd: unmount overlayfs: %v", err)
+			}
+			if n := broker.SubscriberCount(); n > 0 {
+				log.Printf("sandboxd: waiting for %d event subscriber(s) to drain", n)
+				drainCtx, cancelDrain := context.WithTimeout(context.Background(), drainTimeout)
+				if err := broker.WaitDrained(drainCtx, drainQuietFor); err != nil {
+					log.Printf("sandboxd: event drain timed out: %v", err)
+				}
+				cancelDrain()
+			}
+			broker.Close()
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), httpShutdownTimeout)
+			if err := s.Shutdown(shutdownCtx); err != nil {
+				log.Printf("sandboxd: http shutdown: %v", err)
+			}
+			cancelShutdown()
+			log.Println("sandboxd: shutting down sidecars")
+			cancel()
 		})
 	}
-	// /etc/hosts and /etc/resolv.conf are needed by the agent so
-	// hostnames resolve. With the legacy HTTP_PROXY model the
-	// agent dialed 127.0.0.1 and DNS was the proxy's problem;
-	// in transparent mode the agent does its own DNS, then the
-	// kernel redirects the resulting TCP. The parent's files
-	// already carry --add-host entries for upstream-allowed/denied.
-	mounts = append(mounts,
-		runc.BindMount{Source: "/etc/hosts", Destination: "/etc/hosts", Options: []string{"ro"}},
-		runc.BindMount{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
-	)
 
-	// tty: true wraps the entrypoint in a pseudo-terminal so clients can attach
-	// to it via /v1/exec-stream. Only the container backend supports it (the
-	// microvm runs the workload in a guest the host pty can't reach), so ignore
-	// it elsewhere rather than wrapping the wrong process.
-	ttyEnabled := sp.Tty != nil && *sp.Tty
-	if ttyEnabled && iso.Kind() != isolation.KindContainer {
-		log.Printf("sandboxd: tty: ignoring tty option (only supported for %q isolation, got %q)", isolation.KindContainer, iso.Kind())
-		ttyEnabled = false
-	}
-	if ttyEnabled {
-		// The entrypoint runs on a real terminal, so advertise one: without
-		// TERM, programs assume a dumb terminal and disable colour and cursor
-		// control. The interactive-exec path sets these per-session, but an
-		// attach inherits the entrypoint's own environment, so they must be set
-		// here at launch. User-supplied env wins.
-		if _, ok := agentEnv["TERM"]; !ok {
-			agentEnv["TERM"] = "xterm-256color"
-		}
-		if _, ok := agentEnv["COLORTERM"]; !ok {
-			agentEnv["COLORTERM"] = "truecolor"
-		}
-	}
+	// Prepare the workload eagerly — config-independent, so in prewarm mode this
+	// runs at boot and a claim only pays for launchWorkload below.
+	imgCfg := prepareWorkload()
 
-	// Hand the agent workload off to the isolation backend: it writes any
-	// runtime config it needs (the OCI bundle for runc) and returns the
-	// command that launches the workload, which we run through our own
-	// child supervisor for stdio streaming + lifecycle tracking.
-	agentBin, agentArgs, err := iso.LaunchAgent(isolation.AgentConfig{
-		ImageConfig: imgCfg,
-		Env:         agentEnv,
-		Mounts:      mounts,
-		Hostname:    podHostname,
-		TTY:         ttyEnabled,
-	})
-	if err != nil {
-		log.Fatalf("prepare agent: %v", err)
-	}
-	// The agent runs on its own context so that on shutdown we can flush the
-	// workload filesystem (sync the microvm guest) *before* the workload is
-	// stopped — otherwise the guest's recent writes never reach the overlay
-	// image and the captured snapshot is stale. The container backend's flush
-	// is a no-op.
-	agentCtx, stopAgent := context.WithCancel(context.Background())
-	defer stopAgent()
-
-	// agentStdioDone closes once the agent's output is fully drained (both
-	// stdio pipes EOF, or the tty master EOFs). entrypointTTY is non-nil only
-	// on the tty path; it backs exec-stream attach requests.
-	var (
-		agentCmd       *exec.Cmd
-		agentStdioDone <-chan struct{}
-		entrypointTTY  *pty.Session
-	)
-	if ttyEnabled {
-		cmd, sess, ttyErr := startAgentTTY(agentCtx, agentBin, agentArgs)
-		if ttyErr != nil {
-			log.Fatalf("start agent (tty): %v", ttyErr)
-		}
-		agentCmd, entrypointTTY, agentStdioDone = cmd, sess, sess.Done()
-		log.Printf("sandboxd: entrypoint attached to tty")
-	} else {
-		cmd, done, startErr := startChild(agentCtx, &children, "sandbox", agentBin,
-			agentArgs, nil, nil,
-			publishAgentStdio(broker))
-		if startErr != nil {
-			log.Fatalf("start agent: %v", startErr)
-		}
-		agentCmd, agentStdioDone = cmd, done
-	}
-	// The API server is already serving (started above); publish the entrypoint
-	// pty now that it exists so exec-stream attach requests can reach it.
-	if entrypointTTY != nil {
-		s.SetEntrypointTTY(entrypointTTY)
-	}
-	// Covers snapshot restore + CA install + agent launch (everything between
-	// the rootfs mark and here); the workload's own boot is timed below.
-	phase.mark("agent launch")
-
-	// Wait for the inner sandbox to come up, then notify the API — this flips it
-	// out of its "still starting" state (500, or 503 on /v1/ping) into serving
-	// real requests. WaitReady polls the runtime; doing it once here, off the
-	// request path, and broadcasting beats re-probing on every keepalive ping.
-	go func() {
-		if err := iso.WaitReady(ctx); err != nil {
-			log.Printf("sandboxd: wait for sandbox ready: %v", err)
+	// In prewarm mode the workload isn't started at boot; defer the launch until
+	// the first PUT /v1/config supplies the config. Otherwise launch immediately
+	// from the boot spec.
+	if *prewarm {
+		log.Println("sandboxd: prewarm — awaiting first PUT /v1/config to start the workload")
+		select {
+		case <-firstConfig:
+		case <-ctx.Done():
+			children.Wait()
 			return
 		}
-		phase.mark("sandbox ready")
-		s.NotifyReady()
-	}()
-
-	children.Go(func() {
-		<-ctx.Done()
-		flushCtx, cancelFlush := context.WithTimeout(context.Background(), agentFlushTimeout)
-		if err := iso.FlushAgent(flushCtx); err != nil {
-			log.Printf("sandboxd: flush agent before stop: %v", err)
+		// reconcileSidecars has already reconciled the workspaces and restored any
+		// snapshot for this first config; load the applied spec to launch from.
+		cfg, cfgErr := store.Get()
+		if cfgErr != nil {
+			log.Fatalf("prewarm: read config: %v", cfgErr)
 		}
-		cancelFlush()
-		stopAgent()
-	})
-
-	go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
-
-	// Graceful shutdown chain triggered by the agent exiting:
-	//   1. wait for the audit pipeline to settle and SSE subscribers
-	//      to consume trailing events (drain)
-	//   2. close the broker, which closes every subscriber channel and
-	//      lets the SSE handlers fall through their receive loop
-	//   3. http.Server.Shutdown, which waits for those handlers (and
-	//      any other in-flight requests) to return — that's the only
-	//      point at which the kernel has actually sent the trailing
-	//      SSE bytes and FIN'd the TCP connection cleanly
-	//   4. cancel the lifecycle ctx, which SIGTERMs the sidecars
-	children.Go(func() {
-		<-agentStdioDone
-		_ = agentCmd.Wait()
-		log.Println("sandboxd: agent finished")
-
-		// Capture snapshot before unmounting. Read the current config from
-		// the store so any runtime update to snapshot config is respected.
-		if *snapshotDir != "" {
-			if cfg, err := store.Get(); err != nil {
-				log.Printf("sandboxd: snapshot: read config: %v", err)
-			} else if sn := cfg.Snapshot; sn != nil {
-				writeKey := ""
-				if sn.WriteKey != nil && *sn.WriteKey != "" {
-					writeKey = *sn.WriteKey
-				} else if sn.RestoreKey != nil {
-					writeKey = *sn.RestoreKey
-				}
-				if writeKey != "" {
-					var include []string
-					if sn.Include != nil {
-						include = *sn.Include
-					}
-					dst := snapshot.SnapshotPath(*snapshotDir, writeKey)
-					log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
-					if err := iso.CaptureSnapshot(dst, include); err != nil {
-						log.Printf("sandboxd: snapshot capture: %v", err)
-					}
-				}
-			}
+		parsed, parseErr := specFromConfig(cfg)
+		if parseErr != nil {
+			log.Fatalf("prewarm: parse config: %v", parseErr)
 		}
-
-		if err := iso.UnmountRoot(); err != nil {
-			log.Printf("sandboxd: unmount overlayfs: %v", err)
-		}
-		if n := broker.SubscriberCount(); n > 0 {
-			log.Printf("sandboxd: waiting for %d event subscriber(s) to drain", n)
-			drainCtx, cancelDrain := context.WithTimeout(context.Background(), drainTimeout)
-			if err := broker.WaitDrained(drainCtx, drainQuietFor); err != nil {
-				log.Printf("sandboxd: event drain timed out: %v", err)
-			}
-			cancelDrain()
-		}
-		broker.Close()
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), httpShutdownTimeout)
-		if err := s.Shutdown(shutdownCtx); err != nil {
-			log.Printf("sandboxd: http shutdown: %v", err)
-		}
-		cancelShutdown()
-		log.Println("sandboxd: shutting down sidecars")
-		cancel()
-	})
+		sp = parsed
+	}
+	// Reconcile the workspaces and restore any snapshot now that the root is
+	// mounted. In prewarm this is a no-op (reconcileSidecars already did it); in
+	// the normal flow it's where the boot spec's mounts settle and its snapshot
+	// restores.
+	if err := mountMgr.Reconcile(sp); err != nil {
+		log.Printf("sandboxd: reconcile workspaces: %v", err)
+	}
+	launchWorkload(sp, imgCfg)
 
 	<-ctx.Done()
 	children.Wait()
@@ -779,13 +771,6 @@ func writeJSON(path string, v any) error {
 	return json.NewEncoder(f).Encode(v)
 }
 
-// fsSidecar identifies one sbxfuse process for the reconciler: the pid
-// we SIGHUP and the ACL file we rewrite for it.
-type fsSidecar struct {
-	pid     int
-	aclPath string
-}
-
 // reconcileSidecars subscribes to the broker and, for every successful
 // config.apply event, rewrites the on-disk policy files each sidecar
 // reads (sbxproxy's egress allowlist + each sbxfuse's per-mount ACLs)
@@ -794,12 +779,9 @@ type fsSidecar struct {
 // missed or out-of-order event can't leave a sidecar stuck on a stale
 // policy.
 //
-// fsSidecars is keyed by agent-visible mount path; FS entries in the
-// new config that don't match an existing sidecar are ignored — adding
-// or removing mounts at runtime isn't supported, and we lean
-// conservative ("don't quietly change something we can't enforce")
-// rather than try to start/stop sbxfuse processes mid-flight.
-func reconcileSidecars(ctx context.Context, broker *events.Broker, proxyPID int, configPath, rulesPath string, fsSidecars map[string]fsSidecar) {
+// FS changes are delegated to the mount manager, which starts/stops sbxfuse
+// daemons for added/removed mounts and rewrites ACLs for the rest.
+func reconcileSidecars(ctx context.Context, broker *events.Broker, proxyPID int, store *api.ConfigStore, rulesPath string, mountMgr *mountManager, firstConfig chan struct{}) {
 	_, ch, cancel := broker.Subscribe(0)
 	defer cancel()
 	for {
@@ -816,101 +798,35 @@ func reconcileSidecars(ctx context.Context, broker *events.Broker, proxyPID int,
 			if err != nil || !ev.Success {
 				continue
 			}
-			cfg, err := readPersistedConfig(configPath)
+			cfg, err := store.Get()
 			if err != nil {
 				log.Printf("sandboxd: reconcile: %v", err)
 				continue
 			}
-			if err := writeEgressRules(rulesPath, cfg); err != nil {
+			desiredSpec, err := specFromConfig(cfg)
+			if err != nil {
+				log.Printf("sandboxd: reconcile: %v", err)
+				continue
+			}
+			// Rewrite sbxproxy's egress allowlist from the new config and reload it.
+			if err := writeJSON(rulesPath, desiredSpec.Egress); err != nil {
 				log.Printf("sandboxd: reconcile egress: %v", err)
 			} else if err := syscall.Kill(proxyPID, syscall.SIGHUP); err != nil {
 				log.Printf("sandboxd: SIGHUP sbxproxy (pid=%d): %v", proxyPID, err)
 			}
-			for _, fs := range cfg.Fs {
-				base := api.FSBase(fs)
-				sc, ok := fsSidecars[base.Mount]
-				if !ok {
-					log.Printf("sandboxd: reconcile fs: no sidecar for mount %q (mount add/remove not supported)", base.Mount)
-					continue
-				}
-				if err := writeACLsForMount(sc.aclPath, fs); err != nil {
-					log.Printf("sandboxd: reconcile acls (%s): %v", base.Mount, err)
-					continue
-				}
-				// sbxfuse re-reads its ACL file on SIGHUP (host-side for both
-				// backends).
-				if err := syscall.Kill(sc.pid, syscall.SIGHUP); err != nil {
-					log.Printf("sandboxd: SIGHUP sbxfuse (mount=%s pid=%d): %v", base.Mount, sc.pid, err)
-					continue
-				}
+			if err := mountMgr.Reconcile(desiredSpec); err != nil {
+				log.Printf("sandboxd: reconcile fs: %v", err)
 			}
 			log.Printf("sandboxd: reconciled sidecar policy from config (event id=%d)", entry.ID)
+			// Latch the first config: the prewarm path waits on this to launch.
+			if firstConfig != nil {
+				close(firstConfig)
+				firstConfig = nil
+			}
 		case <-ctx.Done():
 			return
 		}
 	}
-}
-
-// readPersistedConfig reads the on-disk SandboxConfig JSON the API
-// server writes through.
-func readPersistedConfig(path string) (gen.SandboxConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return gen.SandboxConfig{}, fmt.Errorf("read config: %w", err)
-	}
-	var cfg gen.SandboxConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return gen.SandboxConfig{}, fmt.Errorf("parse config: %w", err)
-	}
-	return cfg, nil
-}
-
-// writeEgressRules writes cfg.Egress (or `[]` if absent) to rulesPath
-// in the JSON shape sbxproxy expects. gen.EgressRule and proxy.EgressRule
-// share their wire format, so no conversion is needed — sbxproxy
-// unmarshals into its own type.
-func writeEgressRules(rulesPath string, cfg gen.SandboxConfig) error {
-	rules := []gen.EgressRule{}
-	if cfg.Egress != nil {
-		rules = *cfg.Egress
-	}
-	return writeJSON(rulesPath, rules)
-}
-
-// writeACLsForMount writes fs.Acls to aclPath in the JSON shape
-// sbxfuse expects. gen.ACLRule and fusefs.Rule share their wire
-// format.
-func writeACLsForMount(aclPath string, fs gen.FileSystem) error {
-	base := api.FSBase(fs)
-	acls := []gen.ACLRule{}
-	if a := base.Acls; a != nil {
-		acls = *a
-	}
-	if len(acls) == 0 {
-		acls = []gen.ACLRule{{Path: base.Mount + "/**", Access: gen.ACLRuleAccessRw}}
-	}
-	return writeJSON(aclPath, acls)
-}
-
-// writeInitialConfig persists sp to path in the gen.SandboxConfig JSON
-// shape that GET /v1/config serves. spec.Spec's JSON tags align with
-// gen.SandboxConfig's, so a marshal/unmarshal round-trip is enough —
-// going through the generated type catches drift between the two
-// structs at startup rather than at first GET.
-func writeInitialConfig(path string, sp *spec.Spec) error {
-	data, err := json.Marshal(sp)
-	if err != nil {
-		return fmt.Errorf("marshal spec: %w", err)
-	}
-	var cfg gen.SandboxConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("unmarshal as SandboxConfig: %w", err)
-	}
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
 // localFSMounts returns a MountSource for every local-backend FS entry.

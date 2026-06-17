@@ -79,11 +79,17 @@ type microvm struct {
 	localMounts []SnapshotMount
 
 	// Accumulated state from the capability calls, consumed by LaunchAgent.
-	mu        sync.Mutex
-	fuse      []firecracker.GuestFuse
-	proxyPort int
-	mark      int
-	caCertPEM []byte
+	mu   sync.Mutex
+	fuse []firecracker.GuestFuse
+	// fuseCancel stops each mount's 9p-over-vsock server (UnexportWorkspace).
+	fuseCancel map[string]context.CancelFunc
+	// nextFusePort hands out vsock ports monotonically so a mount removed at
+	// runtime doesn't free a port a later add would reuse while the guest may
+	// still reference it.
+	nextFusePort uint32
+	proxyPort    int
+	mark         int
+	caCertPEM    []byte
 
 	// readyLn is the host-side listener for the guest's readiness beacon
 	// (firecracker.GuestReadyPort). LaunchAgent opens it before boot; WaitReady
@@ -166,20 +172,50 @@ func (m *microvm) ExportWorkspace(ctx context.Context, mount string) error {
 	}
 
 	m.mu.Lock()
-	port := firecracker.GuestFuseBasePort + uint32(len(m.fuse))
+	if m.nextFusePort == 0 {
+		m.nextFusePort = firecracker.GuestFuseBasePort
+	}
+	port := m.nextFusePort
+	m.nextFusePort++
 	m.fuse = append(m.fuse, firecracker.GuestFuse{Mount: mount, Port: port})
+	// Each mount's 9p server runs on its own context so UnexportWorkspace can
+	// stop just that one without tearing down the others.
+	srvCtx, cancel := context.WithCancel(ctx)
+	if m.fuseCancel == nil {
+		m.fuseCancel = map[string]context.CancelFunc{}
+	}
+	m.fuseCancel[mount] = cancel
 	m.mu.Unlock()
 
 	ln, err := firecracker.HostVsockListener(m.vsockUDS, port)
 	if err != nil {
+		cancel()
 		return err
 	}
 	go func() {
-		if err := firecracker.Serve9P(ctx, mount, ln); err != nil && ctx.Err() == nil {
+		if err := firecracker.Serve9P(srvCtx, mount, ln); err != nil && srvCtx.Err() == nil {
 			// Logged via the server's own path; nothing actionable here.
 			_ = err
 		}
 	}()
+	return nil
+}
+
+// UnexportWorkspace stops the mount's 9p-over-vsock server and drops it from the
+// guest fuse table. Best-effort: unknown mounts are ignored.
+func (m *microvm) UnexportWorkspace(ctx context.Context, mount string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cancel, ok := m.fuseCancel[mount]; ok {
+		cancel()
+		delete(m.fuseCancel, mount)
+	}
+	for i := range m.fuse {
+		if m.fuse[i].Mount == mount {
+			m.fuse = append(m.fuse[:i], m.fuse[i+1:]...)
+			break
+		}
+	}
 	return nil
 }
 

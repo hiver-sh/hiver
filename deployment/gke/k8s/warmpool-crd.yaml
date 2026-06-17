@@ -1,0 +1,72 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: warmpools.hiver.sh
+spec:
+  group: hiver.sh
+  scope: Namespaced
+  names:
+    kind: WarmPool
+    listKind: WarmPoolList
+    plural: warmpools
+    singular: warmpool
+    shortNames: [wp]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        # status is a subresource so the controller updates it without racing
+        # spec edits (separate write path, own resourceVersion semantics).
+        status: {}
+      additionalPrinterColumns:
+        - { name: Image, type: string, jsonPath: .spec.image }
+        - { name: Ready, type: integer, jsonPath: .status.readyReplicas }
+        - { name: Claimed, type: integer, jsonPath: .status.claimedReplicas }
+        - { name: Max, type: integer, jsonPath: .spec.maxReplicas }
+        - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [image]
+              # The warm buffer can never push the pool past its hard ceiling.
+              x-kubernetes-validations:
+                - rule: "self.maxReplicas >= self.readyReplicas"
+                  message: maxReplicas must be >= readyReplicas
+              properties:
+                image:
+                  type: string
+                  description: >-
+                    Sandbox image to keep pre-booted. A GetOrCreate request only
+                    claims a warm pod when its requested image matches this.
+                readyReplicas:
+                  type: integer
+                  minimum: 0
+                  default: 1
+                  description: >-
+                    Target number of warm (unclaimed, ready) pods to keep on
+                    standby for instant hand-out.
+                maxReplicas:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                  description: >-
+                    Hard ceiling on total pods (warm + claimed) this pool may
+                    hold. The warm buffer shrinks as claims grow so the total
+                    never exceeds this.
+            status:
+              type: object
+              properties:
+                readyReplicas:
+                  type: integer
+                  description: Warm pods currently ready to hand out.
+                claimedReplicas:
+                  type: integer
+                  description: Pods from this pool currently claimed (in use).
+                observedGeneration:
+                  type: integer
+                  format: int64

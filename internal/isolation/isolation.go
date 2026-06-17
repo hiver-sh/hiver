@@ -182,6 +182,15 @@ type Isolation interface {
 	// mounted and ready.
 	ExportWorkspace(ctx context.Context, mount string) error
 
+	// UnexportWorkspace reverses ExportWorkspace for a mount removed from the
+	// config at runtime (config-apply reconcile). The container backend is a
+	// no-op — the bind lives in the agent's mount namespace, established by runc
+	// at launch. The microvm backend stops the mount's 9p-over-vsock server.
+	// Surfacing the removal inside an already-running workload (a live unmount
+	// in the guest / container ns) is intentionally not attempted here; the
+	// clean path is reconciling before the agent launches.
+	UnexportWorkspace(ctx context.Context, mount string) error
+
 	// InstallCA installs the sandbox CA (PEM) into the workload's trust
 	// store so sbxproxy can terminate TLS. The container backend splices it
 	// into the merged rootfs; the microvm backend hands it to the guest

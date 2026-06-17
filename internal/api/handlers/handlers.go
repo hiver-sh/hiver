@@ -53,6 +53,13 @@ type SandboxHandlers struct {
 	// and read atomically — attaches see nil until then. An exec-stream request
 	// with an empty command attaches to it (see execStreamAttach).
 	entrypointTTY atomic.Pointer[pty.Session]
+
+	// started flips true when the workload is launched (the agent process is
+	// committed with its boot-time config). Until then the sandbox is "prewarm":
+	// ApplyConfig may still set the boot-time-only fields (cpu, memory,
+	// entrypoint, cwd, tty, env), which is how a --prewarm sandbox is configured
+	// by its first apply. Afterward those fields are frozen (freezeStartedFields).
+	started atomic.Bool
 }
 
 // NewSandboxHandlers builds the handlers with only netMark, which is a fixed
@@ -88,6 +95,17 @@ func (h *SandboxHandlers) Ready() bool {
 	}
 }
 
+// SetStarted marks the workload as launched, freezing the boot-time-only config
+// fields against further ApplyConfig changes. Called once, when the agent is
+// started (immediately at boot in the normal flow; at first config-apply in the
+// prewarm flow). Idempotent.
+func (h *SandboxHandlers) SetStarted() { h.started.Store(true) }
+
+// Started reports whether the workload has been launched. ApplyConfig uses it to
+// decide whether the boot-time-only fields may still be set (prewarm) or must be
+// frozen (started).
+func (h *SandboxHandlers) Started() bool { return h.started.Load() }
+
 // WaitReady blocks until NotifyReady fires or ctx is done, returning ctx.Err()
 // if it gives up first. Backs the /v1/ping?block=true long-poll.
 func (h *SandboxHandlers) WaitReady(ctx context.Context) error {
@@ -103,7 +121,11 @@ func (h *SandboxHandlers) WaitReady(ctx context.Context) error {
 // is ready: lifetime is wired (and safely published) by then, so callers must
 // gate on Ready first — before that it is nil and racing with injection.
 func (h *SandboxHandlers) ResetLifetime() {
-	h.lifetime.Reset()
+	// nil in prewarm mode, where the API serves (so a config can be applied)
+	// before any lifetime/TTL has been wired.
+	if h.lifetime != nil {
+		h.lifetime.Reset()
+	}
 }
 
 // SetEntrypointTTY publishes the entrypoint's pty session so exec-stream attach

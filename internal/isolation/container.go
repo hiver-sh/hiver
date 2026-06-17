@@ -57,8 +57,6 @@ func newContainer(cfg Config) *container {
 
 func (c *container) Kind() Kind { return KindContainer }
 
-// --- capability 1: filesystem ---
-
 func (c *container) MountRoot() error   { return runc.MountOverlay() }
 func (c *container) UnmountRoot() error { return runc.UnmountOverlay() }
 
@@ -96,6 +94,12 @@ func SeedWorkspace(backendDir, rootfsMount string) error {
 // runc bind-mounts the host sbxfuse mount straight into the container.
 func (c *container) ExportWorkspace(ctx context.Context, mount string) error { return nil }
 
+// UnexportWorkspace is a no-op: the bind into the container is established by
+// runc at launch and lives in the agent's mount namespace, so there is no
+// host-side export to tear down. Stopping the sbxfuse daemon (done by the
+// caller) unmounts the host side.
+func (c *container) UnexportWorkspace(ctx context.Context, mount string) error { return nil }
+
 // InstallCA splices the sandbox CA (PEM) into the agent rootfs trust store
 // so the agent validates the leaf certs sbxproxy mints during interception,
 // and writes a standalone copy for NODE_EXTRA_CA_CERTS. Best-effort on the
@@ -116,8 +120,6 @@ func (c *container) InstallCA(certPEM []byte) error {
 	}
 	return os.WriteFile(node, certPEM, 0o644)
 }
-
-// --- capability 2: network ---
 
 // RedirectEgress installs the OUTPUT-chain nat REDIRECT rules that make
 // the proxy transparent to the agent. Runs in the sandbox-pod's network
@@ -216,16 +218,12 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark
 	})
 }
 
-// --- capability 3: cgroup ---
-
 func (c *container) CgroupPath() string { return c.cgroupPath }
 
 // FlushAgent is a no-op for the container backend: the agent's overlayfs upper
 // layer is a host directory in the shared host page cache, so snapshot capture
 // already reads a consistent view without an explicit sync.
 func (c *container) FlushAgent(ctx context.Context) error { return nil }
-
-// --- snapshot ---
 
 func (c *container) RestoreSnapshot(src string) error {
 	return snapshot.Restore(src, runc.UpperDir, c.snapshotMounts())

@@ -8,6 +8,42 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: controller
+  # WarmPool CRs and the leader-election Lease live in the control-plane
+  # namespace alongside the controller; the warm pods they manage are created in
+  # hiver-sandbox under the Role below.
+  namespace: hiver
+rules:
+  # Read the desired warm-pool state and write observed counts back to status.
+  - apiGroups: ["hiver.sh"]
+    resources: ["warmpools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["hiver.sh"]
+    resources: ["warmpools/status"]
+    verbs: ["get", "update", "patch"]
+  # The replenisher is singleton work, so only the leader runs it — coordinated
+  # through a Lease so the controller can scale past one replica safely.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: controller
+  namespace: hiver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: controller
+subjects:
+  - kind: ServiceAccount
+    name: controller
+    namespace: hiver
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: controller
   # Sandboxes live in their own namespace, so the runtime needs these rights
   # there — not in the control-plane namespace.
   namespace: hiver-sandbox
