@@ -157,9 +157,7 @@ it("readFile sends GET /v1/file?path=<encoded> and returns Uint8Array", async ()
     .mockResolvedValue(
       new Response(content.buffer as ArrayBuffer, { status: 200 }),
     );
-  const result = await makeSandbox(mockFetch).readFile(
-    "/workspace/hello.txt",
-  );
+  const result = await makeSandbox(mockFetch).readFile("/workspace/hello.txt");
   const [url] = mockFetch.mock.calls[0] as [URL];
   expect(url.toString()).toBe(
     `${SANDBOX_BASE}/v1/file?path=%2Fworkspace%2Fhello.txt`,

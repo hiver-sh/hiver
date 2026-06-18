@@ -25,7 +25,7 @@ const sandboxConfig: hiver.SandboxConfig = {
       methods: ["GET"],
       paths: ["/*"],
     },
-  ]
+  ],
 };
 
 const start = performance.now();
@@ -40,7 +40,6 @@ const sandbox = await hiver.getOrCreateSandbox(
 console.info(
   `getOrCreateSandbox returned in ${(performance.now() - start).toFixed(0)}ms`,
 );
-
 
 const ac = new AbortController();
 
@@ -67,7 +66,6 @@ const events = (async () => {
   }
 })();
 
-
 console.info("--- fetching allowed host (example.com) ---");
 const allowed = await sandbox.exec(
   `node -e "fetch('https://example.com/').then(r => console.log('status', r.status)).catch(e => console.log('error', e.message))"`,
@@ -81,7 +79,6 @@ const blocked = await sandbox.exec(
   { cwd: "/workspace" },
 );
 console.info("blocked exec:", blocked.stdout.trim() || blocked.stderr.trim());
-
 
 console.info(
   sawEgress

@@ -13,15 +13,31 @@ components:
             This cannot be changed after the sandbox is initialized.
           example: my-agent:latest
         cpu:
-          type: integer
-          minimum: 1
+          type: number
+          format: double
+          exclusiveMinimum: true
+          minimum: 0
           default: 1
           description: >
-            Number of virtual CPUs allocated to the sandbox. For the microvm
-            isolation this is the guest vCPU count; for the container isolation
-            it is enforced as a CPU quota.
-            This cannot be changed after the sandbox is initialized.
+            Number of virtual CPUs allocated to the sandbox, as a ceiling
+            (the pod CPU limit). May be fractional (e.g. 0.5). For the microvm
+            isolation the guest vCPU count is this value rounded up to a whole
+            number; for the container isolation it is enforced as a CPU quota.
+            The amount reserved at schedule time is set separately by
+            request_cpu. This cannot be changed after the sandbox is initialized.
           example: 1
+        request_cpu:
+          type: number
+          format: double
+          exclusiveMinimum: true
+          minimum: 0
+          default: 0.5
+          description: >
+            CPU cores reserved for the sandbox at schedule time (the pod CPU
+            request), decoupled from cpu (the limit) so an idle sandbox reserves
+            less than it can burst to. Defaults to 0.5; clamped to at most cpu.
+            This cannot be changed after the sandbox is initialized.
+          example: 0.5
         memory:
           type: integer
           minimum: 128

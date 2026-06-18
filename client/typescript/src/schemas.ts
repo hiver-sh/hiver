@@ -274,10 +274,7 @@ export const Snapshot = z.object({
     .regex(/^[A-Za-z0-9_-]{1,64}$/)
     .optional(),
   include: z.array(z.string()).min(1).optional(),
-  mount: z
-    .string()
-    .regex(/^\/.+/)
-    .optional(),
+  mount: z.string().regex(/^\/.+/).optional(),
 });
 type _AssertSnapshot = Expect<Equal<z.infer<typeof Snapshot>, Snapshot>>;
 
@@ -286,11 +283,19 @@ export interface SandboxConfig {
   /** Reference to the agent image to launch. This cannot be changed after the sandbox is initialized. */
   image?: string;
   /**
-   * Number of virtual CPUs allocated to the sandbox (microvm: guest vCPU count;
-   * container: enforced as a CPU quota). Defaults to 1.
+   * Number of virtual CPUs allocated to the sandbox, as a ceiling (the pod CPU
+   * limit). May be fractional (e.g. 0.5); the microvm guest vCPU count is this
+   * value rounded up, the container enforces it as a CPU quota. Defaults to 1.
    * This cannot be changed after the sandbox is initialized.
    */
   cpu?: number;
+  /**
+   * CPU cores reserved for the sandbox at schedule time (the pod CPU request),
+   * decoupled from cpu (the limit) so an idle sandbox reserves less than it can
+   * burst to. Defaults to 0.5. This cannot be changed after the sandbox is
+   * initialized.
+   */
+  request_cpu?: number;
   /**
    * Memory allocated to the sandbox, in MiB (microvm: guest RAM size;
    * container: enforced as a cgroup memory limit). Defaults to 512.
@@ -337,7 +342,8 @@ export interface SandboxConfig {
 }
 export const SandboxConfig = z.object({
   image: z.string().optional(),
-  cpu: z.number().int().min(1).optional(),
+  cpu: z.number().positive().optional(),
+  request_cpu: z.number().positive().optional(),
   memory: z.number().int().min(128).optional(),
   entrypoint: z.union([z.string(), z.array(z.string())]).optional(),
   cwd: z.string().optional(),
@@ -582,9 +588,7 @@ export const StdioEvent = SandboxEventBase.extend({
   stdout: z.string().optional(),
   stderr: z.string().optional(),
 });
-type _AssertStdioEvent = Expect<
-  Equal<z.infer<typeof StdioEvent>, StdioEvent>
->;
+type _AssertStdioEvent = Expect<Equal<z.infer<typeof StdioEvent>, StdioEvent>>;
 
 export interface ResourceUsageEvent extends SandboxEventBase {
   type: "resource.usage";

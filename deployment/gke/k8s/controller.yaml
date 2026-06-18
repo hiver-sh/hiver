@@ -94,7 +94,7 @@ spec:
       serviceAccountName: controller
       containers:
         - name: controller
-          image: hiversh/controller@sha256:2ae4926a772bdf51f3fcdb3d37705281a15e3e31b944166d0e36569cbfadccea
+          image: hiversh/controller@sha256:0e5585e9b0153bf76feb8cc9a7d7191463fe74266cf7b44c52e89f16ea5c3828
           args: ["--server-port=9000"]
           env:
             # Selects the Kubernetes backend in NewControllerHandlers();
@@ -107,6 +107,13 @@ spec:
             # the recycler deletes it and reclaims its resources. "0" disables.
             - name: HIVE_COMPLETED_POD_TTL
               value: "5m"
+            # Client-side rate limiter for the controller's Kubernetes client.
+            # Above the client-go defaults (QPS 5 / Burst 10) so a concurrent
+            # claim burst (one pod Update per claim) isn't self-throttled.
+            - name: HIVE_CLIENT_QPS
+              value: "50"
+            - name: HIVE_CLIENT_BURST
+              value: "100"
           ports:
             - name: http
               containerPort: 9000

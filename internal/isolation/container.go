@@ -47,6 +47,14 @@ type container struct {
 	// WaitReady reads the hook's byte from here. nil until LaunchAgent runs.
 	readyFifo *os.File
 
+	// prewarmCmd is the backgrounded `runc run` process when the container was
+	// started by PrewarmSnapshot (the entrypoint runs warm before claim and the
+	// claim adopts it). nil on the cold path. StopAgent reaps it on teardown.
+	prewarmCmd *exec.Cmd
+	// hasPrewarm is set once PrewarmSnapshot brought the entrypoint container up;
+	// it routes the claim through the resume path instead of a cold launch.
+	hasPrewarm bool
+
 	// mu guards workspaces/bound. workspaces is every mount ExportWorkspace has
 	// recorded; bound marks the ones the agent can already see (runc bind-mounts
 	// them at launch). MountWorkspacesLive injects the difference — workspaces
@@ -362,30 +370,84 @@ func (c *container) WaitReady(ctx context.Context) error {
 	}
 }
 
-// PrewarmSnapshot is a no-op: the container backend has no fast-resume path, so
-// a prewarm sandbox cold-starts the workload on its first config like any other.
-func (c *container) PrewarmSnapshot(ctx context.Context) error { return nil }
-
-// HasPrewarmSnapshot is always false: the container backend never produces a
-// resume snapshot, so sandboxd always takes the cold-start path for it.
-func (c *container) HasPrewarmSnapshot() bool { return false }
-
-// ResumeAgent is unreachable (HasPrewarmSnapshot is false) but completes the
-// interface; it errors defensively if ever called.
-func (c *container) ResumeAgent() (string, []string, error) {
-	return "", nil, fmt.Errorf("container backend has no snapshot resume")
+// PrewarmSnapshot brings up the image entrypoint container off the claim path
+// and keeps it running, so a claim adopts a warm, already-running workload (e.g.
+// a resident browser host) instead of cold-launching. It writes the bundle via
+// LaunchAgent — using the image entrypoint and the static /etc/hosts +
+// /etc/resolv.conf binds (no workspaces; none are known yet) — starts `runc run`
+// in the background, and waits for the poststart fifo (the entrypoint is
+// running). The prewarm guest's /run/hiver/prewarm-ready is unused here. On any
+// failure it tears down and returns nil so the claim falls back to cold launch
+// (hasPrewarm stays false).
+func (c *container) PrewarmSnapshot(ctx context.Context, imgCfg *runc.ImageConfig) error {
+	if len(imgCfg.Entrypoint) == 0 && len(imgCfg.Cmd) == 0 {
+		return nil // nothing config-independent to warm; cold launch on claim
+	}
+	bin, args, err := c.LaunchAgent(AgentConfig{
+		ImageConfig: imgCfg,
+		Env:         map[string]string{"NODE_EXTRA_CA_CERTS": NodeCACertPath},
+		Mounts: []runc.BindMount{
+			{Source: "/etc/hosts", Destination: "/etc/hosts", Options: []string{"ro"}},
+			{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
+		},
+		Prewarm: true,
+	})
+	if err != nil {
+		log.Printf("isolation: container prewarm bundle: %v (cold launch on claim)", err)
+		return nil
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Printf("isolation: container prewarm start: %v (cold launch on claim)", err)
+		return nil
+	}
+	c.prewarmCmd = cmd
+	// WaitReady reads the poststart fifo: the entrypoint is exec'd and running.
+	if err := c.WaitReady(ctx); err != nil {
+		log.Printf("isolation: container prewarm wait: %v (cold launch on claim)", err)
+		_ = c.StopAgent(context.Background())
+		c.prewarmCmd = nil
+		return nil
+	}
+	c.hasPrewarm = true
+	return nil
 }
 
-// ResumeReady is unreachable for the container backend (no resume path).
+// HasPrewarmSnapshot reports whether PrewarmSnapshot brought the entrypoint
+// container up, so the claim adopts it via the resume path.
+func (c *container) HasPrewarmSnapshot() bool { return c.hasPrewarm }
+
+// ResumeAgent returns an empty command: the prewarm container is already
+// running, so the caller starts no child for the container backend.
+func (c *container) ResumeAgent() (string, []string, error) { return "", nil, nil }
+
+// ResumeReady is a no-op: the prewarm container is already serving.
 func (c *container) ResumeReady(ctx context.Context) error { return nil }
+
+// StopAgent stops the prewarm container on the resume teardown path: SIGTERM the
+// container, force-delete it, and reap the backgrounded `runc run` process.
+func (c *container) StopAgent(ctx context.Context) error {
+	if c.prewarmCmd == nil {
+		return nil
+	}
+	_ = exec.Command("runc", "kill", "--all", c.containerID, "SIGTERM").Run()
+	_ = exec.Command("runc", "delete", "--force", c.containerID).Run()
+	_ = c.prewarmCmd.Process.Kill()
+	_ = c.prewarmCmd.Wait()
+	c.prewarmCmd = nil
+	return nil
+}
 
 // ApplyResumeState injects any workspace recorded since launch into the running
 // agent container's mount namespace, so a mount added by a runtime PUT
-// /v1/config becomes visible to the workload (launch-time ones are already bound
-// by runc). Idempotent: each is bound at most once. The injection runs in a
-// re-exec'd helper because it leaves a thread in the container's mount ns. The
-// env argument is ignored: the container backend has no snapshot/resume, so the
-// workload already launched with its full environment via runc.
+// /v1/config — or by the first config on the prewarm resume path, where the
+// container launched with no workspaces — becomes visible to the workload
+// (launch-time ones are already bound by runc). Idempotent: each is bound at most
+// once. The injection runs in a re-exec'd helper because it leaves a thread in
+// the container's mount ns. The env argument is ignored: the entrypoint already
+// launched (cold via runc, or warm at prewarm), so late env can't reach it;
+// exec sessions get env per-call.
 func (c *container) ApplyResumeState(ctx context.Context, _ []string) error {
 	c.mu.Lock()
 	if c.bound == nil {

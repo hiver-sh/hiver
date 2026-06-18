@@ -135,8 +135,10 @@ class SandboxConfig(BaseModel):
 
     image: Optional[str] = None
     """Reference to the agent image to launch. Cannot be changed after the sandbox is initialized."""
-    cpu: Optional[int] = Field(None, ge=1)
-    """Number of virtual CPUs allocated to the sandbox. Defaults to 1. Cannot be changed after the sandbox is initialized."""
+    cpu: Optional[float] = Field(None, gt=0)
+    """Number of virtual CPUs allocated to the sandbox, as a ceiling (the pod CPU limit). May be fractional (e.g. 0.5); the microvm guest vCPU count is this value rounded up. Defaults to 1. Cannot be changed after the sandbox is initialized."""
+    request_cpu: Optional[float] = Field(None, gt=0)
+    """CPU cores reserved for the sandbox at schedule time (the pod CPU request), decoupled from cpu (the limit) so an idle sandbox reserves less than it can burst to. Defaults to 0.5. Cannot be changed after the sandbox is initialized."""
     memory: Optional[int] = Field(None, ge=128)
     """Memory allocated to the sandbox, in MiB. Defaults to 512. Cannot be changed after the sandbox is initialized."""
     entrypoint: Optional[Union[str, list[str]]] = None

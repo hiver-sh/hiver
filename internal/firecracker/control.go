@@ -29,6 +29,14 @@ type ControlRequest struct {
 	// not survive a snapshot/restore and the workspaces are not known until the
 	// first config arrives.
 	MountWorkspaces []GuestFuse `json:"mount_workspaces,omitempty"`
+
+	// UnixNano, when non-zero, is the host wall-clock time (nanoseconds since the
+	// Unix epoch) the guest should set its clock to. A snapshot resume restores
+	// the guest clock to capture time and never resyncs, so a warm pod's clock
+	// lags real time by however long it sat before being claimed — which makes
+	// freshly-minted TLS leaf certs look "not yet valid" (ERR_CERT_DATE_INVALID)
+	// to in-guest clients. Setting it here, before the workload runs, corrects it.
+	UnixNano int64 `json:"unix_nano,omitempty"`
 }
 
 // ControlResponse is the guest→host reply to a ControlRequest.

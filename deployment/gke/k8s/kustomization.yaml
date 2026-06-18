@@ -16,6 +16,6 @@ resources:
 #   kustomize edit set image hiversh/controller=hiversh/controller:v0.1.18
 images:
   - name: hiversh/controller
-    newTag: latest
+    digest: sha256:0e5585e9b0153bf76feb8cc9a7d7191463fe74266cf7b44c52e89f16ea5c3828
   - name: hiversh/gateway
     newTag: latest

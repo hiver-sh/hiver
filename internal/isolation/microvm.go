@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -30,6 +31,11 @@ const (
 	gatewayIP = "172.16.0.1"
 	guestMAC  = "06:00:ac:10:00:02"
 )
+
+// controlAttemptTimeout bounds one ApplyResumeState control RPC so a connection
+// that is accepted but never answered (a starved, just-resumed guest) is
+// abandoned and retried by the self-heal loop instead of blocking it.
+const controlAttemptTimeout = 3 * time.Second
 
 // microvm is the firecracker-backed Isolation. The agent runs inside a
 // guest VM with its own kernel, so each primitive targets the guest:
@@ -445,6 +451,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		Cmd:            cfg.ImageConfig.Cmd,
 		Env:            envSlice(cfg.ImageConfig.Env, cfg.Env),
 		WorkingDir:     cfg.ImageConfig.WorkingDir,
+		Prewarm:        cfg.Prewarm,
 		Fuse:           m.fuse,
 		ProxyPort:      m.proxyPort,
 		Mark:           m.mark,
@@ -563,17 +570,20 @@ func (m *microvm) acceptReady(ctx context.Context) error {
 	}
 }
 
-// PrewarmSnapshot boots an idle guest from the eagerly-prepared overlay (no
-// workload entrypoint, no workspaces — neither is known yet), waits for it to
-// signal ready, pauses it, writes a full VM snapshot, and stops the transient
-// VMM. The overlay drive and snapshot/mem files are left in place for a later
-// ResumeAgent. See the Isolation interface for how this fits the prewarm path.
-func (m *microvm) PrewarmSnapshot(ctx context.Context) error {
-	// Reuse the normal boot path with an empty image config: the guest comes up,
-	// assembles its root, and parks serving exec/control without running a
-	// workload or powering off (see cmd/sbxguest's idle branch). This also opens
-	// the readiness-beacon listener (m.readyLn).
-	bin, args, err := m.LaunchAgent(AgentConfig{ImageConfig: &runc.ImageConfig{}})
+// PrewarmSnapshot boots a guest running the image entrypoint from the
+// eagerly-prepared overlay (no workspaces yet — they aren't known), waits for it
+// to signal ready (which sbxguest delays, on a prewarm boot, until the workload
+// writes /run/hiver/prewarm-ready), pauses it, writes a full VM snapshot, and
+// stops the transient VMM. The resumed guest inherits the warm, already-running
+// workload. The overlay drive and snapshot/mem files are left in place for a
+// later ResumeAgent. See the Isolation interface for how this fits the prewarm
+// path.
+func (m *microvm) PrewarmSnapshot(ctx context.Context, imgCfg *runc.ImageConfig) error {
+	// Boot the workload with the image entrypoint and the prewarm flag: the guest
+	// comes up, assembles its root, runs the entrypoint, and signals ready only
+	// once the workload is warm. This also opens the readiness-beacon listener
+	// (m.readyLn).
+	bin, args, err := m.LaunchAgent(AgentConfig{ImageConfig: imgCfg, Prewarm: true})
 	if err != nil {
 		return fmt.Errorf("prepare prewarm boot: %w", err)
 	}
@@ -675,6 +685,47 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	if len(env) == 0 && len(fuse) == 0 {
 		return nil
 	}
+	// Self-heal: a just-resumed guest under load can reset the control connection
+	// (the response never arrives) or apply the state only partially, leaving
+	// /workspace unmounted. A single best-effort RPC would silently ship that
+	// broken state. Instead re-drive the (idempotent) RPC with capped backoff
+	// until the guest confirms OK; the caller marks the sandbox ready only once
+	// this returns, so the pod converges to the correct state rather than serving
+	// half-configured. Backoff is edge-triggered on failure, not a busy poll;
+	// it ends when ctx is cancelled (sandbox teardown).
+	backoff := 50 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		// Bound each attempt so a hung connection (accepted but never answered)
+		// is abandoned and retried rather than blocking the self-heal forever.
+		attemptCtx, cancel := context.WithTimeout(ctx, controlAttemptTimeout)
+		err := m.applyResumeOnce(attemptCtx, env, fuse)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("microvm: resume state applied after %d attempts", attempt)
+			}
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("apply resume state (after %d attempts): %w", attempt, err)
+		}
+		log.Printf("microvm: resume state attempt %d failed, retrying: %v", attempt, err)
+		select {
+		case <-time.After(backoff):
+			if backoff < 2*time.Second {
+				backoff *= 2
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("apply resume state: %w", ctx.Err())
+		}
+	}
+}
+
+// applyResumeOnce performs one control RPC: deliver env + workspaces + clock and
+// read the guest's ack. A connection error, a lost response, or OK=false all
+// return an error so ApplyResumeState retries. Idempotent guest-side (env/clock
+// re-apply cleanly; mountWorkspaces skips already-mounted paths).
+func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []firecracker.GuestFuse) error {
 	conn, err := firecracker.DialGuest(ctx, m.vsockUDS, firecracker.GuestControlPort)
 	if err != nil {
 		return fmt.Errorf("dial guest control: %w", err)
@@ -683,7 +734,10 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
-	if err := json.NewEncoder(conn).Encode(firecracker.ControlRequest{Env: env, MountWorkspaces: fuse}); err != nil {
+	// UnixNano corrects the guest's post-resume clock skew (frozen at snapshot
+	// capture). Sent in the same RPC so it lands before the workload runs.
+	req := firecracker.ControlRequest{Env: env, MountWorkspaces: fuse, UnixNano: time.Now().UnixNano()}
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return fmt.Errorf("send control request: %w", err)
 	}
 	var resp firecracker.ControlResponse
@@ -695,6 +749,11 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	}
 	return nil
 }
+
+// StopAgent is a no-op for the microvm backend: a resumed guest's VMM is the
+// supervised child, stopped by cancelling its context on the resume teardown
+// path (FlushAgent + the VMM stop), not through this method.
+func (m *microvm) StopAgent(ctx context.Context) error { return nil }
 
 // FlushAgent runs `sync` inside the guest so the agent's writes reach the
 // overlay block device before the VM is stopped. reboot(POWER_OFF) and a host

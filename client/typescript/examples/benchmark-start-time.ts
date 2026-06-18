@@ -15,8 +15,8 @@ const sandboxConfig: hiver.SandboxConfig = {
 
 interface Run {
   run: number;
-  startMs: number;  // time until sandbox is reachable
-  execMs: number;   // time for `ls /` once sandbox is up
+  startMs: number; // time until sandbox is reachable
+  execMs: number; // time for `ls /` once sandbox is up
   totalMs: number;
 }
 
@@ -56,11 +56,17 @@ const min = (arr: number[]) => Math.min(...arr);
 const max = (arr: number[]) => Math.max(...arr);
 
 const startTimes = results.map((r) => r.startMs);
-const execTimes  = results.map((r) => r.execMs);
+const execTimes = results.map((r) => r.execMs);
 const totalTimes = results.map((r) => r.totalMs);
 
 console.info(`\n=== summary (${RUNS} runs) ===`);
 console.info(`               min     avg     max`);
-console.info(`  sandbox up   ${min(startTimes).toFixed(0).padStart(5)}ms  ${avg(startTimes).toFixed(0).padStart(5)}ms  ${max(startTimes).toFixed(0).padStart(5)}ms`);
-console.info(`  listDir /    ${min(execTimes).toFixed(0).padStart(5)}ms  ${avg(execTimes).toFixed(0).padStart(5)}ms  ${max(execTimes).toFixed(0).padStart(5)}ms`);
-console.info(`  total        ${min(totalTimes).toFixed(0).padStart(5)}ms  ${avg(totalTimes).toFixed(0).padStart(5)}ms  ${max(totalTimes).toFixed(0).padStart(5)}ms`);
+console.info(
+  `  sandbox up   ${min(startTimes).toFixed(0).padStart(5)}ms  ${avg(startTimes).toFixed(0).padStart(5)}ms  ${max(startTimes).toFixed(0).padStart(5)}ms`,
+);
+console.info(
+  `  listDir /    ${min(execTimes).toFixed(0).padStart(5)}ms  ${avg(execTimes).toFixed(0).padStart(5)}ms  ${max(execTimes).toFixed(0).padStart(5)}ms`,
+);
+console.info(
+  `  total        ${min(totalTimes).toFixed(0).padStart(5)}ms  ${avg(totalTimes).toFixed(0).padStart(5)}ms  ${max(totalTimes).toFixed(0).padStart(5)}ms`,
+);

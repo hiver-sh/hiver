@@ -15,6 +15,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/hiver-sh/hiver/internal/firecracker"
@@ -73,16 +75,11 @@ func main() {
 	go serveFiles(vsockfile.GuestPort)
 	go serveControl(firecracker.GuestControlPort)
 
-	// Prewarm idle mode: no entrypoint means this guest was booted only to be
-	// snapshotted. Park serving exec/files/control forever (do NOT power off) so
-	// the host can snapshot a ready VM, resume it later, mount the first config's
-	// workspaces over the control channel, and run the entrypoint as an exec
-	// session. The host powers the guest off (by stopping firecracker) when that
-	// session ends.
-	if len(params.Entrypoint) == 0 && len(params.Cmd) == 0 {
-		log.Printf("no entrypoint; parking idle for snapshot/resume")
-		select {}
-	}
+	// Resolve the readiness gate: serveExec signals the host only after this
+	// closes prewarmReady. On a prewarm boot it waits for the workload to write
+	// prewarmReadyFile so the host's snapshot captures it warm; on a normal/resume
+	// boot it closes immediately.
+	go resolvePrewarmReady(params)
 
 	code := runWorkload(params)
 	log.Printf("workload exited with code %d", code)
@@ -105,6 +102,7 @@ func main() {
 // into the new root.
 func bootstrap() (firecracker.GuestParams, error) {
 	mountPseudoFS()
+	tuneVM()
 
 	if err := os.MkdirAll(metadataMnt, 0o755); err != nil {
 		return firecracker.GuestParams{}, err
@@ -135,24 +133,31 @@ func bootstrap() (firecracker.GuestParams, error) {
 }
 
 // mountWorkspaces connects to each workspace's host 9p server over vsock and
-// mounts it at the workspace path with the trans=fd 9p transport. Failures
-// are logged, not fatal.
-func mountWorkspaces(mounts []firecracker.GuestFuse) {
+// mounts it at the workspace path with the trans=fd 9p transport. It is
+// idempotent (a workspace already 9p-mounted is skipped) so the host can
+// re-drive it to self-heal a partial/failed earlier apply, and returns the
+// joined per-mount errors so the host knows whether the guest reached the
+// desired state (and should retry) rather than assuming success.
+func mountWorkspaces(mounts []firecracker.GuestFuse) error {
+	var errs []error
 	for _, f := range mounts {
 		if f.Port == 0 {
 			continue
 		}
+		if is9pMounted(f.Mount) {
+			continue // already mounted by a prior apply — nothing to do
+		}
 		if err := os.MkdirAll(f.Mount, 0o755); err != nil {
-			log.Printf("9p %s: mkdir: %v", f.Mount, err)
+			errs = append(errs, fmt.Errorf("9p %s: mkdir: %w", f.Mount, err))
 			continue
 		}
 		fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 		if err != nil {
-			log.Printf("9p %s: vsock socket: %v", f.Mount, err)
+			errs = append(errs, fmt.Errorf("9p %s: vsock socket: %w", f.Mount, err))
 			continue
 		}
 		if err := unix.Connect(fd, &unix.SockaddrVM{CID: firecracker.HostCID, Port: f.Port}); err != nil {
-			log.Printf("9p %s: connect host port %d: %v", f.Mount, f.Port, err)
+			errs = append(errs, fmt.Errorf("9p %s: connect host port %d: %w", f.Mount, f.Port, err))
 			unix.Close(fd)
 			continue
 		}
@@ -160,10 +165,27 @@ func mountWorkspaces(mounts []firecracker.GuestFuse) {
 		// the mount's lifetime (no Close — the mount owns it).
 		opts := firecracker.MountFuseOption(fd)
 		if err := syscall.Mount("sbxfuse", f.Mount, "9p", 0, opts); err != nil {
-			log.Printf("9p %s: mount: %v", f.Mount, err)
+			errs = append(errs, fmt.Errorf("9p %s: mount: %w", f.Mount, err))
 			unix.Close(fd)
 		}
 	}
+	return errors.Join(errs...)
+}
+
+// is9pMounted reports whether path is already a 9p mount, so a re-driven
+// mountWorkspaces (self-heal) doesn't stack a second mount on it.
+func is9pMounted(path string) bool {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 3 && f[1] == path && f[2] == "9p" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyTrustAndResolver splices the sandbox CA into the workload trust store
@@ -272,6 +294,19 @@ func mountPseudoFS() {
 		if err := os.Symlink("pts/ptmx", "/dev/ptmx"); err != nil {
 			log.Printf("link /dev/ptmx: %v (continuing)", err)
 		}
+	}
+}
+
+// tuneVM applies guest kernel sysctls the workload needs, before the prewarm
+// snapshot is captured so every resumed warm pod inherits them. Currently it
+// sets vm.overcommit_memory=1 (always overcommit): the guest is small and has
+// no swap, so the default heuristic (mode 0) computes a low CommitLimit and
+// __vm_enough_memory denies the large virtual reservations Chromium makes for a
+// renderer — which aborts (trap int3) and crashes the page.
+func tuneVM() {
+	const proc = "/proc/sys/vm/overcommit_memory"
+	if err := os.WriteFile(proc, []byte("1"), 0); err != nil {
+		log.Printf("tuneVM: set overcommit_memory: %v (continuing)", err)
 	}
 }
 
@@ -424,7 +459,14 @@ func runWorkload(p firecracker.GuestParams) int {
 		return 0
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = p.Env
+	// Run with the corrected process environment, not the raw params: main called
+	// applyWorkloadEnv(params.Env), which adds the HOME (and PATH) defaults the
+	// image may omit. HOME is what points Chromium at the NSS trust db
+	// ($HOME/.pki/nssdb) so it accepts sbxproxy's TLS interception — without it,
+	// TLS interception is rejected. Exec sessions already run with os.Environ();
+	// the entrypoint must match (the former prewarm hook inherited it by running
+	// as sbxguest's child).
+	cmd.Env = os.Environ()
 	cmd.Dir = orDefault(p.WorkingDir, "/")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -459,10 +501,17 @@ func serveExec(port uint32) {
 		return
 	}
 	log.Printf("exec: listening on vsock port %d", port)
-	// The exec listener is up, so the host can now reach the agent: dial the
+	// The exec listener is up, so the host can now reach the agent. Dial the
 	// host's readiness beacon to unblock its WaitReady (replaces host-side
-	// connect polling). Best-effort — the host falls back to its own timeout.
-	signalReady()
+	// connect polling) — but gate it on prewarmReady so that, on a prewarm boot,
+	// the host's snapshot captures the resident workload (e.g. an already-launched
+	// browser) warm. The gate is closed immediately on every normal/resume boot,
+	// so this is a no-op there. Done in a goroutine so the Accept loop below stays
+	// live regardless. Best-effort — the host falls back to its own timeout.
+	go func() {
+		<-prewarmReady
+		signalReady()
+	}()
 	for {
 		nfd, _, err := unix.Accept(fd)
 		if err != nil {
@@ -524,6 +573,12 @@ func handleControl(conn io.ReadWriter) error {
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
 		return err
 	}
+	// Resync the clock first: a snapshot resume restores the guest clock to
+	// capture time, so a warm pod's clock lags real time by its dwell — which
+	// makes freshly-minted TLS leaf certs look not-yet-valid to in-guest clients.
+	if req.UnixNano > 0 {
+		setSystemClock(req.UnixNano)
+	}
 	// Apply the workload env before anything else so the resumed guest's process
 	// PATH resolves the entrypoint and every subsequent exec — a prewarm guest
 	// booted with none.
@@ -532,9 +587,56 @@ func handleControl(conn io.ReadWriter) error {
 	}
 	if len(req.MountWorkspaces) > 0 {
 		log.Printf("control: mounting %d workspace(s) post-resume", len(req.MountWorkspaces))
-		mountWorkspaces(req.MountWorkspaces)
+		if err := mountWorkspaces(req.MountWorkspaces); err != nil {
+			// Report failure so the host re-drives this RPC until the workspaces
+			// are actually mounted — the mount is idempotent, so a retry only
+			// completes the missing ones. Without this the guest would claim OK
+			// while /workspace was never mounted.
+			log.Printf("control: mount workspaces: %v", err)
+			return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: false, Error: err.Error()})
+		}
 	}
 	return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: true})
+}
+
+// prewarmReady gates the guest readiness beacon (see serveExec). It is closed
+// once the guest is ready for the host to snapshot: immediately on a normal or
+// resume boot, or — on a prewarm boot — only after the workload writes
+// prewarmReadyFile, so the snapshot captures the resident service warm (e.g. an
+// already-launched browser the workload can connect to instead of launching).
+var prewarmReady = make(chan struct{})
+
+const (
+	// prewarmReadyFile is the sentinel the workload (the image entrypoint)
+	// creates once its resident service is serving; its appearance closes
+	// prewarmReady so the host snapshots a warm guest.
+	prewarmReadyFile = "/run/hiver/prewarm-ready"
+	// prewarmReadyTimeout bounds how long the snapshot waits on the workload, so
+	// an image that never writes the file degrades to a cold (not-yet-warm)
+	// snapshot rather than wedging the warm pool.
+	prewarmReadyTimeout = 30 * time.Second
+)
+
+// resolvePrewarmReady closes prewarmReady to release serveExec's host readiness
+// beacon. On a normal/resume boot (Prewarm false) it closes immediately,
+// preserving the existing readiness timing. On a prewarm boot it waits for the
+// workload to create prewarmReadyFile (bounded by prewarmReadyTimeout) before
+// closing, so the host's snapshot captures the workload warm.
+func resolvePrewarmReady(p firecracker.GuestParams) {
+	defer close(prewarmReady)
+	if !p.Prewarm {
+		return
+	}
+	deadline := time.Now().Add(prewarmReadyTimeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(prewarmReadyFile); err == nil {
+			log.Printf("prewarm: workload ready")
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	log.Printf("prewarm: timed out after %s waiting for %s; snapshotting anyway",
+		prewarmReadyTimeout, prewarmReadyFile)
 }
 
 // signalReady dials the host's readiness beacon (firecracker.GuestReadyPort)
@@ -591,13 +693,37 @@ const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 // resume with the first config's env (delivered over the control channel), so a
 // restored guest matches a normally-booted one. Idempotent.
 func applyWorkloadEnv(env []string) {
+	hasHome := false
 	for _, kv := range env {
 		if idx := strings.IndexByte(kv, '='); idx > 0 {
+			if kv[:idx] == "HOME" {
+				hasHome = true
+			}
 			_ = os.Setenv(kv[:idx], kv[idx+1:])
 		}
 	}
 	if os.Getenv("PATH") == "" {
 		_ = os.Setenv("PATH", defaultPath)
+	}
+	// Default HOME to uid 0's home when the workload env didn't set one, so
+	// $HOME-relative lookups land where the boot installed their files — notably
+	// the NSS trust db at $HOME/.pki/nssdb that Chromium reads to trust sbxproxy's
+	// TLS interception. The kernel hands PID 1 a placeholder HOME=/, so a plain
+	// os.Getenv("HOME") check wouldn't catch this — only the absence from the
+	// workload env distinguishes "image set HOME" from the kernel default, which
+	// would otherwise miss /root/.pki/nssdb.
+	if !hasHome {
+		_ = os.Setenv("HOME", workloadHome())
+	}
+}
+
+// setSystemClock sets the guest wall clock to unixNano (host time), correcting
+// the skew a snapshot resume leaves behind. Best-effort: a failure is logged,
+// not fatal — TLS may still see a stale clock but nothing else breaks.
+func setSystemClock(unixNano int64) {
+	tv := unix.NsecToTimeval(unixNano)
+	if err := unix.Settimeofday(&tv); err != nil {
+		log.Printf("control: set clock: %v (continuing)", err)
 	}
 }
 

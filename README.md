@@ -14,13 +14,12 @@ Run agents autonomously with controlled network access, auditable file operation
 
 ## What is Hiver?
 
-Hiver is a runtime for running AI agents as untrusted workloads, with full visibility and control over everything they do. It has two parts:
+Hiver is a runtime for running AI agents as untrusted workloads, with visibility and control over their file, network, command, and model interactions. It has two parts:
 
-- **The runtime** boots each agent into an isolated sandbox with its own file systems, network egress policy, and path-level ACLs. Choose **MicroVM isolation** to confine fully untrusted code behind a hardware-virtualization boundary with its own kernel, or lightweight container isolation for faster, trusted workloads; both sit behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
+- **The runtime** boots each agent into an isolated sandbox with its own file systems, network egress policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel and hardware-virtualization boundary, or lightweight container isolation for faster, trusted workloads. Both run behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
+- **The inspector** is a live, DevTools-style UI over a running sandbox. It decodes the agent’s LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit sandbox policy on the fly — all over the same event stream and API used by the SDKs.
 
-- **The inspector** is a live, DevTools-style UI over a running sandbox. It decodes the agent's LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit the sandbox's policy on the fly, all over the same event stream and API the SDKs use.
-
-Hiver has first-class support for both local development and deployment to the cloud: the same client library and runtime work whether you run `hiver start` on your machine or deploy to a cluster. You can bring your own Docker image with no changes and run it in Hiver.
+Hiver supports both local development and cloud deployment. The same client library and runtime work whether you run hiver start on your machine or deploy to a cluster. Bring your own Docker image and run it in Hiver with no application changes.
 
 ## 🚀 Getting Started
 
@@ -376,21 +375,9 @@ Run the full stack (controller, gateway, and sandboxes) on a managed Kubernetes 
 
 [`deployment/gke`](deployment/gke/README.md) provisions a GKE cluster with Terraform and deploys the control plane to it. The node pool is configured for microVM isolation out of the box: nested virtualization is enabled so KVM works inside the nodes, and nodes are backed by Local SSD for fast snapshot and prewarm I/O. See the [GKE deployment guide](deployment/gke/README.md) for prerequisites and `terraform apply` steps.
 
-## Documentation
+## Full documentation
 
 * [Docs](https://hiver.sh/docs)
-
-* [Examples](https://hiver.sh/docs/examples)
-
-### Isolation Modes
-Container-level isolation and microVM (kernel-level) isolation.
-
-### File Systems
-Local, External over HTTP, Google Drive, Google Cloud Storage, Microsoft OneDrive, Amazon S3,Azure Blob Storage.
-
-### Container Orchestration
-Docker, k8s.
-
 
 ### Architecture
 
@@ -411,6 +398,12 @@ Getting started is straightforward: just run `hiver start` locally or deploy to 
 ## Status
 
 Hiver is under active development. The local runtime, inspector, audit stream, filesystem ACLs, and egress controls are usable today; APIs and deployment manifests may change before v1.
+
+### Cold start
+
+A core design goal of Hiver is to make a freshly started sandbox available as fast as possible. The microVM backend relies on memory snapshotting, so spawning a new VM takes milliseconds, and it exposes a hook that lets custom images do their own setup during this phase. For example, preloading a browser.
+
+Today, scheduling onto pods goes through Kubernetes, which adds roughly a second of latency. A configurable warm pool sidesteps this by keeping sandboxes ready ahead of time. In the near future, Hiver will support additional container orchestrators and drive end-to-end cold start even lower.
 
 ## License
 

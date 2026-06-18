@@ -141,6 +141,11 @@ type AgentConfig struct {
 	// returned command's stdio to a pty (see internal/pty). Only the container
 	// backend honours this; the microvm backend ignores it.
 	TTY bool
+
+	// Prewarm marks a prewarm launch: the workload runs as usual but readiness
+	// is delayed until it writes /run/hiver/prewarm-ready, so the host snapshots
+	// (microvm) or adopts (container) a warm workload. Set only by PrewarmSnapshot.
+	Prewarm bool
 }
 
 // ExecConfig describes a command to run inside the running workload.
@@ -259,38 +264,49 @@ type Isolation interface {
 	// WaitReady blocks until the workload is running or ctx is cancelled.
 	WaitReady(ctx context.Context) error
 
-	// PrewarmSnapshot boots an idle guest (no workload entrypoint), waits for it
-	// to become ready, pauses it, writes a full VM snapshot, and stops the
-	// transient guest — leaving the writable drive + snapshot for a later resume.
-	// It is the microvm prewarm fast path: the costly guest kernel boot + root
-	// assembly happen here, off the claim path, so the first config pays only for
-	// a snapshot load. The container backend has no fast-resume path and returns
-	// nil. Call after MountRoot/InstallCA and before awaiting the first config.
-	PrewarmSnapshot(ctx context.Context) error
+	// PrewarmSnapshot brings up the image entrypoint off the claim path so a
+	// claimed sandbox inherits a warm, already-running workload. The microvm
+	// backend boots a guest running the entrypoint, waits for it to write
+	// /run/hiver/prewarm-ready, pauses it, writes a full VM snapshot, and stops
+	// the transient guest. The container backend starts the runc container
+	// running the entrypoint and keeps it alive (gated on its poststart fifo).
+	// Either way the entrypoint runs before the config is known, so it must be
+	// config-independent (a resident service like the browser host). On failure a
+	// backend degrades to cold launch (HasPrewarmSnapshot stays false). Call after
+	// MountRoot/InstallCA and before awaiting the first config.
+	PrewarmSnapshot(ctx context.Context, imgCfg *runc.ImageConfig) error
 
-	// HasPrewarmSnapshot reports whether a usable prewarm snapshot exists (a
-	// PrewarmSnapshot succeeded). Always false for the container backend, so the
-	// resume methods below are reached only on the microvm fast path.
+	// HasPrewarmSnapshot reports whether PrewarmSnapshot succeeded and the resume
+	// path (below) should be taken on claim instead of a cold launch.
 	HasPrewarmSnapshot() bool
 
-	// ResumeAgent returns the command that starts a fresh VMM for a snapshot
-	// resume (no boot config — the machine state comes from the snapshot,
-	// loaded by ResumeReady once the VMM's API socket is up). sandboxd
-	// supervises it like LaunchAgent's command. Only valid after a successful
-	// PrewarmSnapshot.
+	// ResumeAgent returns the command that starts the resume process. For the
+	// microvm backend that is a fresh VMM (no boot config — the machine state
+	// comes from the snapshot, loaded by ResumeReady once its API socket is up),
+	// supervised like LaunchAgent's command. The container backend's workload is
+	// already running from PrewarmSnapshot, so it returns an empty command and the
+	// caller starts no child. Only valid after a successful PrewarmSnapshot.
 	ResumeAgent() (bin string, args []string, err error)
 
-	// ResumeReady loads the prewarm snapshot into the VMM started by ResumeAgent
-	// and resumes the guest, blocking until it is serving. It is the resume-path
-	// analogue of WaitReady.
+	// ResumeReady makes the resumed workload serving: the microvm backend loads
+	// the snapshot into the VMM started by ResumeAgent and resumes the guest; the
+	// container backend is already serving and returns nil. Resume-path analogue
+	// of WaitReady.
 	ResumeReady(ctx context.Context) error
 
-	// ApplyResumeState delivers post-resume setup to the restored guest over the
-	// control channel: the workload environment (so the guest's process PATH
-	// resolves the entrypoint and execs) and the config's workspaces (their
-	// 9p-over-vsock mounts don't survive a snapshot/restore). Both are unknown
-	// when the prewarm snapshot is taken. No-op for the container backend.
+	// ApplyResumeState delivers post-resume setup the prewarm step could not
+	// carry: the config's workspaces (microvm: their 9p-over-vsock mounts don't
+	// survive a snapshot/restore; container: bind them into the running mount ns)
+	// and, for the microvm, the workload environment + clock fix. The already-
+	// running entrypoint doesn't pick up late env, so env matters only for exec
+	// sessions; unknown when the workload was prewarmed.
 	ApplyResumeState(ctx context.Context, env []string) error
+
+	// StopAgent stops a workload started by PrewarmSnapshot on the resume teardown
+	// path. The container backend kills + deletes the running runc container; the
+	// microvm backend is a no-op (its VMM child is stopped by cancelling the
+	// supervising context instead).
+	StopAgent(ctx context.Context) error
 
 	// FlushAgent flushes the running workload's filesystem so its recent
 	// writes are durable before the workload is stopped and a snapshot

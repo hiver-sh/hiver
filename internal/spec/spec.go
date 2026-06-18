@@ -24,7 +24,8 @@ const BackendSuffix = "-backend"
 // Spec is the root document. Loaded by sandboxd via [Load].
 type Spec struct {
 	Image      string             `json:"image,omitempty"`
-	CPU        *int               `json:"cpu,omitempty"`
+	CPU        *float64           `json:"cpu,omitempty"`
+	RequestCPU *float64           `json:"request_cpu,omitempty"`
 	Memory     *int               `json:"memory,omitempty"`
 	Entrypoint Entrypoint         `json:"entrypoint,omitempty"`
 	Cwd        string             `json:"cwd,omitempty"`
@@ -363,8 +364,11 @@ func Parse(path string) (*Spec, error) {
 
 // Validate enforces required-field invariants.
 func (s *Spec) Validate() error {
-	if s.CPU != nil && *s.CPU < 1 {
-		return fmt.Errorf("cpu: must be >= 1, got %d", *s.CPU)
+	if s.CPU != nil && *s.CPU <= 0 {
+		return fmt.Errorf("cpu: must be > 0, got %g", *s.CPU)
+	}
+	if s.RequestCPU != nil && *s.RequestCPU <= 0 {
+		return fmt.Errorf("request_cpu: must be > 0, got %g", *s.RequestCPU)
 	}
 	if s.Memory != nil && *s.Memory < 128 {
 		return fmt.Errorf("memory: must be >= 128 (MiB), got %d", *s.Memory)

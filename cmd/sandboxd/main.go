@@ -19,6 +19,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -131,7 +132,7 @@ func main() {
 	iso, err := isolation.New(isoKind, isolation.Config{
 		Hostname:    podHostname,
 		LocalMounts: isolationLocalMounts(sp.FS),
-		VcpuCount:   intOrZero(sp.CPU),
+		VcpuCount:   ceilVcpu(sp.CPU),
 		MemoryMiB:   intOrZero(sp.Memory),
 	})
 	if err != nil {
@@ -535,39 +536,55 @@ func main() {
 		})
 	}
 
-	// resumeWorkload is the microvm prewarm fast path: instead of cold-booting,
-	// start a fresh VMM, load+resume the snapshot captured at prewarm, mount the
-	// first config's workspaces into the live guest, and run the entrypoint as a
-	// vsock exec session. The snapshot predates the config, so (unlike the cold
-	// path) the entrypoint is not guest init — it runs as an exec session and the
-	// host flushes + powers the guest off when that session exits.
+	// resumeWorkload is the prewarm fast path: the workload was already brought up
+	// warm by PrewarmSnapshot, so a claim just makes it serving and injects the
+	// first config's workspaces — it does not launch the entrypoint. The microvm
+	// backend starts a fresh VMM and loads the snapshot (in which the entrypoint
+	// is already running); the container backend's entrypoint container is already
+	// running, so it starts no child. Teardown flushes (microvm) and stops the
+	// workload.
 	resumeWorkload := func(sp *spec.Spec, imgCfg *runc.ImageConfig) {
+		// Start the resume process: a fresh VMM for the microvm (supervised like
+		// the cold path); empty for the container, whose entrypoint container is
+		// already running — nothing to start.
 		vmBin, vmArgs, err := iso.ResumeAgent()
 		if err != nil {
 			log.Fatalf("prepare resume: %v", err)
 		}
-		// The VMM runs on its own context so teardown can flush the guest before
-		// the VM is stopped (mirrors the cold path's agentCtx). A nil onStdio
-		// supervises the firecracker process without publishing its boot noise.
-		vmCtx, stopVM := context.WithCancel(context.Background())
-		vmCmd, vmStdioDone, err := startChild(vmCtx, &children, "sandbox", vmBin, vmArgs, nil, nil, nil)
-		if err != nil {
-			stopVM()
-			log.Fatalf("start resume vm: %v", err)
+		var (
+			vmCmd       *exec.Cmd
+			vmStdioDone <-chan struct{}
+			stopVM      = func() {}
+		)
+		if vmBin != "" {
+			// The VMM runs on its own context so teardown can flush the guest before
+			// the VM is stopped (mirrors the cold path's agentCtx). A nil onStdio
+			// supervises the firecracker process without publishing its boot noise.
+			vmCtx, cancel := context.WithCancel(context.Background())
+			stopVM = cancel
+			cmd, done, startErr := startChild(vmCtx, &children, "sandbox", vmBin, vmArgs, nil, nil, nil)
+			if startErr != nil {
+				stopVM()
+				log.Fatalf("start resume vm: %v", startErr)
+			}
+			vmCmd, vmStdioDone = cmd, done
+			resumeCtx, cancelResume := context.WithTimeout(ctx, snapshotResumeTimeout)
+			err = iso.ResumeReady(resumeCtx)
+			cancelResume()
+			if err != nil {
+				log.Fatalf("resume snapshot: %v", err)
+			}
+		} else if err := iso.ResumeReady(ctx); err != nil {
+			log.Fatalf("resume ready: %v", err)
 		}
-		resumeCtx, cancelResume := context.WithTimeout(ctx, snapshotResumeTimeout)
-		err = iso.ResumeReady(resumeCtx)
-		cancelResume()
-		if err != nil {
-			log.Fatalf("resume snapshot: %v", err)
-		}
-		phase.mark("snapshot resume")
+		phase.mark("resume")
 
-		// Resolve the workload environment from the image config + applied spec.
-		// The prewarm snapshot's guest booted with an empty environment, so this is
-		// the env it must run with: it's delivered to the guest below so its process
-		// PATH resolves the entrypoint and every exec — exactly as a cold boot's
-		// params.Env does — rather than only riding along on each exec session.
+		// Resolve the workload environment from the image config + applied spec and
+		// deliver it along with the first config's workspaces into the running
+		// workload. The already-running entrypoint won't pick up late env (the
+		// browser host doesn't need it), but the microvm guest's process env (for
+		// exec sessions) and the workspaces both matter — workspaces can't be baked
+		// into a snapshot that predates the config.
 		env := make(map[string]string, len(imgCfg.Env)+len(sp.Env)+1)
 		for _, kv := range imgCfg.Env {
 			if i := strings.IndexByte(kv, '='); i > 0 {
@@ -576,129 +593,55 @@ func main() {
 		}
 		maps.Copy(env, sp.Env)
 		env["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
-		// tty: true runs the entrypoint exec under a pty in the guest so its stdin
-		// stays open (otherwise a REPL-style entrypoint like `node` reads EOF and
-		// exits immediately, powering the guest off). The microvm backend is the
-		// only one that reaches this resume path. Advertise a terminal via TERM/
-		// COLORTERM so the program enables colour/cursor control; user env wins.
-		ttyEnabled := sp.Tty != nil && *sp.Tty
-		if ttyEnabled {
-			if _, ok := env["TERM"]; !ok {
-				env["TERM"] = "xterm-256color"
-			}
-			if _, ok := env["COLORTERM"]; !ok {
-				env["COLORTERM"] = "truecolor"
-			}
-		}
 		envSlice := make([]string, 0, len(env))
 		for k, v := range env {
 			envSlice = append(envSlice, k+"="+v)
 		}
-
-		// Deliver the env and mount the first config's workspaces into the running
-		// guest in one control RPC — neither can be baked into the snapshot, which
-		// predates the config (workspace 9p connections also can't survive a
-		// snapshot/restore). The env must land before the entrypoint exec below.
 		if err := iso.ApplyResumeState(ctx, envSlice); err != nil {
 			log.Printf("sandboxd: apply resume state: %v", err)
 		}
 
-		argv := append(append([]string{}, imgCfg.Entrypoint...), imgCfg.Cmd...)
-		if len(sp.Entrypoint) > 0 {
-			argv = sp.Entrypoint
-		}
-		if len(argv) == 0 {
-			log.Fatalf("resume: config has no entrypoint to run")
-		}
-		cwd := imgCfg.WorkingDir
-		if sp.Cwd != "" {
-			cwd = sp.Cwd
-		}
-
-		// The entrypoint exec runs on its own context so teardown (ctx cancel) can
-		// SIGTERM it; killing the exec session ends the workload, after which the
-		// guest is flushed and the VM stopped.
-		agentCtx, stopAgent := context.WithCancel(context.Background())
-		var cwdPtr *string
-		if cwd != "" {
-			cwdPtr = &cwd
-		}
-		execCmd, cleanup, err := iso.ExecCmd(agentCtx, isolation.ExecConfig{
-			Command: shellJoinArgv(argv),
-			Cwd:     cwdPtr,
-			Env:     &env,
-			TTY:     ttyEnabled,
-		})
-		if err != nil {
-			stopAgent()
-			log.Fatalf("resume: build entrypoint exec: %v", err)
-		}
-		execCmd.Cancel = func() error { return execCmd.Process.Signal(syscall.SIGTERM) }
-		execCmd.WaitDelay = 10 * time.Second
-
-		// agentStdioDone closes once the entrypoint's output is drained. On the tty
-		// path the sbxvsock bridge runs attached to a host pty: its stdin is the pty
-		// slave, which never EOFs, so sbxvsock doesn't send StdinClose and the guest
-		// keeps the in-guest pty open — without this a REPL-style entrypoint (node)
-		// reads EOF on stdin and exits at once, powering the guest off. The pty
-		// master is fanned out through a Session so /v1/exec-stream attach can reach
-		// the entrypoint, mirroring the cold-boot startAgentTTY path.
-		var entrypointDone <-chan struct{}
-		if ttyEnabled {
-			master, ptyErr := pty.Start(execCmd)
-			if ptyErr != nil {
-				cleanup()
-				stopAgent()
-				log.Fatalf("resume: start entrypoint exec (tty): %v", ptyErr)
-			}
-			sess := pty.NewSession(master, nil)
-			entrypointDone = sess.Done()
-			s.SetEntrypointTTY(sess)
-			log.Printf("sandboxd: entrypoint (resume) attached to tty")
-		} else {
-			done, startErr := superviseStdio(&children, "sandbox", execCmd, publishAgentStdio(broker))
-			if startErr != nil {
-				cleanup()
-				stopAgent()
-				log.Fatalf("resume: start entrypoint exec: %v", startErr)
-			}
-			entrypointDone = done
-		}
-
-		// The workload is committed; freeze boot-time config fields, flip the
-		// server to started, and announce readiness (the guest is already up).
+		// The workload is committed; freeze boot-time config fields, mark the
+		// workload live, flip the server to started, and announce readiness (the
+		// workload is already up).
 		s.SetStarted()
 		mountMgr.SetWorkloadLive()
-		phase.mark("entrypoint exec (resume)")
+		phase.mark("resume ready")
 		s.NotifyReady()
 
 		go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
 
-		// On lifecycle cancel (signal/TTL) stop the entrypoint exec; the teardown
-		// goroutine below (keyed on the entrypoint exit) then flushes + stops the
-		// guest and runs the shared finalize chain.
-		children.Go(func() {
-			<-ctx.Done()
-			stopAgent()
-		})
-		children.Go(func() {
-			<-entrypointDone
-			_ = execCmd.Wait()
-			cleanup()
-			log.Println("sandboxd: entrypoint finished")
-			// Flush the guest fs and stop the VMM before capture: CaptureSnapshot
-			// loop-mounts the overlay image and needs the guest's writes durable and
-			// the VM quiescent.
-			flushCtx, cancelFlush := context.WithTimeout(context.Background(), fsDrainTimeout)
-			if err := iso.FlushAgent(flushCtx); err != nil {
-				log.Printf("sandboxd: flush agent before stop: %v", err)
-			}
-			cancelFlush()
-			stopVM()
-			<-vmStdioDone
-			_ = vmCmd.Wait()
-			finalizeShutdown(*snapshotDir, store, iso, broker, s, cancelFS, cancel)
-		})
+		// Teardown. microvm: on lifecycle cancel flush + stop the VMM, and finalize
+		// when the VMM exits — which also covers the guest powering itself off when
+		// its workload exits — mirroring the cold path's two goroutines. container:
+		// on lifecycle cancel, StopAgent then finalize.
+		if vmBin != "" {
+			children.Go(func() {
+				<-ctx.Done()
+				flushCtx, cancelFlush := context.WithTimeout(context.Background(), fsDrainTimeout)
+				if err := iso.FlushAgent(flushCtx); err != nil {
+					log.Printf("sandboxd: flush agent before stop: %v", err)
+				}
+				cancelFlush()
+				stopVM()
+			})
+			children.Go(func() {
+				<-vmStdioDone
+				_ = vmCmd.Wait()
+				log.Println("sandboxd: agent finished")
+				finalizeShutdown(*snapshotDir, store, iso, broker, s, cancelFS, cancel)
+			})
+		} else {
+			children.Go(func() {
+				<-ctx.Done()
+				stopCtx, cancelStop := context.WithTimeout(context.Background(), fsDrainTimeout)
+				if err := iso.StopAgent(stopCtx); err != nil {
+					log.Printf("sandboxd: stop agent: %v", err)
+				}
+				cancelStop()
+				finalizeShutdown(*snapshotDir, store, iso, broker, s, cancelFS, cancel)
+			})
+		}
 	}
 
 	// Prepare the workload eagerly — config-independent, so in prewarm mode this
@@ -709,20 +652,25 @@ func main() {
 	// the first PUT /v1/config supplies the config. Otherwise launch immediately
 	// from the boot spec.
 	if *prewarm {
-		// Microvm fast path: boot, snapshot, and stop an idle guest now — off the
-		// claim path — so the first config can resume it (tens of ms) instead of
-		// paying for a full guest cold boot. Best-effort: on any failure we fall
-		// back to cold boot on claim (HasPrewarmSnapshot stays false).
-		if iso.Kind() == isolation.KindMicroVM {
-			if err := iso.PrewarmSnapshot(ctx); err != nil {
-				log.Printf("sandboxd: prewarm snapshot failed, will cold-boot on claim: %v", err)
-			} else {
-				log.Println("sandboxd: prewarm snapshot captured; will resume on first config")
-			}
+		// Bring up the image entrypoint now (config-independent) — off the claim
+		// path — so a claim adopts a warm, already-running workload: the microvm
+		// boots, snapshots, and stops a transient guest (the first config resumes
+		// it in tens of ms instead of a full cold boot); the container starts the
+		// entrypoint container and keeps it running. Best-effort: on any failure
+		// the backend falls back to cold launch on claim (HasPrewarmSnapshot stays
+		// false).
+		if err := iso.PrewarmSnapshot(ctx, imgCfg); err != nil {
+			log.Printf("sandboxd: prewarm failed, will cold-launch on claim: %v", err)
+		} else if iso.HasPrewarmSnapshot() {
+			log.Println("sandboxd: prewarm ready; will resume on first config")
 		}
 		log.Println("sandboxd: prewarm — awaiting first PUT /v1/config to start the workload")
 		select {
 		case <-firstConfig:
+			// Reset the phase clock at the claim boundary: without this the next
+			// mark ("resume") would span the idle park since the last boot phase,
+			// not the resume itself. Logs the warm-park duration as a bonus.
+			phase.mark("prewarm park")
 		case <-ctx.Done():
 			children.Wait()
 			return
@@ -1129,6 +1077,16 @@ func intOrZero(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// ceilVcpu converts the optional fractional cpu (the limit) into a whole guest
+// vCPU count, rounding up so the guest never gets fewer cores than requested.
+// Returns 0 when unset or non-positive so isolation.New applies its default.
+func ceilVcpu(p *float64) int {
+	if p == nil || *p <= 0 {
+		return 0
+	}
+	return int(math.Ceil(*p))
 }
 
 // isolationLocalMounts converts the local-backend FS list into the

@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/hiver-sh/hiver/internal/warmpool"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
@@ -37,7 +40,71 @@ const (
 	// pod an IP. This covers scheduling and image pull on a cold node; sandboxd boot
 	// is waited for separately by waitSandboxReady (the /v1/ping?block=true call).
 	podIPTimeout = 120 * time.Second
+
+	// defaultVcpuCount and defaultMemoryMiB mirror isolation.DefaultVcpuCount /
+	// DefaultMemoryMiB: the compute sandboxd boots a sandbox with when the config
+	// leaves cpu/memory unset. The pod's resource limits must match what the
+	// guest is actually given, so they're resolved with the same defaults.
+	defaultVcpuCount = 1.0
+	defaultMemoryMiB = 512
+
+	// defaultRequestCPU is the pod CPU *request* (cores) used when a config
+	// leaves request_cpu unset. It mirrors the api/config.yaml default and is
+	// deliberately below defaultVcpuCount so an idle sandbox reserves less than
+	// the limit it can burst to, letting many warm/idle pods pack onto a node.
+	defaultRequestCPU = 0.5
+
+	// podMemoryOverheadMiB is added to the guest RAM (config memory) when setting
+	// the pod's memory *limit*: the pod also runs firecracker/sandboxd and the
+	// sidecars (sbxproxy, sbxfuse) outside the guest, so a limit of exactly the
+	// guest size would OOMKill the pod. The request stays at the guest size so the
+	// scheduler reserves only what the guest consumes.
+	podMemoryOverheadMiB = 256
 )
+
+// sandboxResources maps a SandboxConfig's cpu/memory onto the pod container's
+// k8s resource requests and limits so the scheduler accounts for what the guest
+// actually consumes (without it the pod is best-effort and big-guest microVMs
+// overpack a node). CPU limit = cpu (the ceiling the guest can burst to); CPU
+// request = request_cpu (what the scheduler reserves), clamped to at most the
+// limit. Decoupling the two lets an idle sandbox reserve less than it can use.
+// Memory request = guest size; the memory limit adds host-side overhead for
+// firecracker + sandboxd + sidecars (see podMemoryOverheadMiB).
+func sandboxResources(cfg sandboxgen.SandboxConfig) corev1.ResourceRequirements {
+	cpuLimit := defaultVcpuCount
+	if cfg.Cpu != nil && *cfg.Cpu > 0 {
+		cpuLimit = *cfg.Cpu
+	}
+	cpuReq := defaultRequestCPU
+	if cfg.RequestCpu != nil && *cfg.RequestCpu > 0 {
+		cpuReq = *cfg.RequestCpu
+	}
+	// A request above the limit is rejected by the API server; clamp it.
+	cpuReq = math.Min(cpuReq, cpuLimit)
+	memMiB := defaultMemoryMiB
+	if cfg.Memory != nil && *cfg.Memory > 0 {
+		memMiB = *cfg.Memory
+	}
+	memReq := resource.NewQuantity(int64(memMiB)*1024*1024, resource.BinarySI)
+	memLimit := resource.NewQuantity(int64(memMiB+podMemoryOverheadMiB)*1024*1024, resource.BinarySI)
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    milliCPU(cpuReq),
+			corev1.ResourceMemory: *memReq,
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    milliCPU(cpuLimit),
+			corev1.ResourceMemory: *memLimit,
+		},
+	}
+}
+
+// milliCPU converts a fractional core count into a k8s CPU quantity in
+// millicores, rounding to the nearest milli so float representation error
+// (e.g. 1.001*1000 = 1000.999…) doesn't drop a milli.
+func milliCPU(cores float64) resource.Quantity {
+	return *resource.NewMilliQuantity(int64(math.Round(cores*1000)), resource.DecimalSI)
+}
 
 // sandboxHTTPClient talks to sandboxd over the pod network. A claim hits the
 // same pod IP twice back to back — applyConfig's PUT /v1/config then
@@ -82,6 +149,14 @@ func newK8sRuntime() (*K8sRuntime, error) {
 			return nil, fmt.Errorf("build kubeconfig: %w", err)
 		}
 	}
+	// Raise the client-side rate limiter above the client-go defaults (QPS 5 /
+	// Burst 10). A concurrent claim burst issues one pod Update per claim plus the
+	// reconciler's periodic writes; at the defaults those throttle (observed as
+	// "client-side throttling" delays added to claim latency). Sized via env so it
+	// can track the expected claim concurrency without a rebuild.
+	config.QPS = envFloat32("HIVE_CLIENT_QPS", 50)
+	config.Burst = envInt("HIVE_CLIENT_BURST", 100)
+
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("k8s client: %w", err)
@@ -94,6 +169,34 @@ func newK8sRuntime() (*K8sRuntime, error) {
 	r.startWarmPool(config)
 	r.startRecycler(context.Background())
 	return r, nil
+}
+
+// envFloat32 reads name as a float32, returning def if unset or unparseable.
+func envFloat32(name string, def float32) float32 {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 32)
+	if err != nil {
+		log.Printf("controller: invalid %s=%q, using %v: %v", name, v, def, err)
+		return def
+	}
+	return float32(f)
+}
+
+// envInt reads name as an int, returning def if unset or unparseable.
+func envInt(name string, def int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("controller: invalid %s=%q, using %d: %v", name, v, def, err)
+		return def
+	}
+	return n
 }
 
 // startWarmPool wires up and launches the warm-pool manager. Failure to build
@@ -450,6 +553,10 @@ func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []by
 				SecurityContext: &corev1.SecurityContext{
 					Privileged: &privileged,
 				},
+				// Reserve the guest's cpu/memory at the pod level so the
+				// scheduler accounts for it; the limit adds host-side overhead
+				// (firecracker + sandboxd + sidecars) so the pod isn't OOMKilled.
+				Resources: sandboxResources(cfg),
 			},
 		},
 	}
@@ -486,6 +593,22 @@ func (r *K8sRuntime) snapshotVolume() corev1.Volume {
 func (r *K8sRuntime) buildWarmPod(wp warmpool.WarmPool, img warmpool.WarmPoolImage) *corev1.Pod {
 	image := img.Image
 	cfg := sandboxgen.SandboxConfig{Image: &image}
+	// Size the warm guest from the pool spec: cpu/memory are frozen at the warm
+	// pod's prewarm boot (HIVE_SPEC -> sandboxd -> isolation), so a claim adopts a
+	// pod already sized here. They also flow into the pod's resource requests via
+	// sandboxPodSpec. Zero leaves them unset, defaulting in sandboxd / the runtime.
+	if img.Cpu > 0 {
+		cpu := img.Cpu
+		cfg.Cpu = &cpu
+	}
+	if img.RequestCpu > 0 {
+		reqCPU := img.RequestCpu
+		cfg.RequestCpu = &reqCPU
+	}
+	if img.Memory > 0 {
+		mem := img.Memory
+		cfg.Memory = &mem
+	}
 	specBytes, _ := json.Marshal(cfg)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

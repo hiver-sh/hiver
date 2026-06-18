@@ -348,17 +348,17 @@ const text = new TextDecoder().decode(bytes);
 `SandboxConfig` describes the desired state of a sandbox. All fields are
 optional.
 
-| Field        | Type                       | Default            | Notes                                                            |
-| ------------ | -------------------------- | ------------------ | ---------------------------------------------------------------- |
-| `image`      | `string`                   | —                  | Agent image to launch. Immutable after init. Determines isolation (a microvm image ships a guest rootfs). |
-| `cpu`        | `number`                   | `1`                | Virtual CPUs. Immutable after init.                              |
-| `memory`     | `number`                   | `512`              | Memory in MiB. Immutable after init.                             |
-| `entrypoint` | `string \| string[]`       | image default      | Override the container entrypoint (argv array or whitespace-split string). |
-| `env`        | `Record<string, string>`   | —                  | Extra environment variables. Immutable after init.               |
-| `ttl`        | `number`                   | `1800`             | Idle TTL in seconds. Reset with `ping()`. `0` disables shutdown. |
-| `fs`         | `FileSystem[]`             | local `/workspace` | See [Filesystems](#filesystems).                                 |
-| `egress`     | `EgressRule[]`             | allow-all          | Ordered rules; see [Egress](#egress-rules--overrides).           |
-| `snapshot`   | `Snapshot`                 | —                  | See [Snapshots](#snapshots).                                     |
+| Field        | Type                     | Default            | Notes                                                                                                     |
+| ------------ | ------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------- |
+| `image`      | `string`                 | —                  | Agent image to launch. Immutable after init. Determines isolation (a microvm image ships a guest rootfs). |
+| `cpu`        | `number`                 | `1`                | Virtual CPUs. Immutable after init.                                                                       |
+| `memory`     | `number`                 | `512`              | Memory in MiB. Immutable after init.                                                                      |
+| `entrypoint` | `string \| string[]`     | image default      | Override the container entrypoint (argv array or whitespace-split string).                                |
+| `env`        | `Record<string, string>` | —                  | Extra environment variables. Immutable after init.                                                        |
+| `ttl`        | `number`                 | `1800`             | Idle TTL in seconds. Reset with `ping()`. `0` disables shutdown.                                          |
+| `fs`         | `FileSystem[]`           | local `/workspace` | See [Filesystems](#filesystems).                                                                          |
+| `egress`     | `EgressRule[]`           | allow-all          | Ordered rules; see [Egress](#egress-rules--overrides).                                                    |
+| `snapshot`   | `Snapshot`               | —                  | See [Snapshots](#snapshots).                                                                              |
 
 ---
 
@@ -571,7 +571,9 @@ session imports a library once, then reuses it across several writes while
 keeping a running total in memory:
 
 ```ts
-const exec = await sandbox.execStream(["python3", "-iq"], { cwd: "/workspace" });
+const exec = await sandbox.execStream(["python3", "-iq"], {
+  cwd: "/workspace",
+});
 
 const commands = [
   "import math; total = 0", // setup runs once...
@@ -610,7 +612,7 @@ Run any example with `npx tsx examples/<name>`.
 | `node-exec.ts` / `python-exec.ts`               | Run a command and read the buffered result.                          |
 | `node-exec-stream.ts` / `python-exec-stream.ts` | Stream command output over SSE.                                      |
 | `node-exec-tty.ts` / `python-exec-tty.ts`       | Drive an interactive REPL over a TTY exec stream.                    |
-| `playwright-exec-stream.ts`                      | Launch Chromium once in a REPL session and reuse it across scrapes.  |
+| `playwright-exec-stream.ts`                     | Launch Chromium once in a REPL session and reuse it across scrapes.  |
 | `terminal-attach.ts`                            | Attach your local terminal to an interactive shell in the sandbox.   |
 | `node-internal-service.ts`                      | Start deny-all, then `applyConfig` to allow an internal host.        |
 | `http-server`                                   | Proxy HTTP requests to a service running inside the sandbox.         |

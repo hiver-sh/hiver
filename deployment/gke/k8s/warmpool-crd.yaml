@@ -71,6 +71,34 @@ spec:
                           Hard ceiling on total pods (warm + claimed) for this
                           image. Its warm buffer shrinks as claims grow so
                           warm+claimed never exceeds this.
+                      cpu:
+                        type: number
+                        exclusiveMinimum: true
+                        minimum: 0
+                        description: >-
+                          Virtual CPUs each warm pod boots with, as a ceiling
+                          (the pod CPU limit). May be fractional (e.g. 0.5); the
+                          microvm guest vCPU count is this value rounded up.
+                          Frozen at the warm pod's boot — a claim can't resize it
+                          — so size the buffer for what claims need. Omit for the
+                          runtime default (1).
+                      requestCpu:
+                        type: number
+                        exclusiveMinimum: true
+                        minimum: 0
+                        description: >-
+                          CPU cores reserved at schedule time (the pod CPU
+                          request), decoupled from cpu (the limit) so an idle warm
+                          buffer reserves less than it can burst to and packs
+                          densely onto a node. Omit for the runtime default (0.5).
+                      memory:
+                        type: integer
+                        minimum: 128
+                        description: >-
+                          Memory in MiB each warm pod boots with (microvm guest
+                          RAM). Frozen at the warm pod's boot — a claim can't
+                          resize it — so size the buffer for what claims need.
+                          Omit for the runtime default (512).
             status:
               type: object
               properties:

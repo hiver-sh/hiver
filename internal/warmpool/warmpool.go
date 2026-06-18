@@ -75,6 +75,19 @@ type WarmPoolImage struct {
 	// MaxReplicas caps total pods for this image (warm + claimed); the warm buffer
 	// shrinks as claims grow so warm+claimed never exceeds it.
 	MaxReplicas int `json:"maxReplicas"`
+	// Cpu and Memory (MiB) size each warm pod's compute. Like the image, they are
+	// frozen at the warm pod's boot — a claim adopts a warm pod as-is and can't
+	// resize its already-booted guest — so the buffer must be pre-allocated at the
+	// size claims will need. Cpu is the limit/ceiling (may be fractional; the
+	// guest vCPU count is it rounded up). Zero means the runtime default
+	// (1 vCPU / 512 MiB).
+	Cpu    float64 `json:"cpu,omitempty"`
+	Memory int     `json:"memory,omitempty"`
+	// RequestCpu is the pod CPU request (cores) reserved at schedule time,
+	// decoupled from Cpu (the limit) so an idle warm buffer reserves less than it
+	// can burst to and packs densely onto a node. Zero means the runtime default
+	// (see defaultRequestCPU).
+	RequestCpu float64 `json:"requestCpu,omitempty"`
 }
 
 // WarmPoolStatus is the observed state the reconciler writes back.

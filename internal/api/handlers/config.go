@@ -60,6 +60,7 @@ func freezeImmutable(current, desired gen.SandboxConfig, started bool) gen.Sandb
 	}
 	if started {
 		desired.Cpu = current.Cpu
+		desired.RequestCpu = current.RequestCpu
 		desired.Memory = current.Memory
 		desired.Entrypoint = current.Entrypoint
 		desired.Cwd = current.Cwd

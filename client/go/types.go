@@ -124,9 +124,16 @@ type SandboxConfig struct {
 	// Image references the agent image to launch. Cannot be changed after the
 	// sandbox is initialized.
 	Image string `json:"image,omitempty"`
-	// CPU is the number of virtual CPUs allocated to the sandbox. Defaults to 1.
-	// Cannot be changed after the sandbox is initialized.
-	CPU int `json:"cpu,omitempty"`
+	// CPU is the number of virtual CPUs allocated to the sandbox, as a ceiling
+	// (the pod CPU limit). May be fractional (e.g. 0.5); the microvm guest vCPU
+	// count is this value rounded up. Defaults to 1. Cannot be changed after the
+	// sandbox is initialized.
+	CPU float64 `json:"cpu,omitempty"`
+	// RequestCPU is the CPU cores reserved for the sandbox at schedule time (the
+	// pod CPU request), decoupled from CPU (the limit) so an idle sandbox reserves
+	// less than it can burst to. Defaults to 0.5. Cannot be changed after the
+	// sandbox is initialized.
+	RequestCPU float64 `json:"request_cpu,omitempty"`
 	// Memory allocated to the sandbox, in MiB. Defaults to 512. Cannot be
 	// changed after the sandbox is initialized.
 	Memory int `json:"memory,omitempty"`
