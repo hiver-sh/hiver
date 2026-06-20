@@ -45,6 +45,11 @@ type MountSource struct {
 // if the path falls under a MountSource.ContainerPath the content is read
 // from MountSource.HostDir; otherwise it is read from upperDir. Paths not
 // present in the resolved host directory are silently skipped.
+//
+// When include is nil or empty, the entire overlay upper dir is captured
+// (all files modified since the base image started, excluding the upper dir
+// entry itself). Local-backend FS mounts are not included automatically;
+// use explicit include patterns to capture those.
 func Capture(dst, upperDir string, mounts []MountSource, include []string) error {
 	f, err := os.Create(dst)
 	if err != nil {
@@ -56,6 +61,20 @@ func Capture(dst, upperDir string, mounts []MountSource, include []string) error
 	tw := tar.NewWriter(gz)
 
 	written := 0
+	if len(include) == 0 {
+		// No explicit include list: walk the entire overlay upper layer so that
+		// any file written into the container's root filesystem is captured.
+		// The upper dir entry itself is skipped (its metadata belongs to the
+		// overlay, not the container's data).
+		if _, err := os.Lstat(upperDir); err == nil {
+			if err := walkUpperIntoTar(tw, upperDir); err != nil {
+				_ = tw.Close()
+				_ = gz.Close()
+				return fmt.Errorf("walk upper: %w", err)
+			}
+			written++
+		}
+	}
 	for _, pattern := range include {
 		base := baseDir(pattern)
 		hostRoot, tarPrefix := resolveSource(upperDir, mounts, base)
@@ -228,6 +247,62 @@ func baseDir(pattern string) string {
 		p = filepath.Dir(p)
 	}
 	return p
+}
+
+// walkUpperIntoTar walks the overlay upper dir and adds every entry (excluding
+// the root dir itself) into tw using the path relative to upperDir as the tar
+// name. This encodes the container-absolute path without a leading slash,
+// matching the format resolveTarget expects on restore.
+func walkUpperIntoTar(tw *tar.Writer, upperDir string) error {
+	return filepath.Walk(upperDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(upperDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil // skip the upper dir root entry
+		}
+		var hdr *tar.Header
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			hdr = &tar.Header{
+				Typeflag: tar.TypeSymlink,
+				Name:     rel,
+				Linkname: link,
+				Mode:     int64(info.Mode()),
+				ModTime:  info.ModTime(),
+			}
+			if sys, ok := info.Sys().(*syscall.Stat_t); ok {
+				hdr.Uid = int(sys.Uid)
+				hdr.Gid = int(sys.Gid)
+			}
+		} else {
+			hdr, err = tar.FileInfoHeader(info, "")
+			if err != nil {
+				return err
+			}
+			hdr.Name = rel
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		fh, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer fh.Close()
+		_, err = io.Copy(tw, fh)
+		return err
+	})
 }
 
 // walkIntoTar walks hostRoot recursively and writes each entry into tw.

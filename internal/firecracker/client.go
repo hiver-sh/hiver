@@ -208,12 +208,23 @@ type memBackend struct {
 	BackendPath string `json:"backend_path"`
 }
 
+// NetworkOverride is one entry of SnapshotLoad.NetworkOverrides: it repoints a
+// snapshotted network interface at a different host tap. Required for pack-mode
+// resume, where every VM loads the same base snapshot (which recorded the base
+// builder's tap) but must egress on its own per-sandbox tap. Added in Firecracker
+// v1.12.0; see docker/core.Dockerfile's version pin.
+type NetworkOverride struct {
+	IfaceID     string `json:"iface_id"`
+	HostDevName string `json:"host_dev_name"`
+}
+
 // SnapshotLoad is the body of PUT /snapshot/load.
 type SnapshotLoad struct {
-	SnapshotPath        string     `json:"snapshot_path"`
-	MemBackend          memBackend `json:"mem_backend"`
-	EnableDiffSnapshots bool       `json:"enable_diff_snapshots"`
-	ResumeVM            bool       `json:"resume_vm"`
+	SnapshotPath        string            `json:"snapshot_path"`
+	MemBackend          memBackend        `json:"mem_backend"`
+	EnableDiffSnapshots bool              `json:"enable_diff_snapshots"`
+	ResumeVM            bool              `json:"resume_vm"`
+	NetworkOverrides    []NetworkOverride `json:"network_overrides,omitempty"`
 }
 
 // CreateSnapshot writes a full VM snapshot — guest memory to memFilePath and
@@ -232,13 +243,15 @@ func (c *Client) CreateSnapshot(ctx context.Context, snapshotPath, memFilePath s
 // CreateSnapshot. It must be the first state-changing call on a *fresh*
 // Firecracker process — one started with no --config-file and not yet booted.
 // When resume is true the guest is resumed as part of the load; otherwise it
-// stays Paused until Resume.
-func (c *Client) LoadSnapshot(ctx context.Context, snapshotPath, memFilePath string, resume bool) error {
+// stays Paused until Resume. netOverrides repoints snapshotted interfaces at
+// per-VM host taps (nil for an in-place resume that reuses the recorded tap).
+func (c *Client) LoadSnapshot(ctx context.Context, snapshotPath, memFilePath string, resume bool, netOverrides ...NetworkOverride) error {
 	return c.put(ctx, "/snapshot/load", SnapshotLoad{
 		SnapshotPath:        snapshotPath,
 		MemBackend:          memBackend{BackendType: "File", BackendPath: memFilePath},
 		EnableDiffSnapshots: false,
 		ResumeVM:            resume,
+		NetworkOverrides:    netOverrides,
 	})
 }
 

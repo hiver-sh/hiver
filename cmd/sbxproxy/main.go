@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -67,7 +68,6 @@ func main() {
 	caCert, caKey := loadCA(*caCertPath, *caKeyPath)
 	p, err := proxy.New(proxy.Config{
 		Addr:         *addr,
-		Rules:        rules,
 		Audit:        auditOut,
 		OutboundMark: *mark,
 		CACert:       caCert,
@@ -76,6 +76,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("proxy.New: %v", err)
 	}
+	p.SetRulesBySource(rules)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -98,8 +99,8 @@ func main() {
 					log.Printf("sbxproxy: SIGHUP reload failed (keeping current rules): %v", err)
 					continue
 				}
-				p.SetRules(newRules)
-				log.Printf("sbxproxy: reloaded %d rules from %s", len(newRules), *rulesPath)
+				p.SetRulesBySource(newRules)
+				log.Printf("sbxproxy: reloaded %d rules across %d source(s) from %s", countRules(newRules), len(newRules), *rulesPath)
 			}
 		}
 	}()
@@ -119,7 +120,7 @@ func main() {
 	}
 
 	if *transparent {
-		log.Printf("sbxproxy listening (transparent) on %s, %d rules, mark=0x%x", *addr, len(rules), *mark)
+		log.Printf("sbxproxy listening (transparent) on %s, %d rules, mark=0x%x", *addr, countRules(rules), *mark)
 		if err := p.ServeTransparent(ctx, *addr); err != nil {
 			log.Fatalf("proxy.ServeTransparent: %v", err)
 		}
@@ -129,17 +130,16 @@ func main() {
 	if err := p.Listen(); err != nil {
 		log.Fatalf("proxy.Listen: %v", err)
 	}
-	log.Printf("sbxproxy listening on %s, %d rules", p.Addr(), len(rules))
+	log.Printf("sbxproxy listening on %s, %d rules", p.Addr(), countRules(rules))
 	if err := p.Run(ctx); err != nil {
 		log.Fatalf("proxy.Run: %v", err)
 	}
 }
 
-// loadRules reads a JSON-encoded []proxy.EgressRule. An empty path
-// yields a deny-everything proxy, which is the right default if the
-// orchestrator forgot to wire rules in. Errors are fatal — initial
-// load failures shouldn't be papered over.
-func loadRules(path string) []proxy.EgressRule {
+// loadRules reads the egress rules. An empty path yields a deny-everything
+// proxy, which is the right default if the orchestrator forgot to wire rules in.
+// Errors are fatal — initial load failures shouldn't be papered over.
+func loadRules(path string) map[string][]proxy.EgressRule {
 	rules, err := readRules(path)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -147,9 +147,16 @@ func loadRules(path string) []proxy.EgressRule {
 	return rules
 }
 
-// readRules is the non-fatal sibling of loadRules; SIGHUP reloads use
-// it so a bad on-disk write doesn't crash the proxy.
-func readRules(path string) ([]proxy.EgressRule, error) {
+// readRules is the non-fatal sibling of loadRules; SIGHUP reloads use it so a
+// bad on-disk write doesn't crash the proxy. It accepts two on-disk shapes:
+//
+//   - a per-source object `{"<srcIP>": [rule...], ...}` — one allowlist per
+//     sandbox source IP (the multi-sandbox form, design §8), and
+//   - a bare array `[rule...]` — the single-sandbox form, mapped to the
+//     all-sources "" bucket.
+//
+// The shape is detected from the first non-space byte.
+func readRules(path string) (map[string][]proxy.EgressRule, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -157,11 +164,28 @@ func readRules(path string) ([]proxy.EgressRule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read rules %s: %w", path, err)
 	}
-	var rules []proxy.EgressRule
-	if err := json.Unmarshal(data, &rules); err != nil {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var rules []proxy.EgressRule
+		if err := json.Unmarshal(trimmed, &rules); err != nil {
+			return nil, fmt.Errorf("parse rules %s: %w", path, err)
+		}
+		return map[string][]proxy.EgressRule{"": rules}, nil
+	}
+	var bySource map[string][]proxy.EgressRule
+	if err := json.Unmarshal(trimmed, &bySource); err != nil {
 		return nil, fmt.Errorf("parse rules %s: %w", path, err)
 	}
-	return rules, nil
+	return bySource, nil
+}
+
+// countRules totals the rules across all source buckets, for logging.
+func countRules(m map[string][]proxy.EgressRule) int {
+	n := 0
+	for _, rs := range m {
+		n += len(rs)
+	}
+	return n
 }
 
 // loadCA reads the PEM CA cert + key. Returns (nil, nil) when both

@@ -24,24 +24,24 @@ import (
 // FUSE bind-mounts added by runc shadow their paths inside the container's
 // mount namespace, so writes to FUSE-managed paths go to the FUSE daemon
 // and never reach UpperDir.
-func MountOverlay() error {
-	for _, dir := range []string{ScratchDir, MergedDir} {
+func MountOverlay(o Overlay) error {
+	for _, dir := range []string{o.Scratch, o.Merged} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", dir, err)
 		}
 	}
-	if err := syscall.Mount("tmpfs", ScratchDir, "tmpfs", 0, ""); err != nil {
+	if err := syscall.Mount("tmpfs", o.Scratch, "tmpfs", 0, ""); err != nil {
 		return fmt.Errorf("mount tmpfs scratch: %w", err)
 	}
-	for _, dir := range []string{UpperDir, WorkDir} {
+	for _, dir := range []string{o.Upper, o.Work} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			_ = syscall.Unmount(ScratchDir, 0)
+			_ = syscall.Unmount(o.Scratch, 0)
 			return fmt.Errorf("mkdir %s: %w", dir, err)
 		}
 	}
-	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", RootfsDir, UpperDir, WorkDir)
-	if err := syscall.Mount("overlay", MergedDir, "overlay", 0, opts); err != nil {
-		_ = syscall.Unmount(ScratchDir, 0)
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", o.Lower, o.Upper, o.Work)
+	if err := syscall.Mount("overlay", o.Merged, "overlay", 0, opts); err != nil {
+		_ = syscall.Unmount(o.Scratch, 0)
 		return err
 	}
 	return nil
@@ -49,12 +49,12 @@ func MountOverlay() error {
 
 // UnmountOverlay tears down the overlay stack in reverse mount order.
 // Must be called after the runc container exits.
-func UnmountOverlay() error {
+func UnmountOverlay(o Overlay) error {
 	var errs []error
-	if err := syscall.Unmount(MergedDir, 0); err != nil {
+	if err := syscall.Unmount(o.Merged, 0); err != nil {
 		errs = append(errs, fmt.Errorf("unmount merged: %w", err))
 	}
-	if err := syscall.Unmount(ScratchDir, 0); err != nil {
+	if err := syscall.Unmount(o.Scratch, 0); err != nil {
 		errs = append(errs, fmt.Errorf("unmount scratch tmpfs: %w", err))
 	}
 	return errors.Join(errs...)

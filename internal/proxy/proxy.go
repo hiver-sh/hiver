@@ -116,9 +116,10 @@ type EgressOverride struct {
 // the proxy doesn't see body bytes through the cipher.
 type AuditEvent struct {
 	At         time.Time         `json:"at"`
-	Type       string            `json:"type"`  // always "network"
-	Phase      string            `json:"phase"` // "request" | "response" | "response_chunk"
+	Type       string            `json:"type"`             // always "network"
+	Phase      string            `json:"phase"`            // "request" | "response" | "response_chunk"
 	RequestID  int               `json:"request_id"`
+	SrcIP      string            `json:"src_ip,omitempty"` // workload source IP; used in pack mode to route to per-sandbox broker
 	Method     string            `json:"method"`
 	Host       string            `json:"host"`
 	Path       string            `json:"path,omitempty"`
@@ -141,10 +142,14 @@ type Proxy struct {
 	transport *http.Transport
 	minter    *CertMinter // nil unless TLS termination is enabled
 
-	// rules holds the current egress rules, swappable at runtime via
-	// SetRules so sandboxd can reconcile after a /v1/config PUT
-	// without restarting the proxy.
-	rules atomic.Pointer[[]EgressRule]
+	// bySource holds egress rules keyed by the workload's source IP, so one
+	// shared proxy can enforce a different allowlist per sandbox (design §8).
+	// The "" key is the "all sources" bucket used in single-sandbox mode
+	// (SetRules). A connection's source IP is matched first, then "", then
+	// denied — so an unknown source on a per-source map is default-deny.
+	// Swappable at runtime via SetRules/SetRulesBySource so sandboxd can
+	// reconcile after a config change without restarting the proxy.
+	bySource atomic.Pointer[map[string][]EgressRule]
 
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
@@ -154,22 +159,51 @@ type Proxy struct {
 	dnsDedupe dnsDedupe // collapses repeated DNS-sink lookups in the audit stream
 }
 
-// SetRules atomically replaces the egress rules. Safe to call from
-// any goroutine; in-flight matches see either the old or the new list,
-// never a torn read.
+// SetRules atomically replaces the egress rules for all sources (single-sandbox
+// mode). Equivalent to SetRulesBySource with one "" bucket. Safe to call from
+// any goroutine; in-flight matches see either the old or the new rules, never a
+// torn read.
 func (p *Proxy) SetRules(rules []EgressRule) {
-	cp := make([]EgressRule, len(rules))
-	copy(cp, rules)
-	p.rules.Store(&cp)
+	p.SetRulesBySource(map[string][]EgressRule{"": rules})
 }
 
-// currentRules returns the live egress rules. The returned slice is
-// owned by the proxy — callers must not mutate it.
-func (p *Proxy) currentRules() []EgressRule {
-	if r := p.rules.Load(); r != nil {
-		return *r
+// SetRulesBySource atomically replaces the per-source egress rule map. Keys are
+// workload source IPs; the "" key is the all-sources fallback. A copy is stored,
+// so the caller may mutate its map afterward.
+func (p *Proxy) SetRulesBySource(bySource map[string][]EgressRule) {
+	cp := make(map[string][]EgressRule, len(bySource))
+	for src, rules := range bySource {
+		rs := make([]EgressRule, len(rules))
+		copy(rs, rules)
+		cp[src] = rs
+	}
+	p.bySource.Store(&cp)
+}
+
+// rulesForSource returns the egress rules that govern srcIP: the source's own
+// bucket if present, else the all-sources "" bucket, else nil (deny). The
+// returned slice is owned by the proxy — callers must not mutate it.
+func (p *Proxy) rulesForSource(srcIP string) []EgressRule {
+	m := p.bySource.Load()
+	if m == nil {
+		return nil
+	}
+	if rs, ok := (*m)[srcIP]; ok {
+		return rs
+	}
+	if rs, ok := (*m)[""]; ok {
+		return rs
 	}
 	return nil
+}
+
+// srcIPOf extracts the host portion of a "host:port" remote address, or returns
+// the input unchanged if it carries no port.
+func srcIPOf(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 // New validates the config and returns a Proxy.
@@ -278,7 +312,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		defPort = 443
 	}
 	host, port := splitHostPort(r.URL.Host, r.Host, defPort)
-	ac := p.beginAudit(r.Method, host, r.URL.Path, r.URL.RawQuery)
+	ac := p.beginAudit(srcIPOf(r.RemoteAddr), r.Method, host, r.URL.Path, r.URL.RawQuery)
 	log.Printf("handleHTTP: %s %s body_nil=%v", r.Method, r.URL, r.Body == nil)
 	if r.Body != nil {
 		b, err := io.ReadAll(r.Body)
@@ -290,7 +324,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ac.requestHeaders = headerMap(r.Header)
-	rule := MatchEgress(p.currentRules(), r.Method, host, port, r.URL.Path)
+	rule := MatchEgress(p.rulesForSource(srcIPOf(r.RemoteAddr)), r.Method, host, port, r.URL.Path)
 	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
@@ -590,9 +624,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// CONNECT always carries a port (e.g. "example.com:443"); 443 is
 	// only used as a safety net for malformed inputs.
 	host, port := splitHostPort("", r.Host, 443)
-	ac := p.beginAudit("CONNECT", host, "", "")
+	ac := p.beginAudit(srcIPOf(r.RemoteAddr), "CONNECT", host, "", "")
 	// CONNECT is host-only — body is opaque under TLS.
-	rule := MatchEgress(p.currentRules(), "CONNECT", host, port, "")
+	rule := MatchEgress(p.rulesForSource(srcIPOf(r.RemoteAddr)), "CONNECT", host, port, "")
 	if rule == nil || rule.Access == "deny" {
 		ac.deny("no matching rule", http.StatusForbidden)
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
@@ -849,6 +883,7 @@ func (p *Proxy) audit(e AuditEvent) {
 type auditCtx struct {
 	p               *Proxy
 	requestID       int
+	srcIP           string
 	start           time.Time
 	method          string
 	host            string
@@ -866,11 +901,12 @@ type auditCtx struct {
 // It rides alongside `path` to the audit event so the SSE
 // `egress.request` consumer gets `path` and `query` as separate
 // fields, while allowlist matching keeps using just `path`.
-func (p *Proxy) beginAudit(method, host, path, query string) *auditCtx {
+func (p *Proxy) beginAudit(srcIP, method, host, path, query string) *auditCtx {
 	n := p.requestSeq.Add(1)
 	return &auditCtx{
 		p:         p,
 		requestID: int(n),
+		srcIP:     srcIP,
 		start:     time.Now(),
 		method:    method,
 		host:      host,
@@ -888,16 +924,16 @@ func (a *auditCtx) deny(reason string, status int) {
 	now := time.Now()
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
-		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		RequestID: a.requestID, SrcIP: a.srcIP,
+		Method:  a.method, Host: a.host, Path: a.path, Query: a.query,
 		Headers: a.requestHeaders,
 		Body:    a.requestBody,
 		Verdict: "deny", Status: status, Reason: reason,
 	})
 	a.p.audit(AuditEvent{
 		At: now, Type: "network", Phase: "response",
-		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		RequestID: a.requestID, SrcIP: a.srcIP,
+		Method:     a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "deny", Status: status, Reason: reason,
 		DurationMs: int(now.Sub(a.start) / time.Millisecond),
 	})
@@ -909,8 +945,8 @@ func (a *auditCtx) deny(reason string, status int) {
 func (a *auditCtx) allow() {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
-		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		RequestID: a.requestID, SrcIP: a.srcIP,
+		Method:   a.method, Host: a.host, Path: a.path, Query: a.query,
 		Headers:  a.requestHeaders,
 		Body:     a.requestBody,
 		Verdict:  "allow",
@@ -926,8 +962,8 @@ func (a *auditCtx) allow() {
 func (a *auditCtx) response(status int) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response",
-		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		RequestID: a.requestID, SrcIP: a.srcIP,
+		Method:     a.method, Host: a.host, Path: a.path, Query: a.query,
 		Headers: a.responseHeaders,
 		Verdict: "allow", Status: status,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
@@ -940,7 +976,7 @@ func (a *auditCtx) response(status int) {
 func (a *auditCtx) streamChunk(body, label string) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response_chunk",
-		RequestID: a.requestID,
+		RequestID: a.requestID, SrcIP: a.srcIP,
 		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
 		Body: body, Label: label, Verdict: "allow",
 	})
@@ -949,8 +985,8 @@ func (a *auditCtx) streamChunk(body, label string) {
 func (a *auditCtx) responseError(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response",
-		RequestID: a.requestID,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		RequestID: a.requestID, SrcIP: a.srcIP,
+		Method:     a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "error", Status: status, Reason: reason,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
 	})

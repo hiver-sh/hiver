@@ -16,7 +16,7 @@ export function createShutdown(
       promise = (async () => {
         ac.abort();
         await opts?.cleanup?.();
-        await hiver.shutdown(sandbox).catch(() => {});
+        await sandbox.shutdown().catch(() => {});
       })().finally(() => process.exit(code));
     }
     return promise;

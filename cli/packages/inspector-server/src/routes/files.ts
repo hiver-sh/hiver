@@ -4,7 +4,7 @@ import { waitForSandbox } from "../lib/waitForSandbox.js";
 
 const router = Router();
 
-router.get("/:id/directories", async (req: Request, res: Response) => {
+router.get("/:id/:key/directories", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   const path = req.query.path as string | undefined;
   if (!path) {
@@ -23,7 +23,7 @@ router.get("/:id/directories", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/:id/file", async (req: Request, res: Response) => {
+router.get("/:id/:key/file", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   const path = req.query.path as string | undefined;
   if (!path) {

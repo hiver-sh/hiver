@@ -325,6 +325,40 @@ func (t *proxyTranslator) handle(raw map[string]any) {
 	}
 }
 
+// proxyRouter routes proxy audit events to the per-sandbox broker that owns the
+// workload whose source IP generated the event. Used in pack mode where one
+// shared sbxproxy serves N sandboxes (each with a distinct source IP).
+type proxyRouter struct {
+	mu sync.RWMutex
+	m  map[string]*proxyTranslator // srcIP → translator for that sandbox's broker
+}
+
+func newProxyRouter() *proxyRouter {
+	return &proxyRouter{m: map[string]*proxyTranslator{}}
+}
+
+func (r *proxyRouter) register(srcIP string, broker *events.Broker) {
+	r.mu.Lock()
+	r.m[srcIP] = newProxyTranslator(broker)
+	r.mu.Unlock()
+}
+
+func (r *proxyRouter) unregister(srcIP string) {
+	r.mu.Lock()
+	delete(r.m, srcIP)
+	r.mu.Unlock()
+}
+
+func (r *proxyRouter) handle(raw map[string]any) {
+	srcIP, _ := raw["src_ip"].(string)
+	r.mu.RLock()
+	t := r.m[srcIP]
+	r.mu.RUnlock()
+	if t != nil {
+		t.handle(raw)
+	}
+}
+
 func proxyStreamChunkFactory(raw map[string]any, requestID int64) events.Factory {
 	body, _ := raw["body"].(string)
 	if body == "" {
@@ -460,9 +494,9 @@ type fuseTranslator struct {
 	corr    *correlator
 }
 
-func newFuseTranslator(broker *events.Broker, mount string, backend gen.Backend) *fuseTranslator {
-	return &fuseTranslator{broker: broker, mount: mount, backend: backend, corr: newCorrelator()}
-}
+// fuseTranslator instances are built by sharedFuseTranslator per registered
+// mount (with a persistent per-mount correlator), since the pod's single sbxfuse
+// multiplexes every workspace's audit events onto one stream.
 
 func (t *fuseTranslator) handle(raw map[string]any) {
 	phase, _ := raw["phase"].(string)

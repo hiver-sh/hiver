@@ -7,7 +7,6 @@ export const SANDBOX_CONFIG_SCHEMA = {
     SandboxConfig: {
       type: "object",
       description: "Hive sandbox configuration.",
-      required: ["fs"],
       additionalProperties: false,
       properties: {
         image: {
@@ -23,14 +22,6 @@ export const SANDBOX_CONFIG_SCHEMA = {
           description:
             "Number of virtual CPUs allocated to the sandbox, as a ceiling (the pod CPU limit). May be fractional (e.g. 0.5); the microvm guest vCPU count is this value rounded up, the container enforces it as a CPU quota. Cannot be changed after the sandbox is initialized.",
           examples: [1],
-        },
-        request_cpu: {
-          type: "number",
-          exclusiveMinimum: 0,
-          default: 0.5,
-          description:
-            "CPU cores reserved for the sandbox at schedule time (the pod CPU request), decoupled from cpu (the limit) so an idle sandbox reserves less than it can burst to. Defaults to 0.5. Cannot be changed after the sandbox is initialized.",
-          examples: [0.5],
         },
         memory: {
           type: "integer",

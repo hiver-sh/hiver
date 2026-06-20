@@ -145,31 +145,47 @@ interface LayoutProps {
   fetchError: string | null;
   fetchSandboxes: () => void;
   setGatewayUrl: (url: string) => void;
-  onConnectedChange: (id: string, connected: boolean) => void;
+  onConnectedChange: (key: string, connected: boolean) => void;
 }
 
 function SandboxDetailRoute({
   serverUrl,
   sandboxes,
+  loading,
   onConnectedChange,
 }: LayoutProps) {
-  const { id } = useParams<{ id: string }>();
-  const sandbox = sandboxes.find((s) => s.id === id);
+  const { key } = useParams<{ id: string; key: string }>();
+  // Resolve strictly against the live list (the authoritative set of existing
+  // sandboxes, kept in sync by the lifecycle stream). A sandbox is identified by
+  // its key, which is globally unique. No URL fallback: a key that isn't in the
+  // list either never existed or was deleted, and must NOT render a detail view
+  // (which would fire requests against a non-existent sandbox).
+  const sandbox = sandboxes.find((s) => s.key === key);
 
   if (!sandbox) {
+    // While the initial list is still loading, a valid deep link hasn't resolved
+    // yet — show a neutral state rather than a premature "not found".
+    if (loading) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          Loading…
+        </div>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Sandbox not found — select one from the sidebar.
+        Sandbox not found — it doesn’t exist or has been shut down. Select one
+        from the sidebar.
       </div>
     );
   }
 
   return (
     <SandboxDetail
-      key={sandbox.id}
+      key={sandbox.key}
       sandbox={sandbox}
       serverUrl={serverUrl}
-      onConnectedChange={(c) => onConnectedChange(sandbox.id, c)}
+      onConnectedChange={(c) => onConnectedChange(sandbox.key, c)}
     />
   );
 }
@@ -184,13 +200,20 @@ function AppContent() {
   const sidebarCollapsed = prefs.sidebarCollapsed;
   const setSidebarCollapsed = (v: boolean) => setPref("sidebarCollapsed", v);
   const [sandboxes, setSandboxes] = useState<SandboxRef[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Starts true: the list is fetched on mount, so a deep-linked detail view
+  // resolves against a loaded list rather than briefly rendering "not found".
+  const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [connectedId, setConnectedId] = useState<string | null>(null);
+  // Keyed (not by id): in pack mode many sandboxes share one pod id, so the
+  // connected/selected indicators must distinguish by the unique key.
+  const [connectedKey, setConnectedKey] = useState<string | null>(null);
 
   const navigate = useNavigate();
-  const match = useMatch("/sandboxes/:id");
+  // The route carries both the id and the key (/sandboxes/<id>/<key>): the
+  // gateway routes to the pod by id, sandboxd resolves the sandbox by key.
+  const match = useMatch("/sandboxes/:id/:key");
   const selectedId = match?.params.id ?? null;
+  const selectedKey = match?.params.key ?? null;
 
   const fetchSandboxes = useCallback(async () => {
     setLoading(true);
@@ -231,7 +254,7 @@ function AppContent() {
     fetchError,
     fetchSandboxes,
     setGatewayUrl,
-    onConnectedChange: (id, c) => setConnectedId(c ? id : null),
+    onConnectedChange: (key, c) => setConnectedKey(c ? key : null),
   };
 
   const controllerDialog = (
@@ -292,27 +315,31 @@ function AppContent() {
           <CreateSandboxDialog
             compact
             serverUrl={serverUrl}
-            onCreated={(id) => {
+            onCreated={(id, key) => {
               fetchSandboxes();
-              navigate(`/sandboxes/${id}`);
+              navigate(`/sandboxes/${id}/${encodeURIComponent(key)}`);
             }}
           />
           <div className="flex flex-col items-center gap-1 mt-1">
-            {sandboxes.map((sb) => (
+            {sandboxes.map((sb) => {
+              const selected = selectedId === sb.id && selectedKey === sb.key;
+              return (
               <button
-                key={sb.id}
-                onClick={() => navigate(`/sandboxes/${sb.id}`)}
+                key={sb.key}
+                onClick={() =>
+                  navigate(`/sandboxes/${sb.id}/${encodeURIComponent(sb.key)}`)
+                }
                 title={sb.key}
                 className={cn(
                   "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent",
-                  selectedId === sb.id && "bg-sidebar-accent",
+                  selected && "bg-sidebar-accent",
                 )}
               >
                 <span
                   className={cn(
                     "block rounded-full transition-all",
-                    selectedId === sb.id ? "h-2.5 w-2.5" : "h-2 w-2",
-                    connectedId === sb.id
+                    selected ? "h-2.5 w-2.5" : "h-2 w-2",
+                    connectedKey === sb.key
                       ? "bg-green-400"
                       : sb.status === "start"
                         ? "bg-green-400/50"
@@ -322,7 +349,8 @@ function AppContent() {
                   )}
                 />
               </button>
-            ))}
+              );
+            })}
           </div>
           <div className="mt-auto pb-3">
             <ThemeToggle />
@@ -370,13 +398,16 @@ function AppContent() {
           <SandboxList
             sandboxes={sandboxes}
             selectedId={selectedId ?? null}
-            connectedId={connectedId}
+            selectedKey={selectedKey ?? null}
+            connectedKey={connectedKey}
             loading={loading}
-            onSelect={(id) => navigate(`/sandboxes/${id}`)}
+            onSelect={(id, key) =>
+              navigate(`/sandboxes/${id}/${encodeURIComponent(key)}`)
+            }
             onRefresh={fetchSandboxes}
-            onCreated={(id) => {
+            onCreated={(id, key) => {
               fetchSandboxes();
-              navigate(`/sandboxes/${id}`);
+              navigate(`/sandboxes/${id}/${encodeURIComponent(key)}`);
             }}
             serverUrl={serverUrl}
           />
@@ -394,7 +425,7 @@ function AppContent() {
             element={<GettingStarted gatewayUrl={gatewayUrl} />}
           />
           <Route
-            path="/sandboxes/:id"
+            path="/sandboxes/:id/:key"
             element={<SandboxDetailRoute {...layoutProps} />}
           />
         </Routes>

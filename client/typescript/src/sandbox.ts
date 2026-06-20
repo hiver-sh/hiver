@@ -94,7 +94,7 @@ export class Sandbox {
     this.id = ref.id;
     this.key = ref.key;
     this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.id)}`;
-    this.proxyUrl = (port) => `${this.apiServerUrl}/v1/proxy/${port}`;
+    this.proxyUrl = (port) => `${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/proxy/${port}`;
     this.fetchImpl = opts.fetch ?? fetch;
   }
 
@@ -104,11 +104,23 @@ export class Sandbox {
    */
   ping = async (opts?: RequestOptions): Promise<void> => {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ping`, {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/ping`, {
       signal,
     });
     if (!res.ok) throw await toError(res, "ping");
   };
+
+  /**
+   * Tear this sandbox down via `DELETE /v1/<key>`, cancelling its lifecycle.
+   */
+  async shutdown(opts?: RequestOptions): Promise<void> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const res = await this.fetchImpl(
+      `${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}`,
+      { method: "DELETE", signal },
+    );
+    if (!res.ok) throw await toError(res, "shutdown");
+  }
 
   /**
    * List the network ports the sandbox exposes. Reach each one via
@@ -116,7 +128,7 @@ export class Sandbox {
    */
   async getPorts(opts?: RequestOptions): Promise<number[]> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/ports`, {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/ports`, {
       signal,
     });
     if (!res.ok) throw await toError(res, "getPorts");
@@ -130,7 +142,7 @@ export class Sandbox {
    */
   async getInfo(opts?: RequestOptions): Promise<SandboxInfo> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/info`, {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/info`, {
       signal,
     });
     if (!res.ok) throw await toError(res, "getInfo");
@@ -140,7 +152,7 @@ export class Sandbox {
   /** Read the current `SandboxConfig`. */
   async getConfig(opts?: RequestOptions): Promise<SandboxConfig> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`, {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/config`, {
       signal,
     });
     if (!res.ok) throw await toError(res, "getConfig");
@@ -158,7 +170,7 @@ export class Sandbox {
   ): Promise<ApplyResult> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const validated = SandboxConfig.parse(config);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/config`, {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/config`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(validated),
@@ -223,7 +235,7 @@ export class Sandbox {
     signal?: AbortSignal,
     follow = true,
   ): AsyncGenerator<SandboxEvent, void, void> {
-    const url = new URL(`${this.apiServerUrl}/v1/events`);
+    const url = new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/events`);
     if (lastEventId !== undefined) {
       url.searchParams.set("lastEventId", String(lastEventId));
     }
@@ -282,7 +294,7 @@ export class Sandbox {
     const body: Record<string, unknown> = { command };
     if (opts?.cwd !== undefined) body.cwd = opts.cwd;
     if (opts?.env !== undefined) body.env = opts.env;
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/exec`, {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/exec`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -313,8 +325,8 @@ export class Sandbox {
     opts?: ExecStreamOptions,
   ): Promise<ExecProcess> {
     const id = crypto.randomUUID();
-    const streamUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}`;
-    const stdinUrl = `${this.apiServerUrl}/v1/exec-stream/${encodeURIComponent(id)}/stdin`;
+    const streamUrl = `${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/exec-stream/${encodeURIComponent(id)}`;
+    const stdinUrl = `${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/exec-stream/${encodeURIComponent(id)}/stdin`;
 
     const body: Record<string, unknown> = {};
     // A non-empty string or array runs a command; "" / [] / undefined attaches
@@ -412,7 +424,7 @@ export class Sandbox {
     opts?: RequestOptions,
   ): Promise<{ name: string; path: string; is_dir: boolean; size: number }[]> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const url = new URL(`${this.apiServerUrl}/v1/directories`);
+    const url = new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/directories`);
     url.searchParams.set("path", path);
     const res = await this.fetchImpl(url, { signal });
     if (!res.ok) throw await toError(res, "listDirectory");
@@ -428,7 +440,7 @@ export class Sandbox {
    */
   async readFile(path: string, opts?: RequestOptions): Promise<Uint8Array> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const url = new URL(`${this.apiServerUrl}/v1/file`);
+    const url = new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/file`);
     url.searchParams.set("path", path);
     const res = await this.fetchImpl(url, { signal });
     if (!res.ok) throw await toError(res, "readFile");
@@ -451,7 +463,7 @@ export class Sandbox {
     const form = new FormData();
     form.append("destination", destination);
     form.append("file", toBlob(content), filename);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/file`, {
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/file`, {
       method: "POST",
       body: form,
       signal,
@@ -467,7 +479,7 @@ export class Sandbox {
    */
   async deleteFile(path: string, opts?: RequestOptions): Promise<void> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const url = new URL(`${this.apiServerUrl}/v1/file`);
+    const url = new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/file`);
     url.searchParams.set("path", path);
     const res = await this.fetchImpl(url, { method: "DELETE", signal });
     if (!res.ok) throw await toError(res, "deleteFile");

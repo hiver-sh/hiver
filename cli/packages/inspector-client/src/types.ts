@@ -1,11 +1,14 @@
 import { z } from "zod";
 
 export const SandboxRef = z.object({
-  // Server-assigned unique identifier (uuid). Used only to partition
-  // persisted events in IndexedDB, where a reused key must not collide.
+  // Server-assigned unique identifier (the container/pod ID). Used in API
+  // URLs for routing to the correct pod. In pack mode multiple sandboxes
+  // share the same id. The IndexedDB partition key is `${id}:${key}` so
+  // that packed sandboxes are isolated and key-reuse across lifetimes
+  // (different id) never collides.
   id: z.string(),
-  // Caller-chosen key the sandbox was provisioned under. Used for routing,
-  // selection, and display everywhere in the UI.
+  // Caller-chosen key the sandbox was provisioned under. Unique per sandbox
+  // even in pack mode. Used for routing, selection, and display.
   key: z.string(),
   status: z.enum(["start", "stop", "die"]).optional(),
 });

@@ -13,7 +13,7 @@ const ORPHAN_PURGE_INTERVAL_MS = 10_000;
  */
 export function usePurgeOrphanEvents(sandboxes: SandboxRef[]): void {
   useEffect(() => {
-    const ids = sandboxes.map((s) => s.id);
+    const ids = sandboxes.map((s) => `${s.id}:${s.key}`);
     void purgeOrphanEvents(ids);
     const interval = setInterval(() => void purgeOrphanEvents(ids), ORPHAN_PURGE_INTERVAL_MS);
     return () => clearInterval(interval);

@@ -47,11 +47,12 @@ func TestEgressEventsE2E(t *testing.T) {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
 
-	// Trigger an ALLOWED egress: GET /v1/ping on 127.0.0.1:8099 (sandboxd's API).
-	// iptables redirects this outbound TCP connection through sbxproxy, which
-	// permits it, forwards the request, and emits egress.request + egress.response.
+	// Trigger an ALLOWED egress: GET /v1/<key>/ping on 127.0.0.1:8099 (sandboxd's
+	// keyed API). iptables redirects this outbound TCP connection through sbxproxy,
+	// which permits it, forwards the request, and emits egress.request + response.
+	pingPath := "/v1/" + key + "/ping"
 	if _, err := sbx.Exec(ctx, hiverclient.ExecRequest{
-		Command: `python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/v1/ping')"`,
+		Command: fmt.Sprintf(`python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099%s')"`, pingPath),
 	}); err != nil {
 		t.Fatalf("Exec allowed request: %v", err)
 	}
@@ -84,11 +85,11 @@ except Exception:
 	t.Run("allowed_request_fields", func(t *testing.T) {
 		ev := findEvent(egressReqs, func(e hiverclient.SandboxEvent) bool {
 			return e.Access == "allowed" && e.Host == "127.0.0.1" &&
-				e.Method == "GET" && e.Path == "/v1/ping"
+				e.Method == "GET" && e.Path == pingPath
 		})
 		if ev == nil {
-			t.Fatalf("no egress.request{access:allowed, host:127.0.0.1, method:GET, path:/v1/ping}; events:\n%s",
-				summarizeEgressReqs(egressReqs))
+			t.Fatalf("no egress.request{access:allowed, host:127.0.0.1, method:GET, path:%s}; events:\n%s",
+				pingPath, summarizeEgressReqs(egressReqs))
 		}
 		if ev.ID == 0 {
 			t.Errorf("allowed egress.request: id=0, want >0")
@@ -100,7 +101,7 @@ except Exception:
 
 	t.Run("allowed_response_paired", func(t *testing.T) {
 		allowed := findEvent(egressReqs, func(e hiverclient.SandboxEvent) bool {
-			return e.Access == "allowed" && e.Host == "127.0.0.1" && e.Path == "/v1/ping"
+			return e.Access == "allowed" && e.Host == "127.0.0.1" && e.Path == pingPath
 		})
 		if allowed == nil {
 			t.Skip("allowed egress.request not found; skipping response pairing check")

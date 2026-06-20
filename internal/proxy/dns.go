@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"time"
+
 )
 
 // DNS sinkhole.
@@ -91,7 +92,7 @@ func (p *Proxy) auditDNS(name string) {
 	if !p.dnsDedupe.shouldAudit(name, time.Now()) {
 		return
 	}
-	ac := p.beginAudit("DNS", name, "", "")
+	ac := p.beginAudit("", "DNS", name, "", "")
 	ac.allow()
 	ac.response(0)
 }
@@ -141,6 +142,19 @@ func (d *dnsDedupe) shouldAudit(name string, now time.Time) bool {
 	}
 	d.seen[name] = now
 	return true
+}
+
+// ServeSink runs the DNS sinkhole loop on an already-bound UDP PacketConn,
+// answering every query with sinkIP, until ctx is cancelled. audit may be nil.
+// sandboxd uses this to run a per-gateway sink for a packed sandbox — bound
+// directly to <gateway>:53 — so the reply source is the gateway the guest
+// queried (no DNAT, hence no fragile cross-netns conntrack un-NAT).
+func ServeSink(ctx context.Context, pc net.PacketConn, sinkIP net.IP, audit func(string)) {
+	go func() {
+		<-ctx.Done()
+		_ = pc.Close()
+	}()
+	serveSinkUDP(pc, sinkIP.To4(), audit)
 }
 
 func serveSinkUDP(pc net.PacketConn, sinkIP net.IP, audit func(string)) {

@@ -54,8 +54,12 @@ func (w *recordingWriter) capturedBody() string {
 	return w.body.String()
 }
 
-func (h *SandboxHandlers) newReverseProxy(c *gin.Context, port, path string) {
-	target, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%s", port))
+func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
+	host := h.proxyHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	target, err := url.Parse(fmt.Sprintf("http://%s:%s", host, port))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -101,7 +105,7 @@ func captureBody(r *http.Request) string {
 	return string(data)
 }
 
-func (h *SandboxHandlers) publishIngressRequest(c *gin.Context, port, path, body string) int64 {
+func (h *Sandbox) publishIngressRequest(c *gin.Context, port, path, body string) int64 {
 	method := c.Request.Method
 	rawPath := "/" + path
 	query := c.Request.URL.RawQuery
@@ -134,7 +138,7 @@ func (h *SandboxHandlers) publishIngressRequest(c *gin.Context, port, path, body
 	})
 }
 
-func (h *SandboxHandlers) publishIngressResponse(requestID int64, status, durationMs int, body string) {
+func (h *Sandbox) publishIngressResponse(requestID int64, status, durationMs int, body string) {
 	if status == 0 {
 		status = http.StatusOK
 	}
@@ -155,21 +159,21 @@ func (h *SandboxHandlers) publishIngressResponse(requestID int64, status, durati
 	})
 }
 
-func (h *SandboxHandlers) ProxyGet(c *gin.Context, port, path string) {
+func (h *Sandbox) ProxyGet(c *gin.Context, port, path string) {
 	h.newReverseProxy(c, port, path)
 }
-func (h *SandboxHandlers) ProxyHead(c *gin.Context, port, path string) {
+func (h *Sandbox) ProxyHead(c *gin.Context, port, path string) {
 	h.newReverseProxy(c, port, path)
 }
-func (h *SandboxHandlers) ProxyPost(c *gin.Context, port, path string) {
+func (h *Sandbox) ProxyPost(c *gin.Context, port, path string) {
 	h.newReverseProxy(c, port, path)
 }
-func (h *SandboxHandlers) ProxyPut(c *gin.Context, port, path string) {
+func (h *Sandbox) ProxyPut(c *gin.Context, port, path string) {
 	h.newReverseProxy(c, port, path)
 }
-func (h *SandboxHandlers) ProxyPatch(c *gin.Context, port, path string) {
+func (h *Sandbox) ProxyPatch(c *gin.Context, port, path string) {
 	h.newReverseProxy(c, port, path)
 }
-func (h *SandboxHandlers) ProxyDelete(c *gin.Context, port, path string) {
+func (h *Sandbox) ProxyDelete(c *gin.Context, port, path string) {
 	h.newReverseProxy(c, port, path)
 }

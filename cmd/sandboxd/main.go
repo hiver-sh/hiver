@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/hiver-sh/hiver/internal/api"
+	"github.com/hiver-sh/hiver/internal/api/handlers"
 	"github.com/hiver-sh/hiver/internal/events"
 	"github.com/hiver-sh/hiver/internal/isolation"
 	"github.com/hiver-sh/hiver/internal/pty"
@@ -87,12 +88,14 @@ func main() {
 		apiServerPort = flag.String("api-server-port", "8099", "port of the API server")
 		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored on local disk; optional — when unset, snapshots only work for configs that route them to a FUSE drive via snapshot.mount")
 		prewarm       = flag.Bool("prewarm", false, "boot in prewarm mode: bring up the API server and park without a spec, to be configured (and the workload launched) by the first PUT /v1/config")
+		pack          = flag.Bool("pack", false, "boot in pack mode: bring up the shared sidecars and park as a pod host; each POST /v1/<key> packs a new same-image sandbox (own netns/IP, overlay, egress) into this pod")
 	)
 	flag.Parse()
 
 	// The spec is delivered as JSON in the HIVE_SPEC env var (injected by the
-	// runtime), not a mounted file. In prewarm mode it may be absent: the sandbox
-	// parks until its first PUT /v1/config supplies the config.
+	// runtime), not a mounted file — required in every mode. In pack/prewarm the
+	// pod has no boot workload, but the env still carries a base spec (at least
+	// the image); each sandbox's full config arrives later over the API.
 	sp, err := spec.LoadEnv()
 	if err != nil {
 		log.Fatalf("spec: %v", err)
@@ -103,7 +106,11 @@ func main() {
 	// starts, rather than after the multi-second proxy/FUSE/image/agent boot.
 	// Its dependencies are injected via the SetX methods below as boot creates
 	// them; until all are wired the server answers every request with 500.
-	s := api.NewSandboxServer(*apiServerPort, soMark)
+	// The supervisor owns the pod's sandbox map and is what the API server
+	// dispatches keyed requests to. It starts empty; the boot sandbox is created
+	// and registered below once its key and subsystems are known.
+	sup := newSupervisor(*prewarm)
+	s := api.NewSandboxServer(*apiServerPort, sup)
 	go s.ListenAndServe()
 
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
@@ -139,7 +146,6 @@ func main() {
 		log.Fatalf("isolation: %v", err)
 	}
 	log.Printf("sandboxd: isolation = %s", iso.Kind())
-	s.SetIsolation(iso)
 	phase.mark("isolation init")
 
 	// Seed the in-memory config from the boot spec so GET/PUT /v1/config have
@@ -153,6 +159,13 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// When sandboxd is the pod's init (PID 1), reap orphaned zombies. A sandbox
+	// entrypoint whose runc launcher detached, or an exec grandchild, reparents to
+	// init when its parent exits; without reaping, each lingers as a <defunct>
+	// zombie holding a PID slot. No-op unless PID 1, and it never races sandboxd's
+	// own cmd.Wait() (see reapOrphans).
+	go reapOrphans(ctx)
 
 	// The FUSE workspace sidecars run on their own context, not the lifecycle
 	// ctx. Shutdown begins by cancelling the lifecycle ctx (signal/TTL), which
@@ -172,8 +185,14 @@ func main() {
 	// Publish'd here; api.NewSandboxServer hands subscribers to the SSE handler.
 	broker := events.New(events.DefaultCapacity, 0)
 	store := api.NewConfigStore(initialCfg)
-	s.SetBroker(broker)
-	s.SetStore(store)
+
+	// The boot sandbox is created lazily. Without -prewarm it is created and
+	// launched immediately below from the env (HIVE_SPEC) config. With -prewarm
+	// the pod snapshots and parks; the sandbox is created when a POST /v1/<key>
+	// claim arrives, under the caller's key, and the snapshot is restored into it.
+	// sb is assigned by claimSandbox (defined once lifetime exists, below); the
+	// launch/resume closures and shutdown read it after that.
+	var sb *handlers.Sandbox
 
 	// Lifetime expires the sandbox if /v1/ping isn't called within
 	// SandboxConfig.Ttl seconds. ttlFn samples the current config on
@@ -197,25 +216,41 @@ func main() {
 	// Any broker event (except resource.usage, which uses PublishSilent)
 	// counts as sandbox activity and resets the inactivity timer.
 	broker.SetActivityHook(lifetime.Reset)
-	// Inject lifetime last of the four core subsystems: this completes the wiring
-	// and flips the server out of its 500 "still starting" state. Wiring it here
-	// lets /v1/ping reset the timer, but the countdown itself only starts once the
-	// workload launches (see below): a pod sitting in prewarm — awaiting its first
-	// config — must not burn its TTL before any client can claim and ping it.
-	s.SetLifetime(lifetime)
+
+	// claimSandbox builds the boot sandbox under key, wires its subsystems, and
+	// registers it so keyed routes resolve. cancel (the lifecycle ctx's cancel)
+	// backs DELETE /v1/<key>. Called immediately for a normal boot, or at claim
+	// time (POST /v1/<key>) in prewarm mode. The TTL countdown only starts once
+	// the workload launches, so a parked prewarm pod doesn't burn its TTL.
+	claimSandbox := func(key string) {
+		sb = handlers.NewSandbox(key, soMark)
+		sb.SetIsolation(iso)
+		sb.SetBroker(broker)
+		sb.SetStore(store)
+		sb.SetLifetime(lifetime)
+		sup.register(sb, specImage(sp), cancel)
+	}
 
 	proxyPort, err := freePort()
 	if err != nil {
 		log.Fatalf("free port: %v", err)
 	}
-	proxyAddr := fmt.Sprintf("127.0.0.1:%d", proxyPort)
+	// In pack mode each sandbox reaches the proxy/sink via its veth gateway IP
+	// (the host DNATs to it), so they must bind all interfaces. The single-sandbox
+	// path keeps loopback (its workload shares the pod netns and is REDIRECT'd to
+	// 127.0.0.1).
+	bindHost := "127.0.0.1"
+	if *pack {
+		bindHost = "0.0.0.0"
+	}
+	proxyAddr := fmt.Sprintf("%s:%d", bindHost, proxyPort)
 	// DNS sinkhole port: iptables redirects all workload DNS here and sbxproxy
 	// answers with a constant placeholder, so DNS can't be an exfil channel.
 	dnsPort, err := freePort()
 	if err != nil {
 		log.Fatalf("free dns port: %v", err)
 	}
-	dnsAddr := fmt.Sprintf("127.0.0.1:%d", dnsPort)
+	dnsAddr := fmt.Sprintf("%s:%d", bindHost, dnsPort)
 
 	var children sync.WaitGroup
 
@@ -230,16 +265,30 @@ func main() {
 	caCertPath := filepath.Join(workDir, "sandbox-ca.crt")
 	caKeyPath := filepath.Join(workDir, "sandbox-ca.key")
 	var (
-		setupWG  sync.WaitGroup
-		isoMu    sync.Mutex
-		proxyCmd *exec.Cmd
+		setupWG   sync.WaitGroup
+		isoMu     sync.Mutex
+		proxyCmd  *exec.Cmd
+		packRouter *proxyRouter // non-nil in pack mode; routes proxy events to per-sandbox brokers
 	)
+	if *pack {
+		packRouter = newProxyRouter()
+	}
+	// fuseCtl is the pod's single shared sbxfuse process (design §9): every
+	// sandbox's workspaces are served from it, added/removed over its stdin command
+	// channel. It runs on fsCtx so it outlives the start of shutdown (snapshot
+	// capture reads through its mounts) and is torn down by cancelFS. Both the boot
+	// mountManager and each packed sandbox's mountManager drive this one process.
+	fuseCtl, err := startFuseControl(fsCtx, &children, fuseBin)
+	if err != nil {
+		log.Fatalf("start sbxfuse control: %v", err)
+	}
+
 	// mountMgr owns the sbxfuse workspaces: it brings them up at boot and
 	// reconciles them (add/remove/re-ACL) when a later config is applied. It runs
-	// on fsCtx (not the lifecycle ctx) so the FUSE daemons outlive the start of
+	// on fsCtx (not the lifecycle ctx) so the FUSE mounts outlive the start of
 	// shutdown — finalizeShutdown captures the snapshot through them, then tears
 	// them down via cancelFS.
-	mountMgr := newMountManager(fsCtx, &children, broker, iso, &isoMu, fuseBin, workDir, *snapshotDir, soMark)
+	mountMgr := newMountManager(fsCtx, &children, broker, iso, &isoMu, fuseCtl, workDir, *snapshotDir, soMark)
 
 	// 1. sbxproxy in transparent mode. iptables (set up below) will REDIRECT all
 	// outbound TCP from agent processes here; sbxproxy recovers the original
@@ -264,8 +313,17 @@ func main() {
 			"-ca-cert", caCertPath,
 			"-ca-key", caKeyPath,
 		}
+		// In pack mode, route proxy audit events to per-sandbox brokers by
+		// source IP (each packed sandbox has a distinct source IP). In
+		// single-sandbox mode all events go to the one shared broker.
+		var proxyHandler func(map[string]any)
+		if packRouter != nil {
+			proxyHandler = packRouter.handle
+		} else {
+			proxyHandler = newProxyTranslator(broker).handle
+		}
 		cmd, err := startSidecar(ctx, &children, "sbxproxy", proxyBin, proxyArgs, nil,
-			sidecarOnEvent(formatProxyEvent, newProxyTranslator(broker).handle))
+			sidecarOnEvent(formatProxyEvent, proxyHandler))
 		if err != nil {
 			log.Fatalf("start proxy: %v", err)
 		}
@@ -278,13 +336,21 @@ func main() {
 		// so the proxy's own upstream traffic isn't looped back; the loopback
 		// rule keeps in-pod localhost traffic (e.g. unit tests, future control
 		// sockets) untouched.
-		isoMu.Lock()
-		err = iso.RedirectEgress(ctx, proxyPort, dnsPort, soMark)
-		isoMu.Unlock()
-		if err != nil {
-			log.Fatalf("install egress redirect: %v", err)
+		//
+		// Skipped in pack mode: there is no boot workload sharing the pod netns to
+		// confine, and these OUTPUT rules — notably the `! -p tcp -j DROP` that
+		// blocks the workload's non-TCP egress — would drop the DNS sinks' own UDP
+		// replies (which originate in the pod netns). Each packed sandbox installs
+		// its own per-veth PREROUTING/FORWARD rules instead (see container_net_linux).
+		if !*pack {
+			isoMu.Lock()
+			err = iso.RedirectEgress(ctx, proxyPort, dnsPort, soMark)
+			isoMu.Unlock()
+			if err != nil {
+				log.Fatalf("install egress redirect: %v", err)
+			}
+			log.Printf("sandboxd: iptables OUTPUT nat redirect → %s installed (mark=0x%x)", proxyAddr, soMark)
 		}
-		log.Printf("sandboxd: iptables OUTPUT nat redirect → %s installed (mark=0x%x)", proxyAddr, soMark)
 		proxyCmd = cmd
 	}()
 
@@ -315,17 +381,14 @@ func main() {
 	setupWG.Wait()
 	phase.mark("proxy + fuse startup")
 
-	// firstConfig latches closed when reconcileSidecars processes the first
-	// config.apply, signalling the prewarm path that the sandbox has been
-	// configured (and its workspaces + snapshot reconciled) and can launch.
-	firstConfig := make(chan struct{})
-
-	// Reconcile sidecar policy whenever the API publishes a
-	// config.apply event: re-derive egress rules + per-mount ACLs from
-	// the persisted config, rewrite the files each sidecar reads, and
-	// reload. Sidecars keep the current policy on read errors so a
-	// half-written file can't relax access by accident.
-	go reconcileSidecars(ctx, broker, proxyCmd.Process.Pid, store, rulesTmp, mountMgr, firstConfig)
+	// Reconcile sidecar policy whenever the API publishes a config.apply event
+	// (a runtime PUT /v1/<key>/config on a running sandbox): re-derive egress
+	// rules + per-mount ACLs from the persisted config, rewrite the files each
+	// sidecar reads, and reload. Sidecars keep the current policy on read errors
+	// so a half-written file can't relax access by accident. The prewarm launch
+	// is no longer triggered by the first config (it is the POST /v1/<key> claim
+	// below), so no firstConfig latch is passed.
+	go reconcileSidecars(ctx, broker, proxyCmd.Process.Pid, store, rulesTmp, mountMgr, nil)
 
 	// prepareWorkload runs the config-independent half of the bring-up: unpack
 	// the image config, seed the workspaces from the image, assemble the root
@@ -481,13 +544,13 @@ func main() {
 		// The API server is already serving (started above); publish the entrypoint
 		// pty now that it exists so exec-stream attach requests can reach it.
 		if entrypointTTY != nil {
-			s.SetEntrypointTTY(entrypointTTY)
+			sb.SetEntrypointTTY(entrypointTTY)
 		}
 		// The workload is now committed with its boot-time config, so freeze those
 		// fields against further ApplyConfig changes (cpu/memory/entrypoint/cwd/tty/
 		// env become no-ops from here). In the prewarm flow this is the point the
 		// sandbox transitions from configurable to started.
-		s.SetStarted()
+		sb.SetStarted()
 		// The workload is running, so a later config-apply that adds a workspace
 		// must inject it into the live workload rather than rely on launch.
 		mountMgr.SetWorkloadLive()
@@ -503,7 +566,7 @@ func main() {
 				return
 			}
 			phase.mark("sandbox ready")
-			s.NotifyReady()
+			sb.NotifyReady()
 		}()
 
 		children.Go(func() {
@@ -604,10 +667,10 @@ func main() {
 		// The workload is committed; freeze boot-time config fields, mark the
 		// workload live, flip the server to started, and announce readiness (the
 		// workload is already up).
-		s.SetStarted()
+		sb.SetStarted()
 		mountMgr.SetWorkloadLive()
 		phase.mark("resume ready")
-		s.NotifyReady()
+		sb.NotifyReady()
 
 		go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
 
@@ -644,29 +707,85 @@ func main() {
 		}
 	}
 
+	// Pack mode: this pod is a host for N same-image sandboxes created on demand
+	// via POST /v1/<key>. There is no boot sandbox — don't MountRoot/launch on the
+	// boot iso. Extract the shared image config + CA, hand the shared sidecars to
+	// the supervisor, and park. Each POST then packs a sandbox (own netns/IP,
+	// overlay, cgroup, per-source egress) via createPacked. The pod persists until
+	// SIGTERM (no pod-level TTL; each packed sandbox has its own).
+	if *pack {
+		imgCfg, err := runc.ExtractImageConfig()
+		if err != nil {
+			log.Fatalf("unpack sandbox config: %v", err)
+		}
+		caData, _ := os.ReadFile(caCertPath)
+		sup.mu.Lock()
+		sup.pack = &packState{
+			ctx:         ctx,
+			children:    &children,
+			isoKind:     isoKind,
+			hostname:    podHostname,
+			soMark:      soMark,
+			proxyPort:   proxyPort,
+			dnsPort:     dnsPort,
+			proxyPID:    proxyCmd.Process.Pid,
+			rulesPath:   rulesTmp,
+			caData:      caData,
+			imgCfg:      imgCfg,
+			fuse:        fuseCtl,
+			workDir:     workDir,
+			snapshotDir: *snapshotDir,
+			router:      packRouter,
+		}
+		sup.mu.Unlock()
+		sup.bootComplete()
+		phase.mark("pack pod host ready")
+		log.Println("sandboxd: pack — pod host ready; POST /v1/<key> to pack sandboxes")
+		// Build the shared microvm base snapshot eagerly from the boot HIVE_SPEC's
+		// sizing (firecracker fixes the guest's vCPU/RAM in the snapshot, so every
+		// resumer inherits this) rather than waiting for the first claim. baseOnce
+		// makes the first createPacked call a no-op, so claims resume from a warm
+		// base instead of paying the cold base build. No-op for container/runc
+		// pods, which cold-start each sandbox and have no base snapshot — gated the
+		// same way as the per-claim call site (createPacked).
+		if isoKind == isolation.KindMicroVM {
+			if dir := sup.pack.ensureBase(ctx, ceilVcpu(sp.CPU), intOrZero(sp.Memory)); dir != "" {
+				phase.mark("pack base snapshot ready")
+			}
+		}
+		<-ctx.Done()
+		children.Wait()
+		return
+	}
+
 	// Prepare the workload eagerly — config-independent, so in prewarm mode this
 	// runs at boot and a claim only pays for launchWorkload below.
 	imgCfg := prepareWorkload()
 
-	// In prewarm mode the workload isn't started at boot; defer the launch until
-	// the first PUT /v1/config supplies the config. Otherwise launch immediately
-	// from the boot spec.
+	// The boot sandbox is created here. Without -prewarm it is launched
+	// immediately from the env (HIVE_SPEC) config under HIVE_KEY. With -prewarm
+	// the workload is snapshotted now and the pod parks until a POST /v1/<key>
+	// claim arrives, at which point the sandbox is created under the caller's key
+	// and the snapshot is restored into it; the config still comes from env.
+	var claimDone chan error
 	if *prewarm {
 		// Bring up the image entrypoint now (config-independent) — off the claim
 		// path — so a claim adopts a warm, already-running workload: the microvm
-		// boots, snapshots, and stops a transient guest (the first config resumes
-		// it in tens of ms instead of a full cold boot); the container starts the
-		// entrypoint container and keeps it running. Best-effort: on any failure
-		// the backend falls back to cold launch on claim (HasPrewarmSnapshot stays
-		// false).
+		// boots, snapshots, and stops a transient guest (a claim resumes it in tens
+		// of ms instead of a full cold boot); the container starts the entrypoint
+		// container and keeps it running. Best-effort: on any failure the backend
+		// falls back to cold launch on claim (HasPrewarmSnapshot stays false).
 		if err := iso.PrewarmSnapshot(ctx, imgCfg); err != nil {
 			log.Printf("sandboxd: prewarm failed, will cold-launch on claim: %v", err)
 		} else if iso.HasPrewarmSnapshot() {
-			log.Println("sandboxd: prewarm ready; will resume on first config")
+			log.Println("sandboxd: prewarm ready; will resume on claim")
 		}
-		log.Println("sandboxd: prewarm — awaiting first PUT /v1/config to start the workload")
+		log.Println("sandboxd: prewarm — awaiting POST /v1/<key> to claim the workload")
+		sup.bootComplete()
 		select {
-		case <-firstConfig:
+		case cl := <-sup.claims:
+			claimSandbox(cl.key)
+			claimDone = cl.done
 			// Reset the phase clock at the claim boundary: without this the next
 			// mark ("resume") would span the idle park since the last boot phase,
 			// not the resume itself. Logs the warm-park duration as a bonus.
@@ -675,17 +794,13 @@ func main() {
 			children.Wait()
 			return
 		}
-		// reconcileSidecars has already reconciled the workspaces and restored any
-		// snapshot for this first config; load the applied spec to launch from.
-		cfg, cfgErr := store.Get()
-		if cfgErr != nil {
-			log.Fatalf("prewarm: read config: %v", cfgErr)
+	} else {
+		key := os.Getenv("HIVE_KEY")
+		if key == "" {
+			key = "default"
 		}
-		parsed, parseErr := specFromConfig(cfg)
-		if parseErr != nil {
-			log.Fatalf("prewarm: parse config: %v", parseErr)
-		}
-		sp = parsed
+		claimSandbox(key)
+		sup.bootComplete()
 	}
 	// Reconcile the workspaces and restore any snapshot now that the root is
 	// mounted. In prewarm this is a no-op (reconcileSidecars already did it); in
@@ -702,6 +817,12 @@ func main() {
 		resumeWorkload(sp, imgCfg)
 	} else {
 		launchWorkload(sp, imgCfg)
+	}
+
+	// Signal the POST /v1/<key> claim (if any) that its sandbox is up and serving,
+	// so Create returns 201 once the workload is actually running.
+	if claimDone != nil {
+		claimDone <- nil
 	}
 
 	// The inner workload is now started, so begin the inactivity countdown. Both
@@ -785,8 +906,8 @@ func finalizeShutdown(snapshotDir string, store *api.ConfigStore, iso isolation.
 	cancel()
 }
 
-// startChild spawns name with the given args/env, prefix-streams its
-// stdout/stderr to ours, and tracks completion via wg.
+// startChild spawns name with the given args/env, forwards its stdout/stderr
+// to ours (verbatim, see streamLines), and tracks completion via wg.
 //
 // On ctx cancel, the child is given SIGTERM (with a WaitDelay grace period
 // before SIGKILL) so subsystems with cleanup hooks get a chance to
@@ -830,7 +951,7 @@ func startChild(ctx context.Context,
 	return cmd, done, nil
 }
 
-// superviseStdio attaches prefix-streaming (and optional broker publishing via
+// superviseStdio attaches line streaming (and optional broker publishing via
 // onStdio) to an already-built command, starts it, and returns a channel that
 // closes once both stdio pipes have hit EOF — the stdioDone contract startChild
 // documents. It is the shared core of startChild and is also used directly by
@@ -860,12 +981,12 @@ func superviseStdio(wg *sync.WaitGroup, name string, cmd *exec.Cmd, onStdio func
 	go func() {
 		defer wg.Done()
 		defer stdioWg.Done()
-		streamPrefixed(name+":out", stdout, outCb)
+		streamLines(name+":out", stdout, outCb)
 	}()
 	go func() {
 		defer wg.Done()
 		defer stdioWg.Done()
-		streamPrefixed(name+":err", stderr, errCb)
+		streamLines(name+":err", stderr, errCb)
 	}()
 	go func() {
 		stdioWg.Wait()
@@ -879,7 +1000,7 @@ func superviseStdio(wg *sync.WaitGroup, name string, cmd *exec.Cmd, onStdio func
 // to via /v1/exec-stream. It mirrors startChild's process supervision (SIGTERM
 // on ctx cancel, then a kill grace via WaitDelay) but, because a tty merges
 // stdout and stderr into one stream, fans the terminal bytes out through the
-// Session instead of the two prefix-streamed pipes.
+// Session instead of the two line-streamed pipes.
 //
 // Unlike the pipes path, the entrypoint's tty output is neither mirrored to
 // sandboxd's stdout nor published as StdioEvents: a terminal stream is raw
@@ -902,19 +1023,25 @@ func startAgentTTY(ctx context.Context, bin string, args []string) (*exec.Cmd, *
 	return cmd, pty.NewSession(master, nil), nil
 }
 
-func streamPrefixed(prefix string, r io.Reader, onLine func(string)) {
+// streamLines forwards a child's stdio to sandboxd's stdout verbatim — no
+// per-line prefix. The children (sbxproxy, sbxfuse, the agent) already
+// self-identify in their own log lines, so a "[name:err]" wrapper just added
+// noise and made routine sidecar logs (which a child writes to its stderr by
+// convention) look like errors. tag names the stream only for the rare
+// read-error diagnostic below.
+func streamLines(tag string, r io.Reader, onLine func(string)) {
 	br := bufio.NewReader(r)
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
-			fmt.Fprintf(os.Stdout, "[%s] %s", prefix, line)
+			fmt.Fprint(os.Stdout, line)
 			if onLine != nil {
 				onLine(line)
 			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				fmt.Fprintf(os.Stderr, "[%s] read error: %v\n", prefix, err)
+				fmt.Fprintf(os.Stderr, "[%s] read error: %v\n", tag, err)
 			}
 			return
 		}

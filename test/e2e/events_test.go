@@ -67,8 +67,9 @@ func TestEventsLastEventIdE2E(t *testing.T) {
 	})
 
 	// Subscribe to events via the gateway's /sandbox/{id}/ route, which
-	// Envoy forwards to the sandboxd API inside the container.
-	baseURL := setup.GatewayURL + "/sandbox/" + sbx.ID
+	// Envoy forwards to the sandboxd API inside the container. The API is keyed,
+	// so the path carries the sandbox key: /sandbox/<id>/v1/<key>/events.
+	baseURL := setup.GatewayURL + "/sandbox/" + sbx.ID + "/v1/" + key
 	idleTimeout := 750 * time.Millisecond
 
 	// Collect the full event stream. The agent-node fixture's HTTP server

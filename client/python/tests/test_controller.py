@@ -2,19 +2,15 @@ import pytest
 import httpx
 import respx
 
-from hiver.controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox, shutdown
+from hiver.controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox
 from hiver.sandbox import Sandbox, SandboxError
-from hiver.schemas import SandboxConfig, SandboxRef
+from hiver.schemas import SandboxConfig
 
 SANDBOX_ID = "11111111-1111-1111-1111-111111111111"
 SANDBOX_REF = {"id": SANDBOX_ID, "key": "test-sandbox"}
 BASE_CONFIG = SandboxConfig.model_validate(
     {"fs": [{"backend": "local", "mount": "/workspace"}]}
 )
-
-
-def make_sandbox() -> Sandbox:
-    return Sandbox(SandboxRef(id=SANDBOX_ID, key="test-sandbox"), DEFAULT_GATEWAY_URL)
 
 
 # get_or_create_sandbox
@@ -106,49 +102,3 @@ async def test_get_or_create_sandbox_raises_sandbox_error_on_connection_refused(
     assert "connection refused" in str(exc.value).lower()
 
 
-# shutdown
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_shutdown_sends_post_v1_shutdown() -> None:
-    route = respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
-        return_value=httpx.Response(204)
-    )
-    await shutdown(make_sandbox())
-    assert route.called
-    assert route.calls[0].request.method == "POST"
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_shutdown_resolves_on_204() -> None:
-    respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
-        return_value=httpx.Response(204)
-    )
-    result = await shutdown(make_sandbox())
-    assert result is None
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_shutdown_raises_sandbox_error_on_non_204() -> None:
-    respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
-        return_value=httpx.Response(404, json={"error": "not found"})
-    )
-    with pytest.raises(SandboxError) as exc:
-        await shutdown(make_sandbox())
-    assert exc.value.status == 404
-    assert exc.value.operation == "shutdown"
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_shutdown_raises_sandbox_error_on_connection_refused() -> None:
-    respx.post(f"{DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox").mock(
-        side_effect=httpx.ConnectError("Connection refused")
-    )
-    with pytest.raises(SandboxError) as exc:
-        await shutdown(make_sandbox())
-    assert exc.value.status == 0
-    assert "connection refused" in str(exc.value).lower()

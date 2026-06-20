@@ -7,6 +7,7 @@ import traceData from "./trace-sample.json";
 
 const SANDBOX = {
   id: "sandbox-demo",
+  key: "demo",
 };
 
 const ARGS = {

@@ -1,0 +1,57 @@
+# A standalone sandbox Pod for the hiversh/playwright:microvm-12 image.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: playwright-microvm
+  namespace: hiver-sandbox
+  labels:
+    hiver.sandbox.key: playwright-microvm-17
+spec:
+  restartPolicy: Never
+  containers:
+    - name: sandbox
+      # Pinned by digest, not the mutable :microvm-12 tag: GKE nodes pull
+      # docker.io through the mirror.gcr.io pull-through cache, which is
+      # eventually consistent and serves a STALE tag→digest mapping after a
+      # re-push to the same tag — so `:microvm-12` + imagePullPolicy:Always
+      # still lands on an old image. A digest is content-addressed, so the
+      # mirror serves the exact image. Update this to the new digest after each
+      # push (docker buildx imagetools inspect hiversh/playwright:microvm-12).
+      image: hiversh/playwright:microvm-17
+      imagePullPolicy: IfNotPresent
+      args: ["--pack", "--prewarm", "--snapshot-dir", "/snapshots"]
+      ports:
+        - containerPort: 8099
+      env:
+        - name: HIVE_SPEC
+          # Guest size for the microVM: 2 vCPUs / 1 GiB RAM (the same sizing the
+          # old microvm-10 warm-pool entry used for this image). The guest's vCPU
+          # count and RAM come from cpu/memory here, not the pod resources.
+          value: |
+            {"image":"hiversh/playwright:microvm-17","cpu":2,"memory":1024}
+        # DEBUG: bake console=ttyS0 into the base snapshot so a resumed guest's
+        # kernel output (e.g. a panic on resume) goes to firecracker's stdout and
+        # into the pod log. Remove once the resume-failure root cause is found —
+        # the serial console adds measurable guest boot cost.
+        - name: FIRECRACKER_DEBUG_CONSOLE
+          value: "1"
+      securityContext:
+        privileged: true
+      resources:
+        # request = guest size (what the scheduler reserves). The limit is the
+        # node's capacity — the max a single pod can use on an n2-standard-4
+        # (4 vCPU / 16 GiB). As limits these cap at what's physically available
+        # (GKE reserves ~80m CPU and ~2.7 GiB for system daemons), so the pod
+        # bursts up to the node's allocatable without needing the exact figure.
+        requests:
+          cpu: "2"
+          memory: 1Gi
+        limits:
+          cpu: "4"
+          memory: 13Gi
+      volumeMounts:
+        - name: snapshots
+          mountPath: /snapshots
+  volumes:
+    - name: snapshots
+      emptyDir: {}

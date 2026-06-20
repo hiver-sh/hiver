@@ -63,7 +63,7 @@ func TestEgressACLE2E(t *testing.T) {
 	// ── HTTP ─────────────────────────────────────────────────────────────────
 
 	// Default-deny: 127.0.0.1 is not on the allowlist → sbxproxy returns 403.
-	assertAgentCurlStatus(t, ctx, session, "403")
+	assertAgentCurlStatus(t, ctx, session, key, "403")
 
 	// Idempotent PUT: re-applying the same document produces no diff.
 	noop, err := sbx.ApplyConfig(ctx, *initial)
@@ -76,7 +76,7 @@ func TestEgressACLE2E(t *testing.T) {
 	if noop.Changes.FS != nil || noop.Changes.Egress != nil {
 		t.Errorf("idempotent PUT produced changes: %+v", noop.Changes)
 	}
-	assertAgentCurlStatus(t, ctx, session, "403")
+	assertAgentCurlStatus(t, ctx, session, key, "403")
 
 	// Add an explicit allow for 127.0.0.1:8099 → proxy reloads → 200.
 	withAPIAllow := withExtraEgressRule(*initial, hiverclient.EgressRule{
@@ -92,7 +92,7 @@ func TestEgressACLE2E(t *testing.T) {
 		t.Fatalf("add egress PUT: applied=false (error=%q)", add.Error)
 	}
 	assertEgressAdded(t, add.Changes, "127.0.0.1")
-	eventuallyAgentCurlStatus(t, ctx, session, "200", 5*time.Second)
+	eventuallyAgentCurlStatus(t, ctx, session, key, "200", 5*time.Second)
 
 	applied, err := sbx.GetConfig(ctx)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestEgressACLE2E(t *testing.T) {
 		t.Fatalf("remove egress PUT: applied=false (error=%q)", remove.Error)
 	}
 	assertEgressRemoved(t, remove.Changes, "127.0.0.1")
-	eventuallyAgentCurlStatus(t, ctx, session, "403", 5*time.Second)
+	eventuallyAgentCurlStatus(t, ctx, session, key, "403", 5*time.Second)
 
 	// ── HTTPS (TLS) ───────────────────────────────────────────────────────────
 
@@ -239,14 +239,16 @@ func agentResolve(t *testing.T, ctx context.Context, session *mcp.ClientSession,
 	return strings.TrimSpace(out.Stdout)
 }
 
-func agentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSession) string {
+func agentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSession, key string) string {
 	t.Helper()
 	var out struct {
 		Stdout, Stderr string
 		ExitCode       int
 	}
+	// sandboxd's API is keyed: hit /v1/<key>/config so an allowed request returns
+	// 200 (the unkeyed /v1/config has no route and 404s).
 	setup.CallMCP(t, ctx, session, "bash", map[string]any{
-		"cmd": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8099/v1/config",
+		"cmd": fmt.Sprintf("curl -s -o /dev/null -w '%%{http_code}' http://127.0.0.1:8099/v1/%s/config", key),
 	}, &out)
 	if out.ExitCode != 0 {
 		t.Fatalf("agent curl: exit=%d stderr=%q stdout=%q", out.ExitCode, out.Stderr, out.Stdout)
@@ -254,20 +256,20 @@ func agentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSessi
 	return strings.TrimSpace(out.Stdout)
 }
 
-func assertAgentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSession, want string) {
+func assertAgentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSession, key, want string) {
 	t.Helper()
-	got := agentCurlStatus(t, ctx, session)
+	got := agentCurlStatus(t, ctx, session, key)
 	if got != want {
 		t.Errorf("agent curl status: got %q, want %q", got, want)
 	}
 }
 
-func eventuallyAgentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSession, want string, deadline time.Duration) {
+func eventuallyAgentCurlStatus(t *testing.T, ctx context.Context, session *mcp.ClientSession, key, want string, deadline time.Duration) {
 	t.Helper()
 	end := time.Now().Add(deadline)
 	var got string
 	for time.Now().Before(end) {
-		got = agentCurlStatus(t, ctx, session)
+		got = agentCurlStatus(t, ctx, session, key)
 		if got == want {
 			return
 		}

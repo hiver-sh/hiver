@@ -88,6 +88,6 @@ func (p *Proxy) handleTransparent(c *net.TCPConn) {
 	case protoTLS:
 		p.handleTransparentTLS(c, br, origDst)
 	default:
-		p.beginAudit("?", origDst, "", "").deny("unknown protocol", 0)
+		p.beginAudit(srcIPOf(c.RemoteAddr().String()), "?", origDst, "", "").deny("unknown protocol", 0)
 	}
 }

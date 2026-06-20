@@ -122,15 +122,16 @@ func (m *mountManager) Reconcile(sp *spec.Spec) error {
 
 	m.maybeRestore(sp)
 
-	// If the workload is already running, the workspaces just started above must
-	// be injected into it live (runc/the guest only mount them at launch). No-op
-	// at boot (workloadLive is set after launch) and for backends/mounts already
-	// visible.
+	// If the workload is already running, the mount changes above must be applied
+	// to it live: workspaces added here are injected, and workspaces removed above
+	// (queued by the backend's UnexportWorkspace) are unmounted in the guest —
+	// runc/the guest only act on mounts at launch otherwise. No-op at boot
+	// (workloadLive is set after launch) and when nothing changed.
 	if m.workloadLive.Load() {
-		// nil env: a live config-apply only adds workspaces; the workload's
-		// environment was fixed at launch (env is delivered once, at resume).
+		// nil env: the workload's environment is fixed at launch (env is delivered
+		// once, at resume); only the mount add/remove set changes here.
 		if err := m.iso.ApplyResumeState(m.ctx, nil); err != nil {
-			errs = append(errs, fmt.Errorf("mount workspaces live: %w", err))
+			errs = append(errs, fmt.Errorf("apply workspace changes live: %w", err))
 		}
 	}
 	return errors.Join(errs...)

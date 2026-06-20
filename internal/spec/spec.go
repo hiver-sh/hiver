@@ -25,7 +25,6 @@ const BackendSuffix = "-backend"
 type Spec struct {
 	Image      string             `json:"image,omitempty"`
 	CPU        *float64           `json:"cpu,omitempty"`
-	RequestCPU *float64           `json:"request_cpu,omitempty"`
 	Memory     *int               `json:"memory,omitempty"`
 	Entrypoint Entrypoint         `json:"entrypoint,omitempty"`
 	Cwd        string             `json:"cwd,omitempty"`
@@ -366,9 +365,6 @@ func Parse(path string) (*Spec, error) {
 func (s *Spec) Validate() error {
 	if s.CPU != nil && *s.CPU <= 0 {
 		return fmt.Errorf("cpu: must be > 0, got %g", *s.CPU)
-	}
-	if s.RequestCPU != nil && *s.RequestCPU <= 0 {
-		return fmt.Errorf("request_cpu: must be > 0, got %g", *s.RequestCPU)
 	}
 	if s.Memory != nil && *s.Memory < 128 {
 		return fmt.Errorf("memory: must be >= 128 (MiB), got %d", *s.Memory)

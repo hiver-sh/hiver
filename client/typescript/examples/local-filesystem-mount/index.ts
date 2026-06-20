@@ -33,4 +33,4 @@ const readFile = async (file: string) => {
 await readFile("/workspace/echo/SKILL.md");
 await readFile("/workspace/echo/echo.sh");
 
-await hiver.shutdown(sandbox);
+await sandbox.shutdown();

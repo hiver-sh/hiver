@@ -1,8 +1,8 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,6 +24,15 @@ type ControllerHandlers struct {
 	// blocks until the sandbox is reachable.
 	keys    keyedMutex
 	runtime SandboxRuntime
+}
+
+// packCreator is the optional fast path a runtime can offer for getOrCreate:
+// place a sandbox into an already-warm host straight from an in-memory cache,
+// with no orchestrator API call. ok=false means no warm host is cached for the
+// image, so the handler falls back to the lookup+create path. The k8s runtime
+// implements it (cached prewarm hosts); the docker runtime does not.
+type packCreator interface {
+	tryPackCreate(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, bool, error)
 }
 
 // keyedMutex hands out one lock per key, reclaiming a key's lock once no caller
@@ -101,6 +110,45 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, key string) {
 	defer h.keys.lock(key)()
 
 	ctx := c.Request.Context()
+
+	// Fast path: when the runtime can place this sandbox into an already-warm host
+	// straight from its in-memory cache (no orchestrator round-trip), do that and
+	// return. The POST it issues is idempotent on key, so this also covers a
+	// repeated getOrCreate for a sandbox already packed into that host. Falls
+	// through to the lookup+create path below when no warm host is cached for the
+	// image. ShouldBindBodyWith caches the parsed body, so the slow path can bind
+	// it again without re-reading the request.
+	//
+	// This path intentionally skips the per-key Lookup the slow path does. The one
+	// case that loses by it: a key that was cold-booted into a dedicated pod (no
+	// warm host existed then), after which a warm host for its image appears, and
+	// then getOrCreate is called again for the same key. We pack a fresh sandbox
+	// into the warm host instead of returning the existing dedicated one, so for
+	// the overlap the key has two sandboxes and the repeat call returns a fresh
+	// (empty) one rather than the original's accumulated state. It is self-healing,
+	// not a leak: the orphaned dedicated sandbox stops getting /v1/ping, so its
+	// inactivity TTL (cmd/sandboxd Lifetime) shuts it down, its pod terminates, and
+	// the recycler reaps it (recycler.go). Bounded lifetime ≈ sandbox Ttl +
+	// completedPodTTL. Accepted as the cost of keeping the warm path off the API;
+	// add a dedicated-pod check here if state continuity across that window matters.
+	if pc, ok := h.runtime.(packCreator); ok {
+		var cfg sandboxgen.SandboxConfig
+		if err := c.ShouldBindBodyWith(&cfg, binding.JSON); err != nil {
+			c.JSON(http.StatusBadRequest, sandboxgen.Error{Error: err.Error()})
+			return
+		}
+		sb, packed, err := pc.tryPackCreate(ctx, key, api.NormalizeConfig(cfg))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
+			return
+		}
+		if packed {
+			log.Printf("sandbox %q: get-or-create (warm host) total %s", key, time.Since(handlerStart).Round(time.Millisecond))
+			c.JSON(http.StatusCreated, sb)
+			return
+		}
+	}
+
 	lookupStart := time.Now()
 	running, sb, err := h.runtime.Lookup(ctx, key)
 	if err != nil {
@@ -157,20 +205,4 @@ func (h *ControllerHandlers) StreamSandboxEvents(c *gin.Context) {
 			return
 		}
 	}
-}
-
-// ShutdownSandbox stops and removes the sandbox for key. An already-exited
-// container is simply removed; a missing sandbox returns 404.
-func (h *ControllerHandlers) ShutdownSandbox(c *gin.Context, key string) {
-	defer h.keys.lock(key)()
-
-	if err := h.runtime.Shutdown(c.Request.Context(), key); err != nil {
-		if errors.Is(err, ErrSandboxNotFound) {
-			c.JSON(http.StatusNotFound, sandboxgen.Error{Error: fmt.Sprintf("sandbox %q does not exist", key)})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, sandboxgen.Error{Error: err.Error()})
-		return
-	}
-	c.Status(http.StatusNoContent)
 }

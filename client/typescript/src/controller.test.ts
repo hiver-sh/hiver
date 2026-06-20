@@ -1,10 +1,6 @@
 import { expect, it, vi } from "vitest";
-import {
-  getOrCreateSandbox,
-  shutdown,
-  DEFAULT_GATEWAY_URL,
-} from "./controller";
-import { Sandbox, SandboxError } from "./sandbox";
+import { getOrCreateSandbox, DEFAULT_GATEWAY_URL } from "./controller";
+import { Sandbox } from "./sandbox";
 import type { SandboxConfig } from "./schemas";
 
 const SANDBOX_ID = "11111111-1111-1111-1111-111111111111";
@@ -18,10 +14,6 @@ function jsonResp(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
-}
-
-function mockSandbox(): Sandbox {
-  return new Sandbox(SANDBOX_REF, { gatewayUrl: DEFAULT_GATEWAY_URL });
 }
 
 // getOrCreateSandbox
@@ -113,58 +105,6 @@ it("getOrCreateSandbox throws SandboxError with 'connection refused' on ECONNREF
       fetch: mockFetch as unknown as typeof fetch,
       timeoutMs: 0,
     }),
-  ).rejects.toMatchObject({
-    name: "SandboxError",
-    status: 0,
-    message: expect.stringContaining("connection refused"),
-  });
-});
-
-// shutdown
-
-it("shutdown sends POST /controller/v1/shutdown/{id}", async () => {
-  const mockFetch = vi
-    .fn()
-    .mockResolvedValue(new Response(null, { status: 204 }));
-  await shutdown(mockSandbox(), {
-    fetch: mockFetch as unknown as typeof fetch,
-  });
-  const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(
-    `${DEFAULT_GATEWAY_URL}/controller/v1/shutdown/test-sandbox`,
-  );
-  expect(init.method).toBe("POST");
-});
-
-it("shutdown resolves on 204", async () => {
-  const mockFetch = vi
-    .fn()
-    .mockResolvedValue(new Response(null, { status: 204 }));
-  await expect(
-    shutdown(mockSandbox(), { fetch: mockFetch as unknown as typeof fetch }),
-  ).resolves.toBeUndefined();
-});
-
-it("shutdown throws SandboxError on non-204 response", async () => {
-  const mockFetch = vi
-    .fn()
-    .mockResolvedValue(jsonResp({ error: "not found" }, 404));
-  await expect(
-    shutdown(mockSandbox(), { fetch: mockFetch as unknown as typeof fetch }),
-  ).rejects.toMatchObject({
-    name: "SandboxError",
-    status: 404,
-    operation: "shutdown",
-  });
-});
-
-it("shutdown throws SandboxError with 'connection refused' on ECONNREFUSED", async () => {
-  const err = Object.assign(new Error("connect failed"), {
-    cause: { code: "ECONNREFUSED" },
-  });
-  const mockFetch = vi.fn().mockRejectedValue(err);
-  await expect(
-    shutdown(mockSandbox(), { fetch: mockFetch as unknown as typeof fetch }),
   ).rejects.toMatchObject({
     name: "SandboxError",
     status: 0,

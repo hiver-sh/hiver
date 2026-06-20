@@ -144,7 +144,9 @@ func FetchEvents(t *testing.T, baseURL string, opts FetchOpts) []map[string]any 
 	if opts.IdleTimeout == 0 {
 		opts.IdleTimeout = 500 * time.Millisecond
 	}
-	url := baseURL + "/v1/events"
+	// baseURL already includes the keyed API prefix (…/v1/<key>); the stream
+	// endpoint is /events under it.
+	url := baseURL + "/events"
 	if opts.LastEventID != "" {
 		url += "?lastEventId=" + opts.LastEventID
 	}

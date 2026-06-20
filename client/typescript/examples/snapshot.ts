@@ -27,7 +27,7 @@ const before = await first.exec(
 console.info("wrote /root/note.txt:", before.stdout.trim());
 
 console.info("shutting down (capturing snapshot)…");
-await hiver.shutdown(first);
+await first.shutdown();
 
 // --- Second boot: same restore_key brings /root/note.txt back. ---
 const second = await hiver.getOrCreateSandbox(ID, config);
@@ -40,4 +40,4 @@ if (after.exit_code !== 0) {
   process.exitCode = 1;
 }
 
-await hiver.shutdown(second);
+await second.shutdown();

@@ -28,8 +28,17 @@ const cli = subcommand(
     "after",
     "\nAny extra arguments are forwarded to docker compose.",
   );
+if (action === "up") {
+  cli.option(
+    "--no-pack",
+    "Disable packing mode: give each sandbox its own container instead of packing N same-image sandboxes into one.",
+  );
+}
 run(cli); // exits here on --help
-const extra = process.argv.slice(3);
+// Packing is the default; `--no-pack` opts out (Commander sets pack=false).
+const pack = action === "up" && cli.opts().pack !== false;
+// --no-pack is ours, not a docker compose flag — don't forward it.
+const extra = process.argv.slice(3).filter((a) => a !== "--no-pack");
 
 // Parsed (so `--help` works without Docker) — now require Docker.
 await requireDocker();
@@ -62,6 +71,9 @@ if (action === "up") {
   // Pick a free host port for the gateway if the default is taken.
   gatewayPort = await findAvailablePort(DEFAULT_PORT);
   env.GATEWAY_PORT = String(gatewayPort);
+
+  // Packing (default) → controller packs same-image sandboxes into one container.
+  if (pack) env.HIVE_PACK = "1";
 
   // The stack images must be present locally; pull any that are missing.
   for (const image of missingImages(composeFile)) {

@@ -104,6 +104,26 @@ type Config struct {
 	// from it so multiple sandboxes on one host don't collide.
 	Hostname string
 
+	// Key is the sandbox key when more than one sandbox is packed into a single
+	// pod (design §6). Empty for the boot sandbox, which keeps the historical
+	// single-sandbox layout. When set, backends namespace their per-sandbox
+	// runtime state (runc root/cgroup/container id; microvm jail) by it.
+	Key string
+
+	// GuestIP is the pod-local IP assigned to a packed sandbox (e.g.
+	// "172.16.0.2"). When set, the container backend runs the workload in its
+	// own network namespace with this IP so its egress carries a distinct source
+	// address (design §6/§8); the shared sbxproxy then applies per-source rules.
+	// Empty keeps the workload in the shared pod netns (the boot sandbox).
+	GuestIP string
+
+	// BaseSnapshotDir, when set, is the shared per-image base snapshot a packed
+	// microvm resumes from instead of cold-booting (design §7): all VMs in the pod
+	// LoadSnapshot the same base/{snapshot.bin, mem.bin} (guest memory shared COW
+	// via the File backend) with a per-VM CoW overlay, tap, and vsock. Only the
+	// microvm backend uses it; the container backend ignores it. Empty cold-boots.
+	BaseSnapshotDir string
+
 	// LocalMounts lists each local-backend FUSE workspace as (agent path,
 	// host backend dir). The container backend snapshots these dirs
 	// directly; the microvm backend captures the guest's writable image
@@ -213,20 +233,23 @@ type Isolation interface {
 	UnmountRoot() error
 
 	// ExportWorkspace makes the host sbxfuse mount visible to the workload.
-	// For the container backend the agent shares the host mount namespace, so
-	// this is a no-op (runc bind-mounts it). For the microvm backend it
-	// starts a 9p-over-vsock server rooted at the host mount and records the
-	// vsock port so the guest can mount it. Call after the FUSE daemon is
-	// mounted and ready.
-	ExportWorkspace(ctx context.Context, mount string) error
+	// hostMount is the host-side FUSE path; guestMount is the path the agent
+	// sees inside the workload (they differ for packed sandboxes). For the
+	// container backend at launch the agent shares the host mount namespace
+	// (runc bind-mounts it using the two paths); one added after launch is
+	// injected via bindWorkspaceIntoContainer. For the microvm backend it
+	// starts a 9p-over-vsock server rooted at the host mount. Call after the
+	// FUSE daemon is mounted and ready.
+	ExportWorkspace(ctx context.Context, hostMount, guestMount string) error
 
 	// UnexportWorkspace reverses ExportWorkspace for a mount removed from the
-	// config at runtime (config-apply reconcile). The container backend is a
-	// no-op — the bind lives in the agent's mount namespace, established by runc
-	// at launch. The microvm backend stops the mount's 9p-over-vsock server.
-	// Surfacing the removal inside an already-running workload (a live unmount
-	// in the guest / container ns) is intentionally not attempted here; the
-	// clean path is reconciling before the agent launches.
+	// config at runtime (config-apply reconcile). The container backend forgets
+	// the workspace and, if it had already been injected into the running agent,
+	// detaches it from the container's mount namespace so the agent stops seeing
+	// it (unmountWorkspaceFromContainer). The microvm backend stops the mount's
+	// 9p-over-vsock server; the guest keeps the mount it saw at launch until a
+	// live guest-side unmount exists. Call before tearing down the host FUSE
+	// daemon that served the mount.
 	UnexportWorkspace(ctx context.Context, mount string) error
 
 	// InstallCA installs the sandbox CA (PEM) into the workload's trust

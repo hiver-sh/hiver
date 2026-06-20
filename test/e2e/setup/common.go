@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -115,47 +114,20 @@ func BuildImages(t *testing.T, dockerfile, buildContext, agentImage string) {
 }
 
 // BuildSandboxBundle packages agentImage into a sandbox-bundle image tagged
-// bundleTag. It saves the agent image as a tarball then builds bundler.Dockerfile
-// against it, producing a core image with the agent rootfs pre-extracted at /mnt.
+// bundleTag using the `hiver bundle` CLI (the latest bundler). Without
+// --microvm the result is a CONTAINER-isolation image (no baked guest
+// rootfs.ext4), so the fixtures run on hosts without /dev/kvm. The CLI bundles
+// FROM the local hiversh/core, so the bundle carries the locally-built sandboxd.
 func BuildSandboxBundle(t *testing.T, agentImage, bundleTag string) {
 	t.Helper()
-	absRoot, err := filepath.Abs(moduleRoot)
-	if err != nil {
-		t.Fatalf("abs module root: %v", err)
-	}
-	tmpDir, err := os.MkdirTemp("", "sandbox-bundle-*")
-	if err != nil {
-		t.Fatalf("mktemp: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	tarPath := filepath.Join(tmpDir, "sandbox.tar")
-	tarFile, err := os.Create(tarPath)
-	if err != nil {
-		t.Fatalf("create sandbox.tar: %v", err)
-	}
-	saveCmd := exec.CommandContext(ctx, "docker", "save", agentImage)
-	saveCmd.Stdout = tarFile
-	var saveErr bytes.Buffer
-	saveCmd.Stderr = &saveErr
-	if runErr := saveCmd.Run(); runErr != nil {
-		tarFile.Close()
-		t.Fatalf("docker save %s: %v\n%s", agentImage, runErr, saveErr.String())
-	}
-	tarFile.Close()
-
-	buildCmd := exec.CommandContext(ctx, "docker", "build",
-		"-f", filepath.Join(absRoot, "docker/bundler.Dockerfile"),
-		"--build-context", "sandbox-tar="+tmpDir,
-		"-t", bundleTag,
-		absRoot)
-	var buildOut bytes.Buffer
-	buildCmd.Stdout, buildCmd.Stderr = &buildOut, &buildOut
-	if err := buildCmd.Run(); err != nil {
-		t.Fatalf("bundle %s: %v\n%s", agentImage, err, buildOut.String())
+	cmd := exec.CommandContext(ctx, "hiver", "bundle", agentImage, "--tag", bundleTag)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("hiver bundle %s: %v\n%s", agentImage, err, out.String())
 	}
 }
 

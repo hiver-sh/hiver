@@ -25,10 +25,10 @@ const gatewayUrl = process.env.HIVER_GATEWAY_URL ?? "http://localhost:10000";
 const RUNS = Number(process.env.BENCH_RUNS ?? "10");
 const MIN_QPS = Number(process.env.BENCH_MIN_QPS ?? "1");
 const MAX_QPS = Number(process.env.BENCH_MAX_QPS ?? "1");
-const WAIT_MS = Number(process.env.BENCH_WAIT_MS ?? "60000");
+const WAIT_MS = Number(process.env.BENCH_WAIT_MS ?? "10000");
 const MARKER = "__READY__";
 const sandboxConfig: hiver.SandboxConfig = {
-  image: "hiversh/playwright:microvm-10",
+  image: "hiversh/playwright:microvm-17",
 };
 
 // `page` is pre-opened at prewarm (in the image's browser host) and seeded into
@@ -151,7 +151,7 @@ async function runBatch(qps: number): Promise<Run[]> {
 
   await Promise.all(inFlight);
   console.info(`  shutting down ${sandboxes.length} sandboxes ...`);
-  await Promise.all(sandboxes.map((s) => hiver.shutdown(s, { gatewayUrl })));
+  await Promise.all(sandboxes.map((s) => s.shutdown()));
   return results;
 }
 

@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/hiver-sh/hiver/internal/warmpool"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,15 +80,11 @@ func (r *K8sRuntime) startRecycler(ctx context.Context) {
 	}()
 }
 
-// recycleCompleted reaps every kind of terminated sandbox pod the cluster won't
-// GC on its own (all run RestartPolicyNever). Two disjoint sets accumulate:
-// claimed and cold-boot sandboxes, which carry the sandbox-key label; and warm
-// pods that finished while still unclaimed, which carry no key (so the key sweep
-// never sees them) but do carry state=warm. Each set is swept by its own
-// selector.
+// recycleCompleted reaps terminated sandbox pods the cluster won't GC on its own
+// (all run RestartPolicyNever): claimed and cold-boot sandboxes, which carry the
+// sandbox-key label.
 func (r *K8sRuntime) recycleCompleted(ctx context.Context, ttl time.Duration) {
 	r.sweepCompleted(ctx, ttl, labelSandboxKey)
-	r.sweepCompleted(ctx, ttl, warmpool.LabelState+"="+warmpool.StateWarm)
 }
 
 // sweepCompleted lists pods matching selector and deletes those terminated longer

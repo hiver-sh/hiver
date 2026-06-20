@@ -18,4 +18,4 @@ console.info("stdout: " + result.stdout);
 if (result.stderr) console.error("stderr: " + result.stderr);
 console.info("exit code:", result.exit_code);
 
-await hiver.shutdown(sandbox);
+await sandbox.shutdown();

@@ -38,6 +38,7 @@ interface Preview {
 
 interface Props {
   sandboxId: string;
+  sandboxKey: string;
   serverUrl: string;
   events: Extract<SandboxEvent, { type: "fs.request" }>[];
 }
@@ -100,7 +101,7 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
   });
 }
 
-export function FileExplorer({ sandboxId, serverUrl, events }: Props) {
+export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events }: Props) {
   const { transport } = useTransport();
   const { prefs, toggleExpandedPath } = useUserPreferences();
   const [roots, setRoots] = useState<TreeNode[]>([]);
@@ -124,19 +125,19 @@ export function FileExplorer({ sandboxId, serverUrl, events }: Props) {
   const fileUrl = useCallback(
     (path: string) => {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/file`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/file`,
       );
       url.searchParams.set("path", path);
 
       return url;
     },
-    [sandboxId, serverUrl],
+    [sandboxId, sandboxKey, serverUrl],
   );
 
   const fetchChildren = useCallback(
     async (path: string): Promise<TreeNode[]> => {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/directories`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/directories`,
       );
       url.searchParams.set("path", path);
 
@@ -151,7 +152,7 @@ export function FileExplorer({ sandboxId, serverUrl, events }: Props) {
         .then((r) => r.json() as Promise<{ entries: DirEntry[] }>);
       return toNodes(data.entries);
     },
-    [sandboxId, serverUrl, transport],
+    [sandboxId, sandboxKey, serverUrl, transport],
   );
 
   const loadMounts = useCallback(async () => {
@@ -170,7 +171,7 @@ export function FileExplorer({ sandboxId, serverUrl, events }: Props) {
       collectExpanded(rootsRef.current);
 
       const configUrl = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/config`,
       );
 
       const allPaths = [

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -25,11 +26,12 @@ import (
 // Guest network: a /30 point-to-point link over the tap device. The host
 // owns the gateway address and the guest owns the other usable address; the
 // guest routes all egress at the gateway, where the host REDIRECTs it to
-// sbxproxy.
+// sbxproxy. These are the boot-sandbox defaults; a packed sandbox derives its
+// own per-VM address/gateway/MAC from Config.GuestIP (see newMicroVM).
 const (
-	guestIP   = "172.16.0.2"
-	gatewayIP = "172.16.0.1"
-	guestMAC  = "06:00:ac:10:00:02"
+	bootGuestIP   = "172.16.0.2"
+	bootGatewayIP = "172.16.0.1"
+	bootGuestMAC  = "06:00:ac:10:00:02"
 )
 
 // controlAttemptTimeout bounds one ApplyResumeState control RPC so a connection
@@ -65,6 +67,7 @@ type microvm struct {
 	// Host-side artifact paths, all under jailDir.
 	jailDir    string
 	apiSock    string
+	vsockDir   string // holds vsock.sock + the _<port> sockets; bound per-VM on resume
 	vsockUDS   string
 	configFile string
 	logFile    string
@@ -72,15 +75,42 @@ type microvm struct {
 	overlayImg string
 	paramsImg  string
 
+	// baseDir, when non-empty, is the shared per-image base snapshot this VM
+	// resumes from (pack mode, design §7): ResumeAgent binds per-VM overlay/vsock
+	// over the base's canonical paths and ResumeReady loads base/{snapshot,mem}.bin
+	// with a per-VM tap override. Empty for cold boot and the in-place prewarm
+	// resume (which reuses this VM's own snapshot files).
+	baseDir string
+
 	// Compute allocation for the guest, fixed at boot (SandboxConfig.cpu /
 	// .memory). New defaults these before construction.
 	vcpuCount  int
 	memSizeMib int
 
+	// Per-VM network identity. For the boot sandbox these are the boot*
+	// defaults; for a packed sandbox they are derived from Config.GuestIP so N
+	// VMs in one pod don't collide. guestIP is baked into the kernel cmdline
+	// (DefaultBootArgs); gatewayIP is the host end of the /30 on the tap.
+	guestIP   string
+	gatewayIP string
+	guestMAC  string
+
 	// Toolchain + guest assets, resolved from env with defaults.
 	fcBin   string // firecracker binary
 	kernel  string // guest kernel (vmlinux)
 	tapName string
+
+	// netnsName, when set, is the per-VM network namespace a packed VM's tap and
+	// firecracker run in (design §7, "option 1"): every packed VM keeps the base
+	// snapshot's baked guest IP (bootGuestIP) in its own netns — so a resident
+	// prewarmed workload is never re-IP'd and its sockets/DNS/TLS stay valid — and
+	// the host SNATs its egress to sourceIP so sbxproxy still keys per sandbox.
+	// Empty for the boot/base VM, which uses the pod netns.
+	netnsName string
+	// sourceIP is the per-VM host-side identity (172.16.<n>.2) the netns SNATs
+	// guest egress to; it is what sbxproxy sees and keys egress rules on. Empty
+	// unless packed.
+	sourceIP string
 
 	// localMounts are the host-side local-backend dirs (for snapshot).
 	localMounts []SnapshotMount
@@ -90,6 +120,11 @@ type microvm struct {
 	fuse []firecracker.GuestFuse
 	// fuseCancel stops each mount's 9p-over-vsock server (UnexportWorkspace).
 	fuseCancel map[string]context.CancelFunc
+	// pendingUnmount holds guest workspace paths removed by UnexportWorkspace that
+	// the guest hasn't been told to umount yet. The next ApplyResumeState carries
+	// them in the control RPC (UnmountWorkspaces) and clears them on success — the
+	// host-side 9p teardown alone leaves the guest mountpoint behind.
+	pendingUnmount []string
 	// nextFusePort hands out vsock ports monotonically so a mount removed at
 	// runtime doesn't free a port a later add would reuse while the guest may
 	// still reference it.
@@ -117,27 +152,168 @@ type microvm struct {
 }
 
 func newMicroVM(cfg Config) *microvm {
-	jail := filepath.Join(envOr("FIRECRACKER_RUN_DIR", "/run/firecracker"), cfg.Hostname)
-	return &microvm{
+	// The boot sandbox (no GuestIP) keeps the historical single-tenant layout:
+	// jail/cgroup/tap keyed by pod hostname and the fixed boot* network identity.
+	// A packed sandbox (GuestIP set) gets a per-VM identity derived from its IP so
+	// N VMs coexist in one pod: jail/tap keyed by the IP index (short, keeps the
+	// vsock AF_UNIX path well under 108 bytes), cgroup namespaced by Key, and its
+	// own /30 (gateway = .1 of the link) + MAC.
+	id := cfg.Hostname
+	cgroupName := cfg.Hostname
+	// Every microvm — boot, base, and packed — keeps the base snapshot's baked
+	// guest identity (bootGuestIP/bootGatewayIP/bootGuestMAC). Packed VMs no longer
+	// re-IP to a per-VM address (that broke prewarmed resident workloads bound to
+	// the baked IP); instead each runs in its own netns and the host SNATs it to
+	// cfg.GuestIP (172.16.<n>.2) for sbxproxy's per-source keying.
+	gIP, gwIP, mac := bootGuestIP, bootGatewayIP, bootGuestMAC
+	tap := tapNameFor(cfg.Hostname)
+	var netnsName, sourceIP string
+	if cfg.GuestIP != "" {
+		n := netID(cfg.GuestIP)
+		id = n
+		sourceIP = cfg.GuestIP
+		netnsName = "fcsbx" + n
+		tap = "fctap-" + n
+	}
+	if cfg.Key != "" {
+		cgroupName = cfg.Hostname + "-" + cfg.Key
+	}
+	jail := filepath.Join(envOr("FIRECRACKER_RUN_DIR", "/run/firecracker"), id)
+	// vsock.sock and the per-port guest↔host sockets live in their own subdir so a
+	// pack-mode resume can bind the whole dir over the base snapshot's canonical
+	// vsock path in one mount, giving each VM a private vsock channel.
+	vsockDir := filepath.Join(jail, baseVsockDirName)
+	m := &microvm{
 		hostname:    cfg.Hostname,
-		cgroupPath:  sandboxCgroupPath(cfg.Hostname),
+		cgroupPath:  sandboxCgroupPath(cgroupName),
 		jailDir:     jail,
 		apiSock:     filepath.Join(jail, "firecracker.sock"),
-		vsockUDS:    filepath.Join(jail, "vsock.sock"),
+		vsockDir:    vsockDir,
+		vsockUDS:    filepath.Join(vsockDir, "vsock.sock"),
 		configFile:  filepath.Join(jail, "config.json"),
 		logFile:     filepath.Join(jail, "firecracker.log"),
 		rootfsImg:   filepath.Join(jail, "rootfs.ext4"),
-		overlayImg:  filepath.Join(jail, "overlay.ext4"),
+		overlayImg:  filepath.Join(jail, baseOverlayName),
 		paramsImg:   filepath.Join(jail, "metadata.ext4"),
-		snapFile:    filepath.Join(jail, "snapshot.bin"),
-		memFile:     filepath.Join(jail, "mem.bin"),
+		snapFile:    filepath.Join(jail, baseSnapshotName),
+		memFile:     filepath.Join(jail, baseMemName),
+		baseDir:     cfg.BaseSnapshotDir,
+		guestIP:     gIP,
+		gatewayIP:   gwIP,
+		guestMAC:    mac,
 		vcpuCount:   cfg.VcpuCount,
 		memSizeMib:  cfg.MemoryMiB,
 		fcBin:       envOr("FIRECRACKER_BIN", "firecracker"),
 		kernel:      envOr("FIRECRACKER_KERNEL", "/var/lib/firecracker/vmlinux"),
-		tapName:     tapNameFor(cfg.Hostname),
+		tapName:     tap,
+		netnsName:   netnsName,
+		sourceIP:    sourceIP,
 		localMounts: cfg.LocalMounts,
 	}
+	// A packed sandbox with a ready base snapshot takes the resume fast path:
+	// HasPrewarmSnapshot reports true so the caller resumes instead of cold-booting.
+	if m.baseDir != "" && baseSnapshotReady(m.baseDir) {
+		m.haveSnapshot = true
+	}
+	return m
+}
+
+// Canonical artifact names shared by a VM's jail and the pack-mode base snapshot.
+// Using one set of names means the base builder's jail layout already matches what
+// a resumer binds over, so no path rewriting is needed.
+const (
+	baseSnapshotName = "snapshot.bin"
+	baseMemName      = "mem.bin"
+	baseOverlayName  = "overlay.ext4"
+	baseVsockDirName = "vsock"
+)
+
+// baseSnapshotReady reports whether a base dir holds a complete snapshot triple
+// (state + memory + the warm overlay each VM copies-on-write from).
+func baseSnapshotReady(dir string) bool {
+	for _, f := range []string{baseSnapshotName, baseMemName, baseOverlayName} {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.Size() == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// baseBuilderID is the jail id (hence dir/tap/cgroup name) of the transient VM
+// that builds a pod's shared base snapshot. It must not collide with any packed
+// sandbox: those are keyed by their guest-IP index (172.16.<n>.2, n≥2), so the
+// builder's hostname-derived id and its 172.16.0.x boot network are disjoint.
+const baseBuilderID = "base"
+
+// MicroVMBaseDir is the shared dir a pod's base snapshot lives in — the transient
+// builder's jail. Both the builder (which writes it) and every resumer (which
+// binds its canonical overlay/vsock paths) resolve it the same way.
+func MicroVMBaseDir() string {
+	return filepath.Join(envOr("FIRECRACKER_RUN_DIR", "/run/firecracker"), baseBuilderID)
+}
+
+// BuildMicroVMBaseSnapshot boots a transient firecracker guest running the image
+// prewarm entrypoint with the pod's shared sidecars (proxy/DNS), snapshots it into
+// MicroVMBaseDir, and tears the guest down. Packed sandboxes then resume from this
+// base (Config.BaseSnapshotDir) instead of cold-booting (design §7). vcpu/memMiB
+// size the base guest; every resumer inherits that sizing (firecracker fixes
+// vCPU/RAM in the snapshot). Returns the base dir on success; on failure the
+// caller cold-boots each VM. Safe to call once per pod.
+func BuildMicroVMBaseSnapshot(ctx context.Context, certPEM []byte, imgCfg *runc.ImageConfig, vcpu, memMiB, proxyPort, dnsPort, mark int) (string, error) {
+	baseDir := MicroVMBaseDir()
+	_ = os.RemoveAll(baseDir) // discard any stale base from a prior incarnation
+	b := newMicroVM(Config{Hostname: baseBuilderID, VcpuCount: vcpu, MemoryMiB: memMiB})
+	if err := b.MountRoot(); err != nil {
+		return "", fmt.Errorf("base: mount root: %w", err)
+	}
+	if len(certPEM) > 0 {
+		if err := b.InstallCA(certPEM); err != nil {
+			return "", fmt.Errorf("base: install CA: %w", err)
+		}
+	}
+	// Wire the builder's egress to the shared sidecars so the prewarm workload can
+	// reach the network as it warms up; the rules key on the builder's own tap.
+	if err := b.RedirectEgress(ctx, proxyPort, dnsPort, mark); err != nil {
+		_ = exec.Command("ip", "link", "del", b.tapName).Run()
+		return "", fmt.Errorf("base: egress: %w", err)
+	}
+	if err := b.PrewarmSnapshot(ctx, imgCfg); err != nil {
+		_ = exec.Command("ip", "link", "del", b.tapName).Run()
+		return "", fmt.Errorf("base: prewarm snapshot: %w", err)
+	}
+	// The transient VM is stopped; drop its tap (the snapshot/mem/overlay remain in
+	// baseDir, and the vsock dir stays as the canonical bind target for resumers).
+	_ = exec.Command("ip", "link", "del", b.tapName).Run()
+	if !baseSnapshotReady(baseDir) {
+		return "", fmt.Errorf("base: snapshot incomplete in %s", baseDir)
+	}
+	return baseDir, nil
+}
+
+// gatewayForGuest returns the host (gateway) end of a packed sandbox's /30 link:
+// the guest is 172.16.<n>.2, the gateway 172.16.<n>.1. Falls back to the input
+// for a malformed address (callers only pass allocator-formed IPs).
+func gatewayForGuest(guestIP string) string {
+	parts := strings.Split(guestIP, ".")
+	if len(parts) != 4 {
+		return guestIP
+	}
+	parts[3] = "1"
+	return strings.Join(parts, ".")
+}
+
+// macForGuest derives a stable, locally-administered MAC from a packed
+// sandbox's guest IP (06:00:ac:10:<n>:<host>), so each VM's eth0 differs. Each
+// tap is its own L2 segment, so this is belt-and-suspenders rather than required
+// for correctness. Malformed input falls back to the boot MAC.
+func macForGuest(guestIP string) string {
+	parts := strings.Split(guestIP, ".")
+	if len(parts) != 4 {
+		return bootGuestMAC
+	}
+	n, _ := strconv.Atoi(parts[2])
+	host, _ := strconv.Atoi(parts[3])
+	return fmt.Sprintf("06:00:ac:10:%02x:%02x", n&0xff, host&0xff)
 }
 
 func (m *microvm) Kind() Kind { return KindMicroVM }
@@ -158,8 +334,8 @@ const bundledRootfsImg = runc.MntDir + "/rootfs.ext4"
 // (shared, outside jailDir, so UnmountRoot's RemoveAll leaves it intact) and
 // builds the per-sandbox overlay.
 func (m *microvm) MountRoot() error {
-	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
-		return fmt.Errorf("create jail dir: %w", err)
+	if err := m.ensureVsockDir(); err != nil {
+		return err
 	}
 	fi, err := os.Stat(bundledRootfsImg)
 	if err != nil {
@@ -176,20 +352,42 @@ func (m *microvm) MountRoot() error {
 }
 
 func (m *microvm) UnmountRoot() error {
-	// Best-effort teardown of the per-sandbox artifacts and tap link.
-	_ = exec.Command("ip", "link", "del", m.tapName).Run()
+	// Best-effort teardown of the per-sandbox artifacts and network. A packed VM's
+	// tap lives in its netns, so deleting the netns drops it (and the veth/rules);
+	// the boot/base VM's tap is in the pod netns and is deleted directly.
+	if m.netnsName != "" {
+		m.teardownPackedNetMicrovm(context.Background())
+	} else {
+		_ = exec.Command("ip", "link", "del", m.tapName).Run()
+	}
 	return os.RemoveAll(m.jailDir)
+}
+
+// ensureVsockDir creates the jail's vsock subdir (which also creates jailDir).
+// Both the firecracker mux socket and sandboxd's per-port guest↔host listeners
+// land here, so it must exist before any of them is bound. Idempotent.
+func (m *microvm) ensureVsockDir() error {
+	if err := os.MkdirAll(m.vsockDir, 0o755); err != nil {
+		return fmt.Errorf("create vsock dir: %w", err)
+	}
+	return nil
 }
 
 // ExportWorkspace starts a 9p-over-vsock server rooted at the host sbxfuse
 // mount and records the mount + assigned vsock port for the guest to mount.
 // Every guest workspace op then lands on the host FUSE daemon, reusing its
 // ACL enforcement, audit events, and remote-backend handling.
-func (m *microvm) ExportWorkspace(ctx context.Context, mount string) error {
+func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount string) error {
+	// hostMount is the host-side sbxfuse dir the 9p server serves; guestMount is
+	// where the guest mounts it (and the key UnexportWorkspace looks up by, via the
+	// mountManager). For the boot sandbox the two coincide, but a packed sandbox's
+	// host path is per-key (/run/sandboxd/<key>/mnt/...) while its guest path is the
+	// configured mount (e.g. /workspace) — so the guest must be told to mount at
+	// guestMount, not the host path, or /workspace never appears in the guest.
 	// ExportWorkspace runs before MountRoot (which also creates jailDir), so
-	// ensure the jail exists before binding the 9p vsock socket under it.
-	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
-		return fmt.Errorf("create jail dir: %w", err)
+	// ensure the vsock dir exists before binding the 9p vsock socket under it.
+	if err := m.ensureVsockDir(); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -198,14 +396,14 @@ func (m *microvm) ExportWorkspace(ctx context.Context, mount string) error {
 	}
 	port := m.nextFusePort
 	m.nextFusePort++
-	m.fuse = append(m.fuse, firecracker.GuestFuse{Mount: mount, Port: port})
+	m.fuse = append(m.fuse, firecracker.GuestFuse{Mount: guestMount, Port: port})
 	// Each mount's 9p server runs on its own context so UnexportWorkspace can
 	// stop just that one without tearing down the others.
 	srvCtx, cancel := context.WithCancel(ctx)
 	if m.fuseCancel == nil {
 		m.fuseCancel = map[string]context.CancelFunc{}
 	}
-	m.fuseCancel[mount] = cancel
+	m.fuseCancel[guestMount] = cancel
 	m.mu.Unlock()
 
 	ln, err := firecracker.HostVsockListener(m.vsockUDS, port)
@@ -214,7 +412,7 @@ func (m *microvm) ExportWorkspace(ctx context.Context, mount string) error {
 		return err
 	}
 	go func() {
-		if err := firecracker.Serve9P(srvCtx, mount, ln); err != nil && srvCtx.Err() == nil {
+		if err := firecracker.Serve9P(srvCtx, hostMount, ln); err != nil && srvCtx.Err() == nil {
 			// Logged via the server's own path; nothing actionable here.
 			_ = err
 		}
@@ -231,13 +429,43 @@ func (m *microvm) UnexportWorkspace(ctx context.Context, mount string) error {
 		cancel()
 		delete(m.fuseCancel, mount)
 	}
+	removed := false
 	for i := range m.fuse {
 		if m.fuse[i].Mount == mount {
 			m.fuse = append(m.fuse[:i], m.fuse[i+1:]...)
+			removed = true
 			break
 		}
 	}
+	// Queue the guest-side umount: stopping the host 9p server above frees the
+	// export but leaves the mountpoint in the guest. The next ApplyResumeState
+	// (issued by the reconcile after this stop) tells the guest to umount it.
+	if removed {
+		m.pendingUnmount = append(m.pendingUnmount, mount)
+	}
 	return nil
+}
+
+// clearPendingUnmount drops the given paths from pendingUnmount once the guest
+// has acked their umount, so a later control RPC doesn't redundantly resend them.
+// A concurrently-queued path (not in done) is preserved.
+func (m *microvm) clearPendingUnmount(done []string) {
+	if len(done) == 0 {
+		return
+	}
+	cleared := make(map[string]bool, len(done))
+	for _, p := range done {
+		cleared[p] = true
+	}
+	m.mu.Lock()
+	kept := m.pendingUnmount[:0]
+	for _, p := range m.pendingUnmount {
+		if !cleared[p] {
+			kept = append(kept, p)
+		}
+	}
+	m.pendingUnmount = kept
+	m.mu.Unlock()
 }
 
 // InstallCA stashes the sandbox CA so LaunchAgent embeds it in the params
@@ -282,9 +510,16 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark i
 	m.mark = mark
 	m.mu.Unlock()
 
+	// Packed VM: run the tap + firecracker in a per-VM netns and SNAT to sourceIP
+	// (design §7, "option 1"). The guest keeps the base snapshot's baked IP, so it
+	// is never re-IP'd. The boot/base VM (no netns) keeps the pod-netns tap below.
+	if m.netnsName != "" {
+		return m.setupPackedNetMicrovm(ctx, proxyPort, dnsPort, mark)
+	}
+
 	steps := [][]string{
 		{"ip", "tuntap", "add", "dev", m.tapName, "mode", "tap"},
-		{"ip", "addr", "add", gatewayIP + "/30", "dev", m.tapName},
+		{"ip", "addr", "add", m.gatewayIP + "/30", "dev", m.tapName},
 		{"ip", "link", "set", "dev", m.tapName, "up"},
 		// Guest DNS (UDP and TCP/53) is DNAT'd to the host DNS sinkhole. These
 		// must precede the general TCP rule so DNS doesn't fall through to the
@@ -443,7 +678,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	// guest can't reach the pod's loopback resolver directly.
 	etcHosts, _ := os.ReadFile("/etc/hosts")
 	podResolv, _ := os.ReadFile("/etc/resolv.conf")
-	etcResolv := resolvConfForGuest(podResolv, gatewayIP)
+	etcResolv := resolvConfForGuest(podResolv, m.gatewayIP)
 
 	m.mu.Lock()
 	params := firecracker.GuestParams{
@@ -455,7 +690,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		Fuse:           m.fuse,
 		ProxyPort:      m.proxyPort,
 		Mark:           m.mark,
-		ProxyAddr:      fmt.Sprintf("%s:%d", gatewayIP, m.proxyPort),
+		ProxyAddr:      fmt.Sprintf("%s:%d", m.gatewayIP, m.proxyPort),
 		CACertPEM:      m.caCertPEM,
 		EtcHosts:       etcHosts,
 		EtcResolvConf:  etcResolv,
@@ -476,7 +711,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	fcCfg := firecracker.Config{
 		BootSource: firecracker.BootSource{
 			KernelImagePath: m.kernel,
-			BootArgs:        firecracker.DefaultBootArgs(guestIP, gatewayIP),
+			BootArgs:        firecracker.DefaultBootArgs(m.guestIP, m.gatewayIP),
 		},
 		MachineConfig: firecracker.MachineConfig{
 			VcpuCount:  m.vcpuCount,
@@ -489,7 +724,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 			{DriveID: firecracker.MetadataDriveID, PathOnHost: m.paramsImg, IsRootDevice: false, IsReadOnly: true},
 		},
 		NetworkInterfaces: []firecracker.NetworkInterface{
-			{IfaceID: "eth0", HostDevName: m.tapName, GuestMAC: guestMAC},
+			{IfaceID: "eth0", HostDevName: m.tapName, GuestMAC: m.guestMAC},
 		},
 		Vsock:  &firecracker.Vsock{GuestCID: int(firecracker.GuestCID), UDSPath: m.vsockUDS},
 		Logger: &firecracker.Logger{LogPath: m.logFile, Level: "Info"},
@@ -506,6 +741,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	}
 	m.readyLn = readyLn
 
+	m.applyCgroupLimits()
 	bin, args := firecracker.Command(m.fcBin, m.apiSock, m.configFile)
 	wbin, wargs := m.cgroupWrap(bin, args)
 	return wbin, wargs, nil
@@ -529,9 +765,102 @@ func (m *microvm) cgroupWrap(bin string, args []string) (string, []string) {
 	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
 		redirect = ""
 	}
-	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s %s %s",
-		shellQuote(cgDir), shellQuote(cgDir), shellQuote(bin), shellJoin(args), redirect)
+	// cgroup placement happens first (netns-independent), then — for a packed VM —
+	// enter its netns so firecracker opens the tap there.
+	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s%s %s %s",
+		shellQuote(cgDir), shellQuote(cgDir), m.netnsExecPrefix(), shellQuote(bin), shellJoin(args), redirect)
 	return "sh", []string{"-c", shell}
+}
+
+// netnsExecPrefix returns "ip netns exec <ns> " for a packed VM (so the wrapped
+// firecracker runs in the VM's netns and can open its tap), or "" for the
+// boot/base VM, which uses the pod netns. cgroup placement is done before this in
+// the wrap, so entering the netns here doesn't disturb cgroup membership.
+func (m *microvm) netnsExecPrefix() string {
+	if m.netnsName == "" {
+		return ""
+	}
+	return "ip netns exec " + shellQuote(m.netnsName) + " "
+}
+
+// cpuQuotaPeriodUs is the CFS period (µs) the CPU quota is expressed against;
+// quota = vcpuCount * period caps the VMM at vcpuCount whole cores. Matches the
+// container backend's runc resources (internal/runc.cpuQuotaPeriodUs).
+const cpuQuotaPeriodUs = 100_000
+
+// vmmMemoryHeadroomMiB is extra memory granted beyond the guest RAM so the
+// firecracker VMM's own footprint — device models, page tables, and the
+// snapshot/overlay mmaps — doesn't push the cgroup over memory.max and get the
+// VMM OOM-killed. A container's cgroup caps the workload directly, but a VM's
+// process RSS is guest RAM plus this emulation overhead.
+const vmmMemoryHeadroomMiB = 256
+
+// applyCgroupLimits caps the VMM's cgroup CPU and memory from the sandbox config
+// (cgroup v2): CPU as a CFS quota of vcpuCount whole cores, memory as the
+// configured size plus VMM headroom. Called before the VMM joins the cgroup
+// (LaunchAgent/ResumeAgent). Best-effort: limits are a resource concern, not a
+// correctness one, so a host without cgroup delegation (the child limit files
+// absent) logs and runs the VM unconstrained rather than failing the launch.
+func (m *microvm) applyCgroupLimits() {
+	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
+	if err := os.MkdirAll(cgDir, 0o755); err != nil {
+		log.Printf("microvm: cgroup limits: create %s: %v", cgDir, err)
+		return
+	}
+	// cpu.max/memory.max only exist in the child once the parent delegates the
+	// controllers; enabling them is idempotent and best-effort.
+	_ = os.WriteFile(filepath.Join(filepath.Dir(cgDir), "cgroup.subtree_control"), []byte("+cpu +memory"), 0)
+	if m.vcpuCount > 0 {
+		v := fmt.Sprintf("%d %d", m.vcpuCount*cpuQuotaPeriodUs, cpuQuotaPeriodUs)
+		if err := os.WriteFile(filepath.Join(cgDir, "cpu.max"), []byte(v), 0); err != nil {
+			log.Printf("microvm: cgroup limits: set cpu.max=%q: %v", v, err)
+		}
+	}
+	if m.memSizeMib > 0 {
+		limit := int64(m.memSizeMib+vmmMemoryHeadroomMiB) * 1024 * 1024
+		if err := os.WriteFile(filepath.Join(cgDir, "memory.max"), []byte(strconv.FormatInt(limit, 10)), 0); err != nil {
+			log.Printf("microvm: cgroup limits: set memory.max=%d: %v", limit, err)
+		}
+	}
+}
+
+// cgroupUnshareWrap is the pack-resume variant of cgroupWrap: after placing the
+// process in the cgroup it enters a private mount namespace and bind-mounts each
+// (src→dst) pair before exec'ing the VMM, so the VMM sees this VM's private
+// overlay/vsock at the canonical paths the base snapshot recorded. make-rprivate
+// keeps the binds from propagating back to the host (and to other VMs); the ns and
+// its binds are torn down automatically when the VMM exits. The PID is preserved
+// through the exec chain (sh→unshare→sh→firecracker), so the supervisor still
+// tracks the firecracker process.
+func (m *microvm) cgroupUnshareWrap(bin string, args []string, binds [][2]string) (string, []string) {
+	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
+	redirect := ">/dev/null 2>&1"
+	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
+		redirect = ""
+	}
+	var inner strings.Builder
+	inner.WriteString("mount --make-rprivate / && ")
+	for _, b := range binds {
+		fmt.Fprintf(&inner, "mount --bind %s %s && ", shellQuote(b[0]), shellQuote(b[1]))
+	}
+	fmt.Fprintf(&inner, "exec %s %s %s", shellQuote(bin), shellJoin(args), redirect)
+	// Enter the VM's netns (packed) before the private mount namespace, so the
+	// resumed firecracker opens its tap in the netns and the binds land in a mount
+	// ns nested inside it. cgroup placement stays first (netns-independent).
+	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %sunshare --mount sh -c %s",
+		shellQuote(cgDir), shellQuote(cgDir), m.netnsExecPrefix(), shellQuote(inner.String()))
+	return "sh", []string{"-c", shell}
+}
+
+// reflinkCopy copies src to dst, preferring a copy-on-write reflink (fast, space-
+// shared on XFS/btrfs) and falling back to a full copy where the filesystem can't
+// reflink. Used to seed each packed VM's overlay from the shared base overlay so
+// their writes diverge without duplicating the whole image up front.
+func reflinkCopy(src, dst string) error {
+	if out, err := exec.Command("cp", "--reflink=auto", "-f", src, dst).CombinedOutput(); err != nil {
+		return fmt.Errorf("cp --reflink %s -> %s: %w (%s)", src, dst, err, bytes.TrimSpace(out))
+	}
+	return nil
 }
 
 // WaitReady blocks until the in-guest agent dials the readiness beacon (it
@@ -565,10 +894,25 @@ func (m *microvm) acceptReady(ctx context.Context) error {
 		if r.err != nil {
 			return fmt.Errorf("accept ready beacon: %w", r.err)
 		}
-		r.conn.Close()
+		defer r.conn.Close()
+		// Read the guest's post-connect confirmation byte before returning, so a
+		// caller that pauses immediately (PrewarmSnapshot) does so only after the
+		// guest's connect() has fully returned — never mid-dial. A guest that sends
+		// no byte (older baked snapshot) still presents a valid ready edge via the
+		// accepted connection, so don't fail readiness when the read times out.
+		_ = r.conn.SetReadDeadline(time.Now().Add(readyConfirmTimeout))
+		if _, err := io.ReadFull(r.conn, make([]byte, 1)); err != nil {
+			log.Printf("microvm: ready beacon: confirm byte: %v", err)
+		}
 		return nil
 	}
 }
+
+// readyConfirmTimeout bounds how long acceptReady waits for the guest's
+// post-connect byte. It's a defensive cap only — the byte arrives microseconds
+// after the connection is accepted on a healthy guest; a slow/absent byte
+// degrades to the pre-existing "accepted connection == ready" behavior.
+const readyConfirmTimeout = 2 * time.Second
 
 // PrewarmSnapshot boots a guest running the image entrypoint from the
 // eagerly-prepared overlay (no workspaces yet — they aren't known), waits for it
@@ -653,8 +997,31 @@ func (m *microvm) ResumeAgent() (string, []string, error) {
 	if err := os.WriteFile(m.logFile, nil, 0o644); err != nil {
 		return "", nil, fmt.Errorf("create log file: %w", err)
 	}
+	m.applyCgroupLimits()
 	bin, args := firecracker.CommandNoConfig(m.fcBin, m.apiSock)
-	wbin, wargs := m.cgroupWrap(bin, args)
+	if m.baseDir == "" {
+		// In-place prewarm resume: this VM reuses its own snapshot/overlay/tap/vsock
+		// from PrewarmSnapshot, so no per-VM remapping is needed.
+		wbin, wargs := m.cgroupWrap(bin, args)
+		return wbin, wargs, nil
+	}
+	// Pack base resume: every VM loads the same base snapshot, which recorded the
+	// base builder's canonical overlay and vsock paths. Give this VM private copies
+	// — a copy-on-write overlay seeded from the base, and its own vsock dir — and
+	// bind them over those canonical paths inside a per-VM mount namespace so the
+	// VMM opens per-VM files. The tap is remapped on load (ResumeReady); guest
+	// memory is the shared base mem.bin, kept COW-private per VM by the File backend.
+	if err := m.ensureVsockDir(); err != nil {
+		return "", nil, err
+	}
+	if err := reflinkCopy(filepath.Join(m.baseDir, baseOverlayName), m.overlayImg); err != nil {
+		return "", nil, fmt.Errorf("seed overlay from base: %w", err)
+	}
+	binds := [][2]string{
+		{m.overlayImg, filepath.Join(m.baseDir, baseOverlayName)},
+		{m.vsockDir, filepath.Join(m.baseDir, baseVsockDirName)},
+	}
+	wbin, wargs := m.cgroupUnshareWrap(bin, args, binds)
 	return wbin, wargs, nil
 }
 
@@ -667,7 +1034,26 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 	if err := client.WaitAPIReady(ctx); err != nil {
 		return fmt.Errorf("resume vm api: %w", err)
 	}
-	if err := client.LoadSnapshot(ctx, m.snapFile, m.memFile, true); err != nil {
+	// Configure the logger before loading the snapshot so the resume itself, and
+	// any device-restore / guest fault on resume, lands in m.logFile. The cold
+	// path gets this via its config-file; the resume path (CommandNoConfig) has no
+	// logger otherwise, leaving firecracker.log empty when a resumed guest dies.
+	// Best-effort: a logging-setup failure shouldn't abort an otherwise-fine resume.
+	if err := client.PutLogger(ctx, firecracker.Logger{LogPath: m.logFile, Level: "Debug"}); err != nil {
+		log.Printf("microvm: resume: configure logger: %v", err)
+	}
+	snap, mem := m.snapFile, m.memFile
+	var overrides []firecracker.NetworkOverride
+	if m.baseDir != "" {
+		// Pack base resume: load the shared base snapshot + memory, and repoint the
+		// snapshotted eth0 (recorded on the base builder's tap) at this VM's own tap
+		// so its egress carries a distinct source IP. The overlay/vsock are already
+		// remapped via the mount-namespace binds set up in ResumeAgent.
+		snap = filepath.Join(m.baseDir, baseSnapshotName)
+		mem = filepath.Join(m.baseDir, baseMemName)
+		overrides = append(overrides, firecracker.NetworkOverride{IfaceID: "eth0", HostDevName: m.tapName})
+	}
+	if err := client.LoadSnapshot(ctx, snap, mem, true, overrides...); err != nil {
 		return fmt.Errorf("load snapshot: %w", err)
 	}
 	return nil
@@ -681,8 +1067,12 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	m.mu.Lock()
 	fuse := append([]firecracker.GuestFuse(nil), m.fuse...)
+	unmounts := append([]string(nil), m.pendingUnmount...)
 	m.mu.Unlock()
-	if len(env) == 0 && len(fuse) == 0 {
+	// A pack base resume always needs the control RPC even with no env/workspaces:
+	// the guest must be re-IP'd off the base snapshot's baked address to this VM's
+	// own pod-local IP before it is marked ready.
+	if len(env) == 0 && len(fuse) == 0 && len(unmounts) == 0 && m.baseDir == "" {
 		return nil
 	}
 	// Self-heal: a just-resumed guest under load can reset the control connection
@@ -698,12 +1088,14 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 		// Bound each attempt so a hung connection (accepted but never answered)
 		// is abandoned and retried rather than blocking the self-heal forever.
 		attemptCtx, cancel := context.WithTimeout(ctx, controlAttemptTimeout)
-		err := m.applyResumeOnce(attemptCtx, env, fuse)
+		err := m.applyResumeOnce(attemptCtx, env, fuse, unmounts)
 		cancel()
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("microvm: resume state applied after %d attempts", attempt)
 			}
+			// The guest acked the unmounts; drop them so a later RPC doesn't resend.
+			m.clearPendingUnmount(unmounts)
 			return nil
 		}
 		if ctx.Err() != nil {
@@ -725,7 +1117,7 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 // read the guest's ack. A connection error, a lost response, or OK=false all
 // return an error so ApplyResumeState retries. Idempotent guest-side (env/clock
 // re-apply cleanly; mountWorkspaces skips already-mounted paths).
-func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []firecracker.GuestFuse) error {
+func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []firecracker.GuestFuse, unmounts []string) error {
 	conn, err := firecracker.DialGuest(ctx, m.vsockUDS, firecracker.GuestControlPort)
 	if err != nil {
 		return fmt.Errorf("dial guest control: %w", err)
@@ -736,7 +1128,13 @@ func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []fire
 	}
 	// UnixNano corrects the guest's post-resume clock skew (frozen at snapshot
 	// capture). Sent in the same RPC so it lands before the workload runs.
-	req := firecracker.ControlRequest{Env: env, MountWorkspaces: fuse, UnixNano: time.Now().UnixNano()}
+	req := firecracker.ControlRequest{Env: env, MountWorkspaces: fuse, UnmountWorkspaces: unmounts, UnixNano: time.Now().UnixNano()}
+	if m.baseDir != "" {
+		// Re-address eth0 to this VM's pod-local /30 (the base snapshot baked the
+		// builder's address) so egress carries a distinct source for sbxproxy's
+		// per-source ACL, and DNS follows the new gateway.
+		req.GuestIP, req.GatewayIP = m.guestIP, m.gatewayIP
+	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return fmt.Errorf("send control request: %w", err)
 	}

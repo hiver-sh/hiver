@@ -4,7 +4,7 @@ import { waitForSandbox } from "../lib/waitForSandbox.js";
 
 const router = Router();
 
-router.get("/:id/events", async (req: Request, res: Response) => {
+router.get("/:id/:key/events", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
 
   res.setHeader("Content-Type", "text/event-stream");

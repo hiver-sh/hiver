@@ -17,7 +17,7 @@ import (
 // in use, which sandboxd selects automatically from the image (see
 // isolation.Detect). This route is gated behind readiness, so the isolation
 // backend is always wired by the time it is reachable.
-func (h *SandboxHandlers) GetInfo(c *gin.Context) {
+func (h *Sandbox) GetInfo(c *gin.Context) {
 	if h.iso == nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: "isolation backend not initialized"})
 		return
@@ -27,7 +27,7 @@ func (h *SandboxHandlers) GetInfo(c *gin.Context) {
 	})
 }
 
-func (h *SandboxHandlers) GetConfig(c *gin.Context) {
+func (h *Sandbox) GetConfig(c *gin.Context) {
 	cfg, err := h.store.Get()
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -60,7 +60,6 @@ func freezeImmutable(current, desired gen.SandboxConfig, started bool) gen.Sandb
 	}
 	if started {
 		desired.Cpu = current.Cpu
-		desired.RequestCpu = current.RequestCpu
 		desired.Memory = current.Memory
 		desired.Entrypoint = current.Entrypoint
 		desired.Cwd = current.Cwd
@@ -93,7 +92,7 @@ func validateConfig(cfg gen.SandboxConfig) error {
 // delta, and returns the post-apply state. Policy enforcers (sbxfuse,
 // sbxproxy) subscribe to the event stream and reconcile their in-memory
 // rules from the delta — this handler does not call them directly.
-func (h *SandboxHandlers) ApplyConfig(c *gin.Context) {
+func (h *Sandbox) ApplyConfig(c *gin.Context) {
 	var desired gen.SandboxConfig
 	if err := c.ShouldBindJSON(&desired); err != nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})

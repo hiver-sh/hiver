@@ -123,7 +123,7 @@ func writeUpstreamRequest(upstream net.Conn, req *http.Request, rawReqBytes []by
 // audit), and emits the allow event. Returns the matched rule, or nil if
 // denied. req.Body is replaced with a fresh reader that still yields the
 // full original stream so the caller can forward it.
-func (p *Proxy) applyRequestRule(req *http.Request, host string, port int, ac *auditCtx, onDeny func()) *EgressRule {
+func (p *Proxy) applyRequestRule(req *http.Request, host string, port int, srcIP string, ac *auditCtx, onDeny func()) *EgressRule {
 	if req.Body != nil {
 		captured, replay, err := captureBody(req.Body, maxAuditBodyBytes)
 		if err != nil {
@@ -134,7 +134,7 @@ func (p *Proxy) applyRequestRule(req *http.Request, host string, port int, ac *a
 		}
 	}
 	ac.requestHeaders = headerMap(req.Header)
-	rule := MatchEgress(p.currentRules(), req.Method, host, port, req.URL.Path)
+	rule := MatchEgress(p.rulesForSource(srcIP), req.Method, host, port, req.URL.Path)
 	if rule == nil || rule.Access == "deny" {
 		log.Printf("applyRequestRule: denied host=%s port=%d method=%s path=%s", host, port, req.Method, req.URL.Path)
 		ac.deny("no matching rule", http.StatusForbidden)

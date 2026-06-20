@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,9 +9,6 @@ import (
 	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
 	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
-
-// ErrSandboxNotFound is returned when an operation targets a sandbox that does not exist.
-var ErrSandboxNotFound = errors.New("sandbox not found")
 
 // usesSnapshotMount reports whether the config routes snapshots to a FUSE drive
 // (snapshot.mount) rather than the runtime's local snapshot directory. When it
@@ -37,11 +33,11 @@ const (
 // not have bound :sandboxdPort yet. host is the container's id-derived network
 // alias under docker (shared hiver_default network) or the pod IP under k8s,
 // both reachable from the controller. Shared by both SandboxRuntime backends.
-func waitSandboxReady(ctx context.Context, host string) error {
+func waitSandboxReady(ctx context.Context, host, key string) error {
 	ctx, cancel := context.WithTimeout(ctx, sandboxReadyTimeout)
 	defer cancel()
 
-	url := fmt.Sprintf("http://%s:%d/v1/ping?block=true", host, sandboxdPort)
+	url := fmt.Sprintf("http://%s:%d/v1/%s/ping?block=true", host, sandboxdPort, key)
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -81,10 +77,6 @@ type SandboxRuntime interface {
 
 	// List returns all currently running sandboxes.
 	List(ctx context.Context) ([]gen.Sandbox, error)
-
-	// Shutdown stops and removes the sandbox for key.
-	// Returns ErrSandboxNotFound if no sandbox exists for key.
-	Shutdown(ctx context.Context, key string) error
 
 	// Events streams sandbox lifecycle events until ctx is cancelled.
 	// The returned channel is closed when the stream ends.

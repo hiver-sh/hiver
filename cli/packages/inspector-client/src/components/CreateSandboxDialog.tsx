@@ -24,7 +24,7 @@ const DEFAULT_CONFIG = {
 
 interface Props {
   serverUrl: string;
-  onCreated: (id: string) => void;
+  onCreated: (id: string, key: string) => void;
 }
 
 export function CreateSandboxDialog({
@@ -74,10 +74,12 @@ export function CreateSandboxDialog({
         setError((body as { error?: string }).error ?? res.statusText);
         return;
       }
-      // Created by key, but routing is by id: navigate using the assigned id.
+      // The data plane is addressed by <id>/<key>: the gateway routes to the pod
+      // by id, then sandboxd resolves the sandbox by key. Hand both back so the
+      // caller can navigate to /sandboxes/<id>/<key>.
       const created = (await res.json()) as { id: string; key: string };
       setOpen(false);
-      onCreated(created.id);
+      onCreated(created.id, created.key);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -88,7 +90,7 @@ export function CreateSandboxDialog({
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (next) {
-      setKey("");
+      setKey(`sandbox-${Math.random().toString(36).slice(2, 6)}`);
       setConfigJson(JSON.stringify(DEFAULT_CONFIG, null, 2));
       setError(null);
     }

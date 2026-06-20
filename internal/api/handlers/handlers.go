@@ -1,25 +1,34 @@
 package handlers
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"os/exec"
-	"strings"
-	"sync"
-	"sync/atomic"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
-	"github.com/hiver-sh/hiver/internal/events"
-	"github.com/hiver-sh/hiver/internal/isolation"
-	"github.com/hiver-sh/hiver/internal/pty"
 )
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still
 // running; the handler translates this to HTTP 409.
 var ErrApplyInProgress = errors.New("a previous apply is still in progress")
+
+// Supervisor create/delete errors the dispatcher maps to HTTP status codes.
+var (
+	// ErrSandboxNotFound is returned by Delete when no sandbox exists for the key.
+	ErrSandboxNotFound = errors.New("sandbox not found")
+	// ErrImageMismatch is returned by Create when the config names a different
+	// image than the pod's fixed image (the same-image invariant, design §5).
+	ErrImageMismatch = errors.New("config image does not match the pod's image")
+	// ErrPodOccupied is returned by Create when the pod has no free slot for the
+	// key: it already hosts its (single) sandbox, created from the env config at
+	// boot, and is not a prewarmed pod awaiting a claim.
+	ErrPodOccupied = errors.New("pod already hosts its sandbox")
+)
 
 type configStore interface {
 	Get() (gen.SandboxConfig, error)
@@ -30,167 +39,278 @@ type lifetime interface {
 	Reset()
 }
 
+// Supervisor is the pod-level owner of the sandbox map and the shared sidecars.
+// It is implemented by cmd/sandboxd; the handlers depend only on this interface
+// so the API package stays free of the runtime/isolation wiring.
+type Supervisor interface {
+	// Sandbox resolves a running sandbox by key.
+	Sandbox(key string) (*Sandbox, bool)
+	// Create boots a sandbox for key from cfg (the pod's fixed image). Returns
+	// ErrImageMismatch on an image conflict and ErrCreateUnsupported when a
+	// sandbox for a new key cannot yet be allocated.
+	Create(ctx context.Context, key string, cfg gen.SandboxConfig) (*Sandbox, error)
+	// Delete tears the sandbox for key down. Returns ErrSandboxNotFound if absent.
+	Delete(ctx context.Context, key string) error
+	// List returns the sandboxes currently managed by the pod.
+	List() []*Sandbox
+	// SubscribeLifecycle streams inner-sandbox lifecycle transitions for the
+	// pod-level GET /v1/events stream. The returned func unsubscribes.
+	SubscribeLifecycle() (events <-chan gen.PodEvent, cancel func())
+}
+
+// SandboxHandlers implements the generated ServerInterface as a thin dispatcher:
+// keyed routes resolve the addressed *Sandbox and delegate to its method;
+// pod-level routes (list, ping, create, delete) act on the supervisor directly.
 type SandboxHandlers struct {
-	broker    *events.Broker
-	store     configStore
-	lifetime  lifetime
-	iso       isolation.Isolation // runtime boundary: exec + filesystem access
-	processes sync.Map            // id → io.Writer (stdin of a running exec-stream process) or *pty.Session
-	netMark   int                 // SO_MARK for the reverse proxy dialer, bypasses iptables REDIRECT
-
-	// readyCh closes when the inner sandbox is up and running (NotifyReady). The
-	// server starts serving the instant the process starts — before the workload,
-	// and before its own subsystems, exist — so it refuses requests until then
-	// (the /v1/ping probe excepted; see Ready). Observing the close also publishes
-	// the injected subsystem fields above: each is set before NotifyReady, so a
-	// reader past the gate sees them without further synchronization.
-	readyOnce sync.Once
-	readyCh   chan struct{}
-
-	// entrypointTTY is the pty wrapping the sandbox entrypoint when the config
-	// sets tty: true; nil otherwise. The entrypoint launches after the API
-	// server is already serving, so it's published later via SetEntrypointTTY
-	// and read atomically — attaches see nil until then. An exec-stream request
-	// with an empty command attaches to it (see execStreamAttach).
-	entrypointTTY atomic.Pointer[pty.Session]
-
-	// started flips true when the workload is launched (the agent process is
-	// committed with its boot-time config). Until then the sandbox is "prewarm":
-	// ApplyConfig may still set the boot-time-only fields (cpu, memory,
-	// entrypoint, cwd, tty, env), which is how a --prewarm sandbox is configured
-	// by its first apply. Afterward those fields are frozen (freezeStartedFields).
-	started atomic.Bool
+	sup Supervisor
 }
 
-// NewSandboxHandlers builds the handlers with only netMark, which is a fixed
-// constant known up front; the remaining subsystems are injected via the SetX
-// methods as boot creates them.
-func NewSandboxHandlers(netMark int) *SandboxHandlers {
-	return &SandboxHandlers{netMark: netMark, readyCh: make(chan struct{})}
+// NewSandboxHandlers builds the dispatcher over the pod's supervisor.
+func NewSandboxHandlers(sup Supervisor) *SandboxHandlers {
+	return &SandboxHandlers{sup: sup}
 }
 
-// The setters below inject sandboxd's subsystems as boot creates them, while the
-// server is already serving. Each is called exactly once, from the single
-// startup goroutine, and all complete before NotifyReady, which publishes them.
-func (h *SandboxHandlers) SetBroker(b *events.Broker)           { h.broker = b }
-func (h *SandboxHandlers) SetStore(s configStore)               { h.store = s }
-func (h *SandboxHandlers) SetLifetime(l lifetime)               { h.lifetime = l }
-func (h *SandboxHandlers) SetIsolation(iso isolation.Isolation) { h.iso = iso }
-
-// NotifyReady signals that the inner sandbox is up and running, flipping the
-// server from refusing requests (500, or 503 on /v1/ping) to serving them.
-// Idempotent; called once from the startup goroutine when readiness is observed.
-func (h *SandboxHandlers) NotifyReady() {
-	h.readyOnce.Do(func() { close(h.readyCh) })
-}
-
-// Ready reports whether NotifyReady has fired — i.e. the sandbox can serve real
-// requests. The server answers 500/503 until this returns true.
-func (h *SandboxHandlers) Ready() bool {
-	select {
-	case <-h.readyCh:
-		return true
-	default:
-		return false
+// resolve looks up the sandbox for key, writing a 404 and returning false when
+// it is unknown.
+func (h *SandboxHandlers) resolve(c *gin.Context, key string) (*Sandbox, bool) {
+	sb, ok := h.sup.Sandbox(key)
+	if !ok {
+		c.JSON(http.StatusNotFound, gen.Error{Error: "sandbox not found: " + key})
+		return nil, false
 	}
+	return sb, true
 }
 
-// SetStarted marks the workload as launched, freezing the boot-time-only config
-// fields against further ApplyConfig changes. Called once, when the agent is
-// started (immediately at boot in the normal flow; at first config-apply in the
-// prewarm flow). Idempotent.
-func (h *SandboxHandlers) SetStarted() { h.started.Store(true) }
-
-// Started reports whether the workload has been launched. ApplyConfig uses it to
-// decide whether the boot-time-only fields may still be set (prewarm) or must be
-// frozen (started).
-func (h *SandboxHandlers) Started() bool { return h.started.Load() }
-
-// WaitReady blocks until NotifyReady fires or ctx is done, returning ctx.Err()
-// if it gives up first. Backs the /v1/ping?block=true long-poll.
-func (h *SandboxHandlers) WaitReady(ctx context.Context) error {
-	select {
-	case <-h.readyCh:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+// ListSandboxes returns the sandboxes managed by the pod.
+func (h *SandboxHandlers) ListSandboxes(c *gin.Context) {
+	list := h.sup.List()
+	out := gen.SandboxList{Sandboxes: make([]gen.SandboxSummary, 0, len(list))}
+	for _, sb := range list {
+		out.Sandboxes = append(out.Sandboxes, gen.SandboxSummary{Key: sb.Key(), Ready: sb.Ready(), Status: sb.Status()})
 	}
+	c.JSON(http.StatusOK, out)
 }
 
-// ResetLifetime restarts the inactivity countdown. Call only once the sandbox
-// is ready: lifetime is wired (and safely published) by then, so callers must
-// gate on Ready first — before that it is nil and racing with injection.
-func (h *SandboxHandlers) ResetLifetime() {
-	// nil in prewarm mode, where the API serves (so a config can be applied)
-	// before any lifetime/TTL has been wired.
-	if h.lifetime != nil {
-		h.lifetime.Reset()
-	}
-}
-
-// SetEntrypointTTY publishes the entrypoint's pty session so exec-stream attach
-// requests can reach it. Called once, after the entrypoint launches (the API
-// server is already serving by then), so reads of it are atomic.
-func (h *SandboxHandlers) SetEntrypointTTY(sess *pty.Session) {
-	h.entrypointTTY.Store(sess)
-}
-
-// execCommand is the core of the Exec handler: runs command inside the agent
-// workload via the isolation backend and returns buffered stdout, stderr, and
-// exit code. A non-zero exit code is not treated as a Go error.
-func (h *SandboxHandlers) execCommand(ctx context.Context, command string, cwd *string, env *map[string]string) (stdout, stderr string, exitCode int, err error) {
-	// Readiness is guaranteed by /v1/ping, which blocks until the workload is
-	// running; clients ping before they exec, so the workload is up by here.
-	cmd, cleanup, err := h.iso.ExecCmd(ctx, isolation.ExecConfig{Command: command, Cwd: cwd, Env: env})
-	if err != nil {
+// StreamPodEvents opens the pod-level SSE stream of inner-sandbox lifecycle
+// transitions (one frame per PodEvent). The controller holds one of these open
+// per pod to surface inner sandboxes on its own lifecycle stream.
+func (h *SandboxHandlers) StreamPodEvents(c *gin.Context) {
+	w := c.Writer
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	defer cleanup()
+	// Subscribe before snapshotting so a transition that races the snapshot is
+	// buffered and delivered after (at worst a duplicate, which is idempotent).
+	events, cancel := h.sup.SubscribeLifecycle()
+	defer cancel()
 
-	stdoutPipe, pipeErr := cmd.StdoutPipe()
-	if pipeErr != nil {
-		err = pipeErr
-		return
-	}
-	stderrPipe, pipeErr := cmd.StderrPipe()
-	if pipeErr != nil {
-		err = pipeErr
-		return
-	}
-	if err = cmd.Start(); err != nil {
-		return
-	}
+	header := w.Header()
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("Connection", "keep-alive")
+	header.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
 
-	var wg sync.WaitGroup
-	var stdoutBuf, stderrBuf strings.Builder
-	var stdoutMu, stderrMu sync.Mutex
-	collect := func(r io.Reader, stream string, buf *strings.Builder, mu *sync.Mutex) {
-		defer wg.Done()
-		sc := bufio.NewScanner(r)
-		for sc.Scan() {
-			line := sc.Text() + "\n"
-			h.publishStdioLine(stream, line)
-			mu.Lock()
-			buf.WriteString(line)
-			mu.Unlock()
+	// Snapshot the current sandboxes so a freshly-connected subscriber (the
+	// controller, which connects to a pod after it has already created sandboxes)
+	// learns the existing set immediately; it then receives only transitions.
+	for _, sb := range h.sup.List() {
+		snap := gen.PodEvent{
+			Key:       sb.Key(),
+			Status:    gen.PodEventStatus(sb.Status()),
+			Timestamp: time.Now(),
+		}
+		if data, err := json.Marshal(snap); err == nil {
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
 		}
 	}
-	wg.Add(2)
-	go collect(stdoutPipe, "stdout", &stdoutBuf, &stdoutMu)
-	go collect(stderrPipe, "stderr", &stderrBuf, &stderrMu)
-	wg.Wait()
+	flusher.Flush()
 
-	if waitErr := cmd.Wait(); waitErr != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(waitErr, &exitErr) {
-			err = waitErr
+	notify := c.Request.Context().Done()
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-notify:
 			return
 		}
-		exitCode = exitErr.ExitCode()
 	}
-	stdout = stdoutBuf.String()
-	stderr = stderrBuf.String()
-	return
+}
+
+// CreateSandbox brings up the sandbox for key, returning the existing one (200)
+// if it is already running or a newly-claimed one (201). The configuration comes
+// from the pod's env (HIVE_SPEC); a request body, if present, is advisory and
+// only its image is checked against the pod's image.
+func (h *SandboxHandlers) CreateSandbox(c *gin.Context, key gen.Key) {
+	if sb, ok := h.sup.Sandbox(key); ok {
+		if cur, err := sb.store.Get(); err == nil {
+			c.JSON(http.StatusOK, cur)
+			return
+		}
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// The body is optional (config comes from env). Bind it when present so the
+	// image can be checked, but tolerate an empty/absent body.
+	var cfg gen.SandboxConfig
+	_ = c.ShouldBindJSON(&cfg)
+
+	sb, err := h.sup.Create(c.Request.Context(), key, cfg)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrImageMismatch), errors.Is(err, ErrPodOccupied):
+			c.JSON(http.StatusConflict, gen.Error{Error: err.Error()})
+		default:
+			// Log server-side: the error is returned in the body, but the controller
+			// (packCreateSandbox) only records "status 500", so without this the real
+			// cause never reaches the pod log.
+			log.Printf("sandboxd: create %q: %v", key, err)
+			c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		}
+		return
+	}
+	if applied, err := sb.store.Get(); err == nil {
+		c.JSON(http.StatusCreated, applied)
+		return
+	}
+	c.Status(http.StatusCreated)
+}
+
+// DeleteSandbox tears the sandbox for key down.
+func (h *SandboxHandlers) DeleteSandbox(c *gin.Context, key gen.Key) {
+	if err := h.sup.Delete(c.Request.Context(), key); err != nil {
+		if errors.Is(err, ErrSandboxNotFound) {
+			c.JSON(http.StatusNotFound, gen.Error{Error: "sandbox not found: " + key})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *SandboxHandlers) Ping(c *gin.Context, key gen.Key, params gen.PingParams) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.Ping(c, params)
+	}
+}
+
+func (h *SandboxHandlers) GetConfig(c *gin.Context, key gen.Key) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.GetConfig(c)
+	}
+}
+
+func (h *SandboxHandlers) ApplyConfig(c *gin.Context, key gen.Key) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ApplyConfig(c)
+	}
+}
+
+func (h *SandboxHandlers) GetInfo(c *gin.Context, key gen.Key) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.GetInfo(c)
+	}
+}
+
+func (h *SandboxHandlers) GetEvents(c *gin.Context, key gen.Key, params gen.GetEventsParams) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.GetEvents(c, params)
+	}
+}
+
+func (h *SandboxHandlers) Exec(c *gin.Context, key gen.Key) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.Exec(c)
+	}
+}
+
+func (h *SandboxHandlers) ExecStream(c *gin.Context, key gen.Key, id string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ExecStream(c, id)
+	}
+}
+
+func (h *SandboxHandlers) ExecStreamStdin(c *gin.Context, key gen.Key, id string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ExecStreamStdin(c, id)
+	}
+}
+
+func (h *SandboxHandlers) UploadFile(c *gin.Context, key gen.Key) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.UploadFile(c)
+	}
+}
+
+func (h *SandboxHandlers) ListDirectory(c *gin.Context, key gen.Key, params gen.ListDirectoryParams) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ListDirectory(c, params)
+	}
+}
+
+func (h *SandboxHandlers) GetFile(c *gin.Context, key gen.Key, params gen.GetFileParams) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.GetFile(c, params)
+	}
+}
+
+func (h *SandboxHandlers) DeleteFile(c *gin.Context, key gen.Key, params gen.DeleteFileParams) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.DeleteFile(c, params)
+	}
+}
+
+func (h *SandboxHandlers) GetPorts(c *gin.Context, key gen.Key) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.GetPorts(c)
+	}
+}
+
+func (h *SandboxHandlers) ProxyGet(c *gin.Context, key gen.Key, port, path string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ProxyGet(c, port, path)
+	}
+}
+func (h *SandboxHandlers) ProxyHead(c *gin.Context, key gen.Key, port, path string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ProxyHead(c, port, path)
+	}
+}
+func (h *SandboxHandlers) ProxyPost(c *gin.Context, key gen.Key, port, path string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ProxyPost(c, port, path)
+	}
+}
+func (h *SandboxHandlers) ProxyPut(c *gin.Context, key gen.Key, port, path string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ProxyPut(c, port, path)
+	}
+}
+func (h *SandboxHandlers) ProxyPatch(c *gin.Context, key gen.Key, port, path string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ProxyPatch(c, port, path)
+	}
+}
+func (h *SandboxHandlers) ProxyDelete(c *gin.Context, key gen.Key, port, path string) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.ProxyDelete(c, port, path)
+	}
 }
 
 // fsBase decodes the variant-agnostic fields (mount, backend, acls)

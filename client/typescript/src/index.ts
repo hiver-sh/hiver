@@ -41,7 +41,6 @@ export {
   DEFAULT_GATEWAY_URL,
   getOrCreateSandbox,
   listSandboxes,
-  shutdown,
   watchSandboxEvents,
   type GatewayOptions,
   type SandboxLifecycleEvent,

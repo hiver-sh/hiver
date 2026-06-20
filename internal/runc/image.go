@@ -29,6 +29,24 @@ const (
 	ReadyFifoPath = ScratchDir + "/ready.fifo"
 )
 
+// Overlay locates the directories of one agent's overlayfs stack. Lower is the
+// read-only image rootfs (shared across all sandboxes of the same image); the
+// rest are per-sandbox writable paths. Packing N sandboxes into one pod gives
+// each its own Scratch/Upper/Work/Merged while sharing Lower.
+type Overlay struct {
+	Lower   string // base image, read-only (shared)
+	Scratch string // tmpfs root holding Upper+Work (kept off any overlayfs)
+	Upper   string // sandbox writes
+	Work    string // overlayfs scratch
+	Merged  string // unified view; becomes runc's root.path
+}
+
+// DefaultOverlay is the single-sandbox layout under /mnt that sandboxd has
+// always used; the boot sandbox keeps it so its behavior is unchanged.
+func DefaultOverlay() Overlay {
+	return Overlay{Lower: RootfsDir, Scratch: ScratchDir, Upper: UpperDir, Work: WorkDir, Merged: MergedDir}
+}
+
 // ImageConfig is the subset of the Docker / OCI image config that
 // sandboxd needs in order to build a runtime spec for the agent.
 type ImageConfig struct {

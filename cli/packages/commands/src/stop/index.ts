@@ -1,4 +1,4 @@
-import { listSandboxes, shutdown } from "@hiver.sh/client";
+import { listSandboxes } from "@hiver.sh/client";
 import { white, dim } from "../theme.js";
 import { createLoader } from "../hive.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
@@ -24,7 +24,7 @@ try {
     loader.fail(`no sandbox with key ${white(key)} on ${dim(gatewayUrl)}\n`);
     process.exit(1);
   }
-  await shutdown(sandbox, { gatewayUrl });
+  await sandbox.shutdown();
   loader.succeed(`${white(sandbox.key)}  ${dim("stopped")}\n`);
 } catch (err) {
   loader.fail(`could not stop sandbox: ${dim(String(err))}\n`);

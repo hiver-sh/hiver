@@ -55,4 +55,4 @@ console.info("\napplyConfig changes:", JSON.stringify(result.changes, null, 2));
 
 await fetchSandboxes("allow controller — expect success");
 
-await hiver.shutdown(sandbox);
+await sandbox.shutdown();

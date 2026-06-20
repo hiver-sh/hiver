@@ -74,7 +74,7 @@ console.info(
 );
 
 console.info("shutting down (capturing snapshot to GCS)…");
-await hiver.shutdown(first);
+await first.shutdown();
 
 // GCS through the FUSE drive.
 const second = await hiver.getOrCreateSandbox(ID, config);
@@ -87,4 +87,4 @@ if (after.exit_code !== 0) {
   process.exitCode = 1;
 }
 
-await hiver.shutdown(second);
+await second.shutdown();

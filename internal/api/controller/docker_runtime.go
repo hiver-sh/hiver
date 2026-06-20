@@ -2,11 +2,16 @@ package controller
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -40,13 +45,56 @@ func hostHasKVM() bool {
 }
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.
-type DockerRuntime struct{}
+type DockerRuntime struct {
+	// packing enables multi-sandbox pods (HIVE_PACK=1): instead of one container
+	// per (image,key), keys of the same image are packed into one container
+	// running sandboxd --pack, and each is created via POST /v1/<key> (design §6,
+	// §10). Mirrors the k8s pod-per-image placement.
+	packing bool
+	// snapshotHostDir is the host path bind-mounted as /snapshots in sandbox
+	// containers. Set from HIVE_SNAPSHOT_DIR env var. When empty, the named
+	// docker volume hiver_snapshots is used as a fallback (no-op on macOS Docker
+	// Desktop where named volumes don't surface to the host filesystem).
+	snapshotHostDir string
+}
 
 func newDockerRuntime() *DockerRuntime {
-	return &DockerRuntime{}
+	return &DockerRuntime{
+		packing:         os.Getenv("HIVE_PACK") == "1",
+		snapshotHostDir: os.Getenv("HIVE_SNAPSHOT_DIR"),
+	}
+}
+
+// snapshotVolumeArg returns the docker -v argument to mount the snapshot
+// directory at /snapshots in a sandbox container.
+func (r *DockerRuntime) snapshotVolumeArg() string {
+	if r.snapshotHostDir != "" {
+		return r.snapshotHostDir + ":/snapshots"
+	}
+	return composeProject + "_snapshots:/snapshots"
+}
+
+// labelImageHash records which image a pack pod hosts, so getOrCreate can find an
+// existing pod for the image.
+const labelImageHash = "hiver.image.hash"
+
+// podNameForImage is the (atomic) name of the pack pod hosting image.
+func podNameForImage(image string) string {
+	return "hiver-pod-" + shortHash(image)
+}
+
+// shortHash is a stable 12-hex-char digest of s, for image-keyed names/labels.
+func shortHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:6])
 }
 
 func (r *DockerRuntime) Lookup(ctx context.Context, key string) (bool, gen.Sandbox, error) {
+	if r.packing {
+		// In pack mode placement is by image, not by a per-key container; let
+		// Start resolve-or-create the pod and POST the key (both idempotent).
+		return false, gen.Sandbox{}, nil
+	}
 	name := containerNameFor(key)
 	_, running, err := containerState(ctx, name)
 	if err != nil {
@@ -67,6 +115,9 @@ func (r *DockerRuntime) Lookup(ctx context.Context, key string) (bool, gen.Sandb
 }
 
 func (r *DockerRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
+	if r.packing {
+		return r.listPacked(ctx)
+	}
 	format := `{{.Label "` + labelSandboxKey + `"}} {{.Label "` + labelSandboxID + `"}}`
 	out, err := exec.CommandContext(ctx, "docker", "ps", "--filter", "label="+labelSandboxKey, "--format", format).Output()
 	if err != nil {
@@ -88,7 +139,68 @@ func (r *DockerRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
 	return sandboxes, nil
 }
 
+// listPacked enumerates the sandboxes in pack mode. Packed sandboxes are not
+// their own containers (they live inside a per-image pod), so `docker ps` can't
+// see them; instead, find each pack pod (by its image-hash label) and ask its
+// supervisor (GET /v1) for the keys it currently hosts. Every key maps to the
+// pod's routing id, mirroring how startPacked returns the pod id per key.
+func (r *DockerRuntime) listPacked(ctx context.Context) ([]gen.Sandbox, error) {
+	ids, err := r.packPodIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Non-nil so an empty result serializes as [] (JSON null breaks clients that
+	// .map the response).
+	sandboxes := []gen.Sandbox{}
+	for _, podID := range ids {
+		id, err := uuid.Parse(podID)
+		if err != nil {
+			continue
+		}
+		summaries, err := podSandboxes(ctx, containerNameFor(podID))
+		if err != nil {
+			// A pod that's still booting (or briefly unreachable) shouldn't drop the
+			// whole listing — skip it and surface the rest.
+			log.Printf("controller: list pack pod %s: %v", podID, err)
+			continue
+		}
+		for _, s := range summaries {
+			status := gen.SandboxStatus(s.Status)
+			sandboxes = append(sandboxes, gen.Sandbox{Id: id, Key: s.Key, Status: &status})
+		}
+	}
+	return sandboxes, nil
+}
+
+// podSandboxes asks a pack pod's supervisor (GET /v1) for the sandboxes it hosts
+// and their lifecycle status.
+func podSandboxes(ctx context.Context, host string) ([]sandboxgen.SandboxSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("http://%s:%d/v1", host, sandboxdPort)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := sandboxHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer drainAndClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /v1: status %d", resp.StatusCode)
+	}
+	var list sandboxgen.SandboxList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, fmt.Errorf("decode sandbox list: %w", err)
+	}
+	return list.Sandboxes, nil
+}
+
 func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
+	if r.packing {
+		return r.startPacked(ctx, key, cfg)
+	}
 	id := uuid.New()
 	specBytes, err := json.Marshal(cfg)
 	if err != nil {
@@ -194,6 +306,10 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// The spec is delivered as JSON in an env var rather than a mounted file;
 	// sandboxd reads it via spec.LoadEnv.
 	createArgs = append(createArgs, "-e", spec.EnvSpec+"="+string(specBytes))
+	// HIVE_KEY tells sandboxd which key to register the (single) boot sandbox
+	// under, so the keyed API (/v1/<key>/...) addresses it. Docker is 1:1 per
+	// (image,key), so the container's sandbox is exactly this key.
+	createArgs = append(createArgs, "-e", "HIVE_KEY="+key)
 	if cfg.ExtraHosts != nil {
 		for _, h := range *cfg.ExtraHosts {
 			createArgs = append(createArgs, "--add-host", h)
@@ -213,7 +329,7 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// FUSE drive (snapshot.mount); otherwise it's unnecessary and would collide
 	// with a FUSE mount at the same path.
 	if !usesSnapshotMount(cfg) {
-		createArgs = append(createArgs, "-v", composeProject+"_snapshots:/snapshots")
+		createArgs = append(createArgs, "-v", r.snapshotVolumeArg())
 	}
 
 	// Always pass --snapshot-dir so the container overrides the image's default
@@ -245,7 +361,7 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// anchor/pod, it's the durable reservation a retry can revive.
 	sandboxHost := containerNameFor(id.String())
 	readyStart := time.Now()
-	if err := waitSandboxReady(ctx, sandboxHost); err != nil {
+	if err := waitSandboxReady(ctx, sandboxHost, key); err != nil {
 		return gen.Sandbox{}, withContainerLogs(ctx, fmt.Errorf("wait sandbox %s ready: %w", id, err), containerName)
 	}
 	log.Printf("sandbox %s: sandboxd ready in %s (total start %s)", containerName, time.Since(readyStart).Round(time.Millisecond), time.Since(createStart).Round(time.Millisecond))
@@ -253,27 +369,176 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	return gen.Sandbox{Id: id, Key: key}, nil
 }
 
-func (r *DockerRuntime) Shutdown(ctx context.Context, key string) error {
-	name := containerNameFor(key)
-	exists, running, err := containerState(ctx, name)
+// startPacked resolves-or-creates the pack pod hosting cfg's image, then creates
+// the sandbox for key inside it via POST /v1/<key>. All keys of an image share
+// one pod (and one routing id), so the returned id is the pod's.
+func (r *DockerRuntime) startPacked(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
+	image := defaultSandboxImage
+	if cfg.Image != nil && *cfg.Image != "" {
+		image = *cfg.Image
+	}
+	podName := podNameForImage(image)
+
+	exists, running, err := containerState(ctx, podName)
 	if err != nil {
-		return err
+		return gen.Sandbox{}, err
 	}
-	if !exists {
-		return ErrSandboxNotFound
-	}
+	var podID string
 	if running {
-		// Allow 60 s for sandboxd to capture the snapshot before SIGKILL.
-		// `-t` (not `--timeout`) — the Debian Bookworm `docker.io` package
-		// ships CLI 20.10, which predates the `--timeout` long form.
-		if out, err := exec.CommandContext(ctx, "docker", "stop", "-t", "60", name).CombinedOutput(); err != nil {
-			return fmt.Errorf("docker stop %s: %v: %s", name, err, out)
+		podID, err = containerLabel(ctx, podName, labelSandboxID)
+		if err != nil {
+			return gen.Sandbox{}, err
+		}
+	} else {
+		if exists {
+			_ = exec.CommandContext(ctx, "docker", "rm", "-f", podName).Run()
+		}
+		id := uuid.New()
+		podID = id.String()
+		if err := r.createPackPod(ctx, podName, id, image); err != nil {
+			return gen.Sandbox{}, err
 		}
 	}
-	if out, err := exec.CommandContext(ctx, "docker", "rm", name).CombinedOutput(); err != nil {
-		return fmt.Errorf("docker rm %s: %v: %s", name, err, out)
+
+	podHost := containerNameFor(podID)
+	if err := packCreateSandbox(ctx, podHost, key, cfg); err != nil {
+		return gen.Sandbox{}, withContainerLogs(ctx, fmt.Errorf("pack %q into pod %s: %w", key, podName, err), podName)
+	}
+	pid, err := uuid.Parse(podID)
+	if err != nil {
+		return gen.Sandbox{}, fmt.Errorf("parse pod id %q: %w", podID, err)
+	}
+	log.Printf("sandbox %q: packed into pod %s (image %s)", key, podName, image)
+	return gen.Sandbox{Id: pid, Key: key}, nil
+}
+
+// createPackPod creates+starts a sandboxd --pack host for image and waits for
+// its API to listen. The pod bridge needs ip_forward + route_localnet so the
+// host REDIRECT can funnel packed-sandbox egress to sbxproxy.
+func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uuid.UUID, image string) error {
+	createArgs := []string{
+		"create",
+		"--name", podName,
+		"--label", "com.docker.compose.project=" + composeProject,
+		"--label", "com.docker.compose.service=pod-" + shortHash(image),
+		"--label", labelImageHash + "=" + shortHash(image),
+		"--label", labelSandboxID + "=" + id.String(),
+		"--network", composeProject + "_default",
+		"--network-alias", containerNameFor(id.String()),
+		"--device", "/dev/fuse",
+		"--cap-add", "SYS_ADMIN",
+		"--cap-add", "NET_ADMIN",
+		"--cap-add", "DAC_READ_SEARCH",
+		"--security-opt", "apparmor=unconfined",
+		"--security-opt", "seccomp=unconfined",
+		"--cgroupns", "host",
+		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+		"--sysctl", "net.ipv4.ip_forward=1",
+		"--sysctl", "net.ipv4.conf.all.route_localnet=1",
+		// HIVE_SPEC is required in every mode. A pack pod has no boot workload, so
+		// it carries a base spec naming just the image; each packed sandbox's full
+		// config arrives via POST /v1/<key>.
+		"-e", spec.EnvSpec + `={"image":"` + image + `"}`,
+	}
+	if hostHasKVM() {
+		createArgs = append(createArgs,
+			"--device", "/dev/kvm",
+			"--device", "/dev/net/tun",
+			"--device-cgroup-rule", "b 7:* rmw",
+			"--device-cgroup-rule", "c 10:237 rmw",
+		)
+	}
+	// Mount the same snapshot volume as single-sandbox containers so packed
+	// sandboxes can write and restore local snapshots. The volume is shared
+	// across all pods; snapshot keys are unique per-sandbox so they don't collide.
+	createArgs = append(createArgs, "-v", r.snapshotVolumeArg())
+	// `--pack` overrides the image's default `--help` CMD so sandboxd boots as a
+	// pod host with no boot workload.
+	createArgs = append(createArgs, image, "--pack", "--snapshot-dir", "/snapshots")
+	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker create pod %s: %v: %s", image, err, out)
+	}
+	if out, err := exec.CommandContext(ctx, "docker", "start", podName).CombinedOutput(); err != nil {
+		startErr := withContainerLogs(ctx, fmt.Errorf("docker start %s: %v: %s", podName, err, out), podName)
+		_ = exec.Command("docker", "rm", "-f", podName).Run()
+		return startErr
 	}
 	return nil
+}
+
+// postSandboxOnce makes one POST /v1/<key> attempt against host. done is true on
+// a 2xx (the keyed sandbox is up and serving). retry is true when the host is
+// only transiently unavailable — a connect/transport error (sandboxd not
+// listening yet, or the host gone) or a 502/503 — so the caller may try again or
+// move to another host. A non-nil err with retry=false is a definitive rejection
+// from sandboxd (a bad config another host would reject identically), carrying
+// sandboxd's own error message. Note that once connected, this blocks until
+// sandboxd finishes bringing the keyed sandbox up: the connect fails fast, the
+// legitimate creation work does not.
+func postSandboxOnce(ctx context.Context, host, key string, body []byte) (done, retry bool, err error) {
+	url := fmt.Sprintf("http://%s:%d/v1/%s", host, sandboxdPort, key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return false, false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := sandboxHTTPClient.Do(req)
+	if err != nil {
+		return false, true, err // sandboxd not reachable: retriable
+	}
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		drainAndClose(resp)
+		return true, false, nil
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		drainAndClose(resp)
+		return false, true, fmt.Errorf("POST /v1/%s: status %d", key, resp.StatusCode)
+	default:
+		// Surface sandboxd's error body (its real failure reason) rather than a
+		// bare status code, so the controller's error names the actual cause.
+		return false, false, fmt.Errorf("POST /v1/%s: status %d: %s", key, resp.StatusCode, sandboxErrorBody(resp))
+	}
+}
+
+// packCreateSandbox POSTs the config to /v1/<key> on the pack pod, which brings
+// the keyed sandbox up and blocks until it is serving. The connect is retried up
+// to sandboxReadyTimeout because the pod was just created and sandboxd may not
+// have bound its port yet.
+func packCreateSandbox(ctx context.Context, host, key string, cfg sandboxgen.SandboxConfig) error {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, sandboxReadyTimeout)
+	defer cancel()
+	for {
+		done, retry, err := postSandboxOnce(ctx, host, key, body)
+		if done {
+			return nil
+		}
+		if !retry {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("pod did not accept POST /v1/%s within %s", key, sandboxReadyTimeout)
+		case <-time.After(readyProbeInterval):
+		}
+	}
+}
+
+// sandboxErrorBody reads and closes resp.Body and extracts a human-readable
+// message: the JSON {"error": ...} sandboxd returns, falling back to the raw
+// (trimmed, size-capped) body. Used to surface the sandbox-side failure reason
+// in the controller's error instead of a bare status code.
+func sandboxErrorBody(resp *http.Response) string {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	resp.Body.Close()
+	var e sandboxgen.Error
+	if json.Unmarshal(b, &e) == nil && e.Error != "" {
+		return e.Error
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // containerNameFor builds the hiver-sandbox-<segment> DNS name. The segment is
@@ -330,6 +595,9 @@ type dockerRawEvent struct {
 }
 
 func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
+	if r.packing {
+		return r.eventsPacked(ctx), nil
+	}
 	cmd := exec.CommandContext(ctx, "docker", "events",
 		"--filter", "label="+labelSandboxKey,
 		"--filter", "type=container",
@@ -381,4 +649,206 @@ func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycle
 		}
 	}()
 	return ch, nil
+}
+
+// packPodIDs returns the routing id of every running pack pod (label-keyed by
+// image hash). Shared by listPacked and eventsPacked.
+func (r *DockerRuntime) packPodIDs(ctx context.Context) ([]string, error) {
+	format := `{{.Label "` + labelSandboxID + `"}}`
+	out, err := exec.CommandContext(ctx, "docker", "ps", "--filter", "label="+labelImageHash, "--format", format).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w", err)
+	}
+	var ids []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if id := strings.TrimSpace(line); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// eventsPacked aggregates the lifecycle streams of every pack pod. It holds a
+// persistent GET /v1/events connection to each pod (re-discovering pods so new
+// ones are picked up and gone ones dropped) and maps each inner PodEvent to a
+// SandboxLifecycleEvent keyed by the pod's routing id.
+func (r *DockerRuntime) eventsPacked(ctx context.Context) <-chan gen.SandboxLifecycleEvent {
+	out := make(chan gen.SandboxLifecycleEvent, 64)
+	go func() {
+		defer close(out)
+		conns := map[string]context.CancelCauseFunc{} // podID → cancel its stream
+		defer func() {
+			for _, cancel := range conns {
+				cancel(nil) // consumer left: don't mark sandboxes destroyed
+			}
+		}()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			ids, err := r.packPodIDs(ctx)
+			if err != nil && ctx.Err() == nil {
+				log.Printf("controller: events: discover pods: %v", err)
+			}
+			seen := make(map[string]bool, len(ids))
+			for _, podID := range ids {
+				seen[podID] = true
+				if _, ok := conns[podID]; ok {
+					continue
+				}
+				id, err := uuid.Parse(podID)
+				if err != nil {
+					continue
+				}
+				cctx, cancel := context.WithCancelCause(ctx)
+				conns[podID] = cancel
+				go streamPodEvents(cctx, ctx, containerNameFor(podID), id, out)
+			}
+			for podID, cancel := range conns {
+				if !seen[podID] {
+					cancel(errPackPodGone) // pod died: streamPodEvents destroys its sandboxes
+					delete(conns, podID)
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return out
+}
+
+// errPackPodGone is the cancel cause eventsPacked uses when a pack pod leaves
+// discovery (the pod was deleted/terminated). streamPodEvents distinguishes it
+// from a plain context cancel (the client disconnecting the events stream) so it
+// only marks a pod's sandboxes destroyed when the *pod* died, not when the
+// consumer left.
+var errPackPodGone = errors.New("pack pod left discovery")
+
+// podStreamDeadAfter is how long a pod's event stream may stay unreconnectable
+// (repeated connect failures) before the pod is presumed dead and its sandboxes
+// marked destroyed. A transient drop reconnects well within this; a pod that's
+// gone for this long isn't coming back on the same address.
+const podStreamDeadAfter = 30 * time.Second
+
+// streamPodEvents holds one pod's GET /v1/events SSE open, forwarding each
+// PodEvent to out as a SandboxLifecycleEvent and tracking which sandboxes the pod
+// hosts. It reconnects across transient drops, but if the pod becomes
+// unreachable (can't reconnect for podStreamDeadAfter) or leaves discovery
+// (streamCtx cancelled with errPackPodGone), the pod is presumed dead and every
+// sandbox it still hosted is emitted as Destroy — otherwise a crashed/OOM'd pod
+// would strand its sandboxes "running" forever. A plain streamCtx cancel (the
+// consumer disconnecting) leaves the sandboxes alone. sendCtx (the parent events
+// context) gates the Destroy emission so it still delivers after streamCtx is
+// cancelled by a discovery drop.
+func streamPodEvents(streamCtx, sendCtx context.Context, host string, id uuid.UUID, out chan<- gen.SandboxLifecycleEvent) {
+	url := fmt.Sprintf("http://%s:%d/v1/events", host, sandboxdPort)
+	hosted := map[string]bool{} // sandbox keys this pod currently hosts
+	var downSince time.Time
+	for streamCtx.Err() == nil {
+		err := readPodEventStream(streamCtx, url, id, out, hosted)
+		if streamCtx.Err() != nil {
+			break
+		}
+		if err == nil {
+			downSince = time.Time{} // was connected; a clean drop, not a dead pod
+		} else {
+			log.Printf("controller: pod %s event stream: %v", id, err)
+			if downSince.IsZero() {
+				downSince = time.Now()
+			}
+			if time.Since(downSince) >= podStreamDeadAfter {
+				log.Printf("controller: pod %s unreachable for %s; marking %d sandbox(es) destroyed", id, podStreamDeadAfter, len(hosted))
+				emitPodDestroyed(sendCtx, id, hosted, out)
+				return
+			}
+		}
+		select {
+		case <-streamCtx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+	// streamCtx cancelled: a discovery drop (errPackPodGone) means the pod died —
+	// destroy its sandboxes; a plain cancel (consumer left) leaves them.
+	if errors.Is(context.Cause(streamCtx), errPackPodGone) {
+		emitPodDestroyed(sendCtx, id, hosted, out)
+	}
+}
+
+// emitPodDestroyed marks every sandbox a dead pod hosted as Destroy. Gated on ctx
+// (the parent events context) so it stops if the consumer has also gone away.
+func emitPodDestroyed(ctx context.Context, id uuid.UUID, hosted map[string]bool, out chan<- gen.SandboxLifecycleEvent) {
+	for key := range hosted {
+		select {
+		case out <- gen.SandboxLifecycleEvent{Id: id, Key: key, Status: gen.Destroy}:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// readPodEventStream reads one SSE connection until it ends or ctx is cancelled,
+// forwarding events and maintaining hosted (the pod's live sandbox set): a key is
+// added when it starts and dropped when it is destroyed, so on pod death the
+// remaining keys are exactly the sandboxes still believed running.
+func readPodEventStream(ctx context.Context, url string, id uuid.UUID, out chan<- gen.SandboxLifecycleEvent, hosted map[string]bool) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := sandboxHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer drainAndClose(resp)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET /v1/events: status %d", resp.StatusCode)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var pe sandboxgen.PodEvent
+		if err := json.Unmarshal([]byte(data), &pe); err != nil {
+			continue
+		}
+		status, ok := mapPodStatus(pe.Status)
+		if !ok {
+			continue // no controller-side equivalent (e.g. running)
+		}
+		switch status {
+		case gen.Start:
+			hosted[pe.Key] = true
+		case gen.Destroy:
+			delete(hosted, pe.Key)
+		}
+		select {
+		case out <- gen.SandboxLifecycleEvent{Id: id, Key: pe.Key, Status: status}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return scanner.Err()
+}
+
+// mapPodStatus maps an inner-sandbox PodEvent status to the controller's
+// lifecycle vocabulary (start/stop/die/destroy). starting and running both
+// signal "up" → Start (idempotent for consumers); a snapshot of an existing
+// sandbox arrives as running, so it must map to Start too.
+func mapPodStatus(s sandboxgen.PodEventStatus) (gen.SandboxLifecycleEventStatus, bool) {
+	switch s {
+	case sandboxgen.PodEventStatusStarting, sandboxgen.PodEventStatusRunning:
+		return gen.Start, true
+	case sandboxgen.PodEventStatusStopping:
+		return gen.Stop, true
+	case sandboxgen.PodEventStatusStopped:
+		return gen.Destroy, true
+	default:
+		return "", false
+	}
 }

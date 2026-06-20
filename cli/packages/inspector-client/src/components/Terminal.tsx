@@ -18,6 +18,7 @@ export interface TerminalSink {
 
 interface Props {
   sandboxId: string;
+  sandboxKey: string;
   serverUrl: string;
   // Register on the parent's shared stream for terminal output/lifecycle.
   // Returns an unsubscribe function. The parent replays current state (a
@@ -78,7 +79,7 @@ const LIGHT_THEME = {
   brightWhite: "#444444",
 };
 
-export function Terminal({ sandboxId, serverUrl, subscribe }: Props) {
+export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
   const { prefs, terminalScrollPassthrough } = useUserPreferences();
@@ -361,7 +362,7 @@ export function Terminal({ sandboxId, serverUrl, subscribe }: Props) {
       }) {
         if (!connected) return;
         const url = new URL(
-          `/api/sandboxes/${encodeURIComponent(sandboxId)}/terminal/input`,
+          `/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/terminal/input`,
           serverUrl,
         );
         transport
@@ -419,7 +420,7 @@ export function Terminal({ sandboxId, serverUrl, subscribe }: Props) {
       disposed = true;
       cleanup();
     };
-  }, [sandboxId, serverUrl, transport, subscribe]);
+  }, [sandboxId, sandboxKey, serverUrl, transport, subscribe]);
 
   return (
     <div ref={containerRef} className="h-full w-full overflow-hidden p-1" />

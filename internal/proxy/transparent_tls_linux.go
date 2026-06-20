@@ -41,10 +41,11 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 		host = origDst
 	}
 	_, port := splitHostPort("", origDst, 0)
-	rule := MatchEgress(p.currentRules(), "TLS", host, port, "")
+	srcIP := srcIPOf(c.RemoteAddr().String())
+	rule := MatchEgress(p.rulesForSource(srcIP), "TLS", host, port, "")
 	if rule == nil || rule.Access == "deny" {
 		log.Printf("transparent tls: host=%s port=%d denied (no matching rule)", host, port)
-		p.beginAudit("TLS", host, "", "").deny("no matching rule", 0)
+		p.beginAudit(srcIP, "TLS", host, "", "").deny("no matching rule", 0)
 		// Send a fatal TLS Alert so the peer surfaces a concrete error
 		// ("tlsv1 alert access denied") instead of the bare connection close
 		// it would otherwise see as `SSL_ERROR_SYSCALL`.
@@ -53,7 +54,7 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	}
 	log.Printf("transparent tls: host=%s port=%d allowed minter=%v passthrough=%v", host, port, p.minter != nil, rule.Passthrough)
 	if p.minter != nil && !rule.Passthrough {
-		p.interceptTLS(c, br, host, origDst, hello)
+		p.interceptTLS(c, br, host, origDst, hello, srcIP)
 		return
 	}
 	p.rawForwardTLS(c, br, host, origDst, rule)
@@ -71,7 +72,7 @@ func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst st
 	log.Printf("transparent tls: raw forward host=%s dialAddr=%s origDst=%s", host, dialAddr, origDst)
 	upstream, err := p.dialer.DialContext(context.Background(), "tcp", dialAddr)
 	if err != nil {
-		p.beginAudit("TLS", host, "", "").deny("upstream dial: "+err.Error(), http.StatusBadGateway)
+		p.beginAudit(srcIPOf(c.RemoteAddr().String()), "TLS", host, "", "").deny("upstream dial: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer upstream.Close()
@@ -86,11 +87,11 @@ func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst st
 // upstream TLS connection. WebSocket-aware: upstream TLS for WS upgrades
 // mirrors the agent's TLS fingerprint (so CF doesn't see Go's JA3 paired
 // with non-browser HTTP headers); regular HTTPS uses Chrome's JA3.
-func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string, clientHello []byte) {
+func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string, clientHello []byte, srcIP string) {
 	clientTLS, err := p.acceptInnerTLS(c, br, host)
 	if err != nil {
 		log.Printf("intercept tls: inner handshake error host=%s: %v", host, err)
-		p.beginAudit("TLS", host, "", "").deny("inner handshake: "+err.Error(), 0)
+		p.beginAudit(srcIP, "TLS", host, "", "").deny("inner handshake: "+err.Error(), 0)
 		return
 	}
 	defer clientTLS.Close()
@@ -105,14 +106,14 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	req, err := http.ReadRequest(bufio.NewReader(io.TeeReader(clientTLS, &rawReqBuf)))
 	if err != nil {
 		log.Printf("intercept tls: read request error host=%s: %v", host, err)
-		p.beginAudit("TLS", host, "", "").deny("read request: "+err.Error(), 0)
+		p.beginAudit(srcIP, "TLS", host, "", "").deny("read request: "+err.Error(), 0)
 		return
 	}
 	log.Printf("intercept tls: request host=%s method=%s path=%s ws=%v", host, req.Method, req.URL.Path, isWebSocketUpgrade(req))
 
 	_, port := splitHostPort("", origDst, 0)
-	ac := p.beginAudit(req.Method, host, req.URL.Path, req.URL.RawQuery)
-	rule := p.applyRequestRule(req, host, port, ac, func() {
+	ac := p.beginAudit(srcIP, req.Method, host, req.URL.Path, req.URL.RawQuery)
+	rule := p.applyRequestRule(req, host, port, srcIP, ac, func() {
 		_, _ = clientTLS.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 	})
 	if rule == nil {

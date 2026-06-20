@@ -14,7 +14,7 @@ import (
 // Resume semantics: prefer the SSE-standard `Last-Event-ID` header
 // (browsers send it automatically on EventSource reconnect); fall back
 // to the `lastEventId` query param.
-func (h *SandboxHandlers) GetEvents(c *gin.Context, params gen.GetEventsParams) {
+func (h *Sandbox) GetEvents(c *gin.Context, params gen.GetEventsParams) {
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
 	if !ok {

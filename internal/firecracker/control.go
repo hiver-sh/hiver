@@ -30,6 +30,14 @@ type ControlRequest struct {
 	// first config arrives.
 	MountWorkspaces []GuestFuse `json:"mount_workspaces,omitempty"`
 
+	// UnmountWorkspaces, when non-empty, asks the guest to unmount these workspace
+	// paths — used when a config-apply removes a mount from a running sandbox. The
+	// host stops serving the 9p export, but the guest must also umount the (now
+	// dead) mountpoint and remove its directory, or the path lingers in the guest
+	// (the runc backend does the equivalent live umount). Guest paths, matching the
+	// MountWorkspaces[].Mount the guest mounted at.
+	UnmountWorkspaces []string `json:"unmount_workspaces,omitempty"`
+
 	// UnixNano, when non-zero, is the host wall-clock time (nanoseconds since the
 	// Unix epoch) the guest should set its clock to. A snapshot resume restores
 	// the guest clock to capture time and never resyncs, so a warm pod's clock
@@ -37,6 +45,16 @@ type ControlRequest struct {
 	// freshly-minted TLS leaf certs look "not yet valid" (ERR_CERT_DATE_INVALID)
 	// to in-guest clients. Setting it here, before the workload runs, corrects it.
 	UnixNano int64 `json:"unix_nano,omitempty"`
+
+	// GuestIP/GatewayIP, when set, re-address the guest's eth0 after a pack-mode
+	// resume. Every VM resumes from the same per-image base snapshot, whose kernel
+	// cmdline baked in the base builder's address — so each resumed guest comes up
+	// on that stale IP and must be re-IP'd to its own pod-local /30 (172.16.<n>.2,
+	// gateway 172.16.<n>.1) before any egress, so sbxproxy's per-source ACL sees a
+	// distinct source. GuestIP is the bare address (the /30 prefix is implied).
+	// Empty on the in-place (non-pack) resume path, which keeps its booted address.
+	GuestIP   string `json:"guest_ip,omitempty"`
+	GatewayIP string `json:"gateway_ip,omitempty"`
 }
 
 // ControlResponse is the guest→host reply to a ControlRequest.

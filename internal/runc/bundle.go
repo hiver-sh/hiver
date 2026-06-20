@@ -40,6 +40,12 @@ type BundleParams struct {
 	// read instead of polling `runc state`. The path is interpreted in the
 	// runtime (host) mount namespace where runc executes hooks.
 	ReadyFifo string
+	// NetnsPath, if non-empty, joins the container to an existing network
+	// namespace at this path (e.g. /var/run/netns/<key>) instead of sharing the
+	// sandbox-pod's netns. Used when packing N sandboxes into one pod so each
+	// gets a distinct source IP for per-source egress (design §6). Empty keeps
+	// the historical shared-netns behavior.
+	NetnsPath string
 }
 
 // MakeFifo creates a named pipe at path, removing any stale node first. The
@@ -121,14 +127,19 @@ func WriteConfig(p BundleParams) error {
 		})
 	}
 
+	namespaces := []map[string]string{
+		{"type": "pid"},
+		{"type": "ipc"},
+		{"type": "uts"},
+		{"type": "mount"},
+		// network: omitted by default — share parent (sandbox-pod) netns.
+	}
+	if p.NetnsPath != "" {
+		// Packed sandbox: join its own netns so it has a distinct source IP.
+		namespaces = append(namespaces, map[string]string{"type": "network", "path": p.NetnsPath})
+	}
 	linux := map[string]any{
-		"namespaces": []map[string]string{
-			{"type": "pid"},
-			{"type": "ipc"},
-			{"type": "uts"},
-			{"type": "mount"},
-			// network: omitted — share parent (sandbox-pod) netns.
-		},
+		"namespaces": namespaces,
 		"maskedPaths": []string{
 			"/proc/kcore", "/proc/latency_stats",
 			"/proc/timer_list", "/proc/timer_stats", "/proc/sched_debug",

@@ -403,7 +403,7 @@ Hiver is under active development. The local runtime, inspector, audit stream, f
 
 A core design goal of Hiver is to make a freshly started sandbox available as fast as possible. The microVM backend relies on memory snapshotting, so spawning a new VM takes milliseconds, and it exposes a hook that lets custom images do their own setup during this phase. For example, preloading a browser.
 
-Today, scheduling onto pods goes through Kubernetes, which adds roughly a second of latency. A configurable warm pool sidesteps this by keeping sandboxes ready ahead of time. In the near future, Hiver will support additional container orchestrators and drive end-to-end cold start even lower.
+Today, scheduling onto pods goes through Kubernetes, which adds roughly a second of latency. Packing many sandboxes into a single pod — each resumed from a shared per-image base snapshot — sidesteps per-sandbox pod scheduling. In the near future, Hiver will support additional container orchestrators and drive end-to-end cold start even lower.
 
 ## License
 

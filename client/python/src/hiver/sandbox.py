@@ -113,7 +113,7 @@ class Sandbox:
         Base proxy URL for reaching a port inside the sandbox. Append the
         path to get a full URL, e.g. ``sandbox.proxy_url(8080) + "/health"``.
         """
-        return f"{self.api_server_url}/v1/proxy/{port}"
+        return f"{self.api_server_url}/v1/{self.key}/proxy/{port}"
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client if this sandbox owns it."""
@@ -128,16 +128,22 @@ class Sandbox:
 
     async def ping(self) -> None:
         """Keep the sandbox alive by resetting its TTL countdown."""
-        res = await self._client.get(f"{self.api_server_url}/v1/ping")
+        res = await self._client.get(f"{self.api_server_url}/v1/{self.key}/ping")
         if not res.is_success:
             raise _to_error(res, "ping")
+
+    async def shutdown(self) -> None:
+        """Tear this sandbox down via ``DELETE /v1/<key>``, cancelling its lifecycle."""
+        res = await self._client.delete(f"{self.api_server_url}/v1/{self.key}")
+        if not res.is_success:
+            raise _to_error(res, "shutdown")
 
     async def get_ports(self) -> list[int]:
         """
         List the network ports the sandbox exposes. Reach each one via
         :meth:`proxy_url`.
         """
-        res = await self._client.get(f"{self.api_server_url}/v1/ports")
+        res = await self._client.get(f"{self.api_server_url}/v1/{self.key}/ports")
         if not res.is_success:
             raise _to_error(res, "get_ports")
         return res.json()
@@ -148,14 +154,14 @@ class Sandbox:
         mechanism in use, which is selected automatically from the image (a
         microvm image ships a guest root filesystem) rather than configured.
         """
-        res = await self._client.get(f"{self.api_server_url}/v1/info")
+        res = await self._client.get(f"{self.api_server_url}/v1/{self.key}/info")
         if not res.is_success:
             raise _to_error(res, "get_info")
         return SandboxInfo.model_validate(res.json())
 
     async def get_config(self) -> SandboxConfig:
         """Read the current SandboxConfig."""
-        res = await self._client.get(f"{self.api_server_url}/v1/config")
+        res = await self._client.get(f"{self.api_server_url}/v1/{self.key}/config")
         if not res.is_success:
             raise _to_error(res, "get_config")
         return SandboxConfig.model_validate(res.json())
@@ -168,7 +174,7 @@ class Sandbox:
         """
         validated = SandboxConfig.model_validate(config.model_dump(exclude_none=True))
         res = await self._client.put(
-            f"{self.api_server_url}/v1/config",
+            f"{self.api_server_url}/v1/{self.key}/config",
             json=validated.model_dump(exclude_none=True),
         )
         if not res.is_success:
@@ -199,7 +205,7 @@ class Sandbox:
         if env is not None:
             body["env"] = env
         res = await self._client.post(
-            f"{self.api_server_url}/v1/exec",
+            f"{self.api_server_url}/v1/{self.key}/exec",
             json=body,
         )
         if not res.is_success:
@@ -234,8 +240,8 @@ class Sandbox:
         Resolves once the process is ready, so ``write_stdin`` is safe to call.
         """
         exec_id = str(uuid.uuid4())
-        stream_url = f"{self.api_server_url}/v1/exec-stream/{exec_id}"
-        stdin_url = f"{self.api_server_url}/v1/exec-stream/{exec_id}/stdin"
+        stream_url = f"{self.api_server_url}/v1/{self.key}/exec-stream/{exec_id}"
+        stdin_url = f"{self.api_server_url}/v1/{self.key}/exec-stream/{exec_id}/stdin"
 
         body: dict[str, object] = {}
         if command:
@@ -320,7 +326,7 @@ class Sandbox:
         Returns a list of entries with `name`, `path`, `is_dir`, and `size`.
         """
         res = await self._client.get(
-            f"{self.api_server_url}/v1/directories",
+            f"{self.api_server_url}/v1/{self.key}/directories",
             params={"path": path},
         )
         if not res.is_success:
@@ -333,7 +339,7 @@ class Sandbox:
         absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
         """
         res = await self._client.get(
-            f"{self.api_server_url}/v1/file",
+            f"{self.api_server_url}/v1/{self.key}/file",
             params={"path": path},
         )
         if not res.is_success:
@@ -355,7 +361,7 @@ class Sandbox:
         if isinstance(content, str):
             content = content.encode("utf-8")
         res = await self._client.post(
-            f"{self.api_server_url}/v1/file",
+            f"{self.api_server_url}/v1/{self.key}/file",
             data={"destination": destination},
             files={"file": (filename, content)},
         )
@@ -369,7 +375,7 @@ class Sandbox:
         `path` is the agent-visible absolute path (e.g. `/workspace/data.csv`).
         """
         res = await self._client.delete(
-            f"{self.api_server_url}/v1/file",
+            f"{self.api_server_url}/v1/{self.key}/file",
             params={"path": path},
         )
         if not res.is_success:
@@ -423,7 +429,7 @@ class Sandbox:
         sse_timeout = httpx.Timeout(None, connect=_FETCH_TIMEOUT.connect)
         async with self._client.stream(
             "GET",
-            f"{self.api_server_url}/v1/events",
+            f"{self.api_server_url}/v1/{self.key}/events",
             headers={"accept": "text/event-stream"},
             params=params,
             timeout=sse_timeout,

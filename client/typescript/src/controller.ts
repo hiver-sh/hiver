@@ -137,43 +137,12 @@ export async function listSandboxes(
   if (res.status !== 200) {
     throw await toError(res, "listSandboxes");
   }
-  const refs = ((await res.json()) as unknown[]).map((r) =>
-    SandboxRef.parse(r),
-  );
+  // Tolerate a null/absent body (e.g. an empty list serialized as JSON null).
+  const body = ((await res.json()) as unknown[] | null) ?? [];
+  const refs = body.map((r) => SandboxRef.parse(r));
   return refs.map(
     (ref) => new Sandbox(ref, { gatewayUrl: base, fetch: fetchImpl }),
   );
-}
-
-/**
- * Permanently stop and remove a sandbox.
- */
-export async function shutdown(
-  sandbox: Sandbox,
-  opts: GatewayOptions = {},
-): Promise<void> {
-  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
-  const fetchImpl = opts.fetch ?? fetch;
-  const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url = `${base}/controller/v1/shutdown/${encodeURIComponent(sandbox.key)}`;
-  let res: Response;
-  try {
-    res = await fetchImpl(url, {
-      method: "POST",
-      signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
-    });
-  } catch (err) {
-    if (isConnectionRefused(err)) {
-      throw new SandboxError(
-        "shutdown",
-        0,
-        `gateway is not reachable at ${base} (connection refused). Is it running?`,
-      );
-    }
-    throw err;
-  }
-  if (res.status === 204) return;
-  throw await toError(res, "shutdown");
 }
 
 /** Lifecycle transition a sandbox can go through. */

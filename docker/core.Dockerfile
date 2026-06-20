@@ -100,8 +100,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnss3-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Firecracker VMM binary, pinned by version and per-arch.
-ARG FIRECRACKER_VERSION=v1.10.1
+# Firecracker VMM binary, pinned by version and per-arch. v1.12+ is required for
+# host-tap override on snapshot restore (PUT /snapshot/load network_overrides,
+# added in v1.12.0 / PR #4731), which the pack-mode base-snapshot resume uses to
+# point each resumed VM's eth0 at its own per-sandbox tap.
+ARG FIRECRACKER_VERSION=v1.12.1
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
         amd64) fc_arch=x86_64 ;; \

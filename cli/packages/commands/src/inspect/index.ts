@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { mkdirSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
+import { listSandboxes } from "@hiver.sh/client";
 import { HIVER_DIR } from "../config.js";
 import { brand, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
@@ -27,10 +28,10 @@ const opts = cli.opts();
 const recording = Boolean(opts.record);
 const port = opts.port as string;
 const serverUrl = `http://localhost:${port}`;
-// When a sandbox key is given, deep-link straight to its view. The client uses
-// a HashRouter, so the route lives in the URL fragment.
 const key = cli.args[0] as string | undefined;
-const inspectPath = key ? `/#/sandboxes/${encodeURIComponent(key)}` : "";
+// Resolved below (after the gateway is up): the client routes by <id>/<key>, so
+// a key alone isn't enough — we look up the sandbox's id first.
+let inspectPath = "";
 let gatewayUrl = resolveGatewayUrl(opts.gatewayUrl);
 
 if (!existsSync(SERVER_ENTRY)) {
@@ -52,6 +53,29 @@ if (recording) {
 // The devtools UI is useless without the gateway, so make sure the stack is up
 // first (offering to start it), and pick up any re-resolved URL.
 gatewayUrl = await ensureGateway(gatewayUrl);
+
+// Gateway is ready. When a key was given, deep-link straight to its view —
+// resolve the key to its routing id first (the client routes by <id>/<key>, and
+// in pack mode many keys share one id). The client uses a HashRouter, so the
+// route lives in the URL fragment. If the key isn't found, open the home view.
+if (key) {
+  try {
+    const sandbox = (await listSandboxes({ gatewayUrl })).find(
+      (s) => s.key === key,
+    );
+    if (sandbox) {
+      inspectPath = `/#/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(key)}`;
+    } else {
+      console.error(
+        `  ${red("✖")} no sandbox with key ${dim(key)} — opening the home view\n`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `  ${red("✖")} could not resolve ${dim(key)} (${err instanceof Error ? err.message : String(err)}) — opening the home view\n`,
+    );
+  }
+}
 
 // Gateway is ready — now show where things are.
 console.log();

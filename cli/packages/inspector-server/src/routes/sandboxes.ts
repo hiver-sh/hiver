@@ -1,9 +1,9 @@
 import { Router, type Request, type Response } from "express";
 import {
+  Sandbox,
   type SandboxConfig,
   getOrCreateSandbox,
   listSandboxes,
-  shutdown,
   watchSandboxEvents,
 } from "@hiver.sh/client";
 import { gatewayUrl } from "../lib/gatewayUrl.js";
@@ -56,18 +56,15 @@ router.put("/:key", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/:id/shutdown", async (req: Request, res: Response) => {
+router.post("/:id/:key/shutdown", async (req: Request, res: Response) => {
   try {
-    // The detail page identifies the sandbox by id; resolve it back to its
-    // record so shutdown (a control-plane, key-keyed operation) can run.
-    const [sandbox] = await listSandboxes({ gatewayUrl: gatewayUrl(req) }).then(
-      (list) => list.filter((s) => s.id === req.params.id),
-    );
-    if (!sandbox) {
-      res.status(404).json({ error: "sandbox not found" });
-      return;
-    }
-    await shutdown(sandbox, { gatewayUrl: gatewayUrl(req) });
+    // Shutdown is the sandbox-side DELETE /v1/<key>, routed to the pod by id; the
+    // path carries both id and key, so address it directly without a list lookup.
+    const gw = gatewayUrl(req);
+    await new Sandbox(
+      { id: req.params.id, key: req.params.key },
+      { gatewayUrl: gw },
+    ).shutdown();
     res.status(204).send();
   } catch (err) {
     res.status(502).json({ error: String(err) });

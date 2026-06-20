@@ -125,38 +125,6 @@ async def list_sandboxes(
         raise
 
 
-async def shutdown(
-    sandbox: Sandbox,
-    gateway_url: str = DEFAULT_GATEWAY_URL,
-    client: Optional[httpx.AsyncClient] = None,
-    timeout_s: float = _DEFAULT_TIMEOUT_S,
-) -> None:
-    """Permanently stop and remove a sandbox."""
-    base = gateway_url.rstrip("/")
-    owns_client = client is None
-    http = client or httpx.AsyncClient()
-    req_timeout = timeout_s if timeout_s > 0 else None
-    url = f"{base}/controller/v1/shutdown/{sandbox.key}"
-    try:
-        res = await http.post(url, timeout=req_timeout)
-    except httpx.ConnectError as err:
-        if _is_connection_refused(err):
-            raise SandboxError(
-                "shutdown",
-                0,
-                f"gateway is not reachable at {base} (connection refused). Is it running?",
-            ) from err
-        raise
-    finally:
-        if owns_client:
-            await http.aclose()
-
-    if res.status_code == 204:
-        return
-
-    raise _to_error(res, "shutdown")
-
-
 async def watch_sandbox_events(
     gateway_url: str = DEFAULT_GATEWAY_URL,
     client: Optional[httpx.AsyncClient] = None,

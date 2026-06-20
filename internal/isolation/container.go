@@ -23,6 +23,14 @@ import (
 	"github.com/hiver-sh/hiver/internal/spec"
 )
 
+// wsMount pairs the host-side FUSE mount path with the guest-visible path.
+// They are the same for the boot (non-packed) sandbox but differ for packed
+// sandboxes, where the host path is namespaced under /run/sandboxd/<key>/mnt/.
+type wsMount struct {
+	host  string // path reachable in sandboxd's mount namespace
+	guest string // destination inside the agent container
+}
+
 // container is the runc-backed Isolation. All primitives are host-level
 // operations the container shares through namespaces: overlayfs and FUSE
 // mounts live in the sandbox-pod mount namespace, iptables in its (shared)
@@ -42,9 +50,31 @@ type container struct {
 	// agent via the runc bundle's linux.resources (CPU quota + memory limit).
 	vcpuCount  int
 	memSizeMib int
-	// readyFifo is the read end of runc.ReadyFifoPath, opened O_RDWR by
-	// LaunchAgent so the container's poststart hook never blocks writing to it.
-	// WaitReady reads the hook's byte from here. nil until LaunchAgent runs.
+	// overlay/bundleDir/readyFifoPath locate this sandbox's writable runtime
+	// state. They derive from a per-sandbox root (/mnt for the boot sandbox,
+	// /run/sandboxd/<key>/rt for a packed one) so multiple sandboxes can share
+	// one pod without colliding; the image rootfs (overlay.Lower) stays shared.
+	overlay       runc.Overlay
+	bundleDir     string
+	readyFifoPath string
+
+	// guestIP/netnsName are set for a packed sandbox: it runs in its own network
+	// namespace (netnsName, at /var/run/netns/<netnsName>) with guestIP on the
+	// pod bridge, so its egress has a distinct source IP. Empty for the boot
+	// sandbox, which shares the pod netns.
+	guestIP   string
+	netnsName string
+
+	// wsMountRoot/wsBackendRoot are the per-key host roots a packed sandbox's
+	// sbxfuse workspaces live under (/run/sandboxd/<key>/{mnt,backend}); the file
+	// API (Files) resolves workspace paths there instead of the default
+	// <mount>-backend. Empty for the boot sandbox (host==guest layout).
+	wsMountRoot   string
+	wsBackendRoot string
+
+	// readyFifo is the read end of readyFifoPath, opened O_RDWR by LaunchAgent so
+	// the container's poststart hook never blocks writing to it. WaitReady reads
+	// the hook's byte from here. nil until LaunchAgent runs.
 	readyFifo *os.File
 
 	// prewarmCmd is the backgrounded `runc run` process when the container was
@@ -60,24 +90,79 @@ type container struct {
 	// them at launch). MountWorkspacesLive injects the difference — workspaces
 	// added by a runtime config-apply — into the running container.
 	mu         sync.Mutex
-	workspaces []string
+	workspaces []wsMount
 	bound      map[string]bool
 }
 
 func newContainer(cfg Config) *container {
-	return &container{
-		containerID: fmt.Sprintf("agent-%d", os.Getpid()),
-		cgroupPath:  sandboxCgroupPath(cfg.Hostname),
-		localMounts: cfg.LocalMounts,
-		vcpuCount:   cfg.VcpuCount,
-		memSizeMib:  cfg.MemoryMiB,
+	// The boot sandbox (no Key) keeps the historical /mnt layout and a
+	// pid-derived container id, so its behavior is unchanged. A packed sandbox
+	// (Key set) gets its own root, container id, and cgroup so N can coexist in
+	// one pod. The image rootfs (overlay.Lower) is shared either way.
+	root := runc.MntDir
+	containerID := fmt.Sprintf("agent-%d", os.Getpid())
+	cgroupName := cfg.Hostname
+	if cfg.Key != "" {
+		root = filepath.Join("/run/sandboxd", cfg.Key, "rt")
+		containerID = "agent-" + cfg.Key
+		cgroupName = cfg.Hostname + "-" + cfg.Key
 	}
+	scratch := filepath.Join(root, "scratch")
+	c := &container{
+		containerID:   containerID,
+		cgroupPath:    sandboxCgroupPath(cgroupName),
+		localMounts:   cfg.LocalMounts,
+		vcpuCount:     cfg.VcpuCount,
+		memSizeMib:    cfg.MemoryMiB,
+		overlay:       runc.Overlay{Lower: runc.RootfsDir, Scratch: scratch, Upper: filepath.Join(scratch, "upper"), Work: filepath.Join(scratch, "work"), Merged: filepath.Join(root, "merged")},
+		bundleDir:     root,
+		readyFifoPath: filepath.Join(scratch, "ready.fifo"),
+	}
+	// Packed sandbox: run in its own netns, named by its index (the 3rd octet of
+	// 172.16.<n>.2) so the veth/netns names stay short (keys can be up to 64
+	// chars; veth names ≤15).
+	if cfg.GuestIP != "" {
+		c.guestIP = cfg.GuestIP
+		c.netnsName = "hsbx" + netID(cfg.GuestIP)
+	}
+	if cfg.Key != "" {
+		// Matches the mountManager's keyPrefix layout (cmd/sandboxd): host
+		// workspace dirs live under /run/sandboxd/<key>/{mnt,backend}/<slug>.
+		c.wsMountRoot = filepath.Join("/run/sandboxd", cfg.Key, "mnt")
+		c.wsBackendRoot = filepath.Join("/run/sandboxd", cfg.Key, "backend")
+	}
+	return c
+}
+
+// netID returns a packed sandbox's index — the 3rd octet of its guest IP
+// (172.16.<n>.2 → "<n>") — used to name its netns and veth pair.
+func netID(guestIP string) string {
+	parts := strings.Split(guestIP, ".")
+	if len(parts) == 4 {
+		return parts[2]
+	}
+	return strings.ReplaceAll(guestIP, ".", "")
 }
 
 func (c *container) Kind() Kind { return KindContainer }
 
-func (c *container) MountRoot() error   { return runc.MountOverlay() }
-func (c *container) UnmountRoot() error { return runc.UnmountOverlay() }
+func (c *container) MountRoot() error { return runc.MountOverlay(c.overlay) }
+
+func (c *container) UnmountRoot() error {
+	if c.netnsName != "" {
+		c.teardownPackedNet(context.Background())
+	}
+	return runc.UnmountOverlay(c.overlay)
+}
+
+// netnsPath is the runc OCI network-namespace path for a packed sandbox, or ""
+// for the boot sandbox (which shares the pod netns).
+func (c *container) netnsPath() string {
+	if c.netnsName == "" {
+		return ""
+	}
+	return "/var/run/netns/" + c.netnsName
+}
 
 // SeedWorkspace moves image-supplied content at rootfsMount (e.g. files a
 // Dockerfile COPY'd to the mount path) into the FUSE backend dir so the agent
@@ -112,18 +197,54 @@ func SeedWorkspace(backendDir, rootfsMount string) error {
 // ExportWorkspace records the workspace. runc bind-mounts the ones present at
 // launch from the bundle (see LaunchAgent); one added later by a config-apply is
 // injected into the running container by MountWorkspacesLive.
-func (c *container) ExportWorkspace(ctx context.Context, mount string) error {
+func (c *container) ExportWorkspace(ctx context.Context, hostMount, guestMount string) error {
 	c.mu.Lock()
-	c.workspaces = append(c.workspaces, mount)
+	c.workspaces = append(c.workspaces, wsMount{host: hostMount, guest: guestMount})
 	c.mu.Unlock()
 	return nil
 }
 
-// UnexportWorkspace is a no-op: the bind into the container is established by
-// runc at launch and lives in the agent's mount namespace, so there is no
-// host-side export to tear down. Stopping the sbxfuse daemon (done by the
-// caller) unmounts the host side.
-func (c *container) UnexportWorkspace(ctx context.Context, mount string) error { return nil }
+// UnexportWorkspace reverses ExportWorkspace for a mount dropped by a runtime
+// config-apply. It forgets the workspace so a later resume can't re-bind it and,
+// when the mount was already injected into the running container, detaches it from
+// the container's mount namespace so the agent stops seeing it. Stopping the host
+// sbxfuse daemon (done by the caller) only unmounts the host side; the container
+// holds an independent clone bindWorkspaceIntoContainer move_mount'd into it.
+//
+// A workspace that was never bound — the container hasn't launched yet (prewarm),
+// so runc will simply omit it from the launch bundle — only needs forgetting;
+// there is nothing in a mount namespace to remove.
+func (c *container) UnexportWorkspace(ctx context.Context, mount string) error {
+	c.mu.Lock()
+	var hostMount string
+	found := false
+	kept := make([]wsMount, 0, len(c.workspaces))
+	for _, m := range c.workspaces {
+		if m.guest == mount {
+			hostMount = m.host
+			found = true
+			continue
+		}
+		kept = append(kept, m)
+	}
+	c.workspaces = kept
+	wasBound := found && c.bound[hostMount]
+	delete(c.bound, hostMount)
+	c.mu.Unlock()
+
+	if !wasBound {
+		return nil
+	}
+	pid, err := c.agentPID()
+	if err != nil {
+		return fmt.Errorf("unexport workspace %s: %w", mount, err)
+	}
+	if err := unmountWorkspaceFromContainer(pid, mount); err != nil {
+		return fmt.Errorf("unexport workspace %s: %w", mount, err)
+	}
+	log.Printf("isolation: unmounted workspace %s from running container (pid %d)", mount, pid)
+	return nil
+}
 
 // InstallCA splices the sandbox CA (PEM) into the agent rootfs trust store
 // so the agent validates the leaf certs sbxproxy mints during interception,
@@ -131,7 +252,7 @@ func (c *container) UnexportWorkspace(ctx context.Context, mount string) error {
 // bundle: an image without ca-certificates gets a warning, since its TLS
 // would fail regardless.
 func (c *container) InstallCA(certPEM []byte) error {
-	merged := runc.MergedDir
+	merged := c.overlay.Merged
 	bundle := filepath.Join(merged, "etc/ssl/certs/ca-certificates.crt")
 	if existing, err := os.ReadFile(bundle); err == nil {
 		out := append(append(existing, '\n'), certPEM...)
@@ -226,6 +347,13 @@ func workloadHome(merged string) string {
 //
 // Requires CAP_NET_ADMIN; the sandbox-pod runs with NET_ADMIN for now.
 func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark int) error {
+	// Packed sandbox: it runs in its own netns, so egress can't be caught by
+	// OUTPUT rules in the pod netns. Instead bring up its netns/veth on the pod
+	// bridge and REDIRECT bridge-forwarded traffic to sbxproxy in the host netns
+	// (where conntrack + SO_ORIGINAL_DST work, preserving its source IP).
+	if c.guestIP != "" {
+		return c.setupPackedNet(ctx, proxyPort, dnsPort)
+	}
 	markHex := fmt.Sprintf("0x%x", mark)
 	rules := [][]string{
 		// Head: DNS → sink, above docker's embedded-DNS DNAT, skipping our own
@@ -284,11 +412,11 @@ func (c *container) CgroupPath() string { return c.cgroupPath }
 func (c *container) FlushAgent(ctx context.Context) error { return nil }
 
 func (c *container) RestoreSnapshot(src string) error {
-	return snapshot.Restore(src, runc.UpperDir, c.snapshotMounts())
+	return snapshot.Restore(src, c.overlay.Upper, c.snapshotMounts())
 }
 
 func (c *container) CaptureSnapshot(dst string, include []string) error {
-	return snapshot.Capture(dst, runc.UpperDir, c.snapshotMounts(), include)
+	return snapshot.Capture(dst, c.overlay.Upper, c.snapshotMounts(), include)
 }
 
 func (c *container) snapshotMounts() []snapshot.MountSource {
@@ -299,23 +427,25 @@ func (c *container) snapshotMounts() []snapshot.MountSource {
 	return out
 }
 
-func (c *container) Files() FileBridge { return containerFiles{upperDir: runc.UpperDir} }
+func (c *container) Files() FileBridge {
+	return containerFiles{upperDir: c.overlay.Upper, wsMountRoot: c.wsMountRoot, wsBackendRoot: c.wsBackendRoot}
+}
 
 func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	// Create the readiness fifo and hold its read end open *before* runc
 	// starts, so the poststart hook's O_WRONLY open returns immediately and
 	// its byte is buffered even if WaitReady hasn't read yet.
-	if err := runc.MakeFifo(runc.ReadyFifoPath); err != nil {
+	if err := runc.MakeFifo(c.readyFifoPath); err != nil {
 		return "", nil, fmt.Errorf("create ready fifo: %w", err)
 	}
-	f, err := os.OpenFile(runc.ReadyFifoPath, os.O_RDWR, 0)
+	f, err := os.OpenFile(c.readyFifoPath, os.O_RDWR, 0)
 	if err != nil {
 		return "", nil, fmt.Errorf("open ready fifo: %w", err)
 	}
 	c.readyFifo = f
 
 	if err := runc.WriteConfig(runc.BundleParams{
-		BundleDir:   runc.MntDir,
+		BundleDir:   c.bundleDir,
 		RootPath:    "merged",
 		ImageConfig: cfg.ImageConfig,
 		ExtraEnv:    cfg.Env,
@@ -325,7 +455,8 @@ func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		VcpuCount:   c.vcpuCount,
 		MemoryMiB:   c.memSizeMib,
 		Terminal:    cfg.TTY,
-		ReadyFifo:   runc.ReadyFifoPath,
+		ReadyFifo:   c.readyFifoPath,
+		NetnsPath:   c.netnsPath(),
 	}); err != nil {
 		c.readyFifo.Close()
 		c.readyFifo = nil
@@ -339,10 +470,10 @@ func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		c.bound = map[string]bool{}
 	}
 	for _, m := range c.workspaces {
-		c.bound[m] = true
+		c.bound[m.host] = true
 	}
 	c.mu.Unlock()
-	return "runc", []string{"run", "-b", runc.MntDir, c.containerID}, nil
+	return "runc", []string{"run", "-b", c.bundleDir, c.containerID}, nil
 }
 
 // WaitReady blocks until the container's poststart hook signals that the
@@ -425,17 +556,28 @@ func (c *container) ResumeAgent() (string, []string, error) { return "", nil, ni
 // ResumeReady is a no-op: the prewarm container is already serving.
 func (c *container) ResumeReady(ctx context.Context) error { return nil }
 
-// StopAgent stops the prewarm container on the resume teardown path: SIGTERM the
-// container, force-delete it, and reap the backgrounded `runc run` process.
+// StopAgent destroys the agent container on the teardown path, for both launch
+// shapes: a cold `runc run` (started via startChild) and a prewarmed container
+// (started in the background by PrewarmSnapshot).
+//
+// Killing the launching process alone leaks the workload: `runc run` (and the
+// prewarm `exec.Cmd`) is only the supervisor in sandboxd's PID namespace, with
+// no kernel link into the container's own PID namespace. SIGKILLing it leaves
+// the container's init (PID 1 of that namespace) alive, so its whole process
+// tree survives and is reparented to sandboxd (PID 1). In a pack pod, where
+// sandboxd outlives each sandbox, those orphans accumulate. Tearing the
+// container down by id — `runc kill --all` then a force delete — is the only
+// reliable stop, so do it unconditionally (the id is valid however we launched).
 func (c *container) StopAgent(ctx context.Context) error {
-	if c.prewarmCmd == nil {
-		return nil
-	}
-	_ = exec.Command("runc", "kill", "--all", c.containerID, "SIGTERM").Run()
+	_ = exec.Command("runc", "kill", "--all", c.containerID, "SIGKILL").Run()
 	_ = exec.Command("runc", "delete", "--force", c.containerID).Run()
-	_ = c.prewarmCmd.Process.Kill()
-	_ = c.prewarmCmd.Wait()
-	c.prewarmCmd = nil
+	// Reap the backgrounded `runc run` from the prewarm path, if any. The cold
+	// path's supervisor is owned by the caller (it Waits on agentCmd).
+	if c.prewarmCmd != nil {
+		_ = c.prewarmCmd.Process.Kill()
+		_ = c.prewarmCmd.Wait()
+		c.prewarmCmd = nil
+	}
 	return nil
 }
 
@@ -453,9 +595,9 @@ func (c *container) ApplyResumeState(ctx context.Context, _ []string) error {
 	if c.bound == nil {
 		c.bound = map[string]bool{}
 	}
-	var todo []string
+	var todo []wsMount
 	for _, m := range c.workspaces {
-		if !c.bound[m] {
+		if !c.bound[m.host] {
 			todo = append(todo, m)
 		}
 	}
@@ -469,13 +611,13 @@ func (c *container) ApplyResumeState(ctx context.Context, _ []string) error {
 		return err
 	}
 	for _, m := range todo {
-		if err := bindWorkspaceIntoContainer(pid, m); err != nil {
-			return fmt.Errorf("inject workspace %s: %w", m, err)
+		if err := bindWorkspaceIntoContainer(pid, m.host, m.guest); err != nil {
+			return fmt.Errorf("inject workspace %s: %w", m.guest, err)
 		}
 		c.mu.Lock()
-		c.bound[m] = true
+		c.bound[m.host] = true
 		c.mu.Unlock()
-		log.Printf("isolation: bound workspace %s into running container (pid %d)", m, pid)
+		log.Printf("isolation: bound workspace %s into running container (pid %d)", m.guest, pid)
 	}
 	return nil
 }
@@ -667,8 +809,22 @@ func parsePPIDStat(s string) (int, bool) {
 // configured FUSE mount resolve to that mount's backend dir; everything else
 // falls back to the overlay upper layer. Both bypass sbxfuse ACLs — the file
 // API is a higher-privilege control surface than the workload.
+// workspaceSlug mirrors spec.FS.Slug: a filename-safe id for a mount path, used
+// to locate a packed sandbox's per-key host dir (/run/sandboxd/<key>/.../<slug>).
+func workspaceSlug(mount string) string {
+	s := strings.ReplaceAll(strings.Trim(mount, "/"), "/", "-")
+	if s == "" {
+		return "root"
+	}
+	return s
+}
+
 type containerFiles struct {
 	upperDir string
+	// wsMountRoot/wsBackendRoot, when set (packed sandbox), relocate workspace
+	// paths to the per-key host dirs instead of the default <mount>-backend.
+	wsMountRoot   string
+	wsBackendRoot string
 }
 
 func (f containerFiles) List(agentPath string, mounts []MountRoute) ([]FileEntry, error) {
@@ -769,6 +925,15 @@ func (f containerFiles) hostPath(agentPath string, mounts []MountRoute) string {
 	}
 	if matched.Mount != "" {
 		rel := strings.TrimPrefix(cleaned, matched.Mount)
+		// Packed sandbox: workspaces live under the per-key host roots, not the
+		// default <mount>-backend / <mount> layout.
+		if f.wsBackendRoot != "" {
+			root := f.wsBackendRoot
+			if matched.Remote {
+				root = f.wsMountRoot
+			}
+			return filepath.Join(root, workspaceSlug(matched.Mount), rel)
+		}
 		if matched.Remote {
 			return filepath.Join(matched.Mount, rel)
 		}

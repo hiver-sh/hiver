@@ -20,7 +20,7 @@ import (
 // mountRoutes returns the configured mounts and whether each is remote-backed,
 // which the backend's FileBridge uses to route an agent path to its backing
 // store (local backend dir vs. the FUSE mount point for remote mounts).
-func (h *SandboxHandlers) mountRoutes(cfg gen.SandboxConfig) []isolation.MountRoute {
+func (h *Sandbox) mountRoutes(cfg gen.SandboxConfig) []isolation.MountRoute {
 	out := make([]isolation.MountRoute, 0, len(cfg.Fs))
 	for _, f := range cfg.Fs {
 		base := fsBase(f)
@@ -40,7 +40,7 @@ func (h *SandboxHandlers) mountRoutes(cfg gen.SandboxConfig) []isolation.MountRo
 // layer's per-mount ACLs — the API is a higher-privilege control surface than
 // the workload, so operators seeding inputs shouldn't have to grant the agent
 // rw on the same path.
-func (h *SandboxHandlers) UploadFile(c *gin.Context) {
+func (h *Sandbox) UploadFile(c *gin.Context) {
 	destination := c.PostForm("destination")
 	if destination == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing form field: destination"})
@@ -88,7 +88,7 @@ func (h *SandboxHandlers) UploadFile(c *gin.Context) {
 // backend's FileBridge. Local-backend mounts read the host backend dir directly
 // (bypassing sbxfuse ACLs); remote-backed mounts read the FUSE mount point so
 // already-flushed files the oplog evicted from the write buffer stay visible.
-func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) {
+func (h *Sandbox) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) {
 	path := params.Path
 	if path == "" {
 		path = "/"
@@ -131,7 +131,7 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, params gen.ListDirectory
 
 // GetFile streams a file from the sandbox filesystem via the backend's
 // FileBridge, bypassing sbxfuse ACLs.
-func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
+func (h *Sandbox) GetFile(c *gin.Context, params gen.GetFileParams) {
 	if params.Path == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
 		return
@@ -161,7 +161,7 @@ func (h *SandboxHandlers) GetFile(c *gin.Context, params gen.GetFileParams) {
 }
 
 // DeleteFile removes a file or empty directory at the given agent-visible path.
-func (h *SandboxHandlers) DeleteFile(c *gin.Context, params gen.DeleteFileParams) {
+func (h *Sandbox) DeleteFile(c *gin.Context, params gen.DeleteFileParams) {
 	if params.Path == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
 		return

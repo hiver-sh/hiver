@@ -5,7 +5,7 @@ import { waitForSandbox } from "../lib/waitForSandbox.js";
 
 const router = Router();
 
-router.get("/:id/config", async (req: Request, res: Response) => {
+router.get("/:id/:key/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
     await waitForSandbox(sandbox);
@@ -18,7 +18,7 @@ router.get("/:id/config", async (req: Request, res: Response) => {
 
 // Internal runtime info (currently the isolation mechanism, which the sandbox
 // derives from its image rather than from config). Proxied to /v1/info.
-router.get("/:id/info", async (req: Request, res: Response) => {
+router.get("/:id/:key/info", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
     await waitForSandbox(sandbox);
@@ -29,7 +29,7 @@ router.get("/:id/info", async (req: Request, res: Response) => {
   }
 });
 
-router.put("/:id/config", async (req: Request, res: Response) => {
+router.put("/:id/:key/config", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
     await waitForSandbox(sandbox);

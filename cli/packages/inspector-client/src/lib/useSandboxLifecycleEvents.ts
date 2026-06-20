@@ -41,7 +41,7 @@ export function useSandboxLifecycleEvents(
           };
           if (event.status === "destroy") {
             forgetSandbox(event.key);
-            void clearEvents(event.id);
+            void clearEvents(`${event.id}:${event.key}`);
           }
           setSandboxes((prev) => {
             switch (event.status) {

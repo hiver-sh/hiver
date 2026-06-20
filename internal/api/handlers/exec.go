@@ -32,7 +32,7 @@ type ttyStdin interface {
 // Exec runs a shell command inside the agent container and returns the
 // complete buffered stdout, stderr, and exit code once the process finishes.
 // Each line is also published to the broker as a StdioEvent.
-func (h *SandboxHandlers) Exec(c *gin.Context) {
+func (h *Sandbox) Exec(c *gin.Context) {
 	var req gen.ExecRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
@@ -72,7 +72,7 @@ func (h *SandboxHandlers) Exec(c *gin.Context) {
 //
 // When the request command is empty, the stream instead attaches to the
 // sandbox entrypoint's TTY (see execStreamAttach).
-func (h *SandboxHandlers) ExecStream(c *gin.Context, id string) {
+func (h *Sandbox) ExecStream(c *gin.Context, id string) {
 	var req gen.ExecStreamRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
@@ -110,7 +110,7 @@ func (h *SandboxHandlers) ExecStream(c *gin.Context, id string) {
 // execStreamTTY starts command in a fresh pty and streams its terminal output
 // as SSE. The session ends when the process exits; the final exit frame
 // carries its exit code.
-func (h *SandboxHandlers) execStreamTTY(c *gin.Context, id, command string, req gen.ExecStreamRequest, flusher http.Flusher) {
+func (h *Sandbox) execStreamTTY(c *gin.Context, id, command string, req gen.ExecStreamRequest, flusher http.Flusher) {
 	cmd, cleanup, err := h.iso.ExecCmd(c.Request.Context(), isolation.ExecConfig{
 		Command: command, Cwd: req.Cwd, Env: req.Env, TTY: true,
 	})
@@ -152,7 +152,7 @@ func (h *SandboxHandlers) execStreamTTY(c *gin.Context, id, command string, req 
 // routes the client's stdin/resizes back to it. Multiple clients may attach
 // concurrently; each gets the recent scrollback followed by live output. The
 // stream stays open until the client disconnects or the entrypoint exits.
-func (h *SandboxHandlers) execStreamAttach(c *gin.Context, id string, flusher http.Flusher) {
+func (h *Sandbox) execStreamAttach(c *gin.Context, id string, flusher http.Flusher) {
 	sess := h.entrypointTTY.Load()
 	if sess == nil {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "no entrypoint tty: sandbox is not configured with tty: true"})
@@ -210,7 +210,7 @@ func streamSession(w gin.ResponseWriter, flusher http.Flusher, replay [][]byte, 
 	}
 }
 
-func (h *SandboxHandlers) execStreamPipes(c *gin.Context, id, command string, req gen.ExecStreamRequest, flusher http.Flusher) {
+func (h *Sandbox) execStreamPipes(c *gin.Context, id, command string, req gen.ExecStreamRequest, flusher http.Flusher) {
 	reqEventID := h.publishExecRequest(command, req.Cwd)
 	w := c.Writer
 
@@ -288,7 +288,7 @@ func (h *SandboxHandlers) execStreamPipes(c *gin.Context, id, command string, re
 	writeExitFrame(w, flusher, exitCode)
 }
 
-func (h *SandboxHandlers) ExecStreamStdin(c *gin.Context, id string) {
+func (h *Sandbox) ExecStreamStdin(c *gin.Context, id string) {
 	val, ok := h.processes.Load(id)
 	if !ok {
 		c.JSON(http.StatusNotFound, gen.Error{Error: "no running process with id: " + id})
@@ -414,7 +414,7 @@ func shellJoin(argv []string) string {
 // publishExecRequest publishes an ExecRequestEvent and returns its assigned id.
 // command is the resolved `sh -c` command line (an argv array is reported in
 // its shell-quoted form).
-func (h *SandboxHandlers) publishExecRequest(command string, reqCwd *string) int64 {
+func (h *Sandbox) publishExecRequest(command string, reqCwd *string) int64 {
 	cwd := "/"
 	if reqCwd != nil && *reqCwd != "" {
 		cwd = *reqCwd
@@ -432,7 +432,7 @@ func (h *SandboxHandlers) publishExecRequest(command string, reqCwd *string) int
 }
 
 // publishExecResponse publishes an ExecResponseEvent correlated to the given request id.
-func (h *SandboxHandlers) publishExecResponse(requestID int64) {
+func (h *Sandbox) publishExecResponse(requestID int64) {
 	h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		_ = ev.FromExecResponseEvent(gen.ExecResponseEvent{
@@ -446,7 +446,7 @@ func (h *SandboxHandlers) publishExecResponse(requestID int64) {
 
 // publishStdioLine publishes a single line of exec output as a StdioEvent
 // to the sandbox broker, mirroring the agent's own stdio stream.
-func (h *SandboxHandlers) publishStdioLine(stream, line string) {
+func (h *Sandbox) publishStdioLine(stream, line string) {
 	h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		stdio := gen.StdioEvent{Id: int(id), Timestamp: ts}

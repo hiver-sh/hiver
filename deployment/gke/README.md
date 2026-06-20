@@ -59,51 +59,6 @@ The `k8s/` directory deploys the control plane with `kubectl apply -k k8s`:
   each sandbox as a ConfigMap + privileged Pod + Service.
 - **gateway** — envoy front door (LoadBalancer `:80` → `:10000`) routing
   `/controller/*` to the controller and `/sandbox/<id>/*` to per-sandbox Services.
-- **warmpool** — the `WarmPool` CRD and a `default` pool of pre-booted sandbox
-  pods kept on standby for instant hand-out. See [Warm pool](#warm-pool).
-
-### Warm pool
-
-Cold-booting a microVM sandbox (guest kernel + rootfs) costs a few seconds.
-A **WarmPool** removes that from the request path: the controller keeps a buffer
-of pre-booted, unclaimed sandbox pods on standby, and a `GetOrCreate` is handed
-one instantly instead of booting from scratch. Claimed pods get the request's
-real config delivered at claim time; the image is frozen at boot (it fixes the
-isolation), so a request only claims a warm pod whose image matches.
-
-`k8s/warmpool.yaml` declares the buffers as a `WarmPool` custom resource — one
-independent entry per image, each with its own sizing:
-
-```yaml
-apiVersion: hiver.sh/v1alpha1
-kind: WarmPool
-metadata:
-  name: default
-  namespace: hiver
-spec:
-  images:
-    - image: hiversh/node:alpine-microvm
-      readyReplicas: 2    # warm (unclaimed) pods to keep on standby
-      maxReplicas: 100    # hard ceiling on total pods (warm + claimed)
-    - image: hiversh/python:3.13-alpine-microvm
-      readyReplicas: 2
-      maxReplicas: 100
-```
-
-- `readyReplicas` — how many warm pods to keep ready for instant hand-out. The
-  controller refills the buffer as pods are claimed.
-- `maxReplicas` — hard ceiling on total pods (warm + claimed) for that image; the
-  warm buffer shrinks as claims grow so the sum never exceeds it.
-
-The CRD (`k8s/warmpool-crd.yaml`) and a `default` WarmPool are applied as part of
-`kubectl apply -k k8s`. Edit `readyReplicas` / `maxReplicas` per image to size
-each buffer, or add entries to keep more images warm. Inspect live state with:
-
-```sh
-kubectl get warmpools -n hiver        # READY / CLAIMED columns per pool
-kubectl get pods -n hiver-sandbox \
-  -l hiver.sandbox.state=warm          # the standby pods themselves
-```
 
 ### Gateway public IP
 

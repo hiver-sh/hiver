@@ -480,7 +480,7 @@ type LocalFileSystemBackend string
 
 // SandboxConfig Hive sandbox configuration.
 type SandboxConfig struct {
-	// Cpu Number of virtual CPUs allocated to the sandbox, as a ceiling (the pod CPU limit). May be fractional (e.g. 0.5). For the microvm isolation the guest vCPU count is this value rounded up to a whole number; for the container isolation it is enforced as a CPU quota. The amount reserved at schedule time is set separately by request_cpu. This cannot be changed after the sandbox is initialized.
+	// Cpu Number of virtual CPUs allocated to the sandbox, as a ceiling (the pod CPU limit). May be fractional (e.g. 0.5). For the microvm isolation the guest vCPU count is this value rounded up to a whole number; for the container isolation it is enforced as a CPU quota. This cannot be changed after the sandbox is initialized.
 	Cpu *float64 `json:"cpu,omitempty"`
 
 	// Cwd Working directory for the entrypoint. When set, the entrypoint is launched with this as its current working directory, overriding the image's default working directory. When omitted, the image's working directory is used. This cannot be changed after the sandbox is initialized.
@@ -510,9 +510,6 @@ type SandboxConfig struct {
 
 	// Memory Memory allocated to the sandbox, in MiB. For the microvm isolation this is the guest RAM size; for the container isolation it is enforced as a cgroup memory limit. This cannot be changed after the sandbox is initialized.
 	Memory *int `json:"memory,omitempty"`
-
-	// RequestCpu CPU cores reserved for the sandbox at schedule time (the pod CPU request), decoupled from cpu (the limit) so an idle sandbox reserves less than it can burst to. Defaults to 0.5; clamped to at most cpu. This cannot be changed after the sandbox is initialized.
-	RequestCpu *float64 `json:"request_cpu,omitempty"`
 
 	// Snapshot Snapshot configuration. A snapshot is captured automatically before
 	// the sandbox shuts down and restored before the sandbox starts.

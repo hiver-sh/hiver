@@ -37,7 +37,7 @@ async function shutdown(code: number) {
   if (ac.signal.aborted) return;
   ac.abort();
   mcpInspector.kill("SIGINT");
-  await hiver.shutdown(sandbox);
+  await sandbox.shutdown();
   process.exit(code);
 }
 

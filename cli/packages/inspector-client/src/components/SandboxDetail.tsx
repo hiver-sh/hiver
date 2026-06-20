@@ -200,7 +200,7 @@ export function SandboxDetail({
     let cancelled = false;
     setPorts([]);
     const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/ports`,
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/ports`,
     );
     transport
       .fetch(url)
@@ -214,7 +214,7 @@ export function SandboxDetail({
     return () => {
       cancelled = true;
     };
-  }, [sandbox.id, serverUrl, transport]);
+  }, [sandbox.id, sandbox.key, serverUrl, transport]);
 
   // Load the sandbox's isolation mechanism (container/microvm) for the header.
   // Isolation is determined at boot from the image, not configured, so it comes
@@ -223,7 +223,7 @@ export function SandboxDetail({
     let cancelled = false;
     setIsolation(null);
     const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/info`,
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/info`,
     );
     transport
       .fetch(url)
@@ -237,14 +237,14 @@ export function SandboxDetail({
     return () => {
       cancelled = true;
     };
-  }, [sandbox.id, serverUrl, transport]);
+  }, [sandbox.id, sandbox.key, serverUrl, transport]);
 
   const openFile = useCallback(
     async (path: string) => {
       const lang = langForPath(path);
       if (!lang) return;
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/file`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/file`,
       );
       url.searchParams.set("path", path);
 
@@ -255,7 +255,7 @@ export function SandboxDetail({
         /* ignore */
       }
     },
-    [sandbox.id, serverUrl, transport],
+    [sandbox.id, sandbox.key, serverUrl, transport],
   );
 
   const proposePolicy = useCallback(
@@ -263,7 +263,7 @@ export function SandboxDetail({
       updater: (cfg: Record<string, unknown>) => Record<string, unknown>,
     ) => {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/config`,
       );
 
       const current = await transport
@@ -275,7 +275,7 @@ export function SandboxDetail({
       });
       setShowConfig(true);
     },
-    [sandbox.id, serverUrl, transport],
+    [sandbox.id, sandbox.key, serverUrl, transport],
   );
 
   const fsWriteEvents = useMemo(
@@ -332,7 +332,7 @@ export function SandboxDetail({
       const run = async () => {
         if (ac.signal.aborted) return;
         const url = new URL(
-          `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/stream`,
+          `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/stream`,
         );
         if (resumeId !== undefined)
           url.searchParams.set("lastEventId", String(resumeId));
@@ -373,9 +373,19 @@ export function SandboxDetail({
               if (eventName === "feed") {
                 try {
                   const event = JSON.parse(dataLine) as SandboxEvent;
+                  // Always advance resumeId so reconnects resume at the right
+                  // offset even when we skip a duplicate below.
                   resumeId = event.id;
-                  setEvents((prev) => [...prev, event]);
-                  if (!player) void appendEvent(sandbox.id, event);
+                  // Deduplicate: the reader may flush buffered bytes after an
+                  // abort, and the subsequent reconnect re-delivers those same
+                  // events from the broker ring. Only add events with a strictly
+                  // higher id than the last one already in state.
+                  setEvents((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.id >= event.id) return prev;
+                    return [...prev, event];
+                  });
+                  if (!player) void appendEvent(`${sandbox.id}:${sandbox.key}`, event);
                 } catch {
                   // ignore malformed frame
                 }
@@ -404,7 +414,7 @@ export function SandboxDetail({
       });
       void run();
     },
-    [sandbox.id, serverUrl, transport, player],
+    [sandbox.id, sandbox.key, serverUrl, transport, player],
   );
 
   useEffect(() => {
@@ -418,7 +428,7 @@ export function SandboxDetail({
         abortRef.current?.abort();
       };
     }
-    loadEvents(sandbox.id)
+    loadEvents(`${sandbox.id}:${sandbox.key}`)
       .then((stored) => {
         if (cancelled) return;
         setEvents(stored);
@@ -442,10 +452,10 @@ export function SandboxDetail({
     setShutdownLoading(true);
     try {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/shutdown`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/shutdown`,
       );
       await transport.fetch(url, { method: "POST" });
-      void clearEvents(sandbox.id);
+      void clearEvents(`${sandbox.id}:${sandbox.key}`);
     } catch {
       // Shutdown failed — drop the overlay so the panel is usable again.
       setShutdownLoading(false);
@@ -752,7 +762,7 @@ export function SandboxDetail({
                   <button
                     onClick={() => {
                       setEvents([]);
-                      void clearEvents(sandbox.id);
+                      void clearEvents(`${sandbox.id}:${sandbox.key}`);
                     }}
                     title="Clear events"
                     className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
@@ -825,6 +835,7 @@ export function SandboxDetail({
             >
               <Terminal
                 sandboxId={sandbox.id}
+                sandboxKey={sandbox.key}
                 serverUrl={serverUrl}
                 subscribe={subscribeTerminal}
               />
@@ -878,6 +889,7 @@ export function SandboxDetail({
             >
               <FileExplorer
                 sandboxId={sandbox.id}
+                sandboxKey={sandbox.key}
                 serverUrl={serverUrl}
                 events={fsWriteEvents}
               />
@@ -921,6 +933,7 @@ export function SandboxDetail({
 
       <SandboxConfigDialog
         sandboxId={sandbox.id}
+        sandboxKey={sandbox.key}
         serverUrl={serverUrl}
         open={showConfig}
         onOpenChange={(open) => {

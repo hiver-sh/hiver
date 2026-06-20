@@ -130,34 +130,6 @@ func TestClient_ListSandboxes_Empty(t *testing.T) {
 	}
 }
 
-func TestClient_Shutdown_204(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPost)
-		assertPath(t, r, "/controller/v1/shutdown/my-key")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	if err := newTestClient(srv).Shutdown(context.Background(), "my-key"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestClient_Shutdown_404(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusNotFound, APIError{Message: "not found"})
-	}))
-	defer srv.Close()
-
-	err := newTestClient(srv).Shutdown(context.Background(), "no-such-key")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
 func TestClient_WatchEvents(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertPath(t, r, "/controller/v1/sandboxes/events")

@@ -1,7 +1,10 @@
 import type { SandboxEvent } from "@/types";
 
 const DB_NAME = "inspector-events";
-const DB_VERSION = 1;
+// Bump version when the sandboxId key format changes so old entries (stored
+// under a different key scheme) are dropped cleanly rather than lingering as
+// unreachable orphans. Current format: "${containerId}:${sandboxKey}".
+const DB_VERSION = 2;
 const STORE = "events";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -10,14 +13,17 @@ function getDb(): Promise<IDBDatabase> {
   if (!dbPromise) {
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
+      req.onupgradeneeded = (e) => {
         const db = req.result;
-        if (!db.objectStoreNames.contains(STORE)) {
-          const store = db.createObjectStore(STORE, {
-            keyPath: ["sandboxId", "id"],
-          });
-          store.createIndex("bySandbox", "sandboxId");
+        // Drop the old store on any upgrade so stale entries under a previous
+        // sandboxId format don't accumulate.
+        if (e.oldVersion > 0 && db.objectStoreNames.contains(STORE)) {
+          db.deleteObjectStore(STORE);
         }
+        const store = db.createObjectStore(STORE, {
+          keyPath: ["sandboxId", "id"],
+        });
+        store.createIndex("bySandbox", "sandboxId");
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);

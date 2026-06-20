@@ -4,7 +4,7 @@ import { waitForSandbox } from "../lib/waitForSandbox.js";
 
 const router = Router();
 
-router.get("/:id/ports", async (req: Request, res: Response) => {
+router.get("/:id/:key/ports", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
   try {
     await waitForSandbox(sandbox);

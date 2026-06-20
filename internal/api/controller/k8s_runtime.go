@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,20 +13,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
 	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/spec"
-	"github.com/hiver-sh/hiver/internal/warmpool"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -35,6 +33,19 @@ import (
 
 const (
 	sandboxdPort = 8099
+
+	// sandboxContainerName is the name of the sandbox container in every sandbox
+	// and prewarm pod (see sandboxPodSpec). Prewarm discovery resolves the
+	// container by this name to read its args and env.
+	sandboxContainerName = "sandbox"
+
+	// packArg and prewarmArg are the sandboxd flags that mark a pod as a parked,
+	// multi-tenant prewarm host: --pack runs many sandboxes in the one pod, and
+	// --prewarm boots sandboxd and waits for the first PUT /v1/config before
+	// launching a workload. A pod can serve prewarmed sandboxes for an image only
+	// when its container carries BOTH flags, so prewarm discovery requires both.
+	packArg    = "--pack"
+	prewarmArg = "--prewarm"
 
 	// podIPTimeout bounds how long Start/Lookup wait for the scheduler to assign the
 	// pod an IP. This covers scheduling and image pull on a cold node; sandboxd boot
@@ -48,12 +59,6 @@ const (
 	defaultVcpuCount = 1.0
 	defaultMemoryMiB = 512
 
-	// defaultRequestCPU is the pod CPU *request* (cores) used when a config
-	// leaves request_cpu unset. It mirrors the api/config.yaml default and is
-	// deliberately below defaultVcpuCount so an idle sandbox reserves less than
-	// the limit it can burst to, letting many warm/idle pods pack onto a node.
-	defaultRequestCPU = 0.5
-
 	// podMemoryOverheadMiB is added to the guest RAM (config memory) when setting
 	// the pod's memory *limit*: the pod also runs firecracker/sandboxd and the
 	// sidecars (sbxproxy, sbxfuse) outside the guest, so a limit of exactly the
@@ -65,22 +70,15 @@ const (
 // sandboxResources maps a SandboxConfig's cpu/memory onto the pod container's
 // k8s resource requests and limits so the scheduler accounts for what the guest
 // actually consumes (without it the pod is best-effort and big-guest microVMs
-// overpack a node). CPU limit = cpu (the ceiling the guest can burst to); CPU
-// request = request_cpu (what the scheduler reserves), clamped to at most the
-// limit. Decoupling the two lets an idle sandbox reserve less than it can use.
-// Memory request = guest size; the memory limit adds host-side overhead for
-// firecracker + sandboxd + sidecars (see podMemoryOverheadMiB).
+// overpack a node). CPU request = limit = cpu (the ceiling the guest can burst
+// to). Memory request = guest size; the memory limit adds host-side overhead
+// for firecracker + sandboxd + sidecars (see podMemoryOverheadMiB).
 func sandboxResources(cfg sandboxgen.SandboxConfig) corev1.ResourceRequirements {
 	cpuLimit := defaultVcpuCount
 	if cfg.Cpu != nil && *cfg.Cpu > 0 {
 		cpuLimit = *cfg.Cpu
 	}
-	cpuReq := defaultRequestCPU
-	if cfg.RequestCpu != nil && *cfg.RequestCpu > 0 {
-		cpuReq = *cfg.RequestCpu
-	}
-	// A request above the limit is rejected by the API server; clamp it.
-	cpuReq = math.Min(cpuReq, cpuLimit)
+	cpuReq := cpuLimit
 	memMiB := defaultMemoryMiB
 	if cfg.Memory != nil && *cfg.Memory > 0 {
 		memMiB = *cfg.Memory
@@ -106,11 +104,10 @@ func milliCPU(cores float64) resource.Quantity {
 	return *resource.NewMilliQuantity(int64(math.Round(cores*1000)), resource.DecimalSI)
 }
 
-// sandboxHTTPClient talks to sandboxd over the pod network. A claim hits the
-// same pod IP twice back to back — applyConfig's PUT /v1/config then
-// waitSandboxReady's GET /v1/ping — so a keep-alive transport lets the GET reuse
-// the PUT's TCP connection, saving a connect+handshake on the latency path. (The
-// callers must drain response bodies for the connection to return to the pool.)
+// sandboxHTTPClient talks to sandboxd over the pod network. A keep-alive
+// transport lets back-to-back requests to the same pod IP reuse one TCP
+// connection, saving a connect+handshake on the latency path. (The callers must
+// drain response bodies for the connection to return to the pool.)
 var sandboxHTTPClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -131,10 +128,11 @@ func drainAndClose(resp *http.Response) {
 type K8sRuntime struct {
 	client    kubernetes.Interface
 	namespace string
-	// warm is the warm-pool manager: it pre-boots prewarm pods (leader-elected)
-	// and lets Start adopt one instead of cold-booting. nil if warm pooling
-	// failed to initialise, in which case Start always cold-boots.
-	warm *warmpool.Manager
+	// packs is the in-memory snapshot of prewarm hosts (image → host IPs) the
+	// getOrCreate fast path and the events stream read instead of listing pods on
+	// every request. A single background poller (startPackCachePoller) refreshes
+	// it; see pack_cache.go.
+	packs packCache
 }
 
 func newK8sRuntime() (*K8sRuntime, error) {
@@ -166,8 +164,10 @@ func newK8sRuntime() (*K8sRuntime, error) {
 		ns = "default"
 	}
 	r := &K8sRuntime{client: client, namespace: ns}
-	r.startWarmPool(config)
 	r.startRecycler(context.Background())
+	// The pack cache backs the getOrCreate fast path and the events stream, so
+	// start its poller before serving any request.
+	r.startPackCachePoller(context.Background())
 	return r, nil
 }
 
@@ -197,50 +197,6 @@ func envInt(name string, def int) int {
 		return def
 	}
 	return n
-}
-
-// startWarmPool wires up and launches the warm-pool manager. Failure to build
-// the dynamic client is logged and tolerated: the controller still serves
-// requests, just always cold-booting (r.warm stays nil).
-func (r *K8sRuntime) startWarmPool(config *rest.Config) {
-	dyn, err := dynamic.NewForConfig(config)
-	if err != nil {
-		log.Printf("warmpool: dynamic client: %v; warm pooling disabled", err)
-		return
-	}
-	r.warm = warmpool.NewManager(warmpool.Config{
-		Kube:      r.client,
-		Dynamic:   dyn,
-		ControlNS: controlNamespace(),
-		SandboxNS: r.namespace,
-		KeyLabel:  labelSandboxKey,
-		Identity:  leaderIdentity(),
-		BuildWarm: r.buildWarmPod,
-	})
-	go r.warm.Run(context.Background())
-}
-
-// controlNamespace is where WarmPool CRs and the leader-election Lease live: the
-// controller's own namespace. It's read from the ServiceAccount token (the
-// in-cluster source of truth), then HIVE_CONTROL_NAMESPACE, falling back to the
-// deployment's "hiver".
-func controlNamespace() string {
-	if b, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
-		if ns := strings.TrimSpace(string(b)); ns != "" {
-			return ns
-		}
-	}
-	if ns := os.Getenv("HIVE_CONTROL_NAMESPACE"); ns != "" {
-		return ns
-	}
-	return "hiver"
-}
-
-// leaderIdentity is a per-replica leader-election identity: hostname (the pod
-// name under k8s) plus a random suffix so two replicas can never collide.
-func leaderIdentity() string {
-	host, _ := os.Hostname()
-	return host + "_" + uuid.NewString()
 }
 
 // podTerminated reports whether a pod has finished running. A Pending pod is
@@ -281,7 +237,7 @@ func (r *K8sRuntime) describeReadyPod(ctx context.Context, key string, pod *core
 		}
 		ip = ready.Status.PodIP
 	}
-	if err := waitSandboxReady(ctx, ip); err != nil {
+	if err := waitSandboxReady(ctx, ip, key); err != nil {
 		return gen.Sandbox{}, err
 	}
 	id, err := ipID(ip)
@@ -385,9 +341,12 @@ func logPodTimings(pod *corev1.Pod) {
 	}
 }
 
-// podForKey returns the Pod carrying key, preferring a live one, or nil if the
-// key has no Pod at all. Pods are named by id, so the caller-chosen key is
-// resolved through the hiver.sandbox.key label rather than the object name.
+// podForKey returns the dedicated per-key Pod carrying key, preferring a live
+// one, or nil if the key has no Pod at all. Pods are named by id, so the
+// caller-chosen key is resolved through the hiver.sandbox.key label rather than
+// the object name. Prewarm host pods are skipped: they carry the label too (with
+// their own key) but host many packed sandboxes rather than being one — packed
+// sandboxes are resolved by querying the host, not by this label lookup.
 func (r *K8sRuntime) podForKey(key string) (*corev1.Pod, error) {
 	pods, err := r.client.CoreV1().Pods(r.namespace).List(context.Background(), metav1.ListOptions{
 		LabelSelector: labelSandboxKey + "=" + key,
@@ -398,6 +357,9 @@ func (r *K8sRuntime) podForKey(key string) (*corev1.Pod, error) {
 	var chosen *corev1.Pod
 	for i := range pods.Items {
 		p := &pods.Items[i]
+		if _, isPack := prewarmPodImage(p); isPack {
+			continue
+		}
 		if !podTerminated(p.Status.Phase) {
 			return p, nil
 		}
@@ -407,14 +369,55 @@ func (r *K8sRuntime) podForKey(key string) (*corev1.Pod, error) {
 }
 
 func (r *K8sRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
+	// Non-nil so an empty result serializes as [] (a JSON null breaks clients
+	// that .map the response).
+	sandboxes := []gen.Sandbox{}
+
+	// Sandboxes packed inside prewarm hosts aren't their own Pods, so the label
+	// listing below can't see them — ask each host (GET /v1) for the keys it
+	// currently hosts and their status, mirroring the docker runtime's listPacked.
+	packs, err := r.listPackPods(ctx)
+	if err != nil {
+		return nil, err
+	}
+	isPack := make(map[string]bool, len(packs))
+	for _, pod := range packs {
+		isPack[pod.Name] = true
+		ip := pod.Status.PodIP
+		if ip == "" {
+			continue
+		}
+		id, err := ipID(ip)
+		if err != nil {
+			continue
+		}
+		summaries, err := podSandboxes(ctx, ip)
+		if err != nil {
+			// A host still booting (or briefly unreachable) shouldn't drop the whole
+			// listing — skip it and surface the rest.
+			log.Printf("controller: list pack pod %s: %v", pod.Name, err)
+			continue
+		}
+		for _, s := range summaries {
+			status := gen.SandboxStatus(s.Status)
+			sandboxes = append(sandboxes, gen.Sandbox{Id: id, Key: s.Key, Status: &status})
+		}
+	}
+
+	// Dedicated per-key (cold-boot) sandbox Pods, found by label. Skip the prewarm
+	// hosts: they carry the label too but are hosts, not sandboxes (their packed
+	// keys were already enumerated above).
 	pods, err := r.client.CoreV1().Pods(r.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSandboxKey,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)
 	}
-	sandboxes := make([]gen.Sandbox, 0, len(pods.Items))
-	for _, pod := range pods.Items {
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if isPack[pod.Name] {
+			continue
+		}
 		if podTerminated(pod.Status.Phase) || pod.Status.PodIP == "" {
 			continue
 		}
@@ -428,13 +431,15 @@ func (r *K8sRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
 }
 
 func (r *K8sRuntime) Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
-	// Fast path: adopt a pre-booted warm pod whose image matches this
-	// request. A miss (no pool, empty buffer, or delivery failure) falls through
-	// to the cold-boot path below, so warm pooling is a pure optimisation.
-	if sb, ok := r.claimWarm(ctx, key, cfg); ok {
-		return sb, nil
+	// Prefer a cached prewarm host for this image: if one is standing by, pack the
+	// sandbox into it (POST /v1/<key>) straight from the in-memory cache, with no
+	// orchestrator round-trip. tryPackCreate reports ok=false when no host is
+	// cached for the image, in which case we cold-boot a dedicated per-key Pod.
+	if sb, ok, err := r.tryPackCreate(ctx, key, cfg); err != nil || ok {
+		return sb, err
 	}
 
+	// No prewarm host for this image — cold-boot a dedicated per-key Pod.
 	// The Pod is created on a detached context so a client that disconnects
 	// mid-request still leaves a running sandbox behind; only the readiness wait
 	// in bootPod honors ctx.
@@ -486,6 +491,49 @@ func (r *K8sRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sandb
 	}
 }
 
+// tryPackCreate is the getOrCreate fast path: if the in-memory pack cache holds a
+// warm host for cfg's image, pack key into it via POST /v1/<key> and return
+// (ok=true) without touching the k8s API. ok=false means no host is cached for
+// the image, so the caller cold-boots a dedicated pod. The POST is idempotent on
+// key and candidates maps a key to the same primary host every time, so a repeated
+// getOrCreate is safe. The returned id encodes the host's IP, exactly like a
+// per-key pod's id, so the gateway dials it directly.
+func (r *K8sRuntime) tryPackCreate(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, bool, error) {
+	image := r.imageFor(cfg)
+	candidates := r.packs.candidates(image, key)
+	if len(candidates) == 0 {
+		return gen.Sandbox{}, false, nil
+	}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return gen.Sandbox{}, false, fmt.Errorf("marshal config: %w", err)
+	}
+	// Try the deterministically-chosen host first, then the rest. Each attempt
+	// fails fast: a stale cache entry (a host that has died) fails on connect and
+	// we move straight to the next host rather than blocking the request. A
+	// definitive rejection from sandboxd is a real error — another host would
+	// reject it identically — so it stops the loop. If every cached host is
+	// unreachable the cache was stale, so we report ok=false and let the caller
+	// cold-boot a dedicated pod.
+	for _, ip := range candidates {
+		done, retry, err := postSandboxOnce(ctx, ip, key, body)
+		switch {
+		case done:
+			id, idErr := ipID(ip)
+			if idErr != nil {
+				return gen.Sandbox{}, false, idErr
+			}
+			log.Printf("sandbox %q: packed into prewarm host %s (image %s)", key, ip, image)
+			return gen.Sandbox{Id: id, Key: key}, true, nil
+		case retry:
+			log.Printf("sandbox %q: prewarm host %s unavailable (%v); trying next", key, ip, err)
+		default:
+			return gen.Sandbox{}, false, fmt.Errorf("pack %q into prewarm host %s: %w", key, ip, err)
+		}
+	}
+	return gen.Sandbox{}, false, nil
+}
+
 // buildPod constructs the per-sandbox Pod. The spec JSON is delivered inline as
 // the HIVE_SPEC env var (sandboxd reads it via spec.LoadEnv), the same way the
 // docker runtime passes it — so the Pod is self-contained and needs no
@@ -497,21 +545,17 @@ func (r *K8sRuntime) buildPod(podName, key string, cfg sandboxgen.SandboxConfig,
 			Namespace: r.namespace,
 			Labels:    map[string]string{labelSandboxKey: key},
 		},
-		Spec: r.sandboxPodSpec(cfg, specBytes, false),
+		Spec: r.sandboxPodSpec(cfg, specBytes),
 	}
 }
 
-// sandboxPodSpec builds the PodSpec shared by cold-boot and warm (prewarm) pods.
-// When prewarm is true sandboxd is launched with --prewarm: it brings up its API
-// and parks without a workload until the first PUT /v1/config supplies the real
-// spec (see cmd/sandboxd prewarm path).
-func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []byte, prewarm bool) corev1.PodSpec {
+// sandboxPodSpec builds the per-sandbox PodSpec. sandboxd is launched from the
+// inline HIVE_SPEC env, cold-booting its workload at startup.
+func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []byte) corev1.PodSpec {
 	privileged := true
 	// Provision the local snapshot volume only when snapshots aren't routed to a
 	// FUSE drive (snapshot.mount); otherwise it's unnecessary and would collide
-	// with a FUSE mount at the same path. A prewarm pod has no config yet, so it
-	// keeps the default volume and only relinquishes it once a non-prewarm spec
-	// is known.
+	// with a FUSE mount at the same path.
 	localSnapshots := !usesSnapshotMount(cfg)
 	// Always pass --snapshot-dir so Args is non-empty and overrides the image's
 	// default `--help` CMD; the dir is empty (local snapshots disabled) when
@@ -521,9 +565,6 @@ func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []by
 		snapDir = ""
 	}
 	args := []string{"--snapshot-dir", snapDir}
-	if prewarm {
-		args = append(args, "--prewarm")
-	}
 	// No route_localnet sysctl is set here: for microvm isolation sandboxd
 	// enables it from inside the privileged pod (isolation.enableRouteLocalnet),
 	// so no unsafe-sysctl node allowlist is required.
@@ -573,54 +614,12 @@ func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []by
 // It is a pod-local ephemeral emptyDir: on the GKE node pool that is GKE-managed
 // Local SSD (NVMe), so snapshots land on fast local flash but do not survive the
 // Pod. Durable, cross-pod snapshots would need an external store mounted here
-// instead. The Firecracker prewarm fast path is unaffected — it snapshots to
-// /run/firecracker (the container's NVMe-backed writable layer), not /snapshots.
+// instead. The Firecracker snapshot-resume fast path is unaffected — it snapshots
+// to /run/firecracker (the container's NVMe-backed writable layer), not /snapshots.
 func (r *K8sRuntime) snapshotVolume() corev1.Volume {
 	return corev1.Volume{
 		Name:         "snapshots",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-	}
-}
-
-// buildWarmPod constructs an unclaimed warm pod for one of a WarmPool's image
-// buffers: a prewarm sandboxd carrying only that image (the field frozen at
-// boot), parked until a claim delivers the rest via PUT /v1/config. The image
-// also fixes the isolation, which sandboxd derives from it at boot. It is named
-// by GenerateName and labelled for the warm-pool machinery — deliberately
-// without a sandbox-key label, so the runtime's key-based Lookup/List/Events
-// don't surface it as a sandbox until Claim adds the key. Passed as the
-// BuildWarm factory to the warmpool.Manager.
-func (r *K8sRuntime) buildWarmPod(wp warmpool.WarmPool, img warmpool.WarmPoolImage) *corev1.Pod {
-	image := img.Image
-	cfg := sandboxgen.SandboxConfig{Image: &image}
-	// Size the warm guest from the pool spec: cpu/memory are frozen at the warm
-	// pod's prewarm boot (HIVE_SPEC -> sandboxd -> isolation), so a claim adopts a
-	// pod already sized here. They also flow into the pod's resource requests via
-	// sandboxPodSpec. Zero leaves them unset, defaulting in sandboxd / the runtime.
-	if img.Cpu > 0 {
-		cpu := img.Cpu
-		cfg.Cpu = &cpu
-	}
-	if img.RequestCpu > 0 {
-		reqCPU := img.RequestCpu
-		cfg.RequestCpu = &reqCPU
-	}
-	if img.Memory > 0 {
-		mem := img.Memory
-		cfg.Memory = &mem
-	}
-	specBytes, _ := json.Marshal(cfg)
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "warm-" + wp.Name + "-",
-			Namespace:    r.namespace,
-			Labels: map[string]string{
-				warmpool.LabelPool:  wp.Name,
-				warmpool.LabelSpec:  warmpool.SpecHash(image),
-				warmpool.LabelState: warmpool.StateWarm,
-			},
-		},
-		Spec: r.sandboxPodSpec(cfg, specBytes, true),
 	}
 }
 
@@ -642,7 +641,7 @@ func (r *K8sRuntime) bootPod(ctx context.Context, key, podName string, createSta
 	logPodTimings(scheduledPod)
 
 	readyStart := time.Now()
-	if err := waitSandboxReady(ctx, podIP); err != nil {
+	if err := waitSandboxReady(ctx, podIP, key); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("wait sandbox %s ready: %w", podName, err)
 	}
 	log.Printf("sandbox %s: sandboxd ready in %s (total start %s)", podName, time.Since(readyStart).Round(time.Millisecond), time.Since(createStart).Round(time.Millisecond))
@@ -695,184 +694,143 @@ func (r *K8sRuntime) clearTerminatedPod(name string, pod *corev1.Pod) error {
 	}
 }
 
-// Events streams sandbox lifecycle transitions by watching the labelled Pods.
+// Events streams sandbox lifecycle transitions from two sources merged onto one
+// channel: (1) dedicated per-key (cold-boot) Pods, observed via a Pod watch on
+// their phase; and (2) sandboxes packed inside prewarm hosts, which aren't their
+// own Pods — their transitions come from each host's GET /v1/events SSE, the same
+// stream the docker runtime aggregates in eventsPacked. The channel closes once
+// both producers stop.
 func (r *K8sRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
 	w, err := r.client.CoreV1().Pods(r.namespace).Watch(ctx, metav1.ListOptions{LabelSelector: labelSandboxKey})
 	if err != nil {
 		return nil, fmt.Errorf("watch pods: %w", err)
 	}
-	ch := make(chan gen.SandboxLifecycleEvent, 16)
+	ch := make(chan gen.SandboxLifecycleEvent, 64)
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer close(ch)
+		defer wg.Done()
 		defer w.Stop()
-		// Pods emit many Modified events; track the last phase per pod so each
-		// transition is reported once (mirroring docker's discrete actions).
-		lastPhase := map[string]corev1.PodPhase{}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev, ok := <-w.ResultChan():
-				if !ok {
-					return
-				}
-				pod, ok := ev.Object.(*corev1.Pod)
-				if !ok {
-					continue
-				}
-				key := pod.Labels[labelSandboxKey]
-				if key == "" {
-					continue
-				}
-				// The id encodes the pod IP; it's the empty UUID until the pod is
-				// scheduled, but every reported transition (Running/Succeeded/
-				// Failed/Deleted) happens after the IP is assigned.
-				id, _ := ipID(pod.Status.PodIP)
-				uid := string(pod.UID)
-
-				var status gen.SandboxLifecycleEventStatus
-				switch ev.Type {
-				case watch.Deleted:
-					delete(lastPhase, uid)
-					status = gen.Destroy
-				case watch.Added, watch.Modified:
-					if lastPhase[uid] == pod.Status.Phase {
-						continue // no phase change
-					}
-					lastPhase[uid] = pod.Status.Phase
-					switch pod.Status.Phase {
-					case corev1.PodRunning:
-						status = gen.Start
-					case corev1.PodSucceeded:
-						status = gen.Stop
-					case corev1.PodFailed:
-						status = gen.Die
-					default:
-						continue // Pending/Unknown: not a reportable transition
-					}
-				default:
-					continue
-				}
-
-				select {
-				case ch <- gen.SandboxLifecycleEvent{Id: id, Key: key, Status: status}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
+		r.watchPerKeyPods(ctx, w, ch)
+	}()
+	go func() {
+		defer wg.Done()
+		r.eventsPacked(ctx, ch)
+	}()
+	go func() {
+		wg.Wait()
+		close(ch)
 	}()
 	return ch, nil
 }
 
-func (r *K8sRuntime) Shutdown(ctx context.Context, key string) error {
-	// The key-named Pod is the sandbox. The same-named ConfigMap is only a
-	// legacy artifact: older controllers created a per-key anchor ConfigMap that
-	// Start no longer produces, so we still look it up and delete it to clean up
-	// any left over across a rollout, but it is no longer part of the model.
-	anchorName := containerNameFor(key)
-
-	pod, err := r.podForKey(key)
-	if err != nil {
-		return err
-	}
-	_, anchorErr := r.client.CoreV1().ConfigMaps(r.namespace).Get(ctx, anchorName, metav1.GetOptions{})
-	if anchorErr != nil && !k8serrors.IsNotFound(anchorErr) {
-		return fmt.Errorf("get anchor configmap %s: %w", anchorName, anchorErr)
-	}
-	// Neither a live/terminated Pod nor a legacy anchor: nothing to remove.
-	if pod == nil && k8serrors.IsNotFound(anchorErr) {
-		return ErrSandboxNotFound
-	}
-
-	if pod != nil {
-		if err := r.client.CoreV1().Pods(r.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !k8serrors.IsNotFound(err) {
-			return fmt.Errorf("delete pod %s: %w", pod.Name, err)
-		}
-	}
-	// Best-effort cleanup of a legacy anchor ConfigMap, if one exists.
-	if err := r.client.CoreV1().ConfigMaps(r.namespace).Delete(ctx, anchorName, metav1.DeleteOptions{}); err != nil && !k8serrors.IsNotFound(err) {
-		return fmt.Errorf("delete anchor configmap %s: %w", anchorName, err)
-	}
-	return nil
-}
-
-// claimWarm tries to satisfy the request from the warm pool: adopt a matching
-// prewarm pod for key, deliver the real config to its sandboxd, and wait for the
-// workload to come up. It returns ok=false on any miss or failure so Start falls
-// back to a normal cold boot — never surfacing a warm-pool problem to the caller.
-func (r *K8sRuntime) claimWarm(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, bool) {
-	if r.warm == nil {
-		return gen.Sandbox{}, false
-	}
-	image := r.imageFor(cfg)
-	pod, ok, err := r.warm.Claim(ctx, image, key)
-	if err != nil {
-		log.Printf("sandbox %q: warm claim failed, cold-booting: %v", key, err)
-		return gen.Sandbox{}, false
-	}
-	if !ok {
-		return gen.Sandbox{}, false
-	}
-
-	claimStart := time.Now()
-	ip := pod.Status.PodIP
-	// Deliver the real config: a prewarm sandboxd is parked awaiting its first
-	// PUT /v1/config, which latches the workload launch. The image was frozen by
-	// the warm pod's boot env (and fixes the isolation), so this only supplies
-	// the rest.
-	if err := r.applyConfig(ctx, ip, cfg); err != nil {
-		log.Printf("sandbox %q: warm pod %s config delivery failed: %v", key, pod.Name, err)
-		// The pod is already claimed (labelled with key); tear it down so the
-		// cold-boot Create below can take the key cleanly and we don't leak it.
-		_ = r.client.CoreV1().Pods(r.namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{})
-		return gen.Sandbox{}, false
-	}
-	if err := waitSandboxReady(ctx, ip); err != nil {
-		log.Printf("sandbox %q: warm pod %s not ready after config: %v", key, pod.Name, err)
-		_ = r.client.CoreV1().Pods(r.namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{})
-		return gen.Sandbox{}, false
-	}
-	id, err := ipID(ip)
-	if err != nil {
-		return gen.Sandbox{}, false
-	}
-	log.Printf("sandbox %q: claimed warm pod %s in %s", key, pod.Name, time.Since(claimStart).Round(time.Millisecond))
-	return gen.Sandbox{Id: id, Key: key}, true
-}
-
-// applyConfig delivers cfg to the prewarm sandboxd at ip via PUT /v1/config. The
-// PUT is retried while the connection is refused: a just-Running warm pod may
-// not have sandboxd bound yet (the same reason waitSandboxReady retries its GET).
-func (r *K8sRuntime) applyConfig(ctx context.Context, ip string, cfg sandboxgen.SandboxConfig) error {
-	body, err := json.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(ctx, sandboxReadyTimeout)
-	defer cancel()
-
-	url := fmt.Sprintf("http://%s:%d/v1/config", ip, sandboxdPort)
+// watchPerKeyPods maps the phase transitions of dedicated per-key Pods onto out.
+// Prewarm host pods are skipped: they carry the label too but never transition
+// per packed-sandbox (the host stays Running) — their sandboxes flow through
+// eventsPacked instead.
+func (r *K8sRuntime) watchPerKeyPods(ctx context.Context, w watch.Interface, out chan<- gen.SandboxLifecycleEvent) {
+	// Pods emit many Modified events; track the last phase per pod so each
+	// transition is reported once (mirroring docker's discrete actions).
+	lastPhase := map[string]corev1.PodPhase{}
 	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := sandboxHTTPClient.Do(req)
-		if err == nil {
-			status := resp.StatusCode
-			drainAndClose(resp) // return the connection to the pool for the ready GET
-			if status == http.StatusOK {
-				return nil
-			}
-			return fmt.Errorf("config PUT returned %s", resp.Status)
-		}
-		// sandboxd not listening yet: back off and retry while time remains.
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("config PUT to %s: %w", ip, ctx.Err())
-		case <-time.After(readyProbeInterval):
+			return
+		case ev, ok := <-w.ResultChan():
+			if !ok {
+				return
+			}
+			pod, ok := ev.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+			if _, isPack := prewarmPodImage(pod); isPack {
+				continue // host pod, not a sandbox
+			}
+			key := pod.Labels[labelSandboxKey]
+			if key == "" {
+				continue
+			}
+			// The id encodes the pod IP; it's the empty UUID until the pod is
+			// scheduled, but every reported transition (Running/Succeeded/
+			// Failed/Deleted) happens after the IP is assigned.
+			id, _ := ipID(pod.Status.PodIP)
+			uid := string(pod.UID)
+
+			var status gen.SandboxLifecycleEventStatus
+			switch ev.Type {
+			case watch.Deleted:
+				delete(lastPhase, uid)
+				status = gen.Destroy
+			case watch.Added, watch.Modified:
+				if lastPhase[uid] == pod.Status.Phase {
+					continue // no phase change
+				}
+				lastPhase[uid] = pod.Status.Phase
+				switch pod.Status.Phase {
+				case corev1.PodRunning:
+					status = gen.Start
+				case corev1.PodSucceeded:
+					status = gen.Stop
+				case corev1.PodFailed:
+					status = gen.Die
+				default:
+					continue // Pending/Unknown: not a reportable transition
+				}
+			default:
+				continue
+			}
+
+			select {
+			case out <- gen.SandboxLifecycleEvent{Id: id, Key: key, Status: status}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// eventsPacked aggregates the lifecycle streams of every prewarm host. It holds a
+// persistent GET /v1/events connection to each host, re-discovering hosts from
+// the in-memory pack cache on a ticker (the same cache the getOrCreate fast path
+// reads — no pod List here) so new ones are picked up and gone ones dropped, and
+// forwards each inner PodEvent onto out keyed by the host's routing id. Mirrors
+// the docker runtime's eventsPacked; the per-host streaming reuses streamPodEvents.
+func (r *K8sRuntime) eventsPacked(ctx context.Context, out chan<- gen.SandboxLifecycleEvent) {
+	conns := map[string]context.CancelCauseFunc{} // pod IP → cancel its stream
+	defer func() {
+		for _, cancel := range conns {
+			cancel(nil) // consumer left: don't mark sandboxes destroyed
+		}
+	}()
+	ticker := time.NewTicker(packCachePollInterval)
+	defer ticker.Stop()
+	for {
+		ips := r.packs.ips()
+		seen := make(map[string]bool, len(ips))
+		for _, ip := range ips {
+			seen[ip] = true
+			if _, ok := conns[ip]; ok {
+				continue
+			}
+			id, err := ipID(ip)
+			if err != nil {
+				continue
+			}
+			cctx, cancel := context.WithCancelCause(ctx)
+			conns[ip] = cancel
+			go streamPodEvents(cctx, ctx, ip, id, out)
+		}
+		for ip, cancel := range conns {
+			if !seen[ip] {
+				cancel(errPackPodGone) // pod died: streamPodEvents destroys its sandboxes
+				delete(conns, ip)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }
@@ -882,6 +840,65 @@ func (r *K8sRuntime) imageFor(cfg sandboxgen.SandboxConfig) string {
 		return *cfg.Image
 	}
 	return defaultSandboxImage
+}
+
+// listPackPods returns the running prewarm/pack host pods in the namespace. A
+// pack host runs many sandboxes inside one pod — each created via POST /v1/<key>
+// — and is the only place List can find the keys it hosts (they aren't their own
+// Pods). The getOrCreate fast path and the events stream don't call this on the
+// hot path: they read the in-memory pack cache, which a single background poller
+// (refreshPackCache) keeps current from here. The controller learns which pods
+// are hosts purely from the pod spec, no label required: a pod qualifies when its
+// sandbox container carries both --pack and --prewarm (see prewarmPodImage).
+func (r *K8sRuntime) listPackPods(ctx context.Context) ([]*corev1.Pod, error) {
+	pods, err := r.client.CoreV1().Pods(r.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list pods: %w", err)
+	}
+	var packs []*corev1.Pod
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if podTerminated(pod.Status.Phase) {
+			continue
+		}
+		if _, ok := prewarmPodImage(pod); ok {
+			packs = append(packs, pod)
+		}
+	}
+	return packs, nil
+}
+
+// prewarmPodImage reports the image a pod can serve as a prewarm host, or
+// ok=false when the pod is not one. A pod qualifies only when its sandbox
+// container carries BOTH the --pack and --prewarm args; the served image is then
+// that container's image (the image property). A pod missing either arg, or with
+// no image, does not qualify.
+func prewarmPodImage(pod *corev1.Pod) (string, bool) {
+	c := sandboxContainer(pod)
+	if c == nil || !hasArg(c.Args, packArg) || !hasArg(c.Args, prewarmArg) {
+		return "", false
+	}
+	return c.Image, c.Image != ""
+}
+
+// sandboxContainer returns the pod's sandbox container, or nil if it has none.
+func sandboxContainer(pod *corev1.Pod) *corev1.Container {
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == sandboxContainerName {
+			return &pod.Spec.Containers[i]
+		}
+	}
+	return nil
+}
+
+// hasArg reports whether args contains the exact token arg.
+func hasArg(args []string, arg string) bool {
+	for _, a := range args {
+		if a == arg {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *K8sRuntime) envVars(cfg sandboxgen.SandboxConfig) []corev1.EnvVar {

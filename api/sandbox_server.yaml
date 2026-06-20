@@ -20,7 +20,100 @@ tags:
     description: Run commands inside the sandbox.
 
 paths:
-  /v1/config:
+  /v1:
+    get:
+      tags: [Configuration]
+      summary: List the sandboxes running in this pod.
+      operationId: listSandboxes
+      description: |
+        Returns the sandboxes currently managed by this pod's supervisor.
+        Pod-level (not keyed) — used for ops/debug.
+      responses:
+        '200':
+          description: The sandboxes in the pod.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SandboxList' }
+
+  /v1/events:
+    get:
+      tags: [Configuration]
+      summary: Stream lifecycle events for the pod's inner sandboxes.
+      operationId: streamPodEvents
+      description: |
+        Opens a long-lived Server-Sent Events stream of `PodEvent` payloads —
+        one per inner-sandbox lifecycle transition (starting, running, stopping,
+        stopped). Pod-level (not keyed). The controller holds one of these
+        connections open per pod to track its sandboxes' lifecycle and surface
+        them on the controller's own event stream.
+      responses:
+        '200':
+          description: |
+            SSE stream opened. The server writes one `data:` frame (a
+            JSON-encoded `PodEvent`) per transition until the client disconnects
+            or the pod shuts down.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream; each `data:` payload is a JSON `PodEvent`.
+
+  /v1/{key}:
+    parameters:
+      - $ref: '#/components/parameters/Key'
+    post:
+      tags: [Configuration]
+      summary: Create (or claim) the sandbox for the given key.
+      operationId: createSandbox
+      description: |
+        Brings up the sandbox addressed by `key`. On a prewarmed pod
+        (started with `-prewarm`) this restores the pod's snapshot into a new
+        sandbox under `key`; on a non-prewarmed pod the sandbox is already
+        running from the boot (env) config, so an existing key returns it.
+
+        The sandbox configuration comes from the pod's environment
+        (`HIVE_SPEC`); a request body, if present, is currently advisory and
+        only the image is checked against the pod's fixed image.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+      responses:
+        '200':
+          description: A sandbox already exists for this key; its config is returned.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+        '201':
+          description: The sandbox was created and is serving.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+        '409':
+          description: |
+            The config names a different image than the pod's, or the pod has no
+            free slot for this key (it already hosts its sandbox).
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+    delete:
+      tags: [Configuration]
+      summary: Tear down the sandbox for the given key.
+      operationId: deleteSandbox
+      description: Stops the sandbox addressed by `key` and frees its slot.
+      responses:
+        '204':
+          description: The sandbox was torn down.
+        '404':
+          description: No sandbox exists for this key.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
+  /v1/{key}/config:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     get:
       tags: [Configuration]
       summary: Read the current configuration.
@@ -91,7 +184,9 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/file:
+  /v1/{key}/file:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     get:
       tags: [Files]
       summary: Download a file from a sandbox mount.
@@ -244,7 +339,9 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/directories:
+  /v1/{key}/directories:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     get:
       tags: [Files]
       summary: List the contents of a directory under a sandbox mount.
@@ -312,7 +409,9 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/events:
+  /v1/{key}/events:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     get:
       summary: Open the SSE event stream.
       operationId: getEvents
@@ -370,7 +469,9 @@ paths:
                   Server-Sent Events stream. Each `data:` payload is a
                   JSON-encoded `SandboxEvent`.
 
-  /v1/exec:
+  /v1/{key}/exec:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     post:
       tags: [Execution]
       summary: Execute a command and return buffered output.
@@ -410,7 +511,9 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/exec-stream/{id}:
+  /v1/{key}/exec-stream/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     post:
       tags: [Execution]
       summary: Execute a command and stream output as SSE.
@@ -476,7 +579,9 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/exec-stream/{id}/stdin:
+  /v1/{key}/exec-stream/{id}/stdin:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     post:
       tags: [Execution]
       summary: Write to a running process's stdin.
@@ -512,8 +617,9 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/proxy/{port}/{path}:
+  /v1/{key}/proxy/{port}/{path}:
     parameters:
+      - $ref: '#/components/parameters/Key'
       - name: port
         in: path
         required: true
@@ -567,7 +673,9 @@ paths:
       operationId: proxyDelete
       responses: *proxy_responses
 
-  /v1/ports:
+  /v1/{key}/ports:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     get:
       tags: [Proxy]
       summary: List the ports exposed by the sandbox.
@@ -587,7 +695,9 @@ paths:
                   type: integer
                 example: [8080, 9000]
 
-  /v1/info:
+  /v1/{key}/info:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     get:
       tags: [Configuration]
       summary: Read internal runtime info about the sandbox.
@@ -605,7 +715,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SandboxInfo' }
 
-  /v1/ping:
+  /v1/{key}/ping:
+    parameters:
+      - $ref: '#/components/parameters/Key'
     get:
       tags: [Configuration]
       summary: Send a ping to the sandbox.
@@ -634,7 +746,74 @@ paths:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
 components:
+  parameters:
+    Key:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: |
+        The sandbox key addressing a specific sandbox within the pod. Unique
+        per pod and caller-chosen (e.g. `agent-1`).
+      example: agent-1
+
   schemas:
+    SandboxList:
+      type: object
+      description: The sandboxes managed by a pod's supervisor.
+      required: [sandboxes]
+      additionalProperties: false
+      properties:
+        sandboxes:
+          type: array
+          items: { $ref: '#/components/schemas/SandboxSummary' }
+
+    SandboxSummary:
+      type: object
+      description: A single sandbox managed by the pod.
+      required: [key, ready, status]
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+          description: The sandbox's key.
+          example: agent-1
+        ready:
+          type: boolean
+          description: Whether the sandbox's workload is up and serving.
+        status:
+          type: string
+          enum: [starting, running, stopping]
+          description: |
+            Lifecycle phase of the sandbox:
+            - `starting`: created, workload launching, not yet serving.
+            - `running`: workload is up and serving requests.
+            - `stopping`: teardown has begun (DELETE, agent exit, or pod shutdown).
+          example: running
+
+    PodEvent:
+      type: object
+      description: A lifecycle transition of one inner sandbox in the pod.
+      required: [key, status, timestamp]
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+          description: The sandbox's key.
+          example: agent-1
+        status:
+          type: string
+          enum: [starting, running, stopping, stopped]
+          description: |
+            The transition: starting (created, launching), running (now
+            serving), stopping (teardown begun), stopped (slot freed).
+          example: running
+        timestamp:
+          type: string
+          format: date-time
+          description: When the transition occurred.
+
     SandboxInfo:
       type: object
       description: Internal runtime information about the sandbox.

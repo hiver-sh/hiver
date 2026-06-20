@@ -25,11 +25,9 @@ const MARKER = "__READY__";
 
 const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
-  "hiver-playwright-exec-stream",
+  "hiver-playwright-exec-stream3",
   {
-    image: "hiversh/playwright:microvm-10",
-    cpu: 2,
-    memory: 2048,
+    image: "hiversh/playwright:microvm-17"
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );

@@ -233,4 +233,3 @@ func readAPIError(resp *http.Response) error {
 	}
 	return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
-

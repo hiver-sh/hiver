@@ -236,6 +236,7 @@ type Mode = "diff" | "editor";
 
 interface Props {
   sandboxId: string;
+  sandboxKey: string;
   serverUrl: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -244,6 +245,7 @@ interface Props {
 
 export function SandboxConfigDialog({
   sandboxId,
+  sandboxKey,
   serverUrl,
   open,
   onOpenChange,
@@ -261,7 +263,7 @@ export function SandboxConfigDialog({
   useEffect(() => {
     if (!open) return;
     const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`,
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/config`,
     );
     transport
       .fetch(url)
@@ -271,7 +273,7 @@ export function SandboxConfigDialog({
         setSavedConfig(str);
         setEditedConfig(proposal?.proposed ?? str);
       });
-  }, [open, sandboxId, serverUrl, proposal, transport]);
+  }, [open, sandboxId, sandboxKey, serverUrl, proposal, transport]);
 
   useEffect(() => {
     if (open) setMode(proposal ? "diff" : "editor");
@@ -281,7 +283,7 @@ export function SandboxConfigDialog({
     setSaving(true);
     try {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/config`,
       );
       await transport.fetch(url, {
         method: "PUT",
@@ -314,7 +316,6 @@ export function SandboxConfigDialog({
           <div className="flex items-center gap-2">
             {mode === "editor" && (
               <SandboxConfigTemplates
-                editMode
                 onApply={(apply) => {
                   try {
                     const current = JSON.parse(editedConfig) as AnyConfig;

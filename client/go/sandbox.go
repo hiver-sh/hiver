@@ -64,15 +64,39 @@ func newSandbox(ref SandboxRef, gatewayURL string, hc *http.Client) *Sandbox {
 	}
 }
 
+// keyed builds a per-sandbox API URL: <gateway>/sandbox/<id>/v1/<key><suffix>.
+// suffix begins with "/" (e.g. "/config"), or is "" to address the sandbox
+// resource itself (create/delete). Pod-level routes (/v1/ping) don't use this.
+func (s *Sandbox) keyed(suffix string) string {
+	return fmt.Sprintf("%s/v1/%s%s", s.apiURL, s.Key, suffix)
+}
+
+// Shutdown tears the sandbox down via DELETE /v1/<key>, cancelling its lifecycle.
+func (s *Sandbox) Shutdown(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.keyed(""), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("Shutdown: %w", err)
+	}
+	defer resp.Body.Close()
+	if !isSuccess(resp.StatusCode) {
+		return fmt.Errorf("Shutdown: %w", readAPIError(resp))
+	}
+	return nil
+}
+
 // ProxyURL returns the base URL for reaching port inside the sandbox.
 // Append a path to form a full URL, e.g. sandbox.ProxyURL(8080) + "/health".
 func (s *Sandbox) ProxyURL(port int) string {
-	return fmt.Sprintf("%s/v1/proxy/%d", s.apiURL, port)
+	return s.keyed(fmt.Sprintf("/proxy/%d", port))
 }
 
 // Ping keeps the sandbox alive by resetting its TTL countdown.
 func (s *Sandbox) Ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/ping", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/ping"), nil)
 	if err != nil {
 		return err
 	}
@@ -89,7 +113,7 @@ func (s *Sandbox) Ping(ctx context.Context) error {
 
 // GetConfig reads the current SandboxConfig.
 func (s *Sandbox) GetConfig(ctx context.Context) (*SandboxConfig, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/config", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/config"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +136,7 @@ func (s *Sandbox) GetConfig(ctx context.Context) (*SandboxConfig, error) {
 // isolation mechanism in use, which sandboxd selects automatically from the
 // image rather than from config.
 func (s *Sandbox) GetInfo(ctx context.Context) (*SandboxInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/info", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/info"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +162,7 @@ func (s *Sandbox) ApplyConfig(ctx context.Context, config SandboxConfig) (*Apply
 	if err != nil {
 		return nil, fmt.Errorf("ApplyConfig: encode: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.apiURL+"/v1/config", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.keyed("/config"), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +186,7 @@ func (s *Sandbox) ApplyConfig(ctx context.Context, config SandboxConfig) (*Apply
 // GetPorts returns the TCP ports the sandbox currently exposes.
 // Each port is reachable via ProxyURL.
 func (s *Sandbox) GetPorts(ctx context.Context) ([]int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/ports", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/ports"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +212,7 @@ func (s *Sandbox) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error
 	if err != nil {
 		return nil, fmt.Errorf("Exec: encode: %w", err)
 	}
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.apiURL+"/v1/exec", bytes.NewReader(body))
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.keyed("/exec"), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +245,8 @@ func (s *Sandbox) ExecStream(ctx context.Context, req ExecStreamRequest) (*ExecP
 		return nil, fmt.Errorf("ExecStream: encode: %w", err)
 	}
 
-	streamURL := fmt.Sprintf("%s/v1/exec-stream/%s", s.apiURL, execID)
-	stdinURL := fmt.Sprintf("%s/v1/exec-stream/%s/stdin", s.apiURL, execID)
+	streamURL := s.keyed("/exec-stream/"+execID)
+	stdinURL := s.keyed("/exec-stream/"+execID+"/stdin")
 
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, streamURL, bytes.NewReader(body))
 	if err != nil {
@@ -300,7 +324,7 @@ func (s *Sandbox) ExecStream(ctx context.Context, req ExecStreamRequest) (*ExecP
 // ListDirectory returns the immediate children of path inside the sandbox.
 // path is the agent-visible absolute path (e.g. /workspace).
 func (s *Sandbox) ListDirectory(ctx context.Context, path string) ([]DirEntry, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/directories", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/directories"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +352,7 @@ func (s *Sandbox) ListDirectory(ctx context.Context, path string) ([]DirEntry, e
 // ReadFile returns the raw bytes of the file at path.
 // path is the agent-visible absolute path (e.g. /workspace/data.csv).
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/file", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/file"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +393,7 @@ func (s *Sandbox) WriteFile(ctx context.Context, destination, filename string, c
 	}
 	mw.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.apiURL+"/v1/file", &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.keyed("/file"), &buf)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +417,7 @@ func (s *Sandbox) WriteFile(ctx context.Context, destination, filename string, c
 // DeleteFile removes the file or empty directory at path inside the sandbox.
 // path is the agent-visible absolute path (e.g. /workspace/data.csv).
 func (s *Sandbox) DeleteFile(ctx context.Context, path string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.apiURL+"/v1/file", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.keyed("/file"), nil)
 	if err != nil {
 		return err
 	}
@@ -459,7 +483,7 @@ func (s *Sandbox) WatchEvents(ctx context.Context, lastEventID int) (<-chan Sand
 }
 
 func (s *Sandbox) streamEvents(ctx context.Context, lastEventID int, out chan<- SandboxEvent) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL+"/v1/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/events"), nil)
 	if err != nil {
 		return lastEventID, err
 	}

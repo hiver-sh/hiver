@@ -290,13 +290,6 @@ export interface SandboxConfig {
    */
   cpu?: number;
   /**
-   * CPU cores reserved for the sandbox at schedule time (the pod CPU request),
-   * decoupled from cpu (the limit) so an idle sandbox reserves less than it can
-   * burst to. Defaults to 0.5. This cannot be changed after the sandbox is
-   * initialized.
-   */
-  request_cpu?: number;
-  /**
    * Memory allocated to the sandbox, in MiB (microvm: guest RAM size;
    * container: enforced as a cgroup memory limit). Defaults to 512.
    * This cannot be changed after the sandbox is initialized.
@@ -343,7 +336,6 @@ export interface SandboxConfig {
 export const SandboxConfig = z.object({
   image: z.string().optional(),
   cpu: z.number().positive().optional(),
-  request_cpu: z.number().positive().optional(),
   memory: z.number().int().min(128).optional(),
   entrypoint: z.union([z.string(), z.array(z.string())]).optional(),
   cwd: z.string().optional(),

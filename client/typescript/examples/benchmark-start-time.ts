@@ -48,7 +48,7 @@ for (let i = 1; i <= RUNS; i++) {
 }
 
 console.info("\n--- shutting down sandboxes ---");
-await Promise.all(sandboxes.map((s) => hiver.shutdown(s, { gatewayUrl })));
+await Promise.all(sandboxes.map((s) => s.shutdown()));
 console.info("done.");
 
 const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;

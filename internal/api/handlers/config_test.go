@@ -54,11 +54,11 @@ func TestFreezeImmutable(t *testing.T) {
 	})
 
 	t.Run("boot-time fields frozen after start", func(t *testing.T) {
-		current := gen.SandboxConfig{Cpu: ptr(1.0), RequestCpu: ptr(0.5), Memory: ptr(512), Entrypoint: entrypointArgv([]string{"sh"}), Tty: ptr(true), Env: &map[string]string{"A": "1"}}
-		desired := gen.SandboxConfig{Cpu: ptr(4.0), RequestCpu: ptr(2.0), Memory: ptr(1024), Entrypoint: entrypointArgv([]string{"bash"}), Tty: ptr(false), Env: &map[string]string{"A": "2"}}
+		current := gen.SandboxConfig{Cpu: ptr(1.0), Memory: ptr(512), Entrypoint: entrypointArgv([]string{"sh"}), Tty: ptr(true), Env: &map[string]string{"A": "1"}}
+		desired := gen.SandboxConfig{Cpu: ptr(4.0), Memory: ptr(1024), Entrypoint: entrypointArgv([]string{"bash"}), Tty: ptr(false), Env: &map[string]string{"A": "2"}}
 		got := freezeImmutable(current, desired, true)
 		gotArgv, _ := got.Entrypoint.AsSandboxConfigEntrypoint1()
-		if *got.Cpu != 1 || *got.RequestCpu != 0.5 || *got.Memory != 512 || len(gotArgv) != 1 || gotArgv[0] != "sh" || *got.Tty != true || (*got.Env)["A"] != "1" {
+		if *got.Cpu != 1 || *got.Memory != 512 || len(gotArgv) != 1 || gotArgv[0] != "sh" || *got.Tty != true || (*got.Env)["A"] != "1" {
 			t.Errorf("boot-time fields not frozen after start: %+v", got)
 		}
 	})

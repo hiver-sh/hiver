@@ -31,8 +31,8 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 
 	log.Printf("transparent http: host=%s port=%d method=%s path=%s ws=%v", hostOnly, port, req.Method, req.URL.Path, isWebSocketUpgrade(req))
 
-	ac := p.beginAudit(req.Method, hostOnly, req.URL.Path, req.URL.RawQuery)
-	rule := p.applyRequestRule(req, hostOnly, port, ac, func() { writeDenyHTTP(c, hostOnly) })
+	ac := p.beginAudit(srcIPOf(c.RemoteAddr().String()), req.Method, hostOnly, req.URL.Path, req.URL.RawQuery)
+	rule := p.applyRequestRule(req, hostOnly, port, srcIPOf(c.RemoteAddr().String()), ac, func() { writeDenyHTTP(c, hostOnly) })
 	if rule == nil {
 		return
 	}

@@ -6,6 +6,12 @@ services:
     build:
       context: ..
       dockerfile: docker/controller.Dockerfile
+    # HIVE_PACK=1 (e.g. `HIVE_PACK=1 hiver up`) packs N same-image sandboxes into
+    # one container running sandboxd --pack, instead of one container per
+    # (image,key) — the multi-sandbox-pod placement (design §6, §10).
+    environment:
+      HIVE_PACK: ${HIVE_PACK:-}
+      HIVE_SNAPSHOT_DIR: ${HOME}/.hive/snapshots
     # The controller spawns sandbox containers via `docker` CLI calls
     # against the host daemon. Mount the socket read-write so it can
     # create/start/cp into containers in the `hive` project.

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"github.com/hiver-sh/hiver/internal/firecracker"
 	"github.com/hiver-sh/hiver/internal/vsockexec"
 	"github.com/hiver-sh/hiver/internal/vsockfile"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -450,6 +452,63 @@ func setupNetwork(p firecracker.GuestParams) error {
 	return nil
 }
 
+// reconfigureEth0 re-addresses the guest's eth0 to guestIP on a /30 with the
+// given gateway, replacing whatever the kernel ip= cmdline (or a base snapshot)
+// configured, and repoints /etc/resolv.conf at the new gateway. Used by the
+// pack-mode resume path, where every VM boots from the same base snapshot's baked
+// address+gateway and must diverge to its own pod-local IP — including its DNS
+// nameserver, since the host sinkholes guest DNS sent to the (new) gateway. Steps
+// are individually idempotent so the host's self-heal retry re-applies cleanly:
+// flush the old address, add the new /30, bring the link up, replace the default
+// route, and rewrite resolv.conf.
+//
+// Done via netlink rather than shelling out to `ip`: minimal guest images (e.g.
+// the playwright sandbox) don't ship iproute2, so an `ip`-based re-IP failed the
+// whole resume in a self-heal loop. netlink talks rtnetlink directly, with no
+// in-guest binary dependency.
+func reconfigureEth0(guestIP, gatewayIP string) error {
+	link, err := netlink.LinkByName("eth0")
+	if err != nil {
+		return fmt.Errorf("eth0: %w", err)
+	}
+	// Flush the base snapshot's baked IPv4 address(es) before adding our own.
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		return fmt.Errorf("list eth0 addrs: %w", err)
+	}
+	for i := range addrs {
+		if err := netlink.AddrDel(link, &addrs[i]); err != nil {
+			return fmt.Errorf("flush eth0 addr %s: %w", addrs[i].IPNet, err)
+		}
+	}
+	addr, err := netlink.ParseAddr(guestIP + "/30")
+	if err != nil {
+		return fmt.Errorf("parse %s/30: %w", guestIP, err)
+	}
+	if err := netlink.AddrReplace(link, addr); err != nil {
+		return fmt.Errorf("add %s/30: %w", guestIP, err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("link up eth0: %w", err)
+	}
+	if gatewayIP != "" {
+		gw := net.ParseIP(gatewayIP)
+		if gw == nil {
+			return fmt.Errorf("parse gateway %q", gatewayIP)
+		}
+		// Dst nil = default route (0.0.0.0/0); Replace is idempotent under retry.
+		if err := netlink.RouteReplace(&netlink.Route{LinkIndex: link.Attrs().Index, Gw: gw}); err != nil {
+			return fmt.Errorf("default route via %s: %w", gatewayIP, err)
+		}
+		// The host DNATs guest DNS sent to the gateway to its sinkhole, so the
+		// resolver must follow the gateway to the per-VM address.
+		if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver "+gatewayIP+"\n"), 0o644); err != nil {
+			return fmt.Errorf("rewrite resolv.conf: %w", err)
+		}
+	}
+	return nil
+}
+
 // runWorkload execs the agent image's entrypoint+cmd as a child, wiring its
 // stdio to the guest console, and returns its exit code.
 func runWorkload(p firecracker.GuestParams) int {
@@ -585,6 +644,16 @@ func handleControl(conn io.ReadWriter) error {
 	if len(req.Env) > 0 {
 		applyWorkloadEnv(req.Env)
 	}
+	// Re-address eth0 for a pack-mode resume: the base snapshot booted with the
+	// base builder's IP, so this guest must take its own pod-local /30 before any
+	// egress, matching the host tap the load was overridden onto. Idempotent
+	// (flush+add+route replace), so the self-heal retry re-applies cleanly.
+	if req.GuestIP != "" {
+		if err := reconfigureEth0(req.GuestIP, req.GatewayIP); err != nil {
+			log.Printf("control: re-ip eth0: %v", err)
+			return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: false, Error: err.Error()})
+		}
+	}
 	if len(req.MountWorkspaces) > 0 {
 		log.Printf("control: mounting %d workspace(s) post-resume", len(req.MountWorkspaces))
 		if err := mountWorkspaces(req.MountWorkspaces); err != nil {
@@ -596,7 +665,35 @@ func handleControl(conn io.ReadWriter) error {
 			return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: false, Error: err.Error()})
 		}
 	}
+	if len(req.UnmountWorkspaces) > 0 {
+		log.Printf("control: unmounting %d workspace(s)", len(req.UnmountWorkspaces))
+		if err := unmountWorkspaces(req.UnmountWorkspaces); err != nil {
+			log.Printf("control: unmount workspaces: %v", err)
+			return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: false, Error: err.Error()})
+		}
+	}
 	return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: true})
+}
+
+// unmountWorkspaces umounts each path (a workspace removed from the config) and
+// removes its now-empty mountpoint, so the path disappears from the guest — the
+// host already tore down the 9p export. Idempotent: a path that is no longer a 9p
+// mount is skipped (its dir still removed best-effort), so the host can re-drive
+// on a partial failure. A busy mount falls back to a lazy detach.
+func unmountWorkspaces(paths []string) error {
+	var errs []error
+	for _, p := range paths {
+		if is9pMounted(p) {
+			if err := syscall.Unmount(p, 0); err != nil {
+				if err2 := syscall.Unmount(p, syscall.MNT_DETACH); err2 != nil {
+					errs = append(errs, fmt.Errorf("umount %s: %w", p, err))
+					continue
+				}
+			}
+		}
+		_ = os.Remove(p) // drop the now-empty mountpoint; best-effort
+	}
+	return errors.Join(errs...)
 }
 
 // prewarmReady gates the guest readiness beacon (see serveExec). It is closed
@@ -651,6 +748,18 @@ func signalReady() {
 	defer unix.Close(fd)
 	if err := unix.Connect(fd, &unix.SockaddrVM{CID: firecracker.HostCID, Port: firecracker.GuestReadyPort}); err != nil {
 		log.Printf("ready: connect host port %d: %v", firecracker.GuestReadyPort, err)
+		return
+	}
+	// Write one byte *after* connect returns. The host's acceptReady blocks reading
+	// it, so it only treats us as ready once this connect() syscall has fully
+	// unwound — not merely once the connection was established. This closes a
+	// snapshot race: PrewarmSnapshot pauses the VM the instant its Accept() returns,
+	// which can precede connect() returning here; freezing the guest mid-connect
+	// leaves a stale vsock connection that, on resume (no host peer listening on
+	// GuestReadyPort), times out and logs spuriously. Best-effort — on the cold-boot
+	// path the host treats the accepted connection as ready regardless.
+	if _, err := unix.Write(fd, []byte{1}); err != nil {
+		log.Printf("ready: write beacon byte: %v", err)
 	}
 }
 

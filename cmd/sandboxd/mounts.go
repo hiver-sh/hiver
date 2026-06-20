@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/events"
@@ -19,11 +18,12 @@ import (
 	"github.com/hiver-sh/hiver/internal/spec"
 )
 
-// fsSidecar identifies one running sbxfuse process: the pid we signal and the
-// ACL file we rewrite for it.
+// fsSidecar identifies one live workspace mount in the pod-wide sbxfuse process:
+// the host mount point it is keyed by in that process, and the ACL file we
+// rewrite then ask the process to reload.
 type fsSidecar struct {
-	pid     int
-	aclPath string
+	hostMount string
+	aclPath   string
 }
 
 // mountManager owns the live set of sbxfuse workspace mounts and reconciles it
@@ -34,11 +34,13 @@ type fsSidecar struct {
 // PUT /v1/config (an arbitrary add/remove/keep delta).
 //
 // Surfacing an added/removed mount inside an already-running workload is
-// backend-limited (see isolation.UnexportWorkspace): for the microvm guest a
-// live hotplug/unmount needs guest cooperation that doesn't exist yet, and for
-// the container the bind is fixed at runc launch. So the fully-correct case is
-// reconciling before the agent launches (the warm-pod bring-up); a live update
-// reconciles the host side (sbxfuse + ACLs + egress) regardless.
+// backend-dependent: the container backend injects a newly-added mount into the
+// live mount namespace (ExportWorkspace + ApplyResumeState) and detaches a removed
+// one (UnexportWorkspace). The microvm guest needs live 9p hotplug/unmount
+// cooperation that doesn't exist yet, so its updates reconcile the host side
+// (sbxfuse + per-mount 9p server + ACLs + egress) but the guest only sees the
+// mount set fixed at launch. Either way the cleanest case is reconciling before
+// the agent launches (the warm-pod bring-up).
 type mountManager struct {
 	// Immutable deps captured at construction.
 	ctx         context.Context
@@ -46,10 +48,15 @@ type mountManager struct {
 	broker      *events.Broker
 	iso         isolation.Isolation
 	isoMu       *sync.Mutex // serializes isolation-backend mutations (Export/Unexport)
-	fuseBin     string
+	fuse        *fuseControl // pod-wide shared sbxfuse process (mount/unmount/reacl)
 	workDir     string
 	snapshotDir string
 	soMark      int
+	// keyPrefix namespaces the host-side workspace paths for a packed sandbox
+	// (host mount + backend live under <keyPrefix>/...), so two sandboxes that
+	// mount the same guest path (e.g. /workspace) don't collide. Empty for the
+	// boot sandbox, which keeps the historical host==guest layout.
+	keyPrefix string
 
 	// reconcileMu serializes Reconcile so two callers firing on the same
 	// config-apply event (the prewarm launch path and reconcileSidecars) can't
@@ -69,19 +76,45 @@ type mountManager struct {
 	live map[string]fsSidecar // keyed by agent mount path
 }
 
-func newMountManager(ctx context.Context, children *sync.WaitGroup, broker *events.Broker, iso isolation.Isolation, isoMu *sync.Mutex, fuseBin, workDir, snapshotDir string, soMark int) *mountManager {
+func newMountManager(ctx context.Context, children *sync.WaitGroup, broker *events.Broker, iso isolation.Isolation, isoMu *sync.Mutex, fuse *fuseControl, workDir, snapshotDir string, soMark int) *mountManager {
 	return &mountManager{
 		ctx:         ctx,
 		children:    children,
 		broker:      broker,
 		iso:         iso,
 		isoMu:       isoMu,
-		fuseBin:     fuseBin,
+		fuse:        fuse,
 		workDir:     workDir,
 		snapshotDir: snapshotDir,
 		soMark:      soMark,
 		live:        map[string]fsSidecar{},
 	}
+}
+
+// hostMount is the host path where sbxfuse mounts f, and the runc bind source.
+// For the boot sandbox it is the guest path itself (host==guest); for a packed
+// sandbox it is namespaced under keyPrefix so same-path mounts don't collide.
+func (m *mountManager) hostMount(f spec.FS) string {
+	if m.keyPrefix == "" {
+		return f.Mount
+	}
+	return filepath.Join(m.keyPrefix, "mnt", f.Slug())
+}
+
+// hostBackend is the host directory sbxfuse writes through to for f.
+func (m *mountManager) hostBackend(f spec.FS) string {
+	if m.keyPrefix == "" {
+		return f.BackendPath()
+	}
+	return filepath.Join(m.keyPrefix, "backend", f.Slug())
+}
+
+// aclFile is the per-mount ACL file path, namespaced by keyPrefix when packed.
+func (m *mountManager) aclFile(f spec.FS) string {
+	if m.keyPrefix == "" {
+		return filepath.Join(m.workDir, "acls-"+f.Slug()+".json")
+	}
+	return filepath.Join(m.keyPrefix, "acls-"+f.Slug()+".json")
 }
 
 // defaultedACLs returns f.ACLs, falling back to a single read-write rule over
@@ -102,54 +135,74 @@ func defaultedACLs(f spec.FS) []fusefs.Rule {
 	return []fusefs.Rule{{Path: f.Mount + "/**", Access: fusefs.AccessRW}}
 }
 
+// aclsFor returns the ACL rules to write for f, rewriting each rule path's guest
+// prefix (f.Mount) to the host mount point when packed. sbxfuse reconstructs the
+// path it matches as <-mount> + relative, so a packed daemon mounted at a host
+// path must carry host-prefixed ACL rules.
+func (m *mountManager) aclsFor(f spec.FS) []fusefs.Rule {
+	rules := defaultedACLs(f)
+	host := m.hostMount(f)
+	if m.keyPrefix == "" || host == f.Mount {
+		return rules
+	}
+	out := make([]fusefs.Rule, len(rules))
+	for i, r := range rules {
+		r.Path = host + strings.TrimPrefix(r.Path, f.Mount)
+		out[i] = r
+	}
+	return out
+}
+
 // start brings up one sbxfuse daemon for f and exposes it to the workload. It
 // mirrors the boot-time fuse setup so boot and reconcile share one path.
 func (m *mountManager) start(f spec.FS) error {
-	if err := os.MkdirAll(f.Mount, 0o755); err != nil {
-		return fmt.Errorf("create mount point %s: %w", f.Mount, err)
+	mountPoint := m.hostMount(f)
+	backend := m.hostBackend(f)
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		return fmt.Errorf("create mount point %s: %w", mountPoint, err)
 	}
-	if err := os.MkdirAll(f.BackendPath(), 0o755); err != nil {
-		return fmt.Errorf("create backend %s: %w", f.BackendPath(), err)
+	if err := os.MkdirAll(backend, 0o755); err != nil {
+		return fmt.Errorf("create backend %s: %w", backend, err)
 	}
 
 	// Seed the workspace from the image: move any files the image ships at the
-	// mount path into the FUSE backend so the agent sees them. Done here, in the
-	// reconciler, so a mount added by a later config change is seeded too. It must
-	// precede iso.MountRoot (which the caller runs after the reconcile) — the seed
-	// empties these paths out of the overlay lower. Internal mounts are never
-	// exposed to the agent and the image carries no content for them, so skip it.
-	if !f.Internal {
-		if err := isolation.SeedWorkspace(f.BackendPath(), filepath.Join(runc.RootfsDir, f.Mount)); err != nil {
+	// mount path into the FUSE backend so the agent sees them. Skipped for a
+	// packed sandbox — the image rootfs (overlay lower) is shared across all
+	// packed sandboxes, so a destructive move would steal the content from peers;
+	// a packed workspace starts empty.
+	if !f.Internal && m.keyPrefix == "" {
+		if err := isolation.SeedWorkspace(backend, filepath.Join(runc.RootfsDir, f.Mount)); err != nil {
 			return fmt.Errorf("seed workspace %s: %w", f.Mount, err)
 		}
 	}
 
-	aclPath := filepath.Join(m.workDir, "acls-"+f.Slug()+".json")
-	if err := writeACLs(aclPath, defaultedACLs(f)); err != nil {
+	aclPath := m.aclFile(f)
+	if err := writeACLs(aclPath, m.aclsFor(f)); err != nil {
 		return fmt.Errorf("write ACLs (%s): %w", f.Mount, err)
 	}
 
-	fuseArgs := []string{"-mount", f.Mount, "-backend", f.BackendPath(), "-acls", aclPath}
+	spec := fuseMountSpec{Mount: mountPoint, Backend: backend, ACLs: aclPath}
 	if f.Backend.IsRemote() {
 		blob, err := f.BackendConfigJSON()
 		if err != nil {
 			return fmt.Errorf("backend %q config (%s): %w", f.Backend, f.Mount, err)
 		}
-		fuseArgs = append(fuseArgs,
-			"-remote", string(f.Backend),
-			"-remote-config", string(blob),
-			"-mark", fmt.Sprintf("%d", m.soMark),
-		)
+		spec.Remote = string(f.Backend)
+		spec.RemoteConfig = string(blob)
+		spec.Mark = m.soMark
 	}
 
-	cmd, err := startSidecar(m.ctx, m.children, "sbxfuse:"+f.Slug(), m.fuseBin, fuseArgs, nil,
-		sidecarOnEvent(formatFuseEvent, newFuseTranslator(m.broker, f.Mount, gen.Backend(f.Backend)).handle))
-	if err != nil {
+	// Register before issuing the mount so this mount's audit events resolve to
+	// this sandbox's broker the instant sbxfuse starts emitting them.
+	m.fuse.trans.register(mountPoint, f.Mount, gen.Backend(f.Backend), m.broker)
+	if err := m.fuse.Mount(spec); err != nil {
+		m.fuse.trans.unregister(mountPoint)
 		return fmt.Errorf("start fuse (%s): %w", f.Mount, err)
 	}
-	if err := waitForMountReady(m.ctx, f.Mount, mountReadTimout); err != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("fuse did not mount %s: %w", f.Mount, err)
+	if err := waitForMountReady(m.ctx, mountPoint, mountReadTimout); err != nil {
+		_ = m.fuse.Unmount(mountPoint)
+		m.fuse.trans.unregister(mountPoint)
+		return fmt.Errorf("fuse did not mount %s: %w", mountPoint, err)
 	}
 
 	// Internal mounts stay host-side only: the sbxfuse daemon is mounted on the
@@ -158,23 +211,25 @@ func (m *mountManager) start(f spec.FS) error {
 	// it. Everything else is exported into the workload's mount namespace.
 	if !f.Internal {
 		m.isoMu.Lock()
-		err = m.iso.ExportWorkspace(m.ctx, f.Mount)
+		err := m.iso.ExportWorkspace(m.ctx, mountPoint, f.Mount)
 		m.isoMu.Unlock()
 		if err != nil {
-			_ = cmd.Process.Kill()
-			return fmt.Errorf("export workspace %s: %w", f.Mount, err)
+			_ = m.fuse.Unmount(mountPoint)
+			m.fuse.trans.unregister(mountPoint)
+			return fmt.Errorf("export workspace %s: %w", mountPoint, err)
 		}
 	}
 
 	m.mu.Lock()
-	m.live[f.Mount] = fsSidecar{pid: cmd.Process.Pid, aclPath: aclPath}
+	m.live[f.Mount] = fsSidecar{hostMount: mountPoint, aclPath: aclPath}
 	m.mu.Unlock()
 	return nil
 }
 
-// stop tears down the sbxfuse daemon for mount and reverses its export. SIGTERM
-// gives sbxfuse a chance to fusermount -u (and drain a remote oplog) before the
-// WaitDelay kill. A no-op for an unknown mount.
+// stop tears down the workspace mount in the shared sbxfuse process and reverses
+// its export. The control-channel unmount lets sbxfuse fusermount -u (and drain a
+// remote oplog) for just this mount, leaving the pod's other mounts running. A
+// no-op for an unknown mount.
 func (m *mountManager) stop(mount string) {
 	m.mu.Lock()
 	sc, ok := m.live[mount]
@@ -185,21 +240,25 @@ func (m *mountManager) stop(mount string) {
 	if !ok {
 		return
 	}
-	if sc.pid > 0 {
-		if err := syscall.Kill(sc.pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-			log.Printf("sandboxd: reconcile: SIGTERM sbxfuse (mount=%s pid=%d): %v", mount, sc.pid, err)
-		}
-	}
+	// Detach the mount from the workload first (for a live container this unmounts
+	// it from the agent's mount namespace), then tear down the host sbxfuse daemon
+	// that was serving it. Both are best-effort: a failure to detach the consumer
+	// must not strand the host-side daemon.
 	m.isoMu.Lock()
 	err := m.iso.UnexportWorkspace(m.ctx, mount)
 	m.isoMu.Unlock()
 	if err != nil {
 		log.Printf("sandboxd: reconcile: unexport %s: %v", mount, err)
 	}
+	if err := m.fuse.Unmount(sc.hostMount); err != nil {
+		log.Printf("sandboxd: reconcile: unmount sbxfuse (mount=%s host=%s): %v", mount, sc.hostMount, err)
+	}
+	m.fuse.trans.unregister(sc.hostMount)
 	_ = os.Remove(sc.aclPath)
 }
 
-// reACL rewrites a kept mount's ACL file and SIGHUPs its sbxfuse to reload it.
+// reACL rewrites a kept mount's ACL file and tells the shared sbxfuse to reload
+// it for that mount.
 func (m *mountManager) reACL(f spec.FS) error {
 	m.mu.Lock()
 	sc, ok := m.live[f.Mount]
@@ -207,11 +266,26 @@ func (m *mountManager) reACL(f spec.FS) error {
 	if !ok {
 		return nil
 	}
-	if err := writeACLs(sc.aclPath, defaultedACLs(f)); err != nil {
+	if err := writeACLs(sc.aclPath, m.aclsFor(f)); err != nil {
 		return fmt.Errorf("reconcile acls (%s): %w", f.Mount, err)
 	}
-	if err := syscall.Kill(sc.pid, syscall.SIGHUP); err != nil {
-		return fmt.Errorf("SIGHUP sbxfuse (mount=%s pid=%d): %w", f.Mount, sc.pid, err)
+	if err := m.fuse.ReACL(sc.hostMount); err != nil {
+		return fmt.Errorf("reload acls sbxfuse (mount=%s host=%s): %w", f.Mount, sc.hostMount, err)
 	}
 	return nil
+}
+
+// stopAll tears down every live workspace mount. Used on packed-sandbox teardown,
+// where the shared sbxfuse process outlives the sandbox, so its mounts must be
+// removed explicitly (cancelling the sandbox ctx doesn't reach them).
+func (m *mountManager) stopAll() {
+	m.mu.Lock()
+	mounts := make([]string, 0, len(m.live))
+	for mt := range m.live {
+		mounts = append(mounts, mt)
+	}
+	m.mu.Unlock()
+	for _, mt := range mounts {
+		m.stop(mt)
+	}
 }
