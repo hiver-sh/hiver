@@ -10,20 +10,20 @@ import (
 	"net"
 	"time"
 
-	"github.com/hiver-sh/hiver/internal/firecracker"
 	"github.com/hiver-sh/hiver/internal/vsockfile"
 )
 
 // Files serves the management file API by proxying every operation to the
-// in-guest file service over vsock. The guest sees the assembled workload root
-// — the overlay plus the 9p-mounted workspaces — at its real agent paths, so a
-// single path handles every request without distinguishing workspace mounts
-// from the guest overlay. The mounts argument the interface passes is unused
-// for the same reason: the guest resolves the path itself.
-func (m *microvm) Files() FileBridge { return microvmGuestFiles{vsockUDS: m.vsockUDS} }
+// in-guest file service over the netns network (TCP). The guest sees the
+// assembled workload root — the overlay plus the 9p-mounted workspaces — at its
+// real agent paths, so a single path handles every request without
+// distinguishing workspace mounts from the guest overlay. The mounts argument
+// the interface passes is unused for the same reason: the guest resolves the
+// path itself.
+func (m *microvm) Files() FileBridge { return microvmGuestFiles{m: m} }
 
 type microvmGuestFiles struct {
-	vsockUDS string
+	m *microvm
 }
 
 // dial opens a fresh connection to the guest file service, retrying until the
@@ -33,7 +33,7 @@ func (f microvmGuestFiles) dial() (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for {
-		conn, err := firecracker.DialGuest(ctx, f.vsockUDS, vsockfile.GuestPort)
+		conn, err := f.m.dialGuest(ctx, vsockfile.GuestPort)
 		if err == nil {
 			return conn, nil
 		}

@@ -45,6 +45,12 @@ const (
 	metadataMnt = "/run/sbxguest"
 	overlayMnt  = "/mnt/overlay"
 	mergedMnt   = "/mnt/merged"
+
+	// fuseHostGateway is the netns gateway (the guest's eth0 gateway / tap
+	// address, = bootGatewayIP on the host) where the host runs each VM's 9p
+	// listener. 9p is guest-initiated, so the guest dials the gateway. This is
+	// fixed across resume because the netns model keeps the guest's baked IP.
+	fuseHostGateway = "172.16.0.1"
 )
 
 func main() {
@@ -61,12 +67,11 @@ func main() {
 	// guaranteed default PATH so bare commands resolve even when none is set.
 	applyWorkloadEnv(params.Env)
 
-	// Record the workspace mounts so the file API routes their paths to the
-	// live 9p mounts and every other path to the overlay upper layer.
+	// Record the boot-time workspace mounts so the file API routes their paths to
+	// the live 9p mounts and every other path to the overlay upper layer.
+	// Resume-time mounts (added by the control RPC) register via mountWorkspaces.
 	for _, fu := range params.Fuse {
-		if fu.Mount != "" {
-			fileWorkspaceMounts = append(fileWorkspaceMounts, fu.Mount)
-		}
+		addFileWorkspaceMount(fu.Mount)
 	}
 
 	// Serve exec sessions and file operations to the host for the lifetime of
@@ -76,11 +81,13 @@ func main() {
 	go serveExec(firecracker.GuestExecPort)
 	go serveFiles(vsockfile.GuestPort)
 	go serveControl(firecracker.GuestControlPort)
+	// Readiness by polling: the host polls GuestReadyPort, which serveReady opens
+	// only after prewarmReady closes (below). On a normal/resume boot that's
+	// immediate; on a prewarm boot it waits for the workload to write
+	// prewarmReadyFile, so the host snapshots a warm guest.
+	go serveReady(firecracker.GuestReadyPort)
 
-	// Resolve the readiness gate: serveExec signals the host only after this
-	// closes prewarmReady. On a prewarm boot it waits for the workload to write
-	// prewarmReadyFile so the host's snapshot captures it warm; on a normal/resume
-	// boot it closes immediately.
+	// Resolve the readiness gate (closes prewarmReady — see serveReady).
 	go resolvePrewarmReady(params)
 
 	code := runWorkload(params)
@@ -134,9 +141,9 @@ func bootstrap() (firecracker.GuestParams, error) {
 	return params, nil
 }
 
-// mountWorkspaces connects to each workspace's host 9p server over vsock and
-// mounts it at the workspace path with the trans=fd 9p transport. It is
-// idempotent (a workspace already 9p-mounted is skipped) so the host can
+// mountWorkspaces connects to each workspace's host 9p server over the netns
+// network and mounts it at the workspace path with the trans=fd 9p transport. It
+// is idempotent (a workspace already 9p-mounted is skipped) so the host can
 // re-drive it to self-heal a partial/failed earlier apply, and returns the
 // joined per-mount errors so the host knows whether the guest reached the
 // desired state (and should retry) rather than assuming success.
@@ -146,6 +153,10 @@ func mountWorkspaces(mounts []firecracker.GuestFuse) error {
 		if f.Port == 0 {
 			continue
 		}
+		// Register with the file API even on a resume (where this mount wasn't in the
+		// boot params), so reads/writes/lists of /workspace route to the live 9p mount
+		// rather than the overlay upper layer. Idempotent.
+		addFileWorkspaceMount(f.Mount)
 		if is9pMounted(f.Mount) {
 			continue // already mounted by a prior apply — nothing to do
 		}
@@ -153,13 +164,19 @@ func mountWorkspaces(mounts []firecracker.GuestFuse) error {
 			errs = append(errs, fmt.Errorf("9p %s: mkdir: %w", f.Mount, err))
 			continue
 		}
-		fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		// 9p is guest-initiated: dial the netns gateway (the guest's eth0 gateway /
+		// tap address), where the host runs this VM's per-mount 9p listener. The
+		// kernel 9p trans=fd transport works over this TCP socket exactly as it did
+		// over the former vsock one.
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("9p %s: vsock socket: %w", f.Mount, err))
+			errs = append(errs, fmt.Errorf("9p %s: tcp socket: %w", f.Mount, err))
 			continue
 		}
-		if err := unix.Connect(fd, &unix.SockaddrVM{CID: firecracker.HostCID, Port: f.Port}); err != nil {
-			errs = append(errs, fmt.Errorf("9p %s: connect host port %d: %w", f.Mount, f.Port, err))
+		sa := &unix.SockaddrInet4{Port: int(f.Port)}
+		copy(sa.Addr[:], net.ParseIP(fuseHostGateway).To4())
+		if err := unix.Connect(fd, sa); err != nil {
+			errs = append(errs, fmt.Errorf("9p %s: connect gateway %s:%d: %w", f.Mount, fuseHostGateway, f.Port, err))
 			unix.Close(fd)
 			continue
 		}
@@ -541,43 +558,34 @@ func runWorkload(p firecracker.GuestParams) int {
 	return 0
 }
 
-// serveExec listens on the guest vsock port and handles one exec session per
-// connection using the vsockexec framed protocol.
-func serveExec(port uint32) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+// guestListenTCP binds a guest-network TCP listener on eth0 (all interfaces) for
+// one of the agent's host->guest channels. The host reaches it by dialing this
+// VM's source IP with SO_MARK (the ingress DNAT path); see the port doc in
+// internal/firecracker. Replaces the former AF_VSOCK listeners, which did not
+// survive a snapshot resume.
+func guestListenTCP(name string, port uint32) (net.Listener, error) {
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
-		log.Printf("exec: vsock socket: %v", err)
+		log.Printf("%s: listen :%d: %v", name, port, err)
+		return nil, err
+	}
+	log.Printf("%s: listening on tcp :%d", name, port)
+	return ln, nil
+}
+
+// serveExec accepts exec sessions over TCP, one per connection, using the
+// vsockexec framed protocol (the framing is transport-agnostic).
+func serveExec(port uint32) {
+	ln, err := guestListenTCP("exec", port)
+	if err != nil {
 		return
 	}
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
-		log.Printf("exec: vsock bind: %v", err)
-		_ = unix.Close(fd)
-		return
-	}
-	if err := unix.Listen(fd, 16); err != nil {
-		log.Printf("exec: vsock listen: %v", err)
-		_ = unix.Close(fd)
-		return
-	}
-	log.Printf("exec: listening on vsock port %d", port)
-	// The exec listener is up, so the host can now reach the agent. Dial the
-	// host's readiness beacon to unblock its WaitReady (replaces host-side
-	// connect polling) — but gate it on prewarmReady so that, on a prewarm boot,
-	// the host's snapshot captures the resident workload (e.g. an already-launched
-	// browser) warm. The gate is closed immediately on every normal/resume boot,
-	// so this is a no-op there. Done in a goroutine so the Accept loop below stays
-	// live regardless. Best-effort — the host falls back to its own timeout.
-	go func() {
-		<-prewarmReady
-		signalReady()
-	}()
 	for {
-		nfd, _, err := unix.Accept(fd)
+		conn, err := ln.Accept()
 		if err != nil {
 			log.Printf("exec: accept: %v", err)
 			continue
 		}
-		conn := os.NewFile(uintptr(nfd), "vsock-exec")
 		go func() {
 			defer conn.Close()
 			if err := handleExec(conn); err != nil && err != io.EOF {
@@ -587,34 +595,40 @@ func serveExec(port uint32) {
 	}
 }
 
-// serveControl listens on the guest vsock control port and handles host-issued
-// control RPCs — currently mounting workspaces into the running guest after a
-// snapshot resume (their 9p-over-vsock connections cannot survive the snapshot,
-// so they are added live here). One request/response per connection.
-func serveControl(port uint32) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+// serveReady is the readiness probe the host polls: it opens GuestReadyPort only
+// after prewarmReady closes (immediately on a normal/resume boot; after the
+// workload warms on a prewarm boot), so a successful connect tells the host the
+// guest is ready. Accepted connections are closed immediately — the connect edge
+// is the signal.
+func serveReady(port uint32) {
+	<-prewarmReady
+	ln, err := guestListenTCP("ready", port)
 	if err != nil {
-		log.Printf("control: vsock socket: %v", err)
 		return
 	}
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
-		log.Printf("control: vsock bind: %v", err)
-		_ = unix.Close(fd)
-		return
-	}
-	if err := unix.Listen(fd, 16); err != nil {
-		log.Printf("control: vsock listen: %v", err)
-		_ = unix.Close(fd)
-		return
-	}
-	log.Printf("control: listening on vsock port %d", port)
 	for {
-		nfd, _, err := unix.Accept(fd)
+		conn, err := ln.Accept()
+		if err != nil {
+			continue
+		}
+		conn.Close()
+	}
+}
+
+// serveControl handles host-issued control RPCs over TCP — env/clock/re-IP and
+// post-resume workspace mounts, applied live in the running guest. One
+// request/response per connection.
+func serveControl(port uint32) {
+	ln, err := guestListenTCP("control", port)
+	if err != nil {
+		return
+	}
+	for {
+		conn, err := ln.Accept()
 		if err != nil {
 			log.Printf("control: accept: %v", err)
 			continue
 		}
-		conn := os.NewFile(uintptr(nfd), "vsock-control")
 		go func() {
 			defer conn.Close()
 			if err := handleControl(conn); err != nil && err != io.EOF {
@@ -734,33 +748,6 @@ func resolvePrewarmReady(p firecracker.GuestParams) {
 	}
 	log.Printf("prewarm: timed out after %s waiting for %s; snapshotting anyway",
 		prewarmReadyTimeout, prewarmReadyFile)
-}
-
-// signalReady dials the host's readiness beacon (firecracker.GuestReadyPort)
-// to tell the host the agent is up. The host listens on that port before boot,
-// so the connection is the "ready" edge; the byte stream itself is unused.
-func signalReady() {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		log.Printf("ready: vsock socket: %v", err)
-		return
-	}
-	defer unix.Close(fd)
-	if err := unix.Connect(fd, &unix.SockaddrVM{CID: firecracker.HostCID, Port: firecracker.GuestReadyPort}); err != nil {
-		log.Printf("ready: connect host port %d: %v", firecracker.GuestReadyPort, err)
-		return
-	}
-	// Write one byte *after* connect returns. The host's acceptReady blocks reading
-	// it, so it only treats us as ready once this connect() syscall has fully
-	// unwound — not merely once the connection was established. This closes a
-	// snapshot race: PrewarmSnapshot pauses the VM the instant its Accept() returns,
-	// which can precede connect() returning here; freezing the guest mid-connect
-	// leaves a stale vsock connection that, on resume (no host peer listening on
-	// GuestReadyPort), times out and logs spuriously. Best-effort — on the cold-boot
-	// path the host treats the accepted connection as ready regardless.
-	if _, err := unix.Write(fd, []byte{1}); err != nil {
-		log.Printf("ready: write beacon byte: %v", err)
-	}
 }
 
 // handleExec runs one exec session: read the Start frame, run the command
@@ -954,34 +941,21 @@ func waitCode(cmd *exec.Cmd) int {
 	return 0
 }
 
-// serveFiles listens on the guest vsock file port and handles one file
-// operation per connection for the host-side /v1/file* API. Because the guest
-// sees the workload root at real agent paths, a single handler serves every
-// path uniformly — workspace mounts and the overlay alike.
+// serveFiles handles one file operation per connection over TCP for the
+// host-side /v1/file* API. Because the guest sees the workload root at real
+// agent paths, a single handler serves every path uniformly — workspace mounts
+// and the overlay alike.
 func serveFiles(port uint32) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	ln, err := guestListenTCP("files", port)
 	if err != nil {
-		log.Printf("files: vsock socket: %v", err)
 		return
 	}
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
-		log.Printf("files: vsock bind: %v", err)
-		_ = unix.Close(fd)
-		return
-	}
-	if err := unix.Listen(fd, 16); err != nil {
-		log.Printf("files: vsock listen: %v", err)
-		_ = unix.Close(fd)
-		return
-	}
-	log.Printf("files: listening on vsock port %d", port)
 	for {
-		nfd, _, err := unix.Accept(fd)
+		conn, err := ln.Accept()
 		if err != nil {
 			log.Printf("files: accept: %v", err)
 			continue
 		}
-		conn := os.NewFile(uintptr(nfd), "vsock-file")
 		go func() {
 			defer conn.Close()
 			if err := handleFile(conn); err != nil && err != io.EOF {
@@ -1033,20 +1007,45 @@ func fileErr(conn io.Writer, err error) error {
 // container backend, whose file API reads the workspace backend dirs and the
 // overlay upper dir directly — never the merged image.
 var (
+	// fileMountsMu guards fileWorkspaceMounts: it's seeded at bootstrap from the
+	// boot params, but also appended to at runtime when the post-resume control RPC
+	// mounts a workspace the base snapshot never had (see addFileWorkspaceMount),
+	// concurrently with the file API's reads.
+	fileMountsMu        sync.Mutex
 	fileWorkspaceMounts []string
 	overlayUpperRoot    *os.Root
 )
+
+// addFileWorkspaceMount registers a workspace mount path with the file API so
+// resolveFile serves it from the live merged 9p mount instead of the overlay
+// upper layer. Idempotent — a resume's self-heal can re-drive the mount.
+func addFileWorkspaceMount(mount string) {
+	if mount == "" {
+		return
+	}
+	fileMountsMu.Lock()
+	defer fileMountsMu.Unlock()
+	for _, m := range fileWorkspaceMounts {
+		if m == mount {
+			return
+		}
+	}
+	fileWorkspaceMounts = append(fileWorkspaceMounts, mount)
+}
 
 // resolveFile routes an agent path. Paths inside a workspace mount return
 // (abs, "", false) to be served from the live merged path; all others return
 // ("", rel, true) to be served within the overlay upper layer.
 func resolveFile(agentPath string) (abs, rel string, useUpper bool) {
 	clean := filepath.Clean("/" + agentPath)
+	fileMountsMu.Lock()
 	for _, m := range fileWorkspaceMounts {
 		if clean == m || strings.HasPrefix(clean, strings.TrimRight(m, "/")+"/") {
+			fileMountsMu.Unlock()
 			return clean, "", false
 		}
 	}
+	fileMountsMu.Unlock()
 	rel = strings.TrimPrefix(clean, "/")
 	if rel == "" {
 		rel = "."
@@ -1062,10 +1061,22 @@ func fileList(conn io.Writer, path string) error {
 		if overlayUpperRoot == nil {
 			return fileErr(conn, fmt.Errorf("upper layer unavailable"))
 		}
-		var d *os.File
-		if d, err = overlayUpperRoot.Open(rel); err == nil {
-			defer d.Close()
-			es, err = d.ReadDir(-1)
+		// Enumerate the live merged root, then keep only entries that also exist in
+		// the overlay upper layer — i.e. the sandbox's own writes. We can't getdents
+		// the upper directly: its drive is detached (only the overlayUpperRoot fd
+		// pins it) and after a snapshot resume that fd's getdents returns empty,
+		// while named lookups on it still work. So enumerate the merged view (which
+		// is live and reflects post-resume writes) and filter via per-name Stat on
+		// the upper. The merged view already hides whiteouts (deletions).
+		merged := filepath.Join("/", path)
+		if es, err = os.ReadDir(merged); err == nil {
+			kept := es[:0]
+			for _, e := range es {
+				if _, serr := overlayUpperRoot.Stat(filepath.Join(rel, e.Name())); serr == nil {
+					kept = append(kept, e)
+				}
+			}
+			es = kept
 		}
 	} else {
 		es, err = os.ReadDir(abs)

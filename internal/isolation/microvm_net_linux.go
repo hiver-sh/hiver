@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/hiver-sh/hiver/internal/proxy"
 	"github.com/vishvananda/netlink"
@@ -408,4 +410,70 @@ func listenUDPInNetns(nsName, addr string) (net.PacketConn, error) {
 	}()
 	r := <-ch
 	return r.pc, r.err
+}
+
+// listenTCPInNetns binds a TCP listener at addr inside the named netns (or the
+// current/pod netns when nsName is empty), mirroring listenUDPInNetns. Used to
+// host each VM's per-mount 9p endpoint on the netns gateway (bootGatewayIP),
+// which the guest dials — 9p is guest-initiated.
+func listenTCPInNetns(nsName, addr string) (net.Listener, error) {
+	if nsName == "" {
+		return net.Listen("tcp", addr)
+	}
+	type result struct {
+		ln  net.Listener
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread()
+		keepLocked := true
+		defer func() {
+			if !keepLocked {
+				runtime.UnlockOSThread()
+			}
+		}()
+		cur, err := netns.Get()
+		if err != nil {
+			ch <- result{nil, fmt.Errorf("get current netns: %w", err)}
+			return
+		}
+		defer cur.Close()
+		target, err := netns.GetFromName(nsName)
+		if err != nil {
+			ch <- result{nil, fmt.Errorf("open netns %s: %w", nsName, err)}
+			return
+		}
+		defer target.Close()
+		if err := unix.Setns(int(target), unix.CLONE_NEWNET); err != nil {
+			ch <- result{nil, fmt.Errorf("setns %s: %w", nsName, err)}
+			return
+		}
+		ln, lerr := net.Listen("tcp", addr)
+		if err := unix.Setns(int(cur), unix.CLONE_NEWNET); err == nil {
+			keepLocked = false
+		}
+		ch <- result{ln, lerr}
+	}()
+	r := <-ch
+	return r.ln, r.err
+}
+
+// dialGuest opens a TCP connection to one of the guest agent's host->guest ports
+// (control/exec/files/ready). For a packed VM it dials the VM's source IP stamped
+// with the egress SO_MARK, so the netns ingress DNAT carries it to the guest and
+// the pod REDIRECT exempts it (the same path the ingress proxy uses); for the
+// base/boot VM (pod netns) it dials the guest's tap IP directly. Replaces the
+// former Firecracker host-initiated vsock CONNECT, which did not survive resume.
+func (m *microvm) dialGuest(ctx context.Context, port uint32) (net.Conn, error) {
+	host := m.guestIP
+	if m.sourceIP != "" {
+		host = m.sourceIP
+	}
+	d := net.Dialer{Control: func(_, _ string, c syscall.RawConn) error {
+		return c.Control(func(fd uintptr) {
+			_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, m.mark)
+		})
+	}}
+	return d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
 }

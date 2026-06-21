@@ -20,18 +20,21 @@ import (
 	"time"
 )
 
-// Host/guest vsock parameters. The host CID is always 2 (VMADDR_CID_HOST);
-// the guest CID is assigned by us and must be >= 3. The guest agent listens
-// on GuestExecPort for exec sessions.
+// Guest agent TCP ports, served on the guest's eth0 (the per-VM netns network).
+// The host reaches them by dialing the VM's source IP with SO_MARK — the same
+// DNAT path the ingress proxy uses (see internal/isolation/microvm_net_linux.go).
+// vsock was removed: its host<->guest channel does not survive a snapshot resume
+// (Firecracker re-inits the vsock device on /snapshot/load, dropping live
+// connections and racing socket re-binds), whereas the guest network does. The
+// ingress proxy denylists these ports so a sandbox user can't drive them via
+// /v1/<key>/proxy/<port>.
 //
-// GuestReadyPort is the reverse direction: a host-listening port (mapped to
-// the unix socket ${uds}_<port>) that the guest dials once its exec listener
-// is up, so the host's WaitReady blocks on Accept instead of polling.
+// GuestReadyPort flips the old beacon: instead of the guest dialing the host
+// when warm, the guest opens this port only once warm and the host polls it —
+// "readiness by polling".
 const (
-	HostCID        uint32 = 2
-	GuestCID       uint32 = 3
-	GuestExecPort  uint32 = 1024
-	GuestReadyPort uint32 = 1026
+	GuestExecPort  uint32 = 1024 // host->guest: exec sessions
+	GuestReadyPort uint32 = 1026 // host->guest: readiness probe (guest listens once warm)
 )
 
 // Client talks to a running Firecracker process over its API unix socket
@@ -84,13 +87,6 @@ type NetworkInterface struct {
 	IfaceID     string `json:"iface_id"`
 	HostDevName string `json:"host_dev_name"`
 	GuestMAC    string `json:"guest_mac,omitempty"`
-}
-
-// Vsock is the body of PUT /vsock. UDSPath is the host-side unix socket
-// Firecracker creates to multiplex guest vsock connections.
-type Vsock struct {
-	GuestCID int    `json:"guest_cid"`
-	UDSPath  string `json:"uds_path"`
 }
 
 // Logger is the body of PUT /logger.
@@ -168,10 +164,6 @@ func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 
 func (c *Client) PutNetworkInterface(ctx context.Context, n NetworkInterface) error {
 	return c.put(ctx, "/network-interfaces/"+n.IfaceID, n)
-}
-
-func (c *Client) PutVsock(ctx context.Context, v Vsock) error {
-	return c.put(ctx, "/vsock", v)
 }
 
 func (c *Client) PutLogger(ctx context.Context, l Logger) error {

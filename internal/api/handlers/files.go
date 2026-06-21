@@ -118,13 +118,32 @@ func (h *Sandbox) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) 
 		Size  int64  `json:"size"`
 	}
 	result := make([]dirEntry, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
 	for _, e := range entries {
+		seen[e.Name] = true
 		result = append(result, dirEntry{
 			Name:  e.Name,
 			Path:  filepath.Join(cleaned, e.Name),
 			IsDir: e.IsDir,
 			Size:  e.Size,
 		})
+	}
+
+	// Surface configured workspace mounts that sit directly under this directory.
+	// A mount over a lower-image directory leaves no entry in the overlay upper
+	// layer (which the file API reads for non-workspace paths), so without this a
+	// listing of the mount's parent — e.g. "/" — would never show "workspace" and
+	// the mount would be undiscoverable. The mount's own contents are still served
+	// live when listed directly (resolveFile routes it to the 9p mount).
+	for _, m := range h.mountRoutes(cfg) {
+		mount := strings.TrimRight(m.Mount, "/")
+		if mount == "" || filepath.Dir(mount) != cleaned {
+			continue
+		}
+		if name := filepath.Base(mount); !seen[name] {
+			seen[name] = true
+			result = append(result, dirEntry{Name: name, Path: mount, IsDir: true})
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"entries": result})
 }

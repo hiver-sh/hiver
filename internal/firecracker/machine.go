@@ -23,7 +23,6 @@ type Config struct {
 	Drives            []Drive            `json:"drives"`
 	MachineConfig     MachineConfig      `json:"machine-config"`
 	NetworkInterfaces []NetworkInterface `json:"network-interfaces,omitempty"`
-	Vsock             *Vsock             `json:"vsock,omitempty"`
 	Logger            *Logger            `json:"logger,omitempty"`
 }
 

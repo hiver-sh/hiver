@@ -281,7 +281,7 @@ function liveBarClass(row: TimelineRow): string {
   if (row.type === "exec")
     return "bg-emerald-500/50 border border-emerald-400/60";
   if (row.type === "ingress")
-    return "bg-orange-500/50 border border-orange-400/60";
+    return "bg-blue-500/50 border border-blue-400/60";
   return "bg-blue-500/50 border border-blue-400/60";
 }
 
@@ -297,7 +297,7 @@ function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
   if (type === "ingress") {
     return bar.status !== undefined && bar.status >= 400
       ? "bg-red-500/80"
-      : "bg-orange-500/80";
+      : "bg-blue-500/80";
   }
   if (type === "exec") return "bg-emerald-500/80";
   if (type === "stdio") {
@@ -320,7 +320,7 @@ function methodClass(row: TimelineRow): string {
     return row.key === "resource:cpu"
       ? "text-sky-600 dark:text-sky-400"
       : "text-emerald-600 dark:text-emerald-400";
-  if (row.type === "ingress") return "text-orange-500 dark:text-orange-400";
+  if (row.type === "ingress") return "text-blue-500 dark:text-blue-400";
   switch (row.method) {
     case "GET":
       return "text-green-600 dark:text-green-400";
@@ -1603,7 +1603,7 @@ export function TimelineView({
                           const catColor = {
                             llm: "bg-blue-500/70",
                             egress: "bg-blue-500/70",
-                            ingress: "bg-orange-500/70",
+                            ingress: "bg-blue-500/70",
                             fs: "bg-purple-500/70",
                             stdio: "bg-zinc-500/70",
                             resource: "bg-emerald-500/70",

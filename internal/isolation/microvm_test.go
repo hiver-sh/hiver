@@ -83,9 +83,6 @@ func TestNewMicroVMPackedIdentity(t *testing.T) {
 	if m.jailDir != "/run/fc/3" {
 		t.Errorf("jailDir = %q, want /run/fc/3", m.jailDir)
 	}
-	if want := filepath.Join("/run/fc/3", baseVsockDirName, "vsock.sock"); m.vsockUDS != want {
-		t.Errorf("vsockUDS = %q, want %q", m.vsockUDS, want)
-	}
 	if want := sandboxCgroupPath("pod7-alice"); m.cgroupPath != want {
 		t.Errorf("cgroupPath = %q, want %q", m.cgroupPath, want)
 	}

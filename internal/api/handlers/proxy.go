@@ -55,6 +55,14 @@ func (w *recordingWriter) capturedBody() string {
 }
 
 func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
+	// The in-guest agent's control channels (exec/files/readiness/control) now ride
+	// the guest network on fixed TCP ports instead of vsock. They share the guest's
+	// netns with the workload and are reachable through this ingress DNAT, so refuse
+	// to proxy them — a sandbox user must not be able to drive the agent.
+	if isReservedAgentPort(port) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "port reserved for the sandbox agent"})
+		return
+	}
 	host := h.proxyHost
 	if host == "" {
 		host = "127.0.0.1"
@@ -85,6 +93,18 @@ func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
 	durationMs := int(time.Since(start).Milliseconds())
 
 	h.publishIngressResponse(reqID, rw.status, durationMs, rw.capturedBody())
+}
+
+// isReservedAgentPort reports whether port is one of the in-guest agent's
+// host<->guest channels (exec 1024, files 1025, readiness 1026, control 1028),
+// which the ingress proxy must never expose to sandbox users. Keep in sync with
+// internal/firecracker and cmd/sbxguest.
+func isReservedAgentPort(port string) bool {
+	switch port {
+	case "1024", "1025", "1026", "1028":
+		return true
+	}
+	return false
 }
 
 // captureBody reads up to maxBodyCapture bytes from the request body and

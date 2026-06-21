@@ -1,8 +1,9 @@
-// Command sbxvsock bridges a single exec session from the host to the
-// in-guest agent over a Firecracker vsock stream. It is the host end of the
-// vsockexec protocol: it dials the guest exec port, sends a Start frame
-// describing the command, relays the local stdin/stdout/stderr to/from the
-// guest, and exits with the workload's exit code.
+// Command sbxvsock bridges a single exec session from the host to the in-guest
+// agent over the per-VM netns network (TCP). It is the host end of the vsockexec
+// framed protocol: it dials the guest exec port, sends a Start frame describing
+// the command, relays the local stdin/stdout/stderr to/from the guest, and exits
+// with the workload's exit code. (The name predates the vsock→TCP move; kept for
+// compatibility with the exec call site.)
 //
 // The microvm isolation backend returns `sbxvsock ...` as the exec command,
 // so sandboxd's exec handlers drive it exactly like `runc exec`: they wire
@@ -22,7 +23,6 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
-	"github.com/hiver-sh/hiver/internal/firecracker"
 	"github.com/hiver-sh/hiver/internal/vsockexec"
 )
 
@@ -39,8 +39,8 @@ func main() {
 	log.SetPrefix("sbxvsock: ")
 
 	var (
-		uds     = flag.String("uds", "", "firecracker vsock host unix socket (required)")
-		port    = flag.Int("port", int(firecracker.GuestExecPort), "guest vsock exec port")
+		addr    = flag.String("addr", "", "guest exec address host:port (required)")
+		mark    = flag.Int("mark", 0, "SO_MARK stamped on the dial (netns egress bypass)")
 		command = flag.String("command", "", "command to run in the guest (required)")
 		cwd     = flag.String("cwd", "", "working directory")
 		tty     = flag.Bool("tty", false, "allocate a tty in the guest")
@@ -49,7 +49,7 @@ func main() {
 	flag.Var(&env, "env", "environment KEY=VALUE (repeatable)")
 	flag.Parse()
 
-	if *uds == "" || *command == "" {
+	if *addr == "" || *command == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -57,9 +57,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	conn, err := firecracker.DialGuest(ctx, *uds, uint32(*port))
+	conn, err := dialGuestTCP(ctx, *addr, *mark)
 	if err != nil {
-		log.Fatalf("connect guest exec port: %v", err)
+		log.Fatalf("connect guest exec %s: %v", *addr, err)
 	}
 	defer conn.Close()
 

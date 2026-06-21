@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -67,8 +66,6 @@ type microvm struct {
 	// Host-side artifact paths, all under jailDir.
 	jailDir    string
 	apiSock    string
-	vsockDir   string // holds vsock.sock + the _<port> sockets; bound per-VM on resume
-	vsockUDS   string
 	configFile string
 	logFile    string
 	rootfsImg  string
@@ -118,12 +115,11 @@ type microvm struct {
 	// Accumulated state from the capability calls, consumed by LaunchAgent.
 	mu   sync.Mutex
 	fuse []firecracker.GuestFuse
-	// fuseCancel stops each mount's 9p-over-vsock server (UnexportWorkspace).
+	// fuseCancel stops each mount's 9p server (UnexportWorkspace).
 	fuseCancel map[string]context.CancelFunc
 	// fuseHost/fuseCtx record each export's host mountpoint and parent context so
-	// rebindFuseListeners can re-create its 9p-over-vsock listener after a snapshot
-	// resume — Firecracker cleans stale <uds>_<port> sockets on /snapshot/load,
-	// which deletes the listeners ExportWorkspace bound before the resume.
+	// bindWorkspaceListeners can start its in-netns 9p listener once the packed VM's
+	// netns exists (the export is recorded during the pre-netns workspace reconcile).
 	fuseHost map[string]string
 	fuseCtx  map[string]context.Context
 	// pendingUnmount holds guest workspace paths removed by UnexportWorkspace that
@@ -142,11 +138,6 @@ type microvm struct {
 	// base name) trusting the sandbox CA, built host-side in InstallCA and handed
 	// to the guest via the params drive so Chromium/Playwright trust sbxproxy.
 	nssDB map[string][]byte
-
-	// readyLn is the host-side listener for the guest's readiness beacon
-	// (firecracker.GuestReadyPort). LaunchAgent opens it before boot; WaitReady
-	// blocks on Accept. nil until LaunchAgent runs.
-	readyLn net.Listener
 
 	// Prewarm snapshot-resume state. snapFile/memFile hold the full VM snapshot
 	// PrewarmSnapshot writes (device/vCPU state and guest memory respectively);
@@ -185,17 +176,11 @@ func newMicroVM(cfg Config) *microvm {
 		cgroupName = cfg.Hostname + "-" + cfg.Key
 	}
 	jail := filepath.Join(envOr("FIRECRACKER_RUN_DIR", "/run/firecracker"), id)
-	// vsock.sock and the per-port guest↔host sockets live in their own subdir so a
-	// pack-mode resume can bind the whole dir over the base snapshot's canonical
-	// vsock path in one mount, giving each VM a private vsock channel.
-	vsockDir := filepath.Join(jail, baseVsockDirName)
 	m := &microvm{
 		hostname:    cfg.Hostname,
 		cgroupPath:  sandboxCgroupPath(cgroupName),
 		jailDir:     jail,
 		apiSock:     filepath.Join(jail, "firecracker.sock"),
-		vsockDir:    vsockDir,
-		vsockUDS:    filepath.Join(vsockDir, "vsock.sock"),
 		configFile:  filepath.Join(jail, "config.json"),
 		logFile:     filepath.Join(jail, "firecracker.log"),
 		rootfsImg:   filepath.Join(jail, "rootfs.ext4"),
@@ -231,7 +216,6 @@ const (
 	baseSnapshotName = "snapshot.bin"
 	baseMemName      = "mem.bin"
 	baseOverlayName  = "overlay.ext4"
-	baseVsockDirName = "vsock"
 )
 
 // baseSnapshotReady reports whether a base dir holds a complete snapshot triple
@@ -340,8 +324,8 @@ const bundledRootfsImg = runc.MntDir + "/rootfs.ext4"
 // (shared, outside jailDir, so UnmountRoot's RemoveAll leaves it intact) and
 // builds the per-sandbox overlay.
 func (m *microvm) MountRoot() error {
-	if err := m.ensureVsockDir(); err != nil {
-		return err
+	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
+		return fmt.Errorf("create jail dir: %w", err)
 	}
 	fi, err := os.Stat(bundledRootfsImg)
 	if err != nil {
@@ -369,20 +353,10 @@ func (m *microvm) UnmountRoot() error {
 	return os.RemoveAll(m.jailDir)
 }
 
-// ensureVsockDir creates the jail's vsock subdir (which also creates jailDir).
-// Both the firecracker mux socket and sandboxd's per-port guest↔host listeners
-// land here, so it must exist before any of them is bound. Idempotent.
-func (m *microvm) ensureVsockDir() error {
-	if err := os.MkdirAll(m.vsockDir, 0o755); err != nil {
-		return fmt.Errorf("create vsock dir: %w", err)
-	}
-	return nil
-}
-
-// ExportWorkspace starts a 9p-over-vsock server rooted at the host sbxfuse
-// mount and records the mount + assigned vsock port for the guest to mount.
-// Every guest workspace op then lands on the host FUSE daemon, reusing its
-// ACL enforcement, audit events, and remote-backend handling.
+// ExportWorkspace records a workspace mount (host sbxfuse dir, guest mount path,
+// assigned 9p TCP port) and, where the netns is already up, starts its host-side
+// 9p listener. Every guest workspace op then lands on the host FUSE daemon,
+// reusing its ACL enforcement, audit events, and remote-backend handling.
 func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount string) error {
 	// hostMount is the host-side sbxfuse dir the 9p server serves; guestMount is
 	// where the guest mounts it (and the key UnexportWorkspace looks up by, via the
@@ -390,12 +364,6 @@ func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount str
 	// host path is per-key (/run/sandboxd/<key>/mnt/...) while its guest path is the
 	// configured mount (e.g. /workspace) — so the guest must be told to mount at
 	// guestMount, not the host path, or /workspace never appears in the guest.
-	// ExportWorkspace runs before MountRoot (which also creates jailDir), so
-	// ensure the vsock dir exists before binding the 9p vsock socket under it.
-	if err := m.ensureVsockDir(); err != nil {
-		return err
-	}
-
 	m.mu.Lock()
 	if m.nextFusePort == 0 {
 		m.nextFusePort = firecracker.GuestFuseBasePort
@@ -403,7 +371,7 @@ func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount str
 	port := m.nextFusePort
 	m.nextFusePort++
 	m.fuse = append(m.fuse, firecracker.GuestFuse{Mount: guestMount, Port: port})
-	// Record host mount + ctx so rebindFuseListeners can re-create this listener
+	// Record host mount + ctx so bindWorkspaceListeners can start this listener
 	// after a snapshot resume (Firecracker wipes the socket on /snapshot/load).
 	if m.fuseHost == nil {
 		m.fuseHost = map[string]string{}
@@ -413,26 +381,56 @@ func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount str
 	m.fuseCtx[guestMount] = ctx
 	m.mu.Unlock()
 
-	// On the resume path (pack base) the prewarm snapshot never had a workspace and
-	// the mount is deferred (see ApplyResumeState), so the guest never dials this
-	// port. Binding the host 9p listener anyway just drops a stray socket into the
-	// vsock dir while Firecracker is re-initializing its vsock device on resume —
-	// pure perturbation with no consumer. Skip it; the fuse entry recorded above is
-	// enough for a future non-deferred mount path.
-	if m.baseDir != "" {
+	// A packed VM's per-key netns is created *after* the workspace reconcile (egress
+	// setup runs later), and the guest is told to mount only after the resume — so
+	// defer binding the 9p listener to bindWorkspaceListeners, called from
+	// ApplyResumeState once the netns and guest are up. The boot/non-packed VM has
+	// its tap in the pod netns already, so bind immediately.
+	if m.netnsName != "" {
 		return nil
 	}
 	return m.serveFuse(ctx, hostMount, guestMount, port)
 }
 
-// serveFuse binds the host-side 9p-over-vsock listener for one workspace (guest→host
-// on `port`, served from hostMount) and starts its server. Each mount runs on its
-// own context so UnexportWorkspace can stop just that one without tearing down the
-// others. Shared by ExportWorkspace (initial bind) and rebindFuseListeners (re-bind
-// after a resume).
+// bindWorkspaceListeners starts the host-side 9p listener for every recorded
+// workspace export that isn't already serving. Called from ApplyResumeState
+// (packed resume) once the VM's netns exists, so the guest's mount dial to the
+// netns gateway reaches a live listener. Idempotent.
+func (m *microvm) bindWorkspaceListeners() error {
+	m.mu.Lock()
+	type todo struct {
+		host, guest string
+		port        uint32
+		ctx         context.Context
+	}
+	var pending []todo
+	for _, f := range m.fuse {
+		if f.Port == 0 || (m.fuseCancel != nil && m.fuseCancel[f.Mount] != nil) {
+			continue // not exportable, or already serving
+		}
+		pending = append(pending, todo{m.fuseHost[f.Mount], f.Mount, f.Port, m.fuseCtx[f.Mount]})
+	}
+	m.mu.Unlock()
+	for _, p := range pending {
+		ctx := p.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := m.serveFuse(ctx, p.host, p.guest, p.port); err != nil {
+			return fmt.Errorf("bind 9p listener %s: %w", p.guest, err)
+		}
+	}
+	return nil
+}
+
+// serveFuse binds the host-side 9p listener for one workspace (the guest dials the
+// netns gateway on `port`; served from hostMount) and starts its server. The
+// listener lives inside the VM's netns (or the pod netns for a boot VM), so it
+// survives a snapshot resume — unlike the former vsock socket. Each mount runs on
+// its own context so UnexportWorkspace can stop just that one.
 func (m *microvm) serveFuse(ctx context.Context, hostMount, guestMount string, port uint32) error {
 	srvCtx, cancel := context.WithCancel(ctx)
-	ln, err := firecracker.HostVsockListener(m.vsockUDS, port)
+	ln, err := listenTCPInNetns(m.netnsName, fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		cancel()
 		return err
@@ -452,44 +450,8 @@ func (m *microvm) serveFuse(ctx context.Context, hostMount, guestMount string, p
 	return nil
 }
 
-// rebindFuseListeners re-creates every exported workspace's host 9p listener after a
-// snapshot resume. Firecracker, on /snapshot/load, re-initializes its vsock device
-// and removes stale per-port sockets (<uds>_<port>) from the vsock dir — which
-// deletes the listeners ExportWorkspace bound *before* the resume — so without this
-// the guest's first 9p dial (the /workspace mount) is reset by the muxer. It stops
-// each orphaned server (whose socket file Firecracker already removed) and binds a
-// fresh listener at the same path.
-func (m *microvm) rebindFuseListeners() error {
-	type item struct {
-		host, guest string
-		port        uint32
-		ctx         context.Context
-		cancel      context.CancelFunc
-	}
-	m.mu.Lock()
-	items := make([]item, 0, len(m.fuse))
-	for _, f := range m.fuse {
-		ctx := m.fuseCtx[f.Mount]
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		items = append(items, item{m.fuseHost[f.Mount], f.Mount, f.Port, ctx, m.fuseCancel[f.Mount]})
-	}
-	m.mu.Unlock()
-	for _, it := range items {
-		// Do NOT cancel the pre-resume server here: closing its listener (whose socket
-		// Firecracker already unlinked on resume) faults the just-resumed guest. Leave
-		// it as a harmless orphan — its socket is gone so it never accepts — and let
-		// teardown (UnexportWorkspace/stopAll) reap it.
-		if err := m.serveFuse(it.ctx, it.host, it.guest, it.port); err != nil {
-			return fmt.Errorf("rebind 9p %s: %w", it.guest, err)
-		}
-	}
-	return nil
-}
-
-// UnexportWorkspace stops the mount's 9p-over-vsock server and drops it from the
-// guest fuse table. Best-effort: unknown mounts are ignored.
+// UnexportWorkspace stops the mount's 9p server and drops it from the guest
+// fuse table. Best-effort: unknown mounts are ignored.
 func (m *microvm) UnexportWorkspace(ctx context.Context, mount string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -796,20 +758,11 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		NetworkInterfaces: []firecracker.NetworkInterface{
 			{IfaceID: "eth0", HostDevName: m.tapName, GuestMAC: m.guestMAC},
 		},
-		Vsock:  &firecracker.Vsock{GuestCID: int(firecracker.GuestCID), UDSPath: m.vsockUDS},
 		Logger: &firecracker.Logger{LogPath: m.logFile, Level: "Info"},
 	}
 	if err := firecracker.WriteConfigFile(m.configFile, fcCfg); err != nil {
 		return "", nil, fmt.Errorf("write firecracker config: %w", err)
 	}
-
-	// Open the readiness-beacon listener before boot so the guest's dial (once
-	// its exec listener is up) is never refused; WaitReady blocks on its Accept.
-	readyLn, err := firecracker.HostVsockListener(m.vsockUDS, firecracker.GuestReadyPort)
-	if err != nil {
-		return "", nil, fmt.Errorf("open ready listener: %w", err)
-	}
-	m.readyLn = readyLn
 
 	m.applyCgroupLimits()
 	bin, args := firecracker.Command(m.fcBin, m.apiSock, m.configFile)
@@ -943,56 +896,32 @@ func reflinkCopy(src, dst string) error {
 	return nil
 }
 
-// WaitReady blocks until the in-guest agent dials the readiness beacon (it
-// does so right after its exec listener is up, i.e. once the workload root is
-// assembled) or ctx is cancelled.
+// WaitReady blocks until the in-guest agent is ready (its readiness port
+// accepts a connection) or ctx is cancelled.
 func (m *microvm) WaitReady(ctx context.Context) error { return m.acceptReady(ctx) }
 
-// acceptReady blocks on a single connection to the readiness-beacon listener
-// (the guest dialing GuestReadyPort once its exec listener is up). Shared by the
-// cold-boot WaitReady and PrewarmSnapshot, which both wait for the same edge.
+// acceptReady polls the guest's readiness port (GuestReadyPort), which the guest
+// opens only once warm (sbxguest.serveReady, gated on prewarmReady). A successful
+// TCP connect is the ready edge — readiness by polling, since the guest can no
+// longer dial out over vsock. Shared by the cold-boot WaitReady and
+// PrewarmSnapshot, which both wait for the same edge.
 func (m *microvm) acceptReady(ctx context.Context) error {
-	if m.readyLn == nil {
-		return fmt.Errorf("ready listener not initialized; LaunchAgent must run first")
-	}
-	defer m.readyLn.Close()
-
-	type result struct {
-		conn net.Conn
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
-		conn, err := m.readyLn.Accept()
-		done <- result{conn, err}
-	}()
-	select {
-	case <-ctx.Done():
-		m.readyLn.Close() // unblock Accept above
-		return ctx.Err()
-	case r := <-done:
-		if r.err != nil {
-			return fmt.Errorf("accept ready beacon: %w", r.err)
+	for {
+		dialCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		conn, err := m.dialGuest(dialCtx, firecracker.GuestReadyPort)
+		cancel()
+		if err == nil {
+			conn.Close()
+			return nil
 		}
-		defer r.conn.Close()
-		// Read the guest's post-connect confirmation byte before returning, so a
-		// caller that pauses immediately (PrewarmSnapshot) does so only after the
-		// guest's connect() has fully returned — never mid-dial. A guest that sends
-		// no byte (older baked snapshot) still presents a valid ready edge via the
-		// accepted connection, so don't fail readiness when the read times out.
-		_ = r.conn.SetReadDeadline(time.Now().Add(readyConfirmTimeout))
-		if _, err := io.ReadFull(r.conn, make([]byte, 1)); err != nil {
-			log.Printf("microvm: ready beacon: confirm byte: %v", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
 		}
-		return nil
 	}
 }
 
-// readyConfirmTimeout bounds how long acceptReady waits for the guest's
-// post-connect byte. It's a defensive cap only — the byte arrives microseconds
-// after the connection is accepted on a healthy guest; a slow/absent byte
-// degrades to the pre-existing "accepted connection == ready" behavior.
-const readyConfirmTimeout = 2 * time.Second
 
 // PrewarmSnapshot boots a guest running the image entrypoint from the
 // eagerly-prepared overlay (no workspaces yet — they aren't known), waits for it
@@ -1029,11 +958,6 @@ func (m *microvm) PrewarmSnapshot(ctx context.Context, imgCfg *runc.ImageConfig)
 		_ = proc.Process.Kill()
 		_ = proc.Wait()
 		_ = os.Remove(m.apiSock)
-		_ = os.Remove(m.vsockUDS)
-		if m.readyLn != nil {
-			m.readyLn.Close()
-			m.readyLn = nil
-		}
 	}
 	defer stop()
 
@@ -1086,20 +1010,20 @@ func (m *microvm) ResumeAgent() (string, []string, error) {
 		return wbin, wargs, nil
 	}
 	// Pack base resume: every VM loads the same base snapshot, which recorded the
-	// base builder's canonical overlay and vsock paths. Give this VM private copies
-	// — a copy-on-write overlay seeded from the base, and its own vsock dir — and
-	// bind them over those canonical paths inside a per-VM mount namespace so the
-	// VMM opens per-VM files. The tap is remapped on load (ResumeReady); guest
-	// memory is the shared base mem.bin, kept COW-private per VM by the File backend.
-	if err := m.ensureVsockDir(); err != nil {
-		return "", nil, err
+	// base builder's canonical overlay path. Give this VM a private copy-on-write
+	// overlay seeded from the base and bind it over that canonical path inside a
+	// per-VM mount namespace so the VMM opens per-VM files. The tap is remapped on
+	// load (ResumeReady); guest memory is the shared base mem.bin, kept COW-private
+	// per VM by the File backend. (Host<->guest channels are TCP over the netns, so
+	// there is no vsock dir to bind.)
+	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("create jail dir: %w", err)
 	}
 	if err := reflinkCopy(filepath.Join(m.baseDir, baseOverlayName), m.overlayImg); err != nil {
 		return "", nil, fmt.Errorf("seed overlay from base: %w", err)
 	}
 	binds := [][2]string{
 		{m.overlayImg, filepath.Join(m.baseDir, baseOverlayName)},
-		{m.vsockDir, filepath.Join(m.baseDir, baseVsockDirName)},
 	}
 	wbin, wargs := m.cgroupUnshareWrap(bin, args, binds)
 	return wbin, wargs, nil
@@ -1152,19 +1076,15 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	fuse := append([]firecracker.GuestFuse(nil), m.fuse...)
 	unmounts := append([]string(nil), m.pendingUnmount...)
 	m.mu.Unlock()
-	// Workspace 9p mounts are deferred on the microvm resume path. Firecracker
-	// asynchronously unlinks the host-side <uds>_<port> 9p sockets when it re-inits
-	// its vsock device on /snapshot/load; re-binding them races that unlink against
-	// the guest's mount dial (port 1100), a race only "won" by slowing the guest with
-	// a serial console (FIRECRACKER_DEBUG_CONSOLE) — not a real fix. Until it's
-	// resolved deterministically (guest-side mount retry, or stopping Firecracker
-	// from unlinking the socket), deliver only env/re-IP/clock so the sandbox comes
-	// up reliably with no console dependency. The resident-workload paths (exec over
-	// vsock, the ingress HTTP proxy) don't need /workspace. See rebindFuseListeners
-	// for the mechanism once the race is fixed. TODO: restore workspace-on-resume.
-	if m.baseDir != "" && len(fuse) > 0 {
-		log.Printf("microvm: resume: deferring %d workspace mount(s) — 9p-on-resume re-bind race (TODO)", len(fuse))
-		fuse = nil
+	// Bind each workspace's host 9p listener now (the VM's netns exists and the
+	// guest is resumed). The listener lives in the netns and the guest dials the
+	// gateway over TCP, so — unlike the former 9p-over-vsock, which Firecracker's
+	// /snapshot/load vsock re-init dropped — the mount survives resume and is
+	// delivered live below via the control RPC. No console dependency.
+	if len(fuse) > 0 {
+		if err := m.bindWorkspaceListeners(); err != nil {
+			return fmt.Errorf("bind workspace listeners: %w", err)
+		}
 	}
 	// A pack base resume always needs the control RPC even with no env/workspaces:
 	// the guest must be re-IP'd off the base snapshot's baked address to this VM's
@@ -1233,14 +1153,7 @@ func (m *microvm) dumpResumeDiag(reason string) {
 	} else {
 		logTail = fmt.Sprintf("(read %s: %v)", m.logFile, err)
 	}
-	var socks []string
-	if entries, err := os.ReadDir(m.vsockDir); err == nil {
-		for _, e := range entries {
-			socks = append(socks, e.Name())
-		}
-	}
-	log.Printf("microvm: resume diag (%s): vsock dir %s = %v\nfirecracker.log tail:\n%s",
-		reason, m.vsockDir, socks, logTail)
+	log.Printf("microvm: resume diag (%s):\nfirecracker.log tail:\n%s", reason, logTail)
 }
 
 // applyResumeOnce performs one control RPC: deliver env + workspaces + clock and
@@ -1248,7 +1161,7 @@ func (m *microvm) dumpResumeDiag(reason string) {
 // return an error so ApplyResumeState retries. Idempotent guest-side (env/clock
 // re-apply cleanly; mountWorkspaces skips already-mounted paths).
 func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []firecracker.GuestFuse, unmounts []string) error {
-	conn, err := firecracker.DialGuest(ctx, m.vsockUDS, firecracker.GuestControlPort)
+	conn, err := m.dialGuest(ctx, firecracker.GuestControlPort)
 	if err != nil {
 		return fmt.Errorf("dial guest control: %w", err)
 	}
@@ -1297,15 +1210,19 @@ func (m *microvm) FlushAgent(ctx context.Context) error {
 	return cmd.Run()
 }
 
-// ExecCmd returns a command that bridges an exec session to the in-guest
-// agent over vsock via the sbxvsock helper. The helper performs the
-// firecracker CONNECT handshake, sends the command, and relays stdio +
-// exit code, so the caller wires it exactly like the container backend's
+// ExecCmd returns a command that bridges an exec session to the in-guest agent
+// over TCP via the sbxvsock helper. The helper dials the guest exec port on the
+// netns network (stamped with the egress SO_MARK), sends the command, and relays
+// stdio + exit code, so the caller wires it exactly like the container backend's
 // `runc exec`.
 func (m *microvm) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, func(), error) {
+	host := m.guestIP
+	if m.sourceIP != "" {
+		host = m.sourceIP
+	}
 	args := []string{
-		"-uds", m.vsockUDS,
-		"-port", strconv.Itoa(int(firecracker.GuestExecPort)),
+		"-addr", net.JoinHostPort(host, strconv.Itoa(int(firecracker.GuestExecPort))),
+		"-mark", strconv.Itoa(m.mark),
 		"-command", cfg.Command,
 	}
 	if cfg.Cwd != nil && *cfg.Cwd != "" {

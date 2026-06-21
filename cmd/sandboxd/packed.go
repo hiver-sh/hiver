@@ -612,6 +612,18 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			}
 		}
 		mountMgr.stopAll()
+		// Remove this key's host-side workspace tree (mountpoints + backend dirs).
+		// stopAll only unmounts the shared sbxfuse; the per-key dir under
+		// /run/sandboxd otherwise leaks (and its backend keeps the workspace files)
+		// for the pod's lifetime. The sbxfuse unmount is async, so RemoveAll can hit
+		// a still-busy mountpoint — retry briefly until it lands. Done after the
+		// snapshot capture above.
+		for i := 0; i < 50; i++ {
+			if err := os.RemoveAll(keyRoot); err == nil {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
 		_ = iso.UnmountRoot()
 		p.router.unregister(ip)
 		p.setEgress(ip, nil)
