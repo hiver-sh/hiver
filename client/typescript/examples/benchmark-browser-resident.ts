@@ -54,7 +54,7 @@ const URL = process.env.BENCH_URL ?? "https://example.com";
 // sandbox; reached via the ingress proxy. Keep in sync with browser-host.cjs.
 const HOST_PORT = Number(process.env.BENCH_HOST_PORT ?? "9223");
 const sandboxConfig: hiver.SandboxConfig = {
-  image: "hiversh/playwright:microvm-22",
+  image: "hiversh/playwright:microvm-23",
 };
 
 // The "open page" / goto stage: navigate the resident (pre-opened) page to URL
@@ -305,7 +305,7 @@ async function releaseBatch(batch: BatchResult): Promise<Run[]> {
     ...batch.pending.map(async ({ i, run, sandbox }) => {
       const t = performance.now();
       try {
-        await sandbox.shutdown();
+        // await sandbox.shutdown();
       } catch (e) {
         console.error(`  run ${i}: release error: ${e}`);
       }

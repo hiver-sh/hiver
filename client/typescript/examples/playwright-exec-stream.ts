@@ -26,9 +26,9 @@ const HOST_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 
 const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
-  "hiver-playwright-exec-stream3",
+  "hiver-playwright-exec-stream",
   {
-    image: "hiversh/playwright:microvm-22",
+    image: "hiversh/playwright:microvm-23",
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );
@@ -36,35 +36,11 @@ const createMs = performance.now() - tStart;
 console.info(`sandbox created in ${createMs.toFixed(0)}ms`);
 
 const evalUrl = sandbox.proxyUrl(HOST_PORT) + "/eval";
-const healthUrl = sandbox.proxyUrl(HOST_PORT) + "/healthz";
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Wait for the resident host to answer — the warm browser is reachable. Under
-// microvm isolation it's captured in the snapshot, so it answers the instant the
-// sandbox is claimed; under container (runc) isolation the host is cold-launched
-// as the entrypoint and the sandbox is marked ready ~300-400ms before Chromium
-// finishes launching, so poll until the endpoint is up.
-for (;;) {
-  try {
-    const res = await sandbox.fetchImpl(healthUrl, {
-      method: "GET",
-      signal: AbortSignal.timeout(2_000),
-    });
-    if (res.ok) {
-      await res.text();
-      break;
-    }
-  } catch {
-    /* endpoint not up yet — retry below */
-  }
-  if (performance.now() - tStart > 30_000)
-    throw new Error("browser host never came up");
-  await sleep(100);
-}
-console.info(
-  `browser ready in ${(performance.now() - tStart).toFixed(0)}ms ` +
-    `(create ${createMs.toFixed(0)}ms + connect ${(performance.now() - tStart - createMs).toFixed(0)}ms)`,
-);
+// Under microvm isolation the warm browser is captured in the snapshot, so it
+// answers the instant the sandbox is claimed — no readiness poll needed; the
+// first eval below is the readiness edge.
+console.info(`browser ready in ${(performance.now() - tStart).toFixed(0)}ms (create ${createMs.toFixed(0)}ms)`);
 
 // Run one command in the stateful session: POST the JS to /eval and return its
 // console output (the response body). State persists across calls, so `scrape`
@@ -84,9 +60,10 @@ async function evalCmd(cmd: string): Promise<string> {
 // keeps) persist across calls. The browser is reused — never launched, never
 // closed here.
 const commands = [
-  // Define a reusable scraper; it persists in the session for later commands.
-  `const scrape = async (url) => { const page = await browser.newPage(); await page.goto(url); const titles = await page.$$eval('.titleline > a', els => els.map(el => el.textContent)); await page.close(); for (const t of titles) console.log(t); }`,
-  // Reuse the same warm browser for multiple pages.
+  // Reuse the resident pre-opened `page` — a snapshot-resumed Chromium hangs on
+  // browser.newPage() (new CDP target/renderer), so drive the warm page directly,
+  // exactly as the resident-browser benchmark does.
+  `const scrape = async (url) => { await page.goto(url, { waitUntil: 'domcontentloaded' }); const titles = await page.$$eval('.titleline > a', els => els.map(el => el.textContent)); for (const t of titles) console.log(t); }`,
   `await scrape('https://news.ycombinator.com')`,
   `await scrape('https://news.ycombinator.com/news?p=2')`,
 ];
