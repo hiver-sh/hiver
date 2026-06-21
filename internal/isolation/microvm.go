@@ -413,6 +413,15 @@ func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount str
 	m.fuseCtx[guestMount] = ctx
 	m.mu.Unlock()
 
+	// On the resume path (pack base) the prewarm snapshot never had a workspace and
+	// the mount is deferred (see ApplyResumeState), so the guest never dials this
+	// port. Binding the host 9p listener anyway just drops a stray socket into the
+	// vsock dir while Firecracker is re-initializing its vsock device on resume —
+	// pure perturbation with no consumer. Skip it; the fuse entry recorded above is
+	// enough for a future non-deferred mount path.
+	if m.baseDir != "" {
+		return nil
+	}
 	return m.serveFuse(ctx, hostMount, guestMount, port)
 }
 
@@ -822,10 +831,15 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 // stays visible when you need to watch a boot failure.
 func (m *microvm) cgroupWrap(bin string, args []string) (string, []string) {
 	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
-	redirect := ">/dev/null 2>&1"
-	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
-		redirect = ""
-	}
+	// firecracker MUST inherit the supervisor's stdio pipes — do not redirect them
+	// to /dev/null. superviseStdio derives the agent-exit signal (agentDone) from
+	// those pipes reaching EOF; a `>/dev/null` redirect closes them at exec time, so
+	// agentDone fires immediately and the teardown goroutine SIGTERMs the VM ~200ms
+	// after a resume (the silent "dies shortly after resume" bug — masked only by
+	// FIRECRACKER_DEBUG_CONSOLE, which happens to also skip this redirect). In
+	// non-console mode firecracker emits ~nothing here; the supervisor drains and
+	// discards it (onStdio is nil), so leaving stdio attached costs nothing.
+	redirect := ""
 	// cgroup placement happens first (netns-independent), then — for a packed VM —
 	// enter its netns so firecracker opens the tap there.
 	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s%s %s %s",
@@ -895,10 +909,15 @@ func (m *microvm) applyCgroupLimits() {
 // tracks the firecracker process.
 func (m *microvm) cgroupUnshareWrap(bin string, args []string, binds [][2]string) (string, []string) {
 	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
-	redirect := ">/dev/null 2>&1"
-	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
-		redirect = ""
-	}
+	// firecracker MUST inherit the supervisor's stdio pipes — do not redirect them
+	// to /dev/null. superviseStdio derives the agent-exit signal (agentDone) from
+	// those pipes reaching EOF; a `>/dev/null` redirect closes them at exec time, so
+	// agentDone fires immediately and the teardown goroutine SIGTERMs the VM ~200ms
+	// after a resume (the silent "dies shortly after resume" bug — masked only by
+	// FIRECRACKER_DEBUG_CONSOLE, which happens to also skip this redirect). In
+	// non-console mode firecracker emits ~nothing here; the supervisor drains and
+	// discards it (onStdio is nil), so leaving stdio attached costs nothing.
+	redirect := ""
 	var inner strings.Builder
 	inner.WriteString("mount --make-rprivate / && ")
 	for _, b := range binds {
@@ -1133,14 +1152,19 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	fuse := append([]firecracker.GuestFuse(nil), m.fuse...)
 	unmounts := append([]string(nil), m.pendingUnmount...)
 	m.mu.Unlock()
-	// On the pack/resume path Firecracker unlinks the host-side <uds>_<port> 9p
-	// sockets when it re-inits its vsock device on /snapshot/load, so the workspace
-	// listeners ExportWorkspace bound before the resume must be re-bound before the
-	// guest is told to mount (and dials port 1100).
+	// Workspace 9p mounts are deferred on the microvm resume path. Firecracker
+	// asynchronously unlinks the host-side <uds>_<port> 9p sockets when it re-inits
+	// its vsock device on /snapshot/load; re-binding them races that unlink against
+	// the guest's mount dial (port 1100), a race only "won" by slowing the guest with
+	// a serial console (FIRECRACKER_DEBUG_CONSOLE) — not a real fix. Until it's
+	// resolved deterministically (guest-side mount retry, or stopping Firecracker
+	// from unlinking the socket), deliver only env/re-IP/clock so the sandbox comes
+	// up reliably with no console dependency. The resident-workload paths (exec over
+	// vsock, the ingress HTTP proxy) don't need /workspace. See rebindFuseListeners
+	// for the mechanism once the race is fixed. TODO: restore workspace-on-resume.
 	if m.baseDir != "" && len(fuse) > 0 {
-		if err := m.rebindFuseListeners(); err != nil {
-			return fmt.Errorf("rebind workspace listeners: %w", err)
-		}
+		log.Printf("microvm: resume: deferring %d workspace mount(s) — 9p-on-resume re-bind race (TODO)", len(fuse))
+		fuse = nil
 	}
 	// A pack base resume always needs the control RPC even with no env/workspaces:
 	// the guest must be re-IP'd off the base snapshot's baked address to this VM's
