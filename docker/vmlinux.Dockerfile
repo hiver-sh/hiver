@@ -1,5 +1,5 @@
 FROM debian:bookworm-slim AS build
-ARG KERNEL_VERSION=6.1.102
+ARG KERNEL_VERSION=6.1.128
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bc bison ca-certificates flex gcc libelf-dev libssl-dev make wget xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -13,7 +13,7 @@ RUN case "$(dpkg --print-architecture)" in \
     && mv "linux-${KERNEL_VERSION}" /linux \
     && rm "linux-${KERNEL_VERSION}.tar.xz" \
     && wget -q -O /linux/.config \
-        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.10/${fc_arch}/vmlinux-${KERNEL_VERSION}.config" \
+        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/${fc_arch}/vmlinux-${KERNEL_VERSION}.config" \
     && printf '\
 \n# 9p-over-vsock workspace transport — absent from the Firecracker CI config.\
 \nCONFIG_NET_9P=y\
