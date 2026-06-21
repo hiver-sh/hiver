@@ -3,7 +3,7 @@ CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 # JS/TS subprojects with their own format/lint npm scripts
 JS_DIRS := cli client/typescript
 
-.PHONY: help build build-images bundle-sandbox-images publish-images publish-sandbox-images buildx-builder up down test e2e test-e2e test-unit gen fmt format lint $(CMDS)
+.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images buildx-builder up down test e2e test-e2e test-unit gen fmt format lint $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -16,6 +16,7 @@ build-images: ## Build docker images
 # Platforms to build multi-arch images for. The deployment servers are amd64,
 # so amd64 must be included or `docker pull` fails with "no matching manifest".
 PLATFORMS ?= linux/amd64,linux/arm64
+KERNEL_VERSION ?= 6.1.102
 
 # Build and push the default sandbox images as multi-arch manifest lists.
 # `hiver bundle --platform` pushes directly, so there's no separate push step.
@@ -33,6 +34,18 @@ bundle-microvm-sandbox-images: ## Bundle and push the microvm sandbox images (mu
 
 # Multi-arch builds need a docker-container driver builder; the default `docker`
 # driver can't build+push a manifest list. Create one if it's missing.
+publish-vmlinux: buildx-builder ## Build and push the guest kernel image (run once per kernel version bump)
+	docker buildx build \
+		--builder hiver-multiarch \
+		--platform $(PLATFORMS) \
+		--build-arg KERNEL_VERSION=$(KERNEL_VERSION) \
+		--cache-from type=registry,ref=hiversh/vmlinux:cache \
+		--cache-to type=registry,ref=hiversh/vmlinux:cache,mode=max \
+		-f docker/vmlinux.Dockerfile \
+		--push \
+		-t hiversh/vmlinux:$(KERNEL_VERSION) \
+		.
+
 buildx-builder:
 	@docker buildx inspect hiver-multiarch >/dev/null 2>&1 || \
 		docker buildx create --name hiver-multiarch --driver docker-container --bootstrap
@@ -42,8 +55,11 @@ buildx-builder:
 # (e.g. `gateway`, `..`) against that dir rather than the repo root.
 publish-images: buildx-builder ## Build and push multi-arch images to the registry
 	cd docker && docker buildx bake -f compose.yaml \
+		--allow=fs.read=.. \
 		--builder hiver-multiarch \
 		--set "*.platform=$(PLATFORMS)" \
+		--set "gateway.cache-from=type=registry,ref=hiversh/gateway:cache" \
+		--set "gateway.cache-to=type=registry,ref=hiversh/gateway:cache,mode=max" \
 		--push \
 		controller core gateway
 

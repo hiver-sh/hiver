@@ -18,8 +18,8 @@ const packCachePollInterval = 1 * time.Second
 // packCache is an in-memory snapshot of the running prewarm/pack host pods,
 // mapping each served image to the IPs of the hosts serving it. A single
 // background poller (startPackCachePoller) keeps it current; getOrCreate reads it
-// to place a sandbox into a warm host with no orchestrator round-trip, and the
-// events stream reads it to discover which hosts to follow. Reads take a read
+// to place a sandbox into one of those hosts without an orchestrator round-trip,
+// and the events stream reads it to discover which hosts to follow. Reads take a read
 // lock and copy, so a refresh never blocks them for long.
 type packCache struct {
 	mu      sync.RWMutex

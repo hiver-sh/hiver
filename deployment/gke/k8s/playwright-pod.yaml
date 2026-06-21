@@ -1,11 +1,11 @@
-# A standalone sandbox Pod for the hiversh/playwright:microvm-12 image.
+# A standalone sandbox Pod for the hiversh/playwright:microvm-20 image.
 apiVersion: v1
 kind: Pod
 metadata:
   name: playwright-microvm
   namespace: hiver-sandbox
   labels:
-    hiver.sandbox.key: playwright-microvm-17
+    hiver.sandbox.key: playwright-microvm-22
 spec:
   restartPolicy: Never
   containers:
@@ -17,24 +17,24 @@ spec:
       # still lands on an old image. A digest is content-addressed, so the
       # mirror serves the exact image. Update this to the new digest after each
       # push (docker buildx imagetools inspect hiversh/playwright:microvm-12).
-      image: hiversh/playwright:microvm-17
+      image: hiversh/playwright:microvm-22
       imagePullPolicy: IfNotPresent
       args: ["--pack", "--prewarm", "--snapshot-dir", "/snapshots"]
       ports:
         - containerPort: 8099
       env:
         - name: HIVE_SPEC
-          # Guest size for the microVM: 2 vCPUs / 1 GiB RAM (the same sizing the
-          # old microvm-10 warm-pool entry used for this image). The guest's vCPU
-          # count and RAM come from cpu/memory here, not the pod resources.
+          # Guest size for the microVM: 1 vCPU / 1 GiB RAM. firecracker bakes the
+          # vCPU count into the base snapshot, so every resumer inherits it; the
+          # count comes from cpu/memory here, not the pod resources. Sized at 1
+          # (down from 2) so a concurrent-resume burst doesn't oversubscribe the
+          # node's few cores — at high qps the 2-vCPU guests put ~2N vCPU threads
+          # on a 4-core node, and the resume/apply-state phases (CPU-bound in the
+          # guest) ballooned under that contention. Takes effect on the next pod
+          # deploy, which rebuilds the base snapshot at the new size.
           value: |
-            {"image":"hiversh/playwright:microvm-17","cpu":2,"memory":1024}
-        # DEBUG: bake console=ttyS0 into the base snapshot so a resumed guest's
-        # kernel output (e.g. a panic on resume) goes to firecracker's stdout and
-        # into the pod log. Remove once the resume-failure root cause is found —
-        # the serial console adds measurable guest boot cost.
-        - name: FIRECRACKER_DEBUG_CONSOLE
-          value: "1"
+            {"image":"hiversh/playwright:microvm-22","cpu":2,"memory":1024}
+
       securityContext:
         privileged: true
       resources:
@@ -44,7 +44,7 @@ spec:
         # (GKE reserves ~80m CPU and ~2.7 GiB for system daemons), so the pod
         # bursts up to the node's allocatable without needing the exact figure.
         requests:
-          cpu: "2"
+          cpu: "1"
           memory: 1Gi
         limits:
           cpu: "4"

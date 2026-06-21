@@ -431,10 +431,10 @@ func (r *K8sRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
 }
 
 func (r *K8sRuntime) Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
-	// Prefer a cached prewarm host for this image: if one is standing by, pack the
-	// sandbox into it (POST /v1/<key>) straight from the in-memory cache, with no
-	// orchestrator round-trip. tryPackCreate reports ok=false when no host is
-	// cached for the image, in which case we cold-boot a dedicated per-key Pod.
+	// If a prewarm host is cached for this image, pack the sandbox into it
+	// (POST /v1/<key>) from the in-memory cache. tryPackCreate reports ok=false
+	// when no host is cached for the image, in which case we cold-boot a dedicated
+	// per-key Pod.
 	if sb, ok, err := r.tryPackCreate(ctx, key, cfg); err != nil || ok {
 		return sb, err
 	}
@@ -492,7 +492,7 @@ func (r *K8sRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sandb
 }
 
 // tryPackCreate is the getOrCreate fast path: if the in-memory pack cache holds a
-// warm host for cfg's image, pack key into it via POST /v1/<key> and return
+// host for cfg's image, pack key into it via POST /v1/<key> and return
 // (ok=true) without touching the k8s API. ok=false means no host is cached for
 // the image, so the caller cold-boots a dedicated pod. The POST is idempotent on
 // key and candidates maps a key to the same primary host every time, so a repeated

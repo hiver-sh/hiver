@@ -10,7 +10,6 @@ ENV NODE_PATH=/usr/local/lib/node_modules
 RUN apt-get update \
     && npm install -g playwright \
     && npx playwright install --with-deps chromium \
-    && apt-get install -y --no-install-recommends socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-warm Chromium so the first in-sandbox launch is fast:
@@ -27,10 +26,12 @@ RUN fc-cache -f \
 # Resident browser host: this is the image entrypoint, so it runs during the
 # prewarm boot and stays resident — a claimed sandbox inherits Chromium already
 # running (captured in the microvm snapshot, or kept alive in the runc container).
-# Clients drive it over a single execStream session bridged to its Unix socket
-# with socat, instead of paying node startup + require('playwright') +
-# chromium.launch() per exec. The required env (NODE_PATH, PLAYWRIGHT_*) is set
-# via ENV above. See browser-host.cjs.
+# Clients drive it over HTTP (POST /eval through the sandbox ingress proxy),
+# instead of paying node startup + require('playwright') + chromium.launch() per
+# exec. The required env (NODE_PATH, PLAYWRIGHT_*) is set via ENV above. See
+# browser-host.cjs.
 COPY browser-host.cjs /opt/hiver/browser-host.cjs
+
+EXPOSE 9223
 
 ENTRYPOINT ["node", "/opt/hiver/browser-host.cjs"]

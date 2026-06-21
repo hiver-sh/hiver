@@ -99,7 +99,7 @@ func (m *microvm) setupPackedNetMicrovm(ctx context.Context, proxyPort, dnsPort,
 	// SNAT + filter FORWARD drop), one for the pod netns (nat PREROUTING DNAT +
 	// OUTPUT mark RETURN), and one ip6tables-restore for the in-netns v6 drop. All
 	// use --noflush so other VMs' rules in the shared pod netns are preserved.
-	if err := loadNetnsRules(ctx, ns, vp, m.tapName, src); err != nil {
+	if err := loadNetnsRules(ctx, ns, vp, m.tapName, src, m.guestIP); err != nil {
 		return err
 	}
 	if err := loadPodRules(ctx, vh, proxyPort, mark); err != nil {
@@ -269,13 +269,21 @@ func addrUpInNetns(ns, dev, ip string) error {
 // and the shared sbxproxy see a distinct per-sandbox source), and drop non-TCP
 // guest egress reaching FORWARD (DNS is delivered locally to the in-netns sink;
 // guest TCP is forwarded out vp; everything else — UDP, ICMP, raw — has no path).
-func loadNetnsRules(ctx context.Context, ns, vp, tap, src string) error {
+func loadNetnsRules(ctx context.Context, ns, vp, tap, src, guestIP string) error {
+	// nat: POSTROUTING SNATs the guest's egress to this VM's source identity (src).
+	// PREROUTING DNATs host-initiated ingress onward to the guest: the pod-side proxy
+	// dials the sandbox at src (the netns veth address), but the workload listens in
+	// the guest at its baked tap IP (guestIP), so without this the SYN hits the
+	// netns's own veth stack and is RST. DNATing all ingress TCP to the guest makes
+	// /proxy/<port> (e.g. the resident browser host on :9223) reach the in-guest
+	// listener. filter: drop non-TCP forwarded from the guest tap.
 	rules := fmt.Sprintf("*nat\n"+
 		"-A POSTROUTING -o %s -j SNAT --to-source %s\n"+
+		"-A PREROUTING -i %s -d %s -p tcp -j DNAT --to-destination %s\n"+
 		"COMMIT\n"+
 		"*filter\n"+
 		"-A FORWARD -i %s ! -p tcp -j DROP\n"+
-		"COMMIT\n", vp, src, tap)
+		"COMMIT\n", vp, src, vp, src, guestIP, tap)
 	if out, err := runRestore(ctx, "iptables-restore", ns, rules); err != nil {
 		return fmt.Errorf("netns %s iptables-restore: %w (%s)", ns, err, out)
 	}

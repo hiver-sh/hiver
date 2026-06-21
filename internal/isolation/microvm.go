@@ -120,6 +120,12 @@ type microvm struct {
 	fuse []firecracker.GuestFuse
 	// fuseCancel stops each mount's 9p-over-vsock server (UnexportWorkspace).
 	fuseCancel map[string]context.CancelFunc
+	// fuseHost/fuseCtx record each export's host mountpoint and parent context so
+	// rebindFuseListeners can re-create its 9p-over-vsock listener after a snapshot
+	// resume — Firecracker cleans stale <uds>_<port> sockets on /snapshot/load,
+	// which deletes the listeners ExportWorkspace bound before the resume.
+	fuseHost map[string]string
+	fuseCtx  map[string]context.Context
 	// pendingUnmount holds guest workspace paths removed by UnexportWorkspace that
 	// the guest hasn't been told to umount yet. The next ApplyResumeState carries
 	// them in the control RPC (UnmountWorkspaces) and clears them on success — the
@@ -397,26 +403,79 @@ func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount str
 	port := m.nextFusePort
 	m.nextFusePort++
 	m.fuse = append(m.fuse, firecracker.GuestFuse{Mount: guestMount, Port: port})
-	// Each mount's 9p server runs on its own context so UnexportWorkspace can
-	// stop just that one without tearing down the others.
-	srvCtx, cancel := context.WithCancel(ctx)
-	if m.fuseCancel == nil {
-		m.fuseCancel = map[string]context.CancelFunc{}
+	// Record host mount + ctx so rebindFuseListeners can re-create this listener
+	// after a snapshot resume (Firecracker wipes the socket on /snapshot/load).
+	if m.fuseHost == nil {
+		m.fuseHost = map[string]string{}
+		m.fuseCtx = map[string]context.Context{}
 	}
-	m.fuseCancel[guestMount] = cancel
+	m.fuseHost[guestMount] = hostMount
+	m.fuseCtx[guestMount] = ctx
 	m.mu.Unlock()
 
+	return m.serveFuse(ctx, hostMount, guestMount, port)
+}
+
+// serveFuse binds the host-side 9p-over-vsock listener for one workspace (guest→host
+// on `port`, served from hostMount) and starts its server. Each mount runs on its
+// own context so UnexportWorkspace can stop just that one without tearing down the
+// others. Shared by ExportWorkspace (initial bind) and rebindFuseListeners (re-bind
+// after a resume).
+func (m *microvm) serveFuse(ctx context.Context, hostMount, guestMount string, port uint32) error {
+	srvCtx, cancel := context.WithCancel(ctx)
 	ln, err := firecracker.HostVsockListener(m.vsockUDS, port)
 	if err != nil {
 		cancel()
 		return err
 	}
+	m.mu.Lock()
+	if m.fuseCancel == nil {
+		m.fuseCancel = map[string]context.CancelFunc{}
+	}
+	m.fuseCancel[guestMount] = cancel
+	m.mu.Unlock()
 	go func() {
 		if err := firecracker.Serve9P(srvCtx, hostMount, ln); err != nil && srvCtx.Err() == nil {
 			// Logged via the server's own path; nothing actionable here.
 			_ = err
 		}
 	}()
+	return nil
+}
+
+// rebindFuseListeners re-creates every exported workspace's host 9p listener after a
+// snapshot resume. Firecracker, on /snapshot/load, re-initializes its vsock device
+// and removes stale per-port sockets (<uds>_<port>) from the vsock dir — which
+// deletes the listeners ExportWorkspace bound *before* the resume — so without this
+// the guest's first 9p dial (the /workspace mount) is reset by the muxer. It stops
+// each orphaned server (whose socket file Firecracker already removed) and binds a
+// fresh listener at the same path.
+func (m *microvm) rebindFuseListeners() error {
+	type item struct {
+		host, guest string
+		port        uint32
+		ctx         context.Context
+		cancel      context.CancelFunc
+	}
+	m.mu.Lock()
+	items := make([]item, 0, len(m.fuse))
+	for _, f := range m.fuse {
+		ctx := m.fuseCtx[f.Mount]
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		items = append(items, item{m.fuseHost[f.Mount], f.Mount, f.Port, ctx, m.fuseCancel[f.Mount]})
+	}
+	m.mu.Unlock()
+	for _, it := range items {
+		// Do NOT cancel the pre-resume server here: closing its listener (whose socket
+		// Firecracker already unlinked on resume) faults the just-resumed guest. Leave
+		// it as a harmless orphan — its socket is gone so it never accepts — and let
+		// teardown (UnexportWorkspace/stopAll) reap it.
+		if err := m.serveFuse(it.ctx, it.host, it.guest, it.port); err != nil {
+			return fmt.Errorf("rebind 9p %s: %w", it.guest, err)
+		}
+	}
 	return nil
 }
 
@@ -429,6 +488,8 @@ func (m *microvm) UnexportWorkspace(ctx context.Context, mount string) error {
 		cancel()
 		delete(m.fuseCancel, mount)
 	}
+	delete(m.fuseHost, mount)
+	delete(m.fuseCtx, mount)
 	removed := false
 	for i := range m.fuse {
 		if m.fuse[i].Mount == mount {
@@ -1038,8 +1099,11 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 	// any device-restore / guest fault on resume, lands in m.logFile. The cold
 	// path gets this via its config-file; the resume path (CommandNoConfig) has no
 	// logger otherwise, leaving firecracker.log empty when a resumed guest dies.
+	// Level "Info" matches the cold path — high enough to capture a resume fault,
+	// but without the per-request "Debug" fc_api spam, which under a concurrent
+	// resume burst is real log I/O contending for the node's few cores.
 	// Best-effort: a logging-setup failure shouldn't abort an otherwise-fine resume.
-	if err := client.PutLogger(ctx, firecracker.Logger{LogPath: m.logFile, Level: "Debug"}); err != nil {
+	if err := client.PutLogger(ctx, firecracker.Logger{LogPath: m.logFile, Level: "Info"}); err != nil {
 		log.Printf("microvm: resume: configure logger: %v", err)
 	}
 	snap, mem := m.snapFile, m.memFile
@@ -1069,6 +1133,15 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	fuse := append([]firecracker.GuestFuse(nil), m.fuse...)
 	unmounts := append([]string(nil), m.pendingUnmount...)
 	m.mu.Unlock()
+	// On the pack/resume path Firecracker unlinks the host-side <uds>_<port> 9p
+	// sockets when it re-inits its vsock device on /snapshot/load, so the workspace
+	// listeners ExportWorkspace bound before the resume must be re-bound before the
+	// guest is told to mount (and dials port 1100).
+	if m.baseDir != "" && len(fuse) > 0 {
+		if err := m.rebindFuseListeners(); err != nil {
+			return fmt.Errorf("rebind workspace listeners: %w", err)
+		}
+	}
 	// A pack base resume always needs the control RPC even with no env/workspaces:
 	// the guest must be re-IP'd off the base snapshot's baked address to this VM's
 	// own pod-local IP before it is marked ready.
@@ -1099,6 +1172,11 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 			return nil
 		}
 		if ctx.Err() != nil {
+			// The VMM exit handler cancels this ctx (agentDone → cancel), so a resume
+			// that dies mid-RPC lands here. Firecracker's own output is redirected to
+			// /dev/null + firecracker.log (which teardown then deletes), so dump it
+			// while it still exists — otherwise the crash is invisible.
+			m.dumpResumeDiag(fmt.Sprintf("attempt %d failed, ctx done", attempt))
 			return fmt.Errorf("apply resume state (after %d attempts): %w", attempt, err)
 		}
 		log.Printf("microvm: resume state attempt %d failed, retrying: %v", attempt, err)
@@ -1108,9 +1186,37 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 				backoff *= 2
 			}
 		case <-ctx.Done():
+			m.dumpResumeDiag("ctx done while backing off")
 			return fmt.Errorf("apply resume state: %w", ctx.Err())
 		}
 	}
+}
+
+// dumpResumeDiag logs the tail of firecracker.log and a listing of the vsock dir
+// (the per-port guest↔host sockets) when a resume fails. Firecracker's stdout/
+// stderr go to /dev/null and its log to firecracker.log, which teardown removes
+// moments later — so a VMM that dies on resume (e.g. faulting when the guest dials
+// a host vsock port for a 9p workspace mount) leaves no trace otherwise. Best-
+// effort: missing files just yield a short note.
+func (m *microvm) dumpResumeDiag(reason string) {
+	const tail = 4096
+	logTail := "(unreadable)"
+	if data, err := os.ReadFile(m.logFile); err == nil {
+		if len(data) > tail {
+			data = data[len(data)-tail:]
+		}
+		logTail = string(bytes.TrimSpace(data))
+	} else {
+		logTail = fmt.Sprintf("(read %s: %v)", m.logFile, err)
+	}
+	var socks []string
+	if entries, err := os.ReadDir(m.vsockDir); err == nil {
+		for _, e := range entries {
+			socks = append(socks, e.Name())
+		}
+	}
+	log.Printf("microvm: resume diag (%s): vsock dir %s = %v\nfirecracker.log tail:\n%s",
+		reason, m.vsockDir, socks, logTail)
 }
 
 // applyResumeOnce performs one control RPC: deliver env + workspaces + clock and

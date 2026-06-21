@@ -116,8 +116,8 @@ type EgressOverride struct {
 // the proxy doesn't see body bytes through the cipher.
 type AuditEvent struct {
 	At         time.Time         `json:"at"`
-	Type       string            `json:"type"`             // always "network"
-	Phase      string            `json:"phase"`            // "request" | "response" | "response_chunk"
+	Type       string            `json:"type"`  // always "network"
+	Phase      string            `json:"phase"` // "request" | "response" | "response_chunk"
 	RequestID  int               `json:"request_id"`
 	SrcIP      string            `json:"src_ip,omitempty"` // workload source IP; used in pack mode to route to per-sandbox broker
 	Method     string            `json:"method"`
@@ -876,6 +876,17 @@ func (p *Proxy) audit(e AuditEvent) {
 	_ = p.auditEnc.Encode(e)
 }
 
+// EmitControl writes one JSON-line control record on the audit sink, serialized
+// through the same encoder (and lock) as audit events so it never interleaves
+// mid-record. sbxproxy uses it to signal out-of-band state — the applied
+// egress-rules generation — back to sandboxd over the events fd that already
+// carries audit events, avoiding a second channel.
+func (p *Proxy) EmitControl(v any) {
+	p.auditMu.Lock()
+	defer p.auditMu.Unlock()
+	_ = p.auditEnc.Encode(v)
+}
+
 // auditCtx tracks state across the request/response audit pair: the
 // shared RequestID and the start time used to compute DurationMs on
 // the response side. Callers invoke .allow()/.deny() at decision time
@@ -925,7 +936,7 @@ func (a *auditCtx) deny(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID, SrcIP: a.srcIP,
-		Method:  a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method: a.method, Host: a.host, Path: a.path, Query: a.query,
 		Headers: a.requestHeaders,
 		Body:    a.requestBody,
 		Verdict: "deny", Status: status, Reason: reason,
@@ -933,7 +944,7 @@ func (a *auditCtx) deny(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: now, Type: "network", Phase: "response",
 		RequestID: a.requestID, SrcIP: a.srcIP,
-		Method:     a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method: a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "deny", Status: status, Reason: reason,
 		DurationMs: int(now.Sub(a.start) / time.Millisecond),
 	})
@@ -946,7 +957,7 @@ func (a *auditCtx) allow() {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID, SrcIP: a.srcIP,
-		Method:   a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method: a.method, Host: a.host, Path: a.path, Query: a.query,
 		Headers:  a.requestHeaders,
 		Body:     a.requestBody,
 		Verdict:  "allow",
@@ -963,7 +974,7 @@ func (a *auditCtx) response(status int) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response",
 		RequestID: a.requestID, SrcIP: a.srcIP,
-		Method:     a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method: a.method, Host: a.host, Path: a.path, Query: a.query,
 		Headers: a.responseHeaders,
 		Verdict: "allow", Status: status,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
@@ -977,7 +988,7 @@ func (a *auditCtx) streamChunk(body, label string) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response_chunk",
 		RequestID: a.requestID, SrcIP: a.srcIP,
-		Method:    a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method: a.method, Host: a.host, Path: a.path, Query: a.query,
 		Body: body, Label: label, Verdict: "allow",
 	})
 }
@@ -986,7 +997,7 @@ func (a *auditCtx) responseError(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: time.Now(), Type: "network", Phase: "response",
 		RequestID: a.requestID, SrcIP: a.srcIP,
-		Method:     a.method, Host: a.host, Path: a.path, Query: a.query,
+		Method: a.method, Host: a.host, Path: a.path, Query: a.query,
 		Verdict: "error", Status: status, Reason: reason,
 		DurationMs: int(time.Since(a.start) / time.Millisecond),
 	})

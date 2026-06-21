@@ -46,6 +46,12 @@ type packState struct {
 
 	router *proxyRouter // routes sbxproxy audit events to per-sandbox broker by src IP
 
+	// egressGate coalesces the per-source rules-file rewrites + SIGHUPs that
+	// every create/delete would otherwise issue serially; runEgressReloader
+	// drains it. Shared with main's proxy event handler, which advances its
+	// applied generation from sbxproxy's echo.
+	egressGate *egressGate
+
 	mu     sync.Mutex
 	nextN  int                           // next host octet (172.16.0.<n>), starts at 2
 	freed  []int                         // returned octets to reuse
@@ -105,9 +111,144 @@ func (p *packState) freeIP(n int) {
 	p.mu.Unlock()
 }
 
+// egressReloadTimeout bounds how long the create path waits for sbxproxy to ack
+// a coalesced egress reload (egressGate.waitApplied). The wait overlaps the
+// snapshot resume + apply-resume-state work, so it virtually never elapses; it's
+// only a safety net against a missed ack so a create can't hang forever.
+const egressReloadTimeout = 3 * time.Second
+
+// egressFile is the on-disk envelope pack mode writes to the shared sbxproxy
+// rules file: the full per-source allowlist plus a monotonic generation that
+// sbxproxy echoes back once it has applied this exact rule set (see egressGate).
+// The boot/single-sandbox path writes a bare array instead; sbxproxy's readRules
+// accepts both. The generation rides with its rules so an echoed generation
+// always corresponds to the applied content.
+type egressFile struct {
+	Generation uint64                        `json:"generation"`
+	Sources    map[string][]proxy.EgressRule `json:"sources"`
+}
+
+// egressGate coalesces egress-rule reloads between sandboxd and the shared
+// sbxproxy. setEgress mutates the in-memory map, bumps `desired`, and wakes the
+// reloader; a single reloader goroutine collapses a burst of changes into one
+// rules-file rewrite + SIGHUP — turning the old O(N) writes+reloads+reparses per
+// create/delete burst into ~one. sbxproxy echoes the generation it applied back
+// over its events fd, advancing `applied`; the create path blocks (waitApplied)
+// until applied >= its generation so a sandbox's ACL is enforced before it is
+// marked ready. It is decoupled from packState so the proxy's event handler —
+// wired before packState is built — can advance `applied`.
+type egressGate struct {
+	wake chan struct{} // buffered(1): non-blocking reloader wake
+
+	mu        sync.Mutex
+	desired   uint64
+	applied   uint64
+	appliedCh chan struct{} // closed+replaced each time `applied` advances (broadcast)
+}
+
+func newEgressGate() *egressGate {
+	return &egressGate{wake: make(chan struct{}, 1), appliedCh: make(chan struct{})}
+}
+
+// bumpDesired records a new pending change and returns its generation. Callers
+// then call signal() to wake the reloader and may waitApplied() on the result.
+func (g *egressGate) bumpDesired() uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.desired++
+	return g.desired
+}
+
+func (g *egressGate) currentDesired() uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.desired
+}
+
+// signal wakes the reloader without blocking; a pending wake already covers any
+// number of coalesced changes (the reloader always reads the latest desired).
+func (g *egressGate) signal() {
+	select {
+	case g.wake <- struct{}{}:
+	default:
+	}
+}
+
+// markApplied advances the applied generation (sbxproxy's echo) and broadcasts
+// to waiters. Monotonic: out-of-order or duplicate echoes are ignored.
+func (g *egressGate) markApplied(gen uint64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if gen > g.applied {
+		g.applied = gen
+		close(g.appliedCh)
+		g.appliedCh = make(chan struct{})
+	}
+}
+
+// waitApplied blocks until sbxproxy confirms a generation >= gen, ctx is done,
+// or egressReloadTimeout elapses (whichever first). A timeout/cancel returns
+// without error: the pre-coalescing code applied rules with no readiness wait at
+// all, so proceeding is never worse — at worst this one create loses the
+// enforced-before-ready guarantee.
+func (g *egressGate) waitApplied(ctx context.Context, gen uint64) {
+	t := time.NewTimer(egressReloadTimeout)
+	defer t.Stop()
+	for {
+		g.mu.Lock()
+		if g.applied >= gen {
+			g.mu.Unlock()
+			return
+		}
+		ch := g.appliedCh
+		g.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			log.Printf("sandboxd: pack: egress reload gen %d not acked within %s; proceeding", gen, egressReloadTimeout)
+			return
+		}
+	}
+}
+
+// runEgressReloader is the single goroutine that owns the rules-file rewrite +
+// SIGHUP. Woken via egressGate.wake, each pass writes the *latest* desired
+// generation alongside the full per-source map, so a burst of setEgress calls
+// converges to the final state in one reload regardless of burst size. The
+// SIGHUP after the final write guarantees sbxproxy reads (and echoes) that
+// generation, so every waiter <= it is released. Runs until ctx is cancelled.
+func (p *packState) runEgressReloader(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.egressGate.wake:
+		}
+		gen := p.egressGate.currentDesired()
+		p.mu.Lock()
+		snapshot := make(map[string][]proxy.EgressRule, len(p.egress))
+		maps.Copy(snapshot, p.egress)
+		p.mu.Unlock()
+
+		if err := writeJSON(p.rulesPath, egressFile{Generation: gen, Sources: snapshot}); err != nil {
+			log.Printf("sandboxd: pack: write egress rules: %v", err)
+			continue
+		}
+		if err := syscall.Kill(p.proxyPID, syscall.SIGHUP); err != nil {
+			log.Printf("sandboxd: pack: SIGHUP sbxproxy: %v", err)
+		}
+	}
+}
+
 // setEgress records (or clears, when rules is nil) the egress allowlist for a
-// source IP and rewrites the shared sbxproxy rules file, then signals a reload.
-func (p *packState) setEgress(ip string, rules []proxy.EgressRule) {
+// source IP, then wakes the coalescing reloader. It returns the reload
+// generation that includes this change; pass it to egressGate.waitApplied to
+// block until sbxproxy has the rules live. Non-blocking itself, so a teardown
+// (rules == nil) need not wait — a removed sandbox briefly still-allowed is
+// harmless since its workload is already gone.
+func (p *packState) setEgress(ip string, rules []proxy.EgressRule) uint64 {
 	p.mu.Lock()
 	if p.egress == nil {
 		p.egress = map[string][]proxy.EgressRule{}
@@ -117,17 +258,11 @@ func (p *packState) setEgress(ip string, rules []proxy.EgressRule) {
 	} else {
 		p.egress[ip] = rules
 	}
-	snapshot := make(map[string][]proxy.EgressRule, len(p.egress))
-	maps.Copy(snapshot, p.egress)
 	p.mu.Unlock()
 
-	if err := writeJSON(p.rulesPath, snapshot); err != nil {
-		log.Printf("sandboxd: pack: write egress rules: %v", err)
-		return
-	}
-	if err := syscall.Kill(p.proxyPID, syscall.SIGHUP); err != nil {
-		log.Printf("sandboxd: pack: SIGHUP sbxproxy: %v", err)
-	}
+	gen := p.egressGate.bumpDesired()
+	p.egressGate.signal()
+	return gen
 }
 
 // createPacked brings up a new sandbox for key inside a pack pod: allocate an
@@ -204,15 +339,22 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 
 	// Egress: bring up the sandbox's netns/veth + host REDIRECT, then register its
 	// allowlist under its source IP so the shared sbxproxy enforces it per-source.
-	// RedirectEgress forks ~18 ip/iptables processes serially in the netns; the
-	// setEgress reload itself is async (file write + SIGHUP), so this mark attributes
-	// the egress cost to that fork chain, separate from the workspace/root phases.
+	// RedirectEgress builds this sandbox's netns/veth/tap (netlink, no per-command
+	// iproute2 fork) and loads its firewall rules with a batched iptables-restore
+	// per netns-context (see setupPackedNetMicrovm) — a handful of execs, not the
+	// per-rule fork chain the early implementation paid. The setEgress reload is
+	// coalesced + async (the reloader batches the file write + SIGHUP), so this mark
+	// attributes the egress cost to the netns/tap setup, separate from the
+	// workspace/root phases. The returned generation is awaited later
+	// (egressGate.waitApplied, before the sandbox is marked ready) so the reload
+	// overlaps the snapshot resume instead of serializing N reloads on the request
+	// path.
 	if err := iso.RedirectEgress(sbCtx, p.proxyPort, p.dnsPort, p.soMark); err != nil {
 		cleanup()
 		p.freeIP(octet)
 		return nil, fmt.Errorf("egress: %w", err)
 	}
-	p.setEgress(ip, sp.Egress)
+	egressGen := p.setEgress(ip, sp.Egress)
 	phase.mark("pack " + key + ": egress (netns + iptables)")
 	// Route sbxproxy audit events for this source IP to the sandbox's own broker.
 	p.router.register(ip, broker)
@@ -502,6 +644,13 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		cleanup()
 		return nil, fmt.Errorf("wait ready: %w", err)
 	}
+	// Gate readiness on the egress reload landing in sbxproxy. The reload was
+	// kicked off (coalesced) right after RedirectEgress and runs concurrently
+	// with the resume/apply-resume-state work above, so this almost always
+	// returns immediately — it only blocks in the rare case the reload hasn't
+	// caught up, guaranteeing this sandbox's ACL is enforced before its workload
+	// is reachable. Bounded by egressReloadTimeout (proceeds on timeout/cancel).
+	p.egressGate.waitApplied(sbCtx, egressGen)
 	go api.PollResourceUsage(sbCtx, broker, iso.CgroupPath())
 	// The workload is now running; a subsequent config-apply that adds a
 	// workspace must inject it into the live workload via ApplyResumeState.

@@ -264,10 +264,14 @@ func main() {
 	rulesTmp := filepath.Join(workDir, "egress-rules.json")
 	caCertPath := filepath.Join(workDir, "sandbox-ca.crt")
 	caKeyPath := filepath.Join(workDir, "sandbox-ca.key")
+	// Coordinates coalesced egress-rule reloads (pack mode). Created here so the
+	// proxy event handler below can advance its applied generation from sbxproxy's
+	// echo; packState (built later, in the pack branch) drains it via the reloader.
+	egressGate := newEgressGate()
 	var (
-		setupWG   sync.WaitGroup
-		isoMu     sync.Mutex
-		proxyCmd  *exec.Cmd
+		setupWG    sync.WaitGroup
+		isoMu      sync.Mutex
+		proxyCmd   *exec.Cmd
 		packRouter *proxyRouter // non-nil in pack mode; routes proxy events to per-sandbox brokers
 	)
 	if *pack {
@@ -322,8 +326,20 @@ func main() {
 		} else {
 			proxyHandler = newProxyTranslator(broker).handle
 		}
-		cmd, err := startSidecar(ctx, &children, "sbxproxy", proxyBin, proxyArgs, nil,
-			sidecarOnEvent(formatProxyEvent, proxyHandler))
+		// sbxproxy multiplexes control records (egress-reload acks) onto the same
+		// events fd as audit events. Peel those off before the audit translator so
+		// they advance the egress gate instead of being mis-rendered as agent ops.
+		auditOnEvent := sidecarOnEvent(formatProxyEvent, proxyHandler)
+		onProxyEvent := func(ev map[string]any) {
+			if t, _ := ev["type"].(string); t == "control" {
+				if c, _ := ev["control"].(string); c == "egress_reload" {
+					egressGate.markApplied(uint64(intField(ev, "generation")))
+				}
+				return
+			}
+			auditOnEvent(ev)
+		}
+		cmd, err := startSidecar(ctx, &children, "sbxproxy", proxyBin, proxyArgs, nil, onProxyEvent)
 		if err != nil {
 			log.Fatalf("start proxy: %v", err)
 		}
@@ -736,8 +752,11 @@ func main() {
 			workDir:     workDir,
 			snapshotDir: *snapshotDir,
 			router:      packRouter,
+			egressGate:  egressGate,
 		}
 		sup.mu.Unlock()
+		// Drain coalesced egress reloads for the pod's lifetime.
+		go sup.pack.runEgressReloader(ctx)
 		sup.bootComplete()
 		phase.mark("pack pod host ready")
 		log.Println("sandboxd: pack — pod host ready; POST /v1/<key> to pack sandboxes")
@@ -1113,13 +1132,28 @@ func writeACLs(path string, acls any) error {
 }
 
 // writeJSON encodes v to path as a single JSON document.
+// writeJSON atomically writes v as JSON to path: it encodes into a temp file in
+// the same directory and renames it over the target. The rename is atomic on the
+// same filesystem, so a concurrent reader (e.g. sbxproxy re-reading the egress
+// rules on SIGHUP) always sees either the complete old file or the complete new
+// one — never a half-written one. A plain os.Create truncates in place, so under
+// a burst of rewrites (high-qps egress reloads) the reader can catch a torn file
+// and fail the parse ("unexpected end of JSON input"), dropping the new rules.
 func writeJSON(path string, v any) error {
-	f, err := os.Create(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return json.NewEncoder(f).Encode(v)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename below succeeds
+	if err := json.NewEncoder(tmp).Encode(v); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // reconcileSidecars subscribes to the broker and, for every successful

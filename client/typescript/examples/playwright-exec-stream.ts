@@ -1,50 +1,84 @@
-// Drive Playwright/Chromium inside the sandbox over a single exec stream,
-// reusing one already-warm browser across commands.
+// Drive Playwright/Chromium inside the sandbox over HTTP, reusing one already-warm
+// browser across commands.
 //
 // The playwright image ships a resident browser host (/opt/hiver/prewarm) that
 // sbxguest starts before the microvm snapshot, so a claimed sandbox resumes with
-// Chromium already launched. We open one long-lived session to it by bridging an
-// exec stream to its Unix socket with `socat`, then feed it commands via
-// `writeStdin`. Because the host runs a REPL bound to that socket, the session
-// is *stateful*: a binding declared in one command (e.g. `const page = ...`) is
-// usable in the next — so you can create a page in one request and click it in
-// another. And because the browser is warmed at prewarm, the first command pays
-// no require('playwright')/chromium.launch() cost.
+// Chromium already launched. It exposes a `POST /eval` endpoint, reached through
+// the sandbox ingress proxy; we feed it one JS command per request and read the
+// command's console output back as the response body. The host keeps one
+// process-wide REPL behind the endpoint, so the session is *stateful*: a binding
+// declared in one command (e.g. `const scrape = ...`) is usable in the next — so
+// you can define a helper in one request and call it in another. And because the
+// browser is warmed at prewarm, the first command pays no
+// require('playwright')/chromium.launch() cost.
 //
-// The host prints a `__READY__` line after each command settles (and on
-// connect); we wait for it before sending the next. `browser`/`context` are
-// shared warm instances seeded into the session — do NOT close them or call
-// process.exit here (that would tear down the resident host); end the session by
-// just disconnecting (we abort the stream).
+// `browser`/`context`/`page` are shared warm instances seeded into the session —
+// do NOT close them or call process.exit (that would tear down the resident
+// host); just stop sending requests to end the session.
 //
 // Run with: npx tsx examples/playwright-exec-stream.ts
 import * as hiver from "@hiver.sh/client";
 
 const gatewayUrl = process.env.HIVER_GATEWAY_URL ?? "http://localhost:10000";
-const MARKER = "__READY__";
+// TCP port the resident browser host's HTTP /eval endpoint listens on inside the
+// sandbox; reached via the ingress proxy. Keep in sync with browser-host.cjs.
+const HOST_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 
 const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
   "hiver-playwright-exec-stream3",
   {
-    image: "hiversh/playwright:microvm-17"
+    image: "hiversh/playwright:microvm-22",
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );
 const createMs = performance.now() - tStart;
 console.info(`sandbox created in ${createMs.toFixed(0)}ms`);
 
-// Bridge the exec stream to the resident host's socket. socat is a dumb byte
-// pipe: our stdin → socket, socket → our stdout. The browser is already warm on
-// the other side, so there's no launch step in the commands below.
-const ac = new AbortController();
-const exec = await sandbox.execStream(
-  ["socat", "-", "UNIX-CONNECT:/run/hiver/browser.sock"],
-  { signal: ac.signal },
+const evalUrl = sandbox.proxyUrl(HOST_PORT) + "/eval";
+const healthUrl = sandbox.proxyUrl(HOST_PORT) + "/healthz";
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Wait for the resident host to answer — the warm browser is reachable. Under
+// microvm isolation it's captured in the snapshot, so it answers the instant the
+// sandbox is claimed; under container (runc) isolation the host is cold-launched
+// as the entrypoint and the sandbox is marked ready ~300-400ms before Chromium
+// finishes launching, so poll until the endpoint is up.
+for (;;) {
+  try {
+    const res = await sandbox.fetchImpl(healthUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (res.ok) {
+      await res.text();
+      break;
+    }
+  } catch {
+    /* endpoint not up yet — retry below */
+  }
+  if (performance.now() - tStart > 30_000)
+    throw new Error("browser host never came up");
+  await sleep(100);
+}
+console.info(
+  `browser ready in ${(performance.now() - tStart).toFixed(0)}ms ` +
+    `(create ${createMs.toFixed(0)}ms + connect ${(performance.now() - tStart - createMs).toFixed(0)}ms)`,
 );
-// We end the session by aborting the stream, which rejects exitCode with
-// AbortError; that's expected, so mark it handled to avoid an unhandled rejection.
-void exec.exitCode.catch(() => {});
+
+// Run one command in the stateful session: POST the JS to /eval and return its
+// console output (the response body). State persists across calls, so `scrape`
+// defined below is usable by the commands that follow it.
+async function evalCmd(cmd: string): Promise<string> {
+  const res = await sandbox.fetchImpl(evalUrl, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: cmd,
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) throw new Error(`eval status ${res.status}`);
+  return await res.text();
+}
 
 // Each command runs in the same stateful session, so `scrape` (and any pages it
 // keeps) persist across calls. The browser is reused — never launched, never
@@ -57,39 +91,9 @@ const commands = [
   `await scrape('https://news.ycombinator.com/news?p=2')`,
 ];
 
-let next = 0;
-let started = false;
-let buffer = "";
-// Consume output line by line: a `__READY__` marker means the session is idle.
-// Send the next command on each marker; once they're exhausted, disconnect.
-for await (const pipe of exec.pipes) {
-  if (pipe.stderr) process.stderr.write(pipe.stderr);
-  if (!pipe.stdout) continue;
-  buffer += pipe.stdout;
-  let nl: number;
-  while ((nl = buffer.indexOf("\n")) !== -1) {
-    const line = buffer.slice(0, nl);
-    buffer = buffer.slice(nl + 1);
-    if (line === MARKER) {
-      // First marker = session live: the resident warm browser is reachable.
-      // This is the "time to start" — no require/launch was paid here.
-      if (!started) {
-        started = true;
-        console.info(
-          `browser ready in ${(performance.now() - tStart).toFixed(0)}ms ` +
-            `(create ${createMs.toFixed(0)}ms + connect ${(performance.now() - tStart - createMs).toFixed(0)}ms)`,
-        );
-      }
-      if (next < commands.length) {
-        await exec.writeStdin(commands[next++] + "\n");
-      } else {
-        ac.abort(); // all commands done — end the session (don't exit the host).
-      }
-    } else {
-      console.log(line);
-    }
-  }
-  if (ac.signal.aborted) break;
+for (const cmd of commands) {
+  const out = await evalCmd(cmd);
+  if (out) process.stdout.write(out);
 }
 
 console.info("\ndone.");

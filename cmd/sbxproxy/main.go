@@ -64,7 +64,7 @@ func main() {
 		auditOut = f
 	}
 
-	rules := loadRules(*rulesPath)
+	rules, _ := loadRules(*rulesPath)
 	caCert, caKey := loadCA(*caCertPath, *caKeyPath)
 	p, err := proxy.New(proxy.Config{
 		Addr:         *addr,
@@ -94,13 +94,22 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-hup:
-				newRules, err := readRules(*rulesPath)
+				newRules, gen, err := readRules(*rulesPath)
 				if err != nil {
 					log.Printf("sbxproxy: SIGHUP reload failed (keeping current rules): %v", err)
 					continue
 				}
 				p.SetRulesBySource(newRules)
 				log.Printf("sbxproxy: reloaded %d rules across %d source(s) from %s", countRules(newRules), len(newRules), *rulesPath)
+				// Echo the applied generation back to sandboxd so a coalesced
+				// reload can be awaited (the pack-mode create path blocks until its
+				// rules are live before marking the sandbox ready). Emitted only
+				// after SetRulesBySource returns, so an ack implies the rules are
+				// enforced. gen==0 is the boot/single-sandbox array shape, which has
+				// no waiters — stay silent there.
+				if gen > 0 {
+					p.EmitControl(map[string]any{"type": "control", "control": "egress_reload", "generation": gen})
+				}
 			}
 		}
 	}()
@@ -139,44 +148,63 @@ func main() {
 // loadRules reads the egress rules. An empty path yields a deny-everything
 // proxy, which is the right default if the orchestrator forgot to wire rules in.
 // Errors are fatal — initial load failures shouldn't be papered over.
-func loadRules(path string) map[string][]proxy.EgressRule {
-	rules, err := readRules(path)
+func loadRules(path string) (map[string][]proxy.EgressRule, uint64) {
+	rules, gen, err := readRules(path)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	return rules
+	return rules, gen
 }
 
 // readRules is the non-fatal sibling of loadRules; SIGHUP reloads use it so a
-// bad on-disk write doesn't crash the proxy. It accepts two on-disk shapes:
+// bad on-disk write doesn't crash the proxy. It accepts three on-disk shapes:
 //
-//   - a per-source object `{"<srcIP>": [rule...], ...}` — one allowlist per
-//     sandbox source IP (the multi-sandbox form, design §8), and
 //   - a bare array `[rule...]` — the single-sandbox form, mapped to the
-//     all-sources "" bucket.
+//     all-sources "" bucket (generation 0);
+//   - a per-source object `{"<srcIP>": [rule...], ...}` — one allowlist per
+//     sandbox source IP (the multi-sandbox form, design §8), generation 0; and
+//   - a generation envelope `{"generation": N, "sources": {"<srcIP>": [...]}}`
+//     — the pack-mode form, where N lets sandboxd await a coalesced reload.
 //
-// The shape is detected from the first non-space byte.
-func readRules(path string) (map[string][]proxy.EgressRule, error) {
+// The array vs. object split is detected from the first non-space byte; an
+// object carrying a "sources" key is the envelope (no source IP is the literal
+// "sources"). The generation rides inside the same file as its rules, so an
+// echoed generation always corresponds to the rule set just applied.
+func readRules(path string) (map[string][]proxy.EgressRule, uint64, error) {
 	if path == "" {
-		return nil, nil
+		return nil, 0, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read rules %s: %w", path, err)
+		return nil, 0, fmt.Errorf("read rules %s: %w", path, err)
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var rules []proxy.EgressRule
 		if err := json.Unmarshal(trimmed, &rules); err != nil {
-			return nil, fmt.Errorf("parse rules %s: %w", path, err)
+			return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
 		}
-		return map[string][]proxy.EgressRule{"": rules}, nil
+		return map[string][]proxy.EgressRule{"": rules}, 0, nil
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
+	}
+	if _, ok := probe["sources"]; ok {
+		var env struct {
+			Generation uint64                        `json:"generation"`
+			Sources    map[string][]proxy.EgressRule `json:"sources"`
+		}
+		if err := json.Unmarshal(trimmed, &env); err != nil {
+			return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
+		}
+		return env.Sources, env.Generation, nil
 	}
 	var bySource map[string][]proxy.EgressRule
 	if err := json.Unmarshal(trimmed, &bySource); err != nil {
-		return nil, fmt.Errorf("parse rules %s: %w", path, err)
+		return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
 	}
-	return bySource, nil
+	return bySource, 0, nil
 }
 
 // countRules totals the rules across all source buckets, for logging.
