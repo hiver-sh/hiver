@@ -2,7 +2,7 @@
 // nottelabs/browserarena's hello-browser bench measures for cloud browser
 // providers: create → connect → goto → release. The playwright image keeps a
 // headless Chromium resident with its CDP endpoint open (see
-// docker/playwright/chrome-cdp.cjs), captured warm in the microvm snapshot, so a
+// docker/playwright/chromehost), captured warm in the microvm snapshot, so a
 // claimed sandbox resumes with Chromium already listening. The client attaches
 // exactly like the playwright-cdp.ts example: chromium.connectOverCDP() to the
 // in-guest relay's STABLE /cdp url through the sandbox ingress proxy
@@ -31,7 +31,7 @@
 // batch's sandboxes are released (sandbox.shutdown) during this cooldown — off
 // the measured create→connect→goto path — rather than inline per run.
 //
-// Requires the CDP playwright image (docker/playwright/chrome-cdp.cjs) and an
+// Requires the CDP playwright image (docker/playwright/chromehost) and an
 // sbxguest with the prewarm hook.
 import * as hiver from "@hiver.sh/client";
 import { chromium, type Browser } from "playwright-core";
@@ -50,10 +50,10 @@ const RUN_TIMEOUT_MS = Number(process.env.BENCH_RUN_TIMEOUT_MS ?? "20000");
 // `domcontentloaded`; keep the same default so timings are comparable.
 const URL = process.env.BENCH_URL ?? "https://example.com";
 // TCP port Chromium's CDP/DevTools endpoint listens on inside the sandbox,
-// reached via the ingress proxy. Keep in sync with chrome-cdp.cjs.
+// reached via the ingress proxy. Keep in sync with chromehost.
 const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 const sandboxConfig: hiver.SandboxConfig = {
-  image: "hiversh/playwright:microvm-32",
+  image: "hiversh/playwright:microvm-33",
 };
 
 // With BENCH_NAV_TIMING on (default) the goto stage also reads the browser's

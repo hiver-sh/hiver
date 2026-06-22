@@ -1,50 +1,64 @@
-FROM node:20-bookworm-slim
-
-# PLAYWRIGHT_BROWSERS_PATH moves the browser cache out of the root home dir so
-# it's accessible regardless of the workload's uid. The browser binary lives here
-# independently of the playwright npm package, so it survives the
-# `npm uninstall -g playwright` below.
-ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
-
-# The full `playwright` package is a *build-time* tool: it installs the known-good
-# browser binary plus its system library deps, then is removed. A slim
-# `playwright-core` is kept in the final image and used at runtime for ONE thing:
-# the pre-snapshot CDP warmup in chrome-cdp.cjs (connect over CDP + open a blank
-# page so a resumed sandbox starts warm). Clients still drive the browser over CDP
-# themselves, independent of this version.
+# Resident Chrome host image, driven over CDP.
 #
-# We install chrome-headless-shell, NOT full Chrome. The full browser
-# (--headless=new) boots profile/sign-in (GAIA), GCM, the search engine and the
-# rest of the background-networking stack, all of which phone home to Google on
-# their own. chrome-headless-shell is the standalone successor to old --headless
-# and has none of those subsystems compiled in, so it stays silent with no
-# anti-telemetry flags. It speaks the same CDP, so chrome-cdp.cjs is unchanged.
-RUN apt-get update \
-    && npm install -g playwright \
-    && npx playwright install --with-deps chromium-headless-shell \
+# The entrypoint is a stdlib-only Go binary (chromehost/), the lean replacement
+# for the former Node.js chrome-cdp.cjs: it launches chrome-headless-shell with
+# its DevTools/CDP endpoint open, fronts it with a 0.0.0.0 relay exposing a stable
+# /cdp alias, warms the CDP attach path once before the snapshot, and supervises
+# the browser. Nothing Node/Playwright runs at runtime — clients drive the browser
+# over CDP themselves (chromium.connectOverCDP), independent of any version here.
+#
+# We ship chrome-headless-shell, NOT full Chrome: the full browser (--headless=new)
+# boots profile/sign-in (GAIA), GCM, the search engine and the rest of the
+# background-networking stack, all of which phone home to Google. headless-shell is
+# the standalone successor with none of those subsystems compiled in, so it stays
+# silent. It speaks the same CDP.
+
+# 1) Build the resident host. Cross-compile on the native BUILDPLATFORM (no QEMU
+#    for the Go stage); CGO is off so no cross C toolchain is needed.
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS chromehost
+ARG TARGETOS TARGETARCH
+WORKDIR /src
+COPY chromehost/ ./
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -ldflags="-s -w" -trimpath -o /out/chromehost .
+
+# 2) Fetch the known-good chrome-headless-shell binary. Playwright is a
+#    build-time-only tool here (it downloads the browser); nothing from this Node
+#    stage ships in the final image.
+FROM node:20-bookworm-slim AS browser
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
+RUN npm install -g playwright \
+    && npx playwright install chromium-headless-shell \
     && rm -rf /var/lib/apt/lists/*
 
-# Build the fontconfig cache (Chromium scans fonts on first run), symlink the
-# chrome-headless-shell binary to the stable path chrome-cdp.cjs spawns
-# (/opt/hiver/chrome), drop the build-time `playwright`, and install the slim
-# `playwright-core` under /opt/hiver so chrome-cdp.cjs can require it at runtime
-# for the warmup. (Exec'ing the symlink is fine — Chrome resolves its sibling
-# resources via /proc/self/exe, not argv[0].)
-RUN fc-cache -f \
-    && mkdir -p /opt/hiver \
-    && ln -s "$(find "$PLAYWRIGHT_BROWSERS_PATH" \( -name chrome-headless-shell -o -name headless_shell \) -type f | head -1)" /opt/hiver/chrome \
-    && npm uninstall -g playwright \
-    && npm install --prefix /opt/hiver playwright-core
+# 3) Final image: the browser, its runtime libs + fonts, and the Go host. No Node,
+#    no npm, no Playwright — the only resident process is the static Go binary.
+FROM debian:bookworm-slim
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
 
-# Resident Chrome host: this is the image entrypoint, so it runs during the
-# prewarm boot and stays resident — a claimed sandbox inherits Chromium already
-# launched and listening on the CDP/DevTools port (captured in the microvm
-# snapshot, or kept alive in the runc container). Clients attach with Playwright's
-# chromium.connectOverCDP() through the sandbox ingress proxy (/v1/<key>/proxy/
-# 9223); the only Playwright that runs in this image is the one-shot warmup. See
-# chrome-cdp.cjs.
-COPY chrome-cdp.cjs /opt/hiver/chrome-cdp.cjs
+# chrome-headless-shell runtime shared libraries (mirrors what
+# `playwright install-deps chromium-headless-shell` apt-installs on bookworm),
+# plus fontconfig + a base font so text shapes. --no-install-recommends keeps it
+# lean; ca-certificates is for any TLS the workload's own navigation needs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates fontconfig fonts-liberation \
+        libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+        libcups2 libdbus-1-3 libdrm2 libexpat1 libgbm1 libglib2.0-0 libnspr4 \
+        libnss3 libpango-1.0-0 libpangocairo-1.0-0 libx11-6 libxcb1 \
+        libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=browser /usr/local/ms-playwright /usr/local/ms-playwright
+COPY --from=chromehost /out/chromehost /opt/hiver/chromehost
+
+# Symlink the chrome-headless-shell binary to the stable path chromehost spawns
+# (/opt/hiver/chrome), then build the fontconfig cache (Chromium scans fonts on
+# first run). Exec'ing the symlink is fine — Chrome resolves its sibling resources
+# via /proc/self/exe, not argv[0].
+RUN ln -s "$(find "$PLAYWRIGHT_BROWSERS_PATH" \( -name chrome-headless-shell -o -name headless_shell \) -type f | head -1)" /opt/hiver/chrome \
+    && fc-cache -f
 
 EXPOSE 9223
 
-ENTRYPOINT ["node", "/opt/hiver/chrome-cdp.cjs"]
+ENTRYPOINT ["/opt/hiver/chromehost"]

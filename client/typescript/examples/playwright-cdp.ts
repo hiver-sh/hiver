@@ -2,7 +2,7 @@
 //
 // The playwright image no longer runs Playwright or any in-guest REPL — it just
 // launches headless Chromium with its DevTools/CDP endpoint open (see
-// docker/playwright/chrome-cdp.cjs) and keeps it resident. Under microvm
+// docker/playwright/chromehost) and keeps it resident. Under microvm
 // isolation that warm browser is captured in the snapshot, so a claimed sandbox
 // resumes with Chromium already listening.
 //
@@ -18,20 +18,20 @@ import { chromium } from "playwright-core";
 
 const gatewayUrl = process.env.HIVER_GATEWAY_URL ?? "http://localhost:10000";
 // TCP port Chromium's CDP/DevTools endpoint listens on inside the sandbox,
-// reached via the ingress proxy. Keep in sync with chrome-cdp.cjs.
+// reached via the ingress proxy. Keep in sync with chromehost.
 const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 
 const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
   "hiver-playwright-cdp",
   {
-    image: "hiversh/playwright:microvm-32",
+    image: "hiversh/playwright:microvm-33",
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );
 console.info(`sandbox created in ${(performance.now() - tStart).toFixed(0)}ms`);
 
-// Attach Playwright over a STABLE CDP url. The in-guest relay (chrome-cdp.cjs)
+// Attach Playwright over a STABLE CDP url. The in-guest relay (chromehost)
 // exposes a fixed /cdp alias and maps it onto Chrome's per-launch
 // /devtools/browser/<uuid> endpoint, so there's no /json/version discovery to do
 // here. connectOverCDP connects a ws:// url directly (no rewrite), so we just
