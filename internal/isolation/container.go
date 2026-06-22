@@ -65,6 +65,12 @@ type container struct {
 	guestIP   string
 	netnsName string
 
+	// prealloc marks a sandbox claiming a preallocated slot whose netns/veth/
+	// iptables were wired ahead of time by the pod's prealloc pool
+	// (Config.Prealloc). RedirectEgress is then a no-op and UnmountRoot leaves the
+	// netns teardown to the pool.
+	prealloc bool
+
 	// wsMountRoot/wsBackendRoot are the per-key host roots a packed sandbox's
 	// sbxfuse workspaces live under (/run/sandboxd/<key>/{mnt,backend}); the file
 	// API (Files) resolves workspace paths there instead of the default
@@ -124,6 +130,7 @@ func newContainer(cfg Config) *container {
 	if cfg.GuestIP != "" {
 		c.guestIP = cfg.GuestIP
 		c.netnsName = "hsbx" + netID(cfg.GuestIP)
+		c.prealloc = cfg.Prealloc
 	}
 	if cfg.Key != "" {
 		// Matches the mountManager's keyPrefix layout (cmd/sandboxd): host
@@ -149,7 +156,9 @@ func (c *container) Kind() Kind { return KindContainer }
 func (c *container) MountRoot() error { return runc.MountOverlay(c.overlay) }
 
 func (c *container) UnmountRoot() error {
-	if c.netnsName != "" {
+	// A prewarmed sandbox's netns is owned by the pod's prewarm pool, which tears
+	// it down and refills the slot; tearing it down here would race that.
+	if c.netnsName != "" && !c.prealloc {
 		c.teardownPackedNet(context.Background())
 	}
 	return runc.UnmountOverlay(c.overlay)
@@ -352,6 +361,11 @@ func (c *container) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark
 	// bridge and REDIRECT bridge-forwarded traffic to sbxproxy in the host netns
 	// (where conntrack + SO_ORIGINAL_DST work, preserving its source IP).
 	if c.guestIP != "" {
+		// Prewarmed: the pod's prewarm pool already wired this octet's
+		// netns/veth/iptables, so there is nothing to do on the claim path.
+		if c.prealloc {
+			return nil
+		}
 		return c.setupPackedNet(ctx, proxyPort, dnsPort)
 	}
 	markHex := fmt.Sprintf("0x%x", mark)

@@ -137,6 +137,17 @@ type Config struct {
 	// DefaultVcpuCount / DefaultMemoryMiB.
 	VcpuCount int
 	MemoryMiB int
+
+	// Prealloc marks an instance claiming a preallocated slot: its packed network
+	// (netns/veth/iptables + DNS sink) and — for the microvm backend — its CoW
+	// overlay image were provisioned ahead of time by the pod's prealloc pool
+	// (cmd/sandboxd, gated by -prealloc-pool), keyed by the same GuestIP octet.
+	// This preallocates host resources only; no workload is kept running (that is
+	// the separate -prewarm snapshot path). When set, RedirectEgress and MountRoot
+	// skip that work (already done), and UnmountRoot leaves the netns teardown to
+	// the pool, which owns the slot's lifecycle and refills it. The boot sandbox
+	// and the synchronous fallback path leave this false.
+	Prealloc bool
 }
 
 // SnapshotMount pairs an agent-visible mount path with the host directory

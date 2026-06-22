@@ -89,6 +89,7 @@ func main() {
 		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored on local disk; optional — when unset, snapshots only work for configs that route them to a FUSE drive via snapshot.mount")
 		prewarm       = flag.Bool("prewarm", false, "boot in prewarm mode: bring up the API server and park without a spec, to be configured (and the workload launched) by the first PUT /v1/config")
 		pack          = flag.Bool("pack", false, "boot in pack mode: bring up the shared sidecars and park as a pod host; each POST /v1/<key> packs a new same-image sandbox (own netns/IP, overlay, egress) into this pod")
+		preallocPool  = flag.Int("prealloc-pool", 10, "pack mode: number of sandbox slots (netns/veth/iptables + DNS sink, and the microvm CoW overlay) to preallocate and keep warm so a create claims one instead of wiring it on the request path; 0 disables")
 	)
 	flag.Parse()
 
@@ -755,6 +756,15 @@ func main() {
 			snapshotDir: *snapshotDir,
 			router:      packRouter,
 			egressGate:  egressGate,
+		}
+		// Preallocate a warm pool of sandbox slots (netns/veth/iptables + DNS sink,
+		// and the microvm CoW overlay) so claims skip that contended setup on the
+		// request path. Off the request path and serialized on one worker, so the
+		// xtables-lock contention a concurrent create burst otherwise pays is gone.
+		if *preallocPool > 0 {
+			sup.pack.pool = newPreallocPool(sup.pack, *preallocPool)
+			sup.pack.pool.start()
+			log.Printf("sandboxd: pack — preallocating %d sandbox slots", *preallocPool)
 		}
 		sup.mu.Unlock()
 		// Drain coalesced egress reloads for the pod's lifetime.

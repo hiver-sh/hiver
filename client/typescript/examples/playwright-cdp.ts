@@ -25,7 +25,7 @@ const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
   "hiver-playwright-cdp",
   {
-    image: "hiversh/playwright:microvm-33",
+    image: "hiversh/playwright:microvm-34",
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );

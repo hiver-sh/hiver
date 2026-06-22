@@ -109,6 +109,13 @@ type microvm struct {
 	// unless packed.
 	sourceIP string
 
+	// prealloc marks a packed VM claiming a preallocated slot whose
+	// netns/veth/tap/iptables (+DNS sink) and CoW overlay image were provisioned
+	// ahead of time by the pod's prealloc pool (Config.Prealloc). RedirectEgress
+	// and the overlay build in MountRoot are then no-ops, and UnmountRoot leaves
+	// the netns teardown to the pool, which resets the slot and returns it.
+	prealloc bool
+
 	// localMounts are the host-side local-backend dirs (for snapshot).
 	localMounts []SnapshotMount
 
@@ -172,6 +179,7 @@ func newMicroVM(cfg Config) *microvm {
 		netnsName = "fcsbx" + n
 		tap = "fctap-" + n
 	}
+	prealloc := cfg.GuestIP != "" && cfg.Prealloc
 	if cfg.Key != "" {
 		cgroupName = cfg.Hostname + "-" + cfg.Key
 	}
@@ -199,6 +207,7 @@ func newMicroVM(cfg Config) *microvm {
 		tapName:     tap,
 		netnsName:   netnsName,
 		sourceIP:    sourceIP,
+		prealloc:    prealloc,
 		localMounts: cfg.LocalMounts,
 	}
 	// A packed sandbox with a ready base snapshot takes the resume fast path:
@@ -335,6 +344,13 @@ func (m *microvm) MountRoot() error {
 		return fmt.Errorf("bundled rootfs image %s is empty", bundledRootfsImg)
 	}
 	m.rootfsImg = bundledRootfsImg
+	// Prealloc: the slot's CoW overlay image was built (empty) ahead of time by the
+	// pool and reset on its last release, so skip the rebuild on the claim path.
+	if m.prealloc {
+		if fi, err := os.Stat(m.overlayImg); err == nil && fi.Size() > 0 {
+			return nil
+		}
+	}
 	if err := buildEmptyExt4(m.overlayImg, 2048); err != nil { // 2 GiB writable upper
 		return fmt.Errorf("build overlay image: %w", err)
 	}
@@ -345,8 +361,14 @@ func (m *microvm) UnmountRoot() error {
 	// Best-effort teardown of the per-sandbox artifacts and network. A packed VM's
 	// tap lives in its netns, so deleting the netns drops it (and the veth/rules);
 	// the boot/base VM's tap is in the pod netns and is deleted directly.
+	// A prealloc slot's netns (and the tap inside it) is owned by the pod's
+	// prealloc pool, which resets and reuses it; tearing it down here would race
+	// that. The jailDir (incl. the dirty CoW overlay) is still removed — the pool
+	// rebuilds an empty overlay when it resets the slot.
 	if m.netnsName != "" {
-		m.teardownPackedNetMicrovm(context.Background())
+		if !m.prealloc {
+			m.teardownPackedNetMicrovm(context.Background())
+		}
 	} else {
 		_ = exec.Command("ip", "link", "del", m.tapName).Run()
 	}
@@ -546,6 +568,13 @@ func (m *microvm) RedirectEgress(ctx context.Context, proxyPort, dnsPort, mark i
 	// (design §7, "option 1"). The guest keeps the base snapshot's baked IP, so it
 	// is never re-IP'd. The boot/base VM (no netns) keeps the pod-netns tap below.
 	if m.netnsName != "" {
+		// Prealloc: the pod's prealloc pool already wired this octet's
+		// netns/veth/tap/iptables and started its DNS sink, so the claim path has
+		// nothing to do — the slot is reused as-is (the pool flushes per-tenant
+		// residue on release).
+		if m.prealloc {
+			return nil
+		}
 		return m.setupPackedNetMicrovm(ctx, proxyPort, dnsPort, mark)
 	}
 

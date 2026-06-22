@@ -58,6 +58,12 @@ type packState struct {
 	egress map[string][]proxy.EgressRule // srcIP → rules (merged into the proxy file)
 	isoMu  sync.Mutex                    // serialize isolation-backend mutations across keys
 
+	// pool preallocates a fixed set of sandbox slots (wired netns/veth/iptables +
+	// DNS sink, and for microvm an empty CoW overlay) so a create claims one
+	// instead of paying that contended setup on the request path. nil when
+	// -prealloc-pool is 0. Slots are reused: released slots are reset and returned.
+	pool *preallocPool
+
 	// baseOnce builds the shared microvm base snapshot exactly once (design §7);
 	// baseDir is its location ("" if not microvm or the build failed, in which case
 	// every VM cold-boots). Read after baseOnce.Do.
@@ -109,6 +115,32 @@ func (p *packState) freeIP(n int) {
 	p.mu.Lock()
 	p.freed = append(p.freed, n)
 	p.mu.Unlock()
+}
+
+// claimSlot returns the IP/octet for a new sandbox, preferring a preallocated
+// slot from the pool (prealloc=true — its netns/iptables/overlay are already
+// wired, so RedirectEgress/MountRoot are no-ops on the request path). When the
+// pool is disabled or empty it allocates and wires an octet synchronously, the
+// historical path.
+func (p *packState) claimSlot() (ip string, octet int, prealloc bool) {
+	if p.pool != nil {
+		if ip, octet, ok := p.pool.claim(); ok {
+			return ip, octet, true
+		}
+	}
+	ip, octet = p.allocIP()
+	return ip, octet, false
+}
+
+// releaseSlot reclaims a sandbox's octet: a preallocated slot goes back to the
+// pool (which resets and reuses it), a synchronously-wired one returns to the IP
+// allocator.
+func (p *packState) releaseSlot(octet int, prealloc bool) {
+	if prealloc && p.pool != nil {
+		p.pool.release(octet)
+		return
+	}
+	p.freeIP(octet)
 }
 
 // egressReloadTimeout bounds how long the create path waits for sbxproxy to ack
@@ -281,7 +313,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	// time the cold path, so a slow or failing claim can be attributed.
 	phase := &bootPhase{last: time.Now()}
 
-	ip, octet := p.allocIP()
+	ip, octet, prealloc := p.claimSlot()
 	// The sandbox runs on the pod lifecycle, with its own cancel for DELETE.
 	sbCtx, cancel := context.WithCancel(p.ctx)
 	cleanup := func() { cancel() }
@@ -302,15 +334,16 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		LocalMounts:     isolationLocalMounts(sp.FS),
 		VcpuCount:       ceilVcpu(sp.CPU),
 		MemoryMiB:       intOrZero(sp.Memory),
+		Prealloc:        prealloc,
 	})
 	if err != nil {
 		cleanup()
-		p.freeIP(octet)
+		p.releaseSlot(octet, prealloc)
 		return nil, err
 	}
 	if err := iso.MountRoot(); err != nil {
 		cleanup()
-		p.freeIP(octet)
+		p.releaseSlot(octet, prealloc)
 		return nil, fmt.Errorf("mount root: %w", err)
 	}
 	if len(p.caData) > 0 {
@@ -332,7 +365,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	mountMgr.SetRootMounted()
 	if err := mountMgr.Reconcile(sp); err != nil {
 		cleanup()
-		p.freeIP(octet)
+		p.releaseSlot(octet, prealloc)
 		return nil, fmt.Errorf("workspaces: %w", err)
 	}
 	phase.mark("pack " + key + ": workspace mount")
@@ -351,7 +384,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	// path.
 	if err := iso.RedirectEgress(sbCtx, p.proxyPort, p.dnsPort, p.soMark); err != nil {
 		cleanup()
-		p.freeIP(octet)
+		p.releaseSlot(octet, prealloc)
 		return nil, fmt.Errorf("egress: %w", err)
 	}
 	egressGen := p.setEgress(ip, sp.Egress)
@@ -400,7 +433,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		gateway := fmt.Sprintf("172.16.%d.1", octet)
 		if err := os.WriteFile(resolvPath, []byte("nameserver "+gateway+"\n"), 0o644); err != nil {
 			cleanup()
-			p.freeIP(octet)
+			p.releaseSlot(octet, prealloc)
 			return nil, fmt.Errorf("write resolv.conf: %w", err)
 		}
 		mounts = append(mounts,
@@ -464,7 +497,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		failVM := func(format string, a ...any) (*handlers.Sandbox, error) {
 			cancelVM()
 			cleanup()
-			p.freeIP(octet)
+			p.releaseSlot(octet, prealloc)
 			return nil, fmt.Errorf(format, a...)
 		}
 		var vmBin string
@@ -503,7 +536,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		})
 		if lerr != nil {
 			cleanup()
-			p.freeIP(octet)
+			p.releaseSlot(octet, prealloc)
 			return nil, fmt.Errorf("prepare agent: %w", lerr)
 		}
 		// On the tty path the entrypoint runs attached to a pty whose session backs
@@ -513,7 +546,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			cmd, sess, ttyErr := startAgentTTY(sbCtx, agentBin, agentArgs)
 			if ttyErr != nil {
 				cleanup()
-				p.freeIP(octet)
+				p.releaseSlot(octet, prealloc)
 				return nil, fmt.Errorf("start agent (tty): %w", ttyErr)
 			}
 			agentCmd, entrypointTTY, agentDone = cmd, sess, sess.Done()
@@ -521,7 +554,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			cmd, done, startErr := startChild(sbCtx, p.children, "sandbox:"+key, agentBin, agentArgs, nil, nil, publishAgentStdio(broker))
 			if startErr != nil {
 				cleanup()
-				p.freeIP(octet)
+				p.releaseSlot(octet, prealloc)
 				return nil, fmt.Errorf("start agent: %w", startErr)
 			}
 			agentCmd, agentDone = cmd, done
@@ -643,7 +676,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		_ = iso.UnmountRoot()
 		p.router.unregister(ip)
 		p.setEgress(ip, nil)
-		p.freeIP(octet)
+		p.releaseSlot(octet, prealloc)
 		s.mu.Lock()
 		delete(s.sandboxes, key)
 		delete(s.cancels, key)
