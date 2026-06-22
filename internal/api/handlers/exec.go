@@ -111,7 +111,11 @@ func (h *Sandbox) ExecStream(c *gin.Context, id string) {
 // as SSE. The session ends when the process exits; the final exit frame
 // carries its exit code.
 func (h *Sandbox) execStreamTTY(c *gin.Context, id, command string, req gen.ExecStreamRequest, flusher http.Flusher) {
-	cmd, cleanup, err := h.iso.ExecCmd(c.Request.Context(), isolation.ExecConfig{
+	// Tie the exec to the sandbox lifecycle so a DELETE kills it mid-flight
+	// (otherwise the microvm bridge blocks forever on the dead guest).
+	ctx, cancelCtx := h.execContext(c.Request.Context())
+	defer cancelCtx()
+	cmd, cleanup, err := h.iso.ExecCmd(ctx, isolation.ExecConfig{
 		Command: command, Cwd: req.Cwd, Env: req.Env, TTY: true,
 	})
 	if err != nil {
@@ -214,7 +218,11 @@ func (h *Sandbox) execStreamPipes(c *gin.Context, id, command string, req gen.Ex
 	reqEventID := h.publishExecRequest(command, req.Cwd)
 	w := c.Writer
 
-	cmd, cleanup, err := h.iso.ExecCmd(c.Request.Context(), isolation.ExecConfig{
+	// Tie the exec to the sandbox lifecycle so a DELETE kills it mid-flight
+	// (otherwise the microvm bridge blocks forever on the dead guest).
+	ctx, cancelCtx := h.execContext(c.Request.Context())
+	defer cancelCtx()
+	cmd, cleanup, err := h.iso.ExecCmd(ctx, isolation.ExecConfig{
 		Command: command, Cwd: req.Cwd, Env: req.Env,
 	})
 	if err != nil {

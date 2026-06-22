@@ -41,6 +41,41 @@ func (p *Proxy) dialUpstreamTLS(dialAddr, host string, clientHello []byte, ws bo
 	return uc, nil
 }
 
+// dialUpstreamPassthroughTLS dials dialAddr and completes a TLS handshake that
+// mirrors the agent's ClientHello verbatim — including its original ALPN. Used
+// by the non-HTTP splice fallback (interceptTLS), where the inner stream is an
+// opaque protocol (e.g. MTALK/GCM on :5228) that must not be forced onto
+// http/1.1. On a mirror failure it redials and retries with the Chrome
+// fingerprint as a last resort.
+func (p *Proxy) dialUpstreamPassthroughTLS(dialAddr, host string, clientHello []byte) (net.Conn, error) {
+	rawUp, err := p.dialer.DialContext(context.Background(), "tcp", dialAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	var spec utls.ClientHelloSpec
+	if specErr := spec.FromRaw(clientHello, true); specErr == nil {
+		if uc, hsErr := applyUTLSSpec(rawUp, host, &spec); hsErr == nil {
+			cs := uc.ConnectionState()
+			log.Printf("upstream tls: passthrough mirrored handshake ok host=%s version=0x%04x cipher=0x%04x alpn=%q", host, cs.Version, cs.CipherSuite, cs.NegotiatedProtocol)
+			return uc, nil
+		} else {
+			log.Printf("upstream tls: passthrough mirror failed host=%s err=%v — falling back to chrome", host, hsErr)
+		}
+	}
+	_ = rawUp.Close()
+
+	rawUp2, err := p.dialer.DialContext(context.Background(), "tcp", dialAddr)
+	if err != nil {
+		return nil, fmt.Errorf("redial for chrome fallback: %w", err)
+	}
+	uc, err := chromeTLSHandshake(rawUp2, host)
+	if err != nil {
+		_ = rawUp2.Close()
+		return nil, fmt.Errorf("chrome handshake: %w", err)
+	}
+	return uc, nil
+}
+
 // mirroredTLSHandshake connects to the upstream using the same TLS fingerprint
 // the agent sent to us. allowBluntMimicry=true keeps extensions utls doesn't
 // natively understand (e.g. encrypt_then_mac, ext 22) as raw GenericExtension

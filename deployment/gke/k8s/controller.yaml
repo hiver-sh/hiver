@@ -58,7 +58,7 @@ spec:
       serviceAccountName: controller
       containers:
         - name: controller
-          image: hiversh/controller@sha256:0e5585e9b0153bf76feb8cc9a7d7191463fe74266cf7b44c52e89f16ea5c3828
+          image: hiversh/controller@sha256:5f069e11f3ef417813207968a017f6ed3f213a29561fea3f7d388fdb75fd4ca7
           args: ["--server-port=9000"]
           env:
             # Selects the Kubernetes backend in NewControllerHandlers();

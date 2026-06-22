@@ -22,6 +22,17 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: gateway
+                    # Proxy WebSocket upgrades end-to-end. The sandbox ingress
+                    # exposes arbitrary upstream ports via
+                    # /sandbox/<id>/.../proxy/<port>, including Chrome's CDP/DevTools
+                    # endpoint that Playwright's connectOverCDP drives over a
+                    # WebSocket. Without this Envoy refuses the Upgrade and the CDP
+                    # handshake fails. Keep in sync with docker/gateway/envoy.yaml.
+                    upgrade_configs:
+                      - upgrade_type: websocket
+                    # A CDP session can sit idle between commands; don't tear the
+                    # upgraded stream down on the default idle timeout. 0 disables it.
+                    stream_idle_timeout: 0s
                     http_filters:
                       - name: envoy.filters.http.lua
                         typed_config:

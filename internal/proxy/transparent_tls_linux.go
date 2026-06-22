@@ -54,7 +54,7 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	}
 	log.Printf("transparent tls: host=%s port=%d allowed minter=%v passthrough=%v", host, port, p.minter != nil, rule.Passthrough)
 	if p.minter != nil && !rule.Passthrough {
-		p.interceptTLS(c, br, host, origDst, hello, srcIP)
+		p.interceptTLS(c, br, host, origDst, hello, srcIP, rule)
 		return
 	}
 	p.rawForwardTLS(c, br, host, origDst, rule)
@@ -87,7 +87,7 @@ func (p *Proxy) rawForwardTLS(c *net.TCPConn, br *bufio.Reader, host, origDst st
 // upstream TLS connection. WebSocket-aware: upstream TLS for WS upgrades
 // mirrors the agent's TLS fingerprint (so CF doesn't see Go's JA3 paired
 // with non-browser HTTP headers); regular HTTPS uses Chrome's JA3.
-func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string, clientHello []byte, srcIP string) {
+func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst string, clientHello []byte, srcIP string, rule *EgressRule) {
 	clientTLS, err := p.acceptInnerTLS(c, br, host)
 	if err != nil {
 		log.Printf("intercept tls: inner handshake error host=%s: %v", host, err)
@@ -105,6 +105,26 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	var rawReqBuf bytes.Buffer
 	req, err := http.ReadRequest(bufio.NewReader(io.TeeReader(clientTLS, &rawReqBuf)))
 	if err != nil {
+		// No bytes read before the error: the agent opened TLS and closed
+		// without sending anything (Chrome fires speculative preconnect sockets
+		// constantly and abandons them). There's no request to allow or deny —
+		// drop it quietly rather than emit a spurious deny audit event.
+		if rawReqBuf.Len() == 0 {
+			log.Printf("intercept tls: inner stream closed before request host=%s: %v", host, err)
+			return
+		}
+		// Bytes were read but they aren't HTTP: an opaque protocol over TLS
+		// (e.g. Google's MTALK/GCM push on :5228). The connection already
+		// cleared the host-level egress check, so if that rule grants access
+		// without method/path constraints we splice the decrypted stream
+		// straight to the upstream — the agent may speak whatever protocol it
+		// likes. A rule that pins methods or paths needs HTTP to enforce, so a
+		// non-HTTP stream can't satisfy it and fails closed.
+		if rule.Access == "allow" && len(rule.Paths) == 0 && len(rule.Methods) == 0 {
+			log.Printf("intercept tls: non-http inner stream host=%s, splicing passthrough (read: %v)", host, err)
+			p.spliceTLS(clientTLS, host, origDst, rule, clientHello, rawReqBuf.Bytes(), srcIP)
+			return
+		}
 		log.Printf("intercept tls: read request error host=%s: %v", host, err)
 		p.beginAudit(srcIP, "TLS", host, "", "").deny("read request: "+err.Error(), 0)
 		return
@@ -113,7 +133,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 
 	_, port := splitHostPort("", origDst, 0)
 	ac := p.beginAudit(srcIP, req.Method, host, req.URL.Path, req.URL.RawQuery)
-	rule := p.applyRequestRule(req, host, port, srcIP, ac, func() {
+	rule = p.applyRequestRule(req, host, port, srcIP, ac, func() {
 		_, _ = clientTLS.Write([]byte("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
 	})
 	if rule == nil {
@@ -136,6 +156,43 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		rawReqBytes = rawReqBuf.Bytes()
 	}
 	p.forwardHTTP(clientTLS, upstreamConn, req, rawReqBytes, ac)
+}
+
+// spliceTLS forwards an intercepted TLS connection whose decrypted inner
+// stream isn't HTTP. The agent's TLS is already terminated (clientTLS holds the
+// plaintext), so we open our own TLS to the upstream and pipe the decrypted
+// bytes end-to-end without parsing. pending holds the bytes the failed HTTP read
+// already pulled off clientTLS (captured via the request TeeReader); they are
+// the head of the application stream and must be replayed upstream first. The
+// upstream handshake mirrors the agent's ClientHello verbatim — ALPN included —
+// so a non-HTTP protocol isn't forced onto http/1.1. Audit visibility is
+// host + port only, like a passthrough rule.
+func (p *Proxy) spliceTLS(clientTLS net.Conn, host, origDst string, rule *EgressRule, clientHello, pending []byte, srcIP string) {
+	ac := p.beginAudit(srcIP, "TLS", host, "", "")
+	dialAddr := dialTarget(rule, upstreamAddr(host, origDst))
+	upstream, err := p.dialUpstreamPassthroughTLS(dialAddr, host, clientHello)
+	if err != nil {
+		ac.deny("upstream tls: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer upstream.Close()
+	ac.allow()
+	// Opaque tunnel: there's no inner HTTP status to wait for, and the stream
+	// can stay open indefinitely (mtalk/GCM push is long-lived). Emit the
+	// response event now — status 200 means "tunnel established" — so consumers
+	// see a paired request/response immediately instead of nothing until the
+	// connection eventually closes.
+	ac.response(http.StatusOK)
+
+	if len(pending) > 0 {
+		if _, err := upstream.Write(pending); err != nil {
+			return
+		}
+	}
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(upstream, clientTLS); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(clientTLS, upstream); done <- struct{}{} }()
+	<-done
 }
 
 // acceptInnerTLS completes the agent-facing TLS handshake using a per-host

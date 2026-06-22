@@ -1,21 +1,19 @@
-// Benchmark the *resident browser host* path against the same lifecycle that
+// Benchmark the *resident browser* path against the same lifecycle that
 // nottelabs/browserarena's hello-browser bench measures for cloud browser
-// providers: create → connect → goto → release. The playwright image ships
-// /opt/hiver/prewarm, which sbxguest starts before the microvm snapshot, so a
-// claimed sandbox resumes with Chromium already running. Instead of spawning
-// `node -e "require('playwright'); chromium.launch()"` per exec (see
-// benchmark-browser-ready.ts — ~0.9s require + ~1.1s launch + node startup), the
-// client drives the already-warm browser over plain HTTP: each command is a
-// `POST /eval` to the resident host's endpoint through the sandbox ingress proxy
-// (/v1/<key>/proxy/<port>/eval) — no exec session and no per-request in-guest
-// process spawn (the old path bridged a Unix socket with `socat` over
-// execStream). The host keeps one persistent REPL behind the endpoint, so
-// top-level bindings persist across requests.
+// providers: create → connect → goto → release. The playwright image keeps a
+// headless Chromium resident with its CDP endpoint open (see
+// docker/playwright/chrome-cdp.cjs), captured warm in the microvm snapshot, so a
+// claimed sandbox resumes with Chromium already listening. The client attaches
+// exactly like the playwright-cdp.ts example: chromium.connectOverCDP() to the
+// in-guest relay's STABLE /cdp url through the sandbox ingress proxy
+// (/v1/<key>/proxy/<port>/cdp), then drives the warm page with the normal
+// Playwright API — no per-exec `node -e "chromium.launch()"` (see
+// benchmark-browser-ready.ts: ~0.9s require + ~1.1s launch + node startup).
 //
 // Stages (mirroring browserarena/src/benchmarks/hello-browser):
 //   create   getOrCreateSandbox — the provider "create session" API call.
-//   connect  GET the resident host's HTTP endpoint (through the proxy) until it
-//            answers 200 — the analog of chromium.connectOverCDP().
+//   connect  chromium.connectOverCDP() to the resident browser through the proxy
+//            (retried until it answers) — the "attach" stage.
 //   goto     navigate the resident page to BENCH_URL and wait for
 //            `domcontentloaded` — the "open page" stage, page.goto({ waitUntil:
 //            "domcontentloaded" }). This is the best proxy for browser speed.
@@ -33,49 +31,37 @@
 // batch's sandboxes are released (sandbox.shutdown) during this cooldown — off
 // the measured create→connect→goto path — rather than inline per run.
 //
-// Requires an image built with the resident host (Dockerfile/browser-host.cjs)
-// and an sbxguest with the prewarm hook.
+// Requires the CDP playwright image (docker/playwright/chrome-cdp.cjs) and an
+// sbxguest with the prewarm hook.
 import * as hiver from "@hiver.sh/client";
+import { chromium, type Browser } from "playwright-core";
 
 const gatewayUrl = process.env.HIVER_GATEWAY_URL ?? "http://localhost:10000";
 const RUNS = Number(process.env.BENCH_RUNS ?? "10");
 const MIN_QPS = Number(process.env.BENCH_MIN_QPS ?? "1");
 const MAX_QPS = Number(process.env.BENCH_MAX_QPS ?? "1");
 const WAIT_MS = Number(process.env.BENCH_WAIT_MS ?? "10000");
-// Per-stage deadline: a run whose /eval (or connect health-check) doesn't return
-// within this (e.g. a wedged page.goto when a contended --single-process Chromium
-// stalls under load) is aborted and counted as a failed run, rather than blocking
-// the whole sweep forever on Promise.all. Generous vs. a healthy ~0.5s round-trip.
+// Per-stage deadline: a run whose connect/goto doesn't return within this (e.g. a
+// wedged page.goto when a contended --single-process Chromium stalls under load)
+// is aborted and counted as a failed run, rather than blocking the whole sweep
+// forever on Promise.all. Generous vs. a healthy ~0.5s round-trip.
 const RUN_TIMEOUT_MS = Number(process.env.BENCH_RUN_TIMEOUT_MS ?? "20000");
 // browserarena navigates every provider to example.com and waits for
 // `domcontentloaded`; keep the same default so timings are comparable.
 const URL = process.env.BENCH_URL ?? "https://example.com";
-// TCP port the resident browser host's HTTP /eval endpoint listens on inside the
-// sandbox; reached via the ingress proxy. Keep in sync with browser-host.cjs.
-const HOST_PORT = Number(process.env.BENCH_HOST_PORT ?? "9223");
+// TCP port Chromium's CDP/DevTools endpoint listens on inside the sandbox,
+// reached via the ingress proxy. Keep in sync with chrome-cdp.cjs.
+const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 const sandboxConfig: hiver.SandboxConfig = {
-  image: "hiversh/playwright:microvm-23",
+  image: "hiversh/playwright:microvm-32",
 };
 
-// The "open page" / goto stage: navigate the resident (pre-opened) page to URL
-// and wait for `domcontentloaded` (matches browserarena's page.goto(url, {
-// waitUntil: "domcontentloaded" })). With BENCH_NAV_TIMING on (default) the
-// command also reads the browser's Navigation Timing so we can split the cost
-// into DNS / connect / TTFB / response / DOM — but that second page.evaluate is
-// itself a post-navigation round-trip into a fresh execution context, so it
-// inflates the measured goto (it lands in `resid`). Set BENCH_NAV_TIMING=0 to
-// drop it and measure the bare page.goto; compare the two `goto` columns to see
-// how much of the overhead is the instrumentation vs page.goto's own lag.
-// Emitted as one line: `goto:<status>` or `goto:<status> <navTimingJson>`.
+// With BENCH_NAV_TIMING on (default) the goto stage also reads the browser's
+// Navigation Timing (a post-navigation page.evaluate) so we can split the cost
+// into DNS / connect / TTFB / response / DOM. That extra round-trip inflates the
+// measured goto (it lands in `resid`); set BENCH_NAV_TIMING=0 to measure the bare
+// page.goto and compare.
 const NAV_TIMING = process.env.BENCH_NAV_TIMING !== "0";
-const gotoPage = !NAV_TIMING
-  ? `console.log('goto:' + (await page.goto(${JSON.stringify(URL)}, { waitUntil: 'domcontentloaded' })).status())`
-  : `const __r = await page.goto(${JSON.stringify(URL)}, { waitUntil: 'domcontentloaded' }); ` +
-    `const __n = await page.evaluate(() => { const e = performance.getEntriesByType('navigation')[0]; ` +
-    `return e ? { dns: e.domainLookupEnd - e.domainLookupStart, connect: e.connectEnd - e.connectStart, ` +
-    `ttfb: e.responseStart - e.requestStart, response: e.responseEnd - e.responseStart, ` +
-    `dom: e.domContentLoadedEventEnd - e.responseEnd, nav: e.domContentLoadedEventEnd - e.startTime } : null; }); ` +
-    `console.log('goto:' + __r.status() + ' ' + JSON.stringify(__n))`;
 
 // In-browser Navigation Timing for the goto, in ms (all deltas off the same
 // navigation entry). `nav` is the browser-measured navigation total.
@@ -88,17 +74,10 @@ interface NavTiming {
   nav: number;
 }
 
-// A no-op REPL round-trip: one POST /eval through the proxy → eval →
-// console.log → response body, with zero browser work. This is the pure
-// transport+REPL floor; `gotoMs - nav - pingMs` is then what the goto costs
-// *over* that floor (mostly the instrumentation page.evaluate + node scheduling).
-const PONG = "__PONG__";
-const pingHost = `console.log('${PONG}')`;
-
 interface Run {
   createMs: number; // provider "create session" (getOrCreateSandbox)
-  connectMs: number; // HTTP attach to resident host (connectOverCDP analog)
-  pingMs: number; // no-op REPL round-trip — the transport+REPL floor
+  connectMs: number; // chromium.connectOverCDP() attach to the resident browser
+  pingMs: number; // a trivial page.evaluate() round-trip — the CDP transport floor
   gotoMs: number; // page.goto(URL, domcontentloaded) — the "open page" stage
   releaseMs: number; // provider "release session" (sandbox.shutdown) — filled at cooldown
   totalMs: number; // lifecycle sum, completed once release lands (releaseBatch)
@@ -114,52 +93,26 @@ interface PendingRun {
   sandbox: hiver.Sandbox;
 }
 
-// Run one REPL command over HTTP: POST the JS to the resident host's /eval
-// endpoint through the sandbox ingress proxy and return the command's console
-// output (the response body). Bounded by RUN_TIMEOUT_MS so a wedged stage fails
-// the run rather than hanging the sweep.
-async function evalCmd(
-  sandbox: hiver.Sandbox,
-  cmd: string,
-  label: string,
-): Promise<string> {
-  const res = await sandbox.fetchImpl(sandbox.proxyUrl(HOST_PORT) + "/eval", {
-    method: "POST",
-    headers: { "content-type": "text/plain" },
-    body: cmd,
-    signal: AbortSignal.timeout(RUN_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`${label}: eval status ${res.status}`);
-  return await res.text();
-}
-
-// Poll the resident host's HTTP endpoint until it answers 200 — the connect /
-// attach stage. On the warm microvm path it's up at claim (first try); on the
-// cold container path browser-host.cjs is still launching Chromium, so poll
-// (≤ RUN_TIMEOUT_MS) until it's listening.
-async function waitHealthy(
+// connect / attach stage: chromium.connectOverCDP() to the resident browser over
+// the relay's stable /cdp url (…/proxy/<port>/cdp, http→ws), retried until it
+// answers. On the warm microvm path the browser is in the snapshot and connects
+// on the first try; on the cold container path Chromium is still coming up, so we
+// retry (≤ RUN_TIMEOUT_MS) until the relay is listening.
+async function connectWithRetry(
   sandbox: hiver.Sandbox,
   label: string,
-): Promise<void> {
-  const url = sandbox.proxyUrl(HOST_PORT) + "/healthz";
+): Promise<Browser> {
+  const wsEndpoint = sandbox.proxyUrl(CDP_PORT).replace(/^http/, "ws") + "/cdp";
   const start = performance.now();
   for (;;) {
     try {
-      const res = await sandbox.fetchImpl(url, {
-        method: "GET",
-        signal: AbortSignal.timeout(2_000),
-      });
-      if (res.ok) {
-        await res.text();
-        return;
+      return await chromium.connectOverCDP(wsEndpoint, { timeout: 2_000 });
+    } catch (e) {
+      if (performance.now() - start > RUN_TIMEOUT_MS) {
+        throw new Error(`${label} timed out after ${RUN_TIMEOUT_MS}ms: ${e}`);
       }
-    } catch {
-      /* endpoint not up yet — retry below */
+      await sleep(100);
     }
-    if (performance.now() - start > RUN_TIMEOUT_MS) {
-      throw new Error(`${label} timed out after ${RUN_TIMEOUT_MS}ms`);
-    }
-    await sleep(100);
   }
 }
 
@@ -182,55 +135,63 @@ async function doRun(
   sandboxes.push(sandbox);
   const createMs = performance.now() - t0;
 
-  // connect: poll the resident host's HTTP endpoint until it answers — the analog
-  // of chromium.connectOverCDP() (attaching to the running browser). On the warm
-  // microvm path the host is in the snapshot and answers on the first try, so
-  // connectMs measures the warm attach; on the cold container path it includes
-  // the browser launch (no resident browser to attach to).
+  // connect: chromium.connectOverCDP() to the resident browser over the stable
+  // /cdp url. On the warm microvm path the browser is in the snapshot and connects
+  // on the first try, so connectMs measures the warm attach; on the cold container
+  // path it includes waiting for Chromium to come up.
   const t1 = performance.now();
-  await waitHealthy(sandbox, "connect");
+  const browser = await connectWithRetry(sandbox, "connect");
   const connectMs = performance.now() - t1;
 
   let run: Run | null = null;
+  try {
+    // Reuse the resident browser's warm context + pre-opened page (a fresh CDP
+    // target would spin up a new renderer); fall back if it came up empty.
+    const context = browser.contexts()[0]!;
+    const page = context.pages()[0]!;
 
-  // ping: a no-op REPL round-trip with zero browser work — measures the pure
-  // transport+REPL floor (one /eval POST through the proxy) so we can attribute
-  // how much of the goto's overhead is transport vs browser.
-  const tp = performance.now();
-  await evalCmd(sandbox, pingHost, "ping");
-  const pingMs = performance.now() - tp;
+    // ping: a trivial page.evaluate() with no browser work — the CDP transport
+    // floor (one Runtime.evaluate round-trip through the proxy) so we can
+    // attribute how much of the goto's overhead is transport vs browser.
+    const tp = performance.now();
+    await page.evaluate(() => 1);
+    const pingMs = performance.now() - tp;
 
-  // goto: navigate the pre-opened page to URL and wait for `domcontentloaded` —
-  // the "open page" stage and the best proxy for browser speed.
-  const t2 = performance.now();
-  const body = await evalCmd(sandbox, gotoPage, `goto ${i}`);
-  const gotoMs = performance.now() - t2;
-  // The response body is the command's console output. Expected: a line
-  // `goto:<status> <navTimingJson>`. Parse the status word and the Navigation
-  // Timing JSON (may be `null` if the entry wasn't available).
-  const out = body.split("\n");
-  const goto = out.find((l) => l.startsWith("goto:"));
-  if (!goto) {
-    console.error(`  run ${i}: goto failed: ${JSON.stringify(out)}`);
-  } else {
-    const rest = goto.slice("goto:".length);
-    const sp = rest.indexOf(" ");
+    // goto: navigate the pre-opened page to URL and wait for `domcontentloaded` —
+    // the "open page" stage and the best proxy for browser speed.
+    const t2 = performance.now();
+    await page.goto(URL, { waitUntil: "domcontentloaded", timeout: RUN_TIMEOUT_MS });
+    const gotoMs = performance.now() - t2;
+
+    // Optionally read the browser's Navigation Timing (an extra page.evaluate
+    // round-trip, so it inflates `goto` into `resid` — see NAV_TIMING).
     let nav: NavTiming | undefined;
-    try {
-      const parsed = sp === -1 ? null : JSON.parse(rest.slice(sp + 1));
-      if (parsed) nav = parsed as NavTiming;
-    } catch {
-      /* keep nav undefined if the breakdown didn't parse */
+    if (NAV_TIMING) {
+      nav =
+        (await page.evaluate(() => {
+          const e = performance.getEntriesByType(
+            "navigation",
+          )[0] as PerformanceNavigationTiming | undefined;
+          return e
+            ? {
+                dns: e.domainLookupEnd - e.domainLookupStart,
+                connect: e.connectEnd - e.connectStart,
+                ttfb: e.responseStart - e.requestStart,
+                response: e.responseEnd - e.responseStart,
+                dom: e.domContentLoadedEventEnd - e.responseEnd,
+                nav: e.domContentLoadedEventEnd - e.startTime,
+              }
+            : null;
+        })) ?? undefined;
     }
-    run = {
-      createMs,
-      connectMs,
-      pingMs,
-      gotoMs,
-      releaseMs: 0,
-      totalMs: 0,
-      nav,
-    };
+
+    run = { createMs, connectMs, pingMs, gotoMs, releaseMs: 0, totalMs: 0, nav };
+  } catch (e) {
+    console.error(`  run ${i}: failed: ${e}`);
+  } finally {
+    // Disconnect this CDP client — does NOT terminate the resident browser, so
+    // the sandbox stays warm until it's shut down in the cooldown.
+    await browser.close().catch(() => {});
   }
 
   // No release here: shutdown is deferred to the cooldown between QPS levels
@@ -305,7 +266,7 @@ async function releaseBatch(batch: BatchResult): Promise<Run[]> {
     ...batch.pending.map(async ({ i, run, sandbox }) => {
       const t = performance.now();
       try {
-        // await sandbox.shutdown();
+        await sandbox.shutdown();
       } catch (e) {
         console.error(`  run ${i}: release error: ${e}`);
       }
@@ -441,7 +402,8 @@ for (const { qps, results } of batches) {
 // Navigation breakdown: split the goto into the browser's network phases (DNS,
 // TCP connect, TTFB, response, DOM), `nav` (browser-measured navigation total),
 // and the overhead `xport = gotoMs − nav`. That overhead is further split into
-// `ping` (the no-op transport+REPL floor) and `resid = xport − ping` (the rest:
+// `ping` (the CDP transport floor — a bare page.evaluate round-trip) and
+// `resid = xport − ping` (the rest:
 // the instrumentation page.evaluate + node scheduling). If DNS/connect/TTFB
 // dominate, egress is the bottleneck; if `ping` dominates, it's the tunnel
 // round-trip; if `dom`/`resid` dominate, it's browser/node CPU.

@@ -536,6 +536,10 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	sb.SetIsolation(iso)
 	sb.SetBroker(broker)
 	sb.SetStore(store)
+	// Tie exec sessions to this sandbox's lifecycle: a DELETE (sbCtx cancel)
+	// kills in-flight execs, so the microvm bridge (sbxvsock) doesn't linger
+	// blocked on a read to the guest the teardown is about to kill.
+	sb.SetLifecycleContext(sbCtx)
 	// Publish the entrypoint pty (tty path only) so exec-stream attach requests
 	// reach the running entrypoint terminal.
 	if entrypointTTY != nil {
@@ -618,11 +622,23 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		// for the pod's lifetime. The sbxfuse unmount is async, so RemoveAll can hit
 		// a still-busy mountpoint — retry briefly until it lands. Done after the
 		// snapshot capture above.
+		removed := false
 		for i := 0; i < 50; i++ {
 			if err := os.RemoveAll(keyRoot); err == nil {
+				removed = true
 				break
 			}
 			time.Sleep(20 * time.Millisecond)
+		}
+		// If the async unmount never landed, RemoveAll is permanently wedged on a
+		// stale FUSE mountpoint — it would leak for the pod's life and (worse) block
+		// a same-key re-create with "mkdir: file exists". Force-detach the leftover
+		// mounts so a re-create starts clean.
+		if !removed {
+			log.Printf("sandboxd: pack %q: workspace dir still busy after teardown, force-detaching %s", key, keyRoot)
+			if cerr := clearStaleMount(keyRoot); cerr != nil {
+				log.Printf("sandboxd: pack %q: force-detach %s: %v", key, keyRoot, cerr)
+			}
 		}
 		_ = iso.UnmountRoot()
 		p.router.unregister(ip)

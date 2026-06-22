@@ -159,7 +159,16 @@ func (m *mountManager) start(f spec.FS) error {
 	mountPoint := m.hostMount(f)
 	backend := m.hostBackend(f)
 	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
-		return fmt.Errorf("create mount point %s: %w", mountPoint, err)
+		// A re-created key can find a stale FUSE mountpoint here: a prior sandbox
+		// with the same key whose async teardown didn't fully clear it leaves the
+		// path present but un-stat-able (dead transport endpoint), so MkdirAll
+		// fails with EEXIST. Force-detach and clear it, then retry.
+		if cerr := clearStaleMount(mountPoint); cerr != nil {
+			return fmt.Errorf("create mount point %s: %w (clear stale: %v)", mountPoint, err, cerr)
+		}
+		if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+			return fmt.Errorf("create mount point %s: %w", mountPoint, err)
+		}
 	}
 	if err := os.MkdirAll(backend, 0o755); err != nil {
 		return fmt.Errorf("create backend %s: %w", backend, err)

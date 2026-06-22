@@ -228,6 +228,8 @@ func main() {
 		sb.SetBroker(broker)
 		sb.SetStore(store)
 		sb.SetLifetime(lifetime)
+		// Tie exec sessions to the lifecycle ctx so DELETE/shutdown kills them.
+		sb.SetLifecycleContext(ctx)
 		sup.register(sb, specImage(sp), cancel)
 	}
 

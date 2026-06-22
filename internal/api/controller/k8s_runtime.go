@@ -545,13 +545,13 @@ func (r *K8sRuntime) buildPod(podName, key string, cfg sandboxgen.SandboxConfig,
 			Namespace: r.namespace,
 			Labels:    map[string]string{labelSandboxKey: key},
 		},
-		Spec: r.sandboxPodSpec(cfg, specBytes),
+		Spec: r.sandboxPodSpec(key, cfg, specBytes),
 	}
 }
 
 // sandboxPodSpec builds the per-sandbox PodSpec. sandboxd is launched from the
-// inline HIVE_SPEC env, cold-booting its workload at startup.
-func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []byte) corev1.PodSpec {
+// inline HIVE_SPEC env, cold-booting its workload at startup under key (HIVE_KEY).
+func (r *K8sRuntime) sandboxPodSpec(key string, cfg sandboxgen.SandboxConfig, specBytes []byte) corev1.PodSpec {
 	privileged := true
 	// Provision the local snapshot volume only when snapshots aren't routed to a
 	// FUSE drive (snapshot.mount); otherwise it's unnecessary and would collide
@@ -584,7 +584,16 @@ func (r *K8sRuntime) sandboxPodSpec(cfg sandboxgen.SandboxConfig, specBytes []by
 				Ports: []corev1.ContainerPort{
 					{ContainerPort: sandboxdPort},
 				},
-				Env: append(r.envVars(cfg), corev1.EnvVar{Name: spec.EnvSpec, Value: string(specBytes)}),
+				// HIVE_SPEC carries the workload config; HIVE_KEY tells sandboxd
+				// which key to register the single boot sandbox under, so the keyed
+				// API (/v1/<key>/...) — and the readiness ping the controller and
+				// gateway issue — addresses it. Without HIVE_KEY sandboxd falls back
+				// to "default" and every /v1/<key>/ping 404s, so the sandbox never
+				// reports ready. Mirrors the Docker runtime.
+				Env: append(r.envVars(cfg),
+					corev1.EnvVar{Name: spec.EnvSpec, Value: string(specBytes)},
+					corev1.EnvVar{Name: "HIVE_KEY", Value: key},
+				),
 				// No readiness probe: nothing gates on the pod's Ready
 				// condition (there's no per-sandbox Service — the gateway
 				// decodes the pod IP from the id and dials it directly).

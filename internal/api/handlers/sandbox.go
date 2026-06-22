@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -30,11 +31,30 @@ type Sandbox struct {
 	iso      isolation.Isolation // runtime boundary: exec + filesystem access
 	netMark  int                 // SO_MARK for the reverse proxy dialer, bypasses iptables REDIRECT
 
+	// lifecycleCtx is the sandbox's lifecycle context; it's cancelled when the
+	// sandbox is torn down (DELETE, agent exit, or pod shutdown). Exec sessions
+	// tie their host-side bridge process to it (via execContext) so a delete
+	// kills in-flight execs instead of leaving them blocked — e.g. a microvm
+	// exec's sbxvsock otherwise stalls forever on a TCP read to the now-dead
+	// guest, which sends no RST when its VMM is killed. Set once, before
+	// NotifyReady; nil for sandboxes that never wired it (exec falls back to the
+	// request context alone).
+	lifecycleCtx context.Context
+
 	// proxyHost is the host the ingress reverse proxy dials to reach the user's
 	// workload. The boot sandbox shares the pod netns, so its workload is on
 	// 127.0.0.1 (the default). A packed sandbox runs in its own netns reachable
 	// only at its guest IP (172.16.<n>.2), set via SetProxyHost.
 	proxyHost string
+
+	// proxyTransport is the shared, keep-alive HTTP transport the ingress reverse
+	// proxy reuses across requests. netMark and proxyHost are fixed after
+	// readiness, so one transport per sandbox is correct — it pools connections to
+	// the workload instead of dialing (and allocating a Transport) per request.
+	// Built lazily by proxyRoundTripper. Nil when no SO_MARK is set (the proxy
+	// then falls back to http.DefaultTransport, which is itself pooled).
+	proxyTransportOnce sync.Once
+	proxyTransport     *http.Transport
 
 	// processes maps an exec-stream id → io.Writer (the running process's stdin)
 	// or *pty.Session. Per sandbox so ids can't collide across keys.
@@ -89,6 +109,25 @@ func (s *Sandbox) SetBroker(b *events.Broker)           { s.broker = b }
 func (s *Sandbox) SetStore(st configStore)              { s.store = st }
 func (s *Sandbox) SetLifetime(l lifetime)               { s.lifetime = l }
 func (s *Sandbox) SetIsolation(iso isolation.Isolation) { s.iso = iso }
+
+// SetLifecycleContext wires the sandbox's lifecycle context so exec sessions
+// can be cancelled when the sandbox is torn down. Called once, before
+// NotifyReady.
+func (s *Sandbox) SetLifecycleContext(ctx context.Context) { s.lifecycleCtx = ctx }
+
+// execContext derives a context for an exec session that is cancelled when
+// either the request ends or the sandbox is torn down. Without the sandbox tie,
+// a DELETE leaves in-flight execs running: the microvm bridge (sbxvsock) blocks
+// indefinitely on a read to the killed guest, which never sends a RST. The
+// returned cancel must be called to release the AfterFunc registration.
+func (s *Sandbox) execContext(reqCtx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(reqCtx)
+	if s.lifecycleCtx == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(s.lifecycleCtx, cancel)
+	return ctx, func() { stop(); cancel() }
+}
 
 // NotifyReady signals that the sandbox's workload is up and running, flipping it
 // from refusing requests to serving them. Idempotent.
@@ -162,6 +201,9 @@ func (s *Sandbox) SetEntrypointTTY(sess *pty.Session) {
 func (h *Sandbox) execCommand(ctx context.Context, command string, cwd *string, env *map[string]string) (stdout, stderr string, exitCode int, err error) {
 	// Readiness is guaranteed by /v1/ping, which blocks until the workload is
 	// running; clients ping before they exec, so the workload is up by here.
+	// Tie the exec to the sandbox lifecycle so a DELETE kills it mid-flight.
+	ctx, cancelCtx := h.execContext(ctx)
+	defer cancelCtx()
 	cmd, cleanup, err := h.iso.ExecCmd(ctx, isolation.ExecConfig{Command: command, Cwd: cwd, Env: env})
 	if err != nil {
 		return

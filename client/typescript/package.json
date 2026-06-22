@@ -43,6 +43,7 @@
     "@types/node": "^20.19.41",
     "chalk": "^5.6.2",
     "googleapis": "^144.0.0",
+    "playwright-core": "^1.61.0",
     "prettier": "^3.8.3",
     "tsup": "^8.3.0",
     "typescript": "^5.5.4",

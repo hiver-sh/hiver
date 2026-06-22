@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
@@ -18,13 +19,57 @@ type SandboxServer struct {
 	*http.Server
 }
 
+// proxyCatchAllRouter wraps the gin router passed to the generated route
+// registration so the ingress proxy routes match multi-segment paths.
+// oapi-codegen only ever emits a single-segment param for `{path}`
+// (/v1/:key/proxy/:port/:path), but a proxied upstream can expose nested paths
+// — e.g. Chrome's DevTools/CDP endpoint serves /json/version and
+// /devtools/browser/<id>. We rewrite just those registrations to gin's
+// catch-all (/v1/:key/proxy/:port/*path) at registration time, leaving every
+// other route untouched, instead of hand-editing generated code (which a
+// `go generate` would clobber). The catch-all param carries a leading slash;
+// the proxy handler normalizes it (see handlers.newReverseProxy).
+type proxyCatchAllRouter struct {
+	gin.IRouter
+}
+
+// rewriteProxyPath turns the generated single-segment proxy pattern into a
+// catch-all. Only the proxy routes end in "/proxy/:port/:path"; all others pass
+// through unchanged.
+func rewriteProxyPath(relativePath string) string {
+	const single = "/proxy/:port/:path"
+	if strings.HasSuffix(relativePath, single) {
+		return strings.TrimSuffix(relativePath, "/:path") + "/*path"
+	}
+	return relativePath
+}
+
+func (r proxyCatchAllRouter) GET(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.GET(rewriteProxyPath(p), h...)
+}
+func (r proxyCatchAllRouter) POST(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.POST(rewriteProxyPath(p), h...)
+}
+func (r proxyCatchAllRouter) PUT(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.PUT(rewriteProxyPath(p), h...)
+}
+func (r proxyCatchAllRouter) PATCH(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.PATCH(rewriteProxyPath(p), h...)
+}
+func (r proxyCatchAllRouter) DELETE(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.DELETE(rewriteProxyPath(p), h...)
+}
+func (r proxyCatchAllRouter) HEAD(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.HEAD(rewriteProxyPath(p), h...)
+}
+
 // NewSandboxServer builds the pod API over sup: a dispatcher that resolves the
 // addressed sandbox by key, fronted by a readiness gate.
 func NewSandboxServer(port string, sup handlers.Supervisor) *SandboxServer {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 	r.Use(readyGate(sup))
-	gen.RegisterHandlers(r, handlers.NewSandboxHandlers(sup))
+	gen.RegisterHandlers(proxyCatchAllRouter{r}, handlers.NewSandboxHandlers(sup))
 
 	return &SandboxServer{
 		Server: &http.Server{

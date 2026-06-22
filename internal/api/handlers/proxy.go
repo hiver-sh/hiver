@@ -63,6 +63,11 @@ func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "port reserved for the sandbox agent"})
 		return
 	}
+	// The route is registered as a catch-all (/proxy/:port/*path, see
+	// api.proxyCatchAllRouter), so gin hands us `path` with a leading slash
+	// (e.g. "/json/version"). Trim it so the single `"/" + path` joins below
+	// produce one slash, not two.
+	path = strings.TrimPrefix(path, "/")
 	host := h.proxyHost
 	if host == "" {
 		host = "127.0.0.1"
@@ -79,8 +84,8 @@ func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
 	reqID := h.publishIngressRequest(c, port, path, reqBody)
 
 	rp := httputil.NewSingleHostReverseProxy(target)
-	if dialFn := markedDialContext(h.netMark); dialFn != nil {
-		rp.Transport = &http.Transport{DialContext: dialFn}
+	if rt := h.proxyRoundTripper(); rt != nil {
+		rp.Transport = rt
 	}
 	c.Request.URL.Path = "/" + path
 	c.Request.URL.RawPath = "/" + path
@@ -93,6 +98,31 @@ func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
 	durationMs := int(time.Since(start).Milliseconds())
 
 	h.publishIngressResponse(reqID, rw.status, durationMs, rw.capturedBody())
+}
+
+// proxyRoundTripper returns the sandbox's shared, keep-alive transport for the
+// ingress reverse proxy, building it once. netMark and proxyHost are fixed after
+// readiness, so a single transport is safe to reuse across requests — it pools
+// connections to the workload instead of dialing (and allocating a Transport) per
+// request. Returns nil when no SO_MARK is set, so the proxy falls back to
+// http.DefaultTransport (also pooled), preserving the unmarked behavior.
+func (h *Sandbox) proxyRoundTripper() http.RoundTripper {
+	dialFn := markedDialContext(h.netMark)
+	if dialFn == nil {
+		return nil
+	}
+	h.proxyTransportOnce.Do(func() {
+		h.proxyTransport = &http.Transport{
+			DialContext:           dialFn,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		}
+	})
+	return h.proxyTransport
 }
 
 // isReservedAgentPort reports whether port is one of the in-guest agent's

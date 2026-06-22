@@ -20,6 +20,19 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /out/sandboxd ./cmd/san
 
 FROM hiversh/vmlinux:${KERNEL_VERSION} AS vmlinux
 
+FROM golang:1.26-bookworm AS firecracker
+ARG FIRECRACKER_VERSION=v1.12.1
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) fc_arch=x86_64 ;; \
+        arm64) fc_arch=aarch64 ;; \
+        *) echo "unsupported arch for firecracker" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${fc_arch}.tgz"; \
+    curl -fsSL "$url" -o /tmp/firecracker.tgz; \
+    tar -xzf /tmp/firecracker.tgz -C /tmp; \
+    install -m 0755 "/tmp/release-${FIRECRACKER_VERSION}-${fc_arch}/firecracker-${FIRECRACKER_VERSION}-${fc_arch}" /usr/local/bin/firecracker
+
 FROM debian:bookworm-slim
 # Shared (both isolation backends):
 #   fuse3:     /workspace passthrough mount (sbxfuse).
@@ -49,14 +62,12 @@ FROM debian:bookworm-slim
 #              (the controller passes them for microvm sandboxes).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         fuse3 \
-        jq \
         runc \
         iptables \
         ca-certificates \
         procps \
         e2fsprogs \
         iproute2 \
-        curl \
         libnss3-tools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -64,18 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # host-tap override on snapshot restore (PUT /snapshot/load network_overrides,
 # added in v1.12.0 / PR #4731), which the pack-mode base-snapshot resume uses to
 # point each resumed VM's eth0 at its own per-sandbox tap.
-ARG FIRECRACKER_VERSION=v1.12.1
-RUN set -eux; \
-    case "$(dpkg --print-architecture)" in \
-        amd64) fc_arch=x86_64 ;; \
-        arm64) fc_arch=aarch64 ;; \
-        *) echo "unsupported arch for firecracker" >&2; exit 1 ;; \
-    esac; \
-    url="https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${fc_arch}.tgz"; \
-    curl -fsSL "$url" -o /tmp/firecracker.tgz; \
-    tar -xzf /tmp/firecracker.tgz -C /tmp; \
-    install -m 0755 "/tmp/release-${FIRECRACKER_VERSION}-${fc_arch}/firecracker-${FIRECRACKER_VERSION}-${fc_arch}" /usr/local/bin/firecracker; \
-    rm -rf /tmp/firecracker.tgz "/tmp/release-${FIRECRACKER_VERSION}-${fc_arch}"
+COPY --from=firecracker /usr/local/bin/firecracker /usr/local/bin/firecracker
 
 RUN mkdir -p /var/lib/firecracker
 COPY --from=vmlinux /vmlinux /var/lib/firecracker/vmlinux
