@@ -116,6 +116,11 @@ type microvm struct {
 	// the netns teardown to the pool, which resets the slot and returns it.
 	prealloc bool
 
+	// cowLoop is the per-VM COW-store loop device backing this resumed VM's
+	// dm-snapshot overlay (setupOverlayCoW); "" for cold-boot VMs. teardownOverlayCoW
+	// detaches it.
+	cowLoop string
+
 	// localMounts are the host-side local-backend dirs (for snapshot).
 	localMounts []SnapshotMount
 
@@ -344,12 +349,12 @@ func (m *microvm) MountRoot() error {
 		return fmt.Errorf("bundled rootfs image %s is empty", bundledRootfsImg)
 	}
 	m.rootfsImg = bundledRootfsImg
-	// Prealloc: the slot's CoW overlay image was built (empty) ahead of time by the
-	// pool and reset on its last release, so skip the rebuild on the claim path.
-	if m.prealloc {
-		if fi, err := os.Stat(m.overlayImg); err == nil && fi.Size() > 0 {
-			return nil
-		}
+	// A base-snapshot resume seeds its per-VM overlay by copying the base overlay
+	// in ResumeAgent, which overwrites whatever is at overlayImg — so building an
+	// empty ext4 here is wasted work (formatting ~2 GiB) on the claim critical
+	// path. Only the cold-boot path (no base snapshot) needs the empty upper built.
+	if m.haveSnapshot {
+		return nil
 	}
 	if err := buildEmptyExt4(m.overlayImg, 2048); err != nil { // 2 GiB writable upper
 		return fmt.Errorf("build overlay image: %w", err)
@@ -372,6 +377,9 @@ func (m *microvm) UnmountRoot() error {
 	} else {
 		_ = exec.Command("ip", "link", "del", m.tapName).Run()
 	}
+	// Remove the per-VM dm-snapshot + COW loop before deleting the jail (the COW
+	// file lives there). Per-claim, so it runs for prealloc VMs too.
+	m.teardownOverlayCoW()
 	return os.RemoveAll(m.jailDir)
 }
 
@@ -697,7 +705,12 @@ func (m *microvm) withOverlayMount(readonly bool, fn func(upper string, mounts [
 // loopDevicePoolSize is how many /dev/loopN nodes ensureLoopNodes creates.
 // `mount -o loop` allocates the first free one via /dev/loop-control; a small
 // pool covers concurrent snapshot mounts within a sandbox.
-const loopDevicePoolSize = 8
+// loopDevicePoolSize must cover every loop device alive at once: the shared
+// read-only base-overlay origin plus one COW-store loop per *running* resumed VM
+// (setupOverlayCoW), which at high qps is arrival-rate x lifetime (~tens), well
+// above the handful a single sandbox's snapshot mounts need. Loop nodes are just
+// device nodes — cheap to pre-create — so size generously.
+const loopDevicePoolSize = 256
 
 // ensureLoopNodes creates the loop-control char device and a pool of loop
 // block devices in the container's /dev when they are missing. The host kernel
@@ -918,11 +931,119 @@ func (m *microvm) cgroupUnshareWrap(bin string, args []string, binds [][2]string
 // shared on XFS/btrfs) and falling back to a full copy where the filesystem can't
 // reflink. Used to seed each packed VM's overlay from the shared base overlay so
 // their writes diverge without duplicating the whole image up front.
+// reflinkCopy copies src to dst, using a reflink where the filesystem supports
+// it (instant, metadata-only) and falling back to a full data copy otherwise. The
+// fallback path for setupOverlayCoW when dmsetup is unavailable.
 func reflinkCopy(src, dst string) error {
 	if out, err := exec.Command("cp", "--reflink=auto", "-f", src, dst).CombinedOutput(); err != nil {
 		return fmt.Errorf("cp --reflink %s -> %s: %w (%s)", src, dst, err, bytes.TrimSpace(out))
 	}
 	return nil
+}
+
+// originLoops memoizes the shared read-only loop device backing each base
+// overlay, so every per-VM dm-snapshot reads unchanged base blocks through one
+// device (and thus one page cache) instead of N.
+var (
+	originLoopMu sync.Mutex
+	originLoops  = map[string]string{}
+)
+
+// ensureOriginLoop returns a shared read-only loop device for the base overlay
+// image, creating it once per path. The origin is never written (every VM CoWs
+// to its own store), so a single RO loop is safe to share across all snapshots.
+func ensureOriginLoop(baseOverlay string) (string, error) {
+	originLoopMu.Lock()
+	defer originLoopMu.Unlock()
+	if lp := originLoops[baseOverlay]; lp != "" {
+		return lp, nil
+	}
+	out, err := exec.Command("losetup", "--read-only", "--find", "--show", baseOverlay).Output()
+	if err != nil {
+		return "", fmt.Errorf("losetup origin %s: %w", baseOverlay, err)
+	}
+	lp := strings.TrimSpace(string(out))
+	originLoops[baseOverlay] = lp
+	return lp, nil
+}
+
+func (m *microvm) overlayDMName() string { return "sbxovl-" + filepath.Base(m.jailDir) }
+
+// setupOverlayCoW gives this resumed VM a copy-on-write view of the shared base
+// overlay without copying it: a per-VM dm-snapshot device whose origin is the
+// shared read-only loop of the base overlay and whose exception (COW) store is a
+// per-VM sparse file. Unchanged blocks are read from the shared origin; the
+// guest's writes land in the per-VM store. It returns the /dev/mapper path to
+// bind over the canonical overlay path the snapshot references.
+//
+// This replaces a former full per-VM copy of the base overlay: /run/firecracker
+// is on overlayfs, which has no reflink, so `cp --reflink=auto` fell back to a
+// full ~tens-of-MB data copy on the resume critical path, N-way concurrent under a
+// burst. The dm-snapshot setup is metadata-only — no data copy.
+func (m *microvm) setupOverlayCoW() (string, error) {
+	// dmsetup may be absent from the host image; the caller falls back to a copy.
+	// Check first so we don't allocate loops then fail.
+	if _, err := exec.LookPath("dmsetup"); err != nil {
+		return "", fmt.Errorf("dmsetup not available: %w", err)
+	}
+	if err := ensureLoopNodes(); err != nil {
+		return "", fmt.Errorf("loop nodes: %w", err)
+	}
+	baseOverlay := filepath.Join(m.baseDir, baseOverlayName)
+	fi, err := os.Stat(baseOverlay)
+	if err != nil {
+		return "", fmt.Errorf("stat base overlay: %w", err)
+	}
+	origin, err := ensureOriginLoop(baseOverlay)
+	if err != nil {
+		return "", err
+	}
+	// Per-VM sparse COW store, sized to the origin so it can never overflow (full
+	// divergence = full origin); sparse, so it costs only what the guest writes.
+	cowPath := filepath.Join(m.jailDir, "overlay.cow")
+	f, err := os.Create(cowPath)
+	if err != nil {
+		return "", fmt.Errorf("create cow store: %w", err)
+	}
+	if err := f.Truncate(fi.Size()); err != nil {
+		f.Close()
+		return "", fmt.Errorf("size cow store: %w", err)
+	}
+	f.Close()
+	out, err := exec.Command("losetup", "--find", "--show", cowPath).Output()
+	if err != nil {
+		return "", fmt.Errorf("losetup cow: %w", err)
+	}
+	cowLoop := strings.TrimSpace(string(out))
+	m.cowLoop = cowLoop
+	dmName := m.overlayDMName()
+	// "snapshot <origin> <cow> P 8": persistent on-disk exception metadata,
+	// 8-sector (4 KiB) chunks. Device size = origin size, matching the canonical
+	// overlay the snapshot expects.
+	table := fmt.Sprintf("0 %d snapshot %s %s P 8", fi.Size()/512, origin, cowLoop)
+	if out, err := exec.Command("dmsetup", "create", dmName, "--table", table).CombinedOutput(); err != nil {
+		_ = exec.Command("losetup", "-d", cowLoop).Run()
+		m.cowLoop = ""
+		return "", fmt.Errorf("dmsetup create %s: %w (%s)", dmName, err, bytes.TrimSpace(out))
+	}
+	// In a tmpfs /dev with no udev running, dmsetup must create the node itself
+	// (same reason ensureLoopNodes mknods the loop devices).
+	_ = exec.Command("dmsetup", "mknodes", dmName).Run()
+	return "/dev/mapper/" + dmName, nil
+}
+
+// teardownOverlayCoW removes the per-VM dm-snapshot device and detaches its COW
+// loop. The shared origin loop is left in place (reused by other VMs). The COW
+// file itself is removed with the jail dir by UnmountRoot. Best-effort.
+func (m *microvm) teardownOverlayCoW() {
+	// cowLoop is set only when setupOverlayCoW built a dm-snapshot for this VM;
+	// cold-boot and copy-fallback VMs have nothing to remove.
+	if m.cowLoop == "" {
+		return
+	}
+	_ = exec.Command("dmsetup", "remove", "--retry", m.overlayDMName()).Run()
+	_ = exec.Command("losetup", "-d", m.cowLoop).Run()
+	m.cowLoop = ""
 }
 
 // WaitReady blocks until the in-guest agent is ready (its readiness port
@@ -950,7 +1071,6 @@ func (m *microvm) acceptReady(ctx context.Context) error {
 		}
 	}
 }
-
 
 // PrewarmSnapshot boots a guest running the image entrypoint from the
 // eagerly-prepared overlay (no workspaces yet — they aren't known), waits for it
@@ -1048,11 +1168,22 @@ func (m *microvm) ResumeAgent() (string, []string, error) {
 	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("create jail dir: %w", err)
 	}
-	if err := reflinkCopy(filepath.Join(m.baseDir, baseOverlayName), m.overlayImg); err != nil {
-		return "", nil, fmt.Errorf("seed overlay from base: %w", err)
+	// Zero-copy CoW: a per-VM dm-snapshot over the shared base overlay, bound over
+	// the canonical overlay path the snapshot opens — no per-VM data copy. When
+	// dmsetup is unavailable (not in the host image) or dm setup fails, fall back
+	// to copying the base overlay (overlayfs has no reflink, so that copy is a full
+	// one — the cost this whole path avoids), so resumes still work either way.
+	overlayBackend := filepath.Join(m.baseDir, baseOverlayName)
+	dmDev, dmErr := m.setupOverlayCoW()
+	if dmErr != nil {
+		log.Printf("microvm: overlay CoW unavailable (%v); falling back to copy", dmErr)
+		if err := reflinkCopy(overlayBackend, m.overlayImg); err != nil {
+			return "", nil, fmt.Errorf("seed overlay from base: %w", err)
+		}
+		dmDev = m.overlayImg
 	}
 	binds := [][2]string{
-		{m.overlayImg, filepath.Join(m.baseDir, baseOverlayName)},
+		{dmDev, overlayBackend},
 	}
 	wbin, wargs := m.cgroupUnshareWrap(bin, args, binds)
 	return wbin, wargs, nil
@@ -1111,9 +1242,11 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	// /snapshot/load vsock re-init dropped — the mount survives resume and is
 	// delivered live below via the control RPC. No console dependency.
 	if len(fuse) > 0 {
+		tb := time.Now()
 		if err := m.bindWorkspaceListeners(); err != nil {
 			return fmt.Errorf("bind workspace listeners: %w", err)
 		}
+		log.Printf("microvm: apply split ip=%s bind=%dms", m.sourceIP, time.Since(tb).Milliseconds())
 	}
 	// A pack base resume always needs the control RPC even with no env/workspaces:
 	// the guest must be re-IP'd off the base snapshot's baked address to this VM's
@@ -1190,11 +1323,13 @@ func (m *microvm) dumpResumeDiag(reason string) {
 // return an error so ApplyResumeState retries. Idempotent guest-side (env/clock
 // re-apply cleanly; mountWorkspaces skips already-mounted paths).
 func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []firecracker.GuestFuse, unmounts []string) error {
+	tDial := time.Now()
 	conn, err := m.dialGuest(ctx, firecracker.GuestControlPort)
 	if err != nil {
 		return fmt.Errorf("dial guest control: %w", err)
 	}
 	defer conn.Close()
+	dialMs := time.Since(tDial).Milliseconds()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
@@ -1207,6 +1342,7 @@ func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []fire
 		// per-source ACL, and DNS follows the new gateway.
 		req.GuestIP, req.GatewayIP = m.guestIP, m.gatewayIP
 	}
+	tRPC := time.Now()
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return fmt.Errorf("send control request: %w", err)
 	}
@@ -1217,6 +1353,7 @@ func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []fire
 	if !resp.OK {
 		return fmt.Errorf("guest resume setup: %s", resp.Error)
 	}
+	log.Printf("microvm: apply split ip=%s dial=%dms rpc=%dms", m.sourceIP, dialMs, time.Since(tRPC).Milliseconds())
 	return nil
 }
 

@@ -13,28 +13,26 @@ import (
 // preallocPool keeps a fixed set of preallocated sandbox slots so a create can
 // claim one instead of paying the per-sandbox network setup — netns + veth + a
 // batched iptables-restore (whose forks contend on the kernel-wide xtables lock,
-// the dominant cost under a concurrent create burst) + the in-netns DNS sink, and
-// for the microvm backend an empty CoW overlay image — on the request path.
+// the dominant cost under a concurrent create burst) + the in-netns DNS sink — on
+// the request path.
 //
-// A slot is the host-side resources for one guest-IP octet (172.16.<n>.2): they
-// are octet-deterministic and tenant-agnostic, so slots are *reused* rather than
+// A slot is the host-side network for one guest-IP octet (172.16.<n>.2): it is
+// octet-deterministic and tenant-agnostic, so slots are *reused* rather than
 // rebuilt. The pool provisions `target` slots once at startup, hands them out on
 // claim, and on release resets each back to its original state (flush per-tenant
-// conntrack, rebuild the empty overlay) before returning it to `ready`. Both
-// provisioning and resets run on a single worker goroutine, so the contended
-// setup is off the request path *and* serialized — no concurrent xtables-lock
-// contention from the pool itself.
+// conntrack) before returning it to `ready`. Both provisioning and resets run on a
+// single worker goroutine, so the contended setup is off the request path *and*
+// serialized — no concurrent xtables-lock contention from the pool itself.
 //
 // The pool owns its octets for the pod's lifetime; they never go back to
 // packState's IP allocator. A create that finds the pool empty (all slots in use)
 // falls back to allocating + wiring an octet synchronously, exactly as before.
 //
-// Network preallocation applies to both isolation backends. The CoW overlay is
-// preallocated for the microvm backend only — its jail (and thus overlay) is
-// octet-keyed; the container backend's overlay is keyed by the sandbox key, which
-// isn't known until claim, so it stays on the per-claim path. The FUSE workspace
-// is likewise key-coupled (host dirs live under /run/sandboxd/<key>) and is not
-// preallocated here.
+// Only the network is preallocated, for both backends. The overlay is not: a
+// microvm base-snapshot resume seeds its per-VM overlay from the base overlay in
+// ResumeAgent on claim (so a prebuilt one would just be overwritten), and the
+// container overlay is keyed by the sandbox key, unknown until claim. The FUSE
+// workspace is likewise key-coupled (host dirs live under /run/sandboxd/<key>).
 type preallocPool struct {
 	p      *packState
 	target int
@@ -95,10 +93,12 @@ func (pp *preallocPool) run() {
 	}
 }
 
-// provision wires a slot's packed network (and, for microvm, builds its empty CoW
-// overlay) for the first time. The DNS sink it starts is bound to the pod context,
-// so it persists across claims — it is tenant-agnostic (answers every lookup with
-// the proxy placeholder).
+// provision wires a slot's packed network for the first time. The DNS sink it
+// starts is bound to the pod context, so it persists across claims — it is
+// tenant-agnostic (answers every lookup with the proxy placeholder). The per-VM
+// overlay is intentionally not preallocated: a base-snapshot resume seeds it by
+// copying the base overlay in ResumeAgent on claim, so any overlay built here
+// would just be overwritten.
 func (pp *preallocPool) provision(octet int) error {
 	ip := slotIP(octet)
 	iso, err := isolation.New(pp.p.isoKind, isolation.Config{GuestIP: ip, Hostname: pp.p.hostname})
@@ -108,32 +108,16 @@ func (pp *preallocPool) provision(octet int) error {
 	if err := iso.RedirectEgress(pp.p.ctx, pp.p.proxyPort, pp.p.dnsPort, pp.p.soMark); err != nil {
 		return fmt.Errorf("redirect egress: %w", err)
 	}
-	if pp.p.isoKind == isolation.KindMicroVM {
-		if err := iso.MountRoot(); err != nil {
-			return fmt.Errorf("build overlay: %w", err)
-		}
-	}
 	return nil
 }
 
 // reset returns a released slot to its original state without re-wiring the
 // network (which is octet-deterministic and persists): it flushes per-tenant
-// conntrack for the slot's source IP and, for microvm, rebuilds the empty overlay
-// the claimant's UnmountRoot removed. Best-effort — a failed reset still returns
-// the slot (the network is intact; the overlay is rebuilt on the next claim's
-// MountRoot if it isn't present).
+// conntrack for the slot's source IP. The overlay needs no reset here — the
+// claimant's UnmountRoot removed it and the next claim re-seeds it (ResumeAgent
+// for a base resume, MountRoot for cold boot). Best-effort.
 func (pp *preallocPool) reset(octet int) {
-	ip := slotIP(octet)
-	flushConntrack(pp.p.ctx, ip)
-	if pp.p.isoKind == isolation.KindMicroVM {
-		// A non-prealloc instance so MountRoot actually rebuilds the empty overlay;
-		// the network is left untouched (no RedirectEgress).
-		if iso, err := isolation.New(pp.p.isoKind, isolation.Config{GuestIP: ip, Hostname: pp.p.hostname}); err == nil {
-			if err := iso.MountRoot(); err != nil {
-				log.Printf("sandboxd: prealloc: reset overlay octet %d: %v", octet, err)
-			}
-		}
-	}
+	flushConntrack(pp.p.ctx, slotIP(octet))
 }
 
 // claim hands out a ready slot's octet, or ok=false when the pool is empty (the

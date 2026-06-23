@@ -85,11 +85,12 @@ const (
 func main() {
 	phase := &bootPhase{last: time.Now()}
 	var (
-		apiServerPort = flag.String("api-server-port", "8099", "port of the API server")
-		snapshotDir   = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored on local disk; optional — when unset, snapshots only work for configs that route them to a FUSE drive via snapshot.mount")
-		prewarm       = flag.Bool("prewarm", false, "boot in prewarm mode: bring up the API server and park without a spec, to be configured (and the workload launched) by the first PUT /v1/config")
-		pack          = flag.Bool("pack", false, "boot in pack mode: bring up the shared sidecars and park as a pod host; each POST /v1/<key> packs a new same-image sandbox (own netns/IP, overlay, egress) into this pod")
-		preallocPool  = flag.Int("prealloc-pool", 10, "pack mode: number of sandbox slots (netns/veth/iptables + DNS sink, and the microvm CoW overlay) to preallocate and keep warm so a create claims one instead of wiring it on the request path; 0 disables")
+		apiServerPort         = flag.String("api-server-port", "8099", "port of the API server")
+		snapshotDir           = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored on local disk; optional — when unset, snapshots only work for configs that route them to a FUSE drive via snapshot.mount")
+		prewarm               = flag.Bool("prewarm", false, "boot in prewarm mode: bring up the API server and park without a spec, to be configured (and the workload launched) by the first PUT /v1/config")
+		pack                  = flag.Bool("pack", false, "boot in pack mode: bring up the shared sidecars and park as a pod host; each POST /v1/<key> packs a new same-image sandbox (own netns/IP, overlay, egress) into this pod")
+		preallocPool          = flag.Int("prealloc-pool", 10, "pack mode: number of sandbox network slots (netns/veth/iptables + DNS sink) to preallocate and keep warm so a create claims one instead of wiring it on the request path; 0 disables")
+		maxConcurrentLaunches = flag.Int("max-concurrent-launches", 10, "pack mode: cap on concurrent sandbox creates in flight, so a burst doesn't oversubscribe the node's cores during the CPU-bound resume/convergence phases; set near the node's vCPU count; 0 disables (unbounded)")
 	)
 	flag.Parse()
 
@@ -756,6 +757,10 @@ func main() {
 			snapshotDir: *snapshotDir,
 			router:      packRouter,
 			egressGate:  egressGate,
+		}
+		if *maxConcurrentLaunches > 0 {
+			sup.pack.launchSem = make(chan struct{}, *maxConcurrentLaunches)
+			log.Printf("sandboxd: pack — capping concurrent launches at %d", *maxConcurrentLaunches)
 		}
 		// Preallocate a warm pool of sandbox slots (netns/veth/iptables + DNS sink,
 		// and the microvm CoW overlay) so claims skip that contended setup on the

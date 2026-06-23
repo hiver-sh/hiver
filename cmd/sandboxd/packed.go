@@ -58,11 +58,18 @@ type packState struct {
 	egress map[string][]proxy.EgressRule // srcIP → rules (merged into the proxy file)
 	isoMu  sync.Mutex                    // serialize isolation-backend mutations across keys
 
-	// pool preallocates a fixed set of sandbox slots (wired netns/veth/iptables +
-	// DNS sink, and for microvm an empty CoW overlay) so a create claims one
-	// instead of paying that contended setup on the request path. nil when
-	// -prealloc-pool is 0. Slots are reused: released slots are reset and returned.
+	// pool preallocates a fixed set of sandbox network slots (wired netns/veth/
+	// iptables + DNS sink) so a create claims one instead of paying that contended
+	// setup on the request path. nil when -prealloc-pool is 0. Slots are reused:
+	// released slots are reset (conntrack flush) and returned.
 	pool *preallocPool
+
+	// launchSem caps concurrent creates so a burst doesn't oversubscribe the
+	// node's cores during the CPU-bound resume/convergence phases (firecracker
+	// resume + guest re-IP/mount). A buffered channel of capacity
+	// -max-concurrent-launches; nil disables the cap (unbounded). Held from the
+	// start of createPacked until the sandbox is ready (or the create errors).
+	launchSem chan struct{}
 
 	// baseOnce builds the shared microvm base snapshot exactly once (design §7);
 	// baseDir is its location ("" if not microvm or the build failed, in which case
@@ -306,6 +313,20 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	sp, err := specFromConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	// Cap concurrent creates (-max-concurrent-launches) so a burst doesn't
+	// oversubscribe the node's cores during the CPU-bound resume/convergence
+	// phases. Held until this create returns (sandbox ready, or errored); the
+	// running sandbox does not hold a slot. Abort if the request is cancelled
+	// while queued.
+	if p.launchSem != nil {
+		select {
+		case p.launchSem <- struct{}{}:
+			defer func() { <-p.launchSem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	// Time each stage of bringing this packed sandbox up — especially the resume

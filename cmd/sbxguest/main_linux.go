@@ -461,6 +461,19 @@ func assembleRoot() error {
 // transparent step wouldn't loop proxy traffic.
 func setupNetwork(p firecracker.GuestParams) error {
 	_ = run("ip", "link", "set", "dev", "lo", "up")
+	// Disable IPv6 on eth0 so its link-local DAD can't settle *after* a snapshot
+	// resume. The base snapshot can capture eth0's fe80 address while DAD is still
+	// running (flags TENTATIVE); when DAD completes on resume, the
+	// tentative->permanent transition emits RTM_NEWADDR, which the workload's
+	// network-change detector (Chrome's NetworkChangeNotifier, debounced a few
+	// hundred ms) reads as a network change and aborts a navigation issued right
+	// after resume with ERR_NETWORK_CHANGED. The guest is IPv4-only (the host drops
+	// guest IPv6 egress), so removing eth0 IPv6 is pure hardening. This runs at cold
+	// boot — before the workload starts and before the snapshot — so the snapshot,
+	// and therefore every resumer, has no eth0 IPv6 left to settle. Best-effort.
+	if err := os.WriteFile("/proc/sys/net/ipv6/conf/eth0/disable_ipv6", []byte("1"), 0); err != nil {
+		log.Printf("setupNetwork: disable eth0 ipv6: %v (continuing)", err)
+	}
 	if p.Mark != 0 {
 		// Best-effort: absent iptables in a minimal guest, this is a no-op.
 		_ = run("iptables", "-t", "nat", "-A", "OUTPUT", "-m", "mark",
@@ -473,11 +486,14 @@ func setupNetwork(p firecracker.GuestParams) error {
 // given gateway, replacing whatever the kernel ip= cmdline (or a base snapshot)
 // configured, and repoints /etc/resolv.conf at the new gateway. Used by the
 // pack-mode resume path, where every VM boots from the same base snapshot's baked
-// address+gateway and must diverge to its own pod-local IP — including its DNS
-// nameserver, since the host sinkholes guest DNS sent to the (new) gateway. Steps
-// are individually idempotent so the host's self-heal retry re-applies cleanly:
-// flush the old address, add the new /30, bring the link up, replace the default
-// route, and rewrite resolv.conf.
+// address+gateway — including its DNS nameserver, since the host sinkholes guest
+// DNS sent to the gateway.
+//
+// Each step is a no-op when eth0 is already in the desired state (the common case,
+// since the guest keeps its baked IP and the host SNATs per-VM): this makes it
+// idempotent for the host's self-heal retry AND avoids emitting spurious rtnetlink
+// address/route change events that the workload's network-change detector would
+// read as the link flapping (see the ERR_NETWORK_CHANGED note inline).
 //
 // Done via netlink rather than shelling out to `ip`: minimal guest images (e.g.
 // the playwright sandbox) don't ship iproute2, so an `ip`-based re-IP failed the
@@ -488,42 +504,98 @@ func reconfigureEth0(guestIP, gatewayIP string) error {
 	if err != nil {
 		return fmt.Errorf("eth0: %w", err)
 	}
-	// Flush the base snapshot's baked IPv4 address(es) before adding our own.
 	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 	if err != nil {
 		return fmt.Errorf("list eth0 addrs: %w", err)
 	}
-	for i := range addrs {
-		if err := netlink.AddrDel(link, &addrs[i]); err != nil {
-			return fmt.Errorf("flush eth0 addr %s: %w", addrs[i].IPNet, err)
+	// Idempotent re-address. Every pack resume re-applies the *same* baked address
+	// (the guest keeps bootGuestIP; the host SNATs per-VM), so eth0 is already
+	// correct on the common path. Only flush+re-add when it actually differs:
+	// deleting and re-adding emits RTM_DELADDR/RTM_NEWADDR, which the workload's
+	// network-change detector (e.g. Chrome's NetworkChangeNotifier) reads as the
+	// interface dropping — surfacing as ERR_NETWORK_CHANGED on a navigation issued
+	// right after resume, since that notification is processed asynchronously and
+	// races the just-readied client's first request.
+	want := guestIP + "/30"
+	if !(len(addrs) == 1 && addrs[0].IPNet.String() == want) {
+		for i := range addrs {
+			if err := netlink.AddrDel(link, &addrs[i]); err != nil {
+				return fmt.Errorf("flush eth0 addr %s: %w", addrs[i].IPNet, err)
+			}
+		}
+		addr, err := netlink.ParseAddr(want)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", want, err)
+		}
+		if err := netlink.AddrReplace(link, addr); err != nil {
+			return fmt.Errorf("add %s: %w", want, err)
 		}
 	}
-	addr, err := netlink.ParseAddr(guestIP + "/30")
-	if err != nil {
-		return fmt.Errorf("parse %s/30: %w", guestIP, err)
-	}
-	if err := netlink.AddrReplace(link, addr); err != nil {
-		return fmt.Errorf("add %s/30: %w", guestIP, err)
-	}
-	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("link up eth0: %w", err)
+	// Bring the link up only if it isn't already (a resumed guest's eth0 is); an
+	// unconditional LinkSetUp re-emits RTM_NEWLINK.
+	if link.Attrs().Flags&net.FlagUp == 0 {
+		if err := netlink.LinkSetUp(link); err != nil {
+			return fmt.Errorf("link up eth0: %w", err)
+		}
 	}
 	if gatewayIP != "" {
 		gw := net.ParseIP(gatewayIP)
 		if gw == nil {
 			return fmt.Errorf("parse gateway %q", gatewayIP)
 		}
-		// Dst nil = default route (0.0.0.0/0); Replace is idempotent under retry.
-		if err := netlink.RouteReplace(&netlink.Route{LinkIndex: link.Attrs().Index, Gw: gw}); err != nil {
-			return fmt.Errorf("default route via %s: %w", gatewayIP, err)
+		// Replace the default route only when it isn't already via gatewayIP — a
+		// redundant RouteReplace also emits an rtnetlink event the workload may treat
+		// as a network change.
+		if !hasDefaultRouteVia(link, gw) {
+			if err := netlink.RouteReplace(&netlink.Route{LinkIndex: link.Attrs().Index, Gw: gw}); err != nil {
+				return fmt.Errorf("default route via %s: %w", gatewayIP, err)
+			}
 		}
 		// The host DNATs guest DNS sent to the gateway to its sinkhole, so the
-		// resolver must follow the gateway to the per-VM address.
-		if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver "+gatewayIP+"\n"), 0o644); err != nil {
-			return fmt.Errorf("rewrite resolv.conf: %w", err)
+		// resolver must point at the gateway. Leave resolv.conf untouched when it
+		// already does: cold boot wrote the full file (nameserver + the pod's
+		// search/options lines, via resolvConfForGuest), so on resume the nameserver
+		// is already the gateway. Rewriting it here — which also strips search/options
+		// — is a DNS-config change the workload's resolver watcher (e.g. Chrome's
+		// DnsConfigService) reads as a network change, surfacing as ERR_NETWORK_CHANGED
+		// on a navigation issued right after resume. Only (re)write when it's wrong,
+		// and only the minimal record we can reconstruct here.
+		cur, _ := os.ReadFile("/etc/resolv.conf")
+		if !resolvUsesNameserver(cur, gatewayIP) {
+			if err := os.WriteFile("/etc/resolv.conf", []byte("nameserver "+gatewayIP+"\n"), 0o644); err != nil {
+				return fmt.Errorf("rewrite resolv.conf: %w", err)
+			}
 		}
 	}
 	return nil
+}
+
+// resolvUsesNameserver reports whether resolv already lists gateway as a
+// nameserver, so reconfigureEth0 can leave /etc/resolv.conf (and its search/options
+// lines) untouched rather than rewriting it and triggering a DNS-config change.
+func resolvUsesNameserver(resolv []byte, gateway string) bool {
+	for _, line := range strings.Split(string(resolv), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" && f[1] == gateway {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDefaultRouteVia reports whether link already has a default route (no Dst) via
+// gw, so reconfigureEth0 can skip a redundant RouteReplace and its rtnetlink event.
+func hasDefaultRouteVia(link netlink.Link, gw net.IP) bool {
+	routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
+	if err != nil {
+		return false
+	}
+	for _, r := range routes {
+		if r.Dst == nil && r.Gw != nil && r.Gw.Equal(gw) {
+			return true
+		}
+	}
+	return false
 }
 
 // runWorkload execs the agent image's entrypoint+cmd as a child, wiring its
