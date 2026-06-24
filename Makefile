@@ -3,7 +3,7 @@ CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 # JS/TS subprojects with their own format/lint npm scripts
 JS_DIRS := cli client/typescript
 
-.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images buildx-builder up down test e2e test-e2e test-unit gen fmt format lint $(CMDS)
+.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images build-agent-base buildx-builder up down test e2e test-e2e test-unit gen fmt format lint $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -18,17 +18,32 @@ build-images: ## Build docker images
 PLATFORMS ?= linux/amd64,linux/arm64
 KERNEL_VERSION ?= 6.1.102
 
-# Build and push the default sandbox images as multi-arch manifest lists.
-# `hiver bundle --platform` pushes directly, so there's no separate push step.
+# Build and push hiversh/agent-base (plain docker image; prerequisite for the
+# per-agent bundle targets below, which all FROM hiversh/agent-base).
+build-agent-base: buildx-builder ## Build and push the agent base image (multi-arch)
+	docker buildx build \
+		--builder hiver-multiarch \
+		--platform $(PLATFORMS) \
+		--push \
+		-t hiversh/agent-base:latest \
+		docker/agent-base
+
+# Run build-agent-base first so the per-agent images can resolve FROM hiversh/agent-base.
 bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
-	hiver bundle ./docker/agent-cli --tag hiversh/agent-cli --push --platform $(PLATFORMS)
-	hiver bundle ./docker/playwright --tag hiversh/playwright --push --platform $(PLATFORMS)
+	hiver bundle ./docker/claude --tag hiversh/claude:latest --push --platform $(PLATFORMS)
+	hiver bundle ./docker/codex --tag hiversh/codex:latest --push --platform $(PLATFORMS)
+	hiver bundle ./docker/copilot --tag hiversh/copilot:latest --push --platform $(PLATFORMS)
+	hiver bundle ./docker/opencode --tag hiversh/opencode:latest --push --platform $(PLATFORMS)
+	hiver bundle ./docker/browser --tag hiversh/browser:latest --push --platform $(PLATFORMS)
 	hiver bundle python:3.13-alpine --entrypoint="tail -f /dev/null" --tag hiversh/python:3.13-alpine --push --platform $(PLATFORMS)
 	hiver bundle node:alpine --entrypoint="tail -f /dev/null" --tag hiversh/node:alpine --push --platform $(PLATFORMS)
 
 bundle-microvm-sandbox-images: ## Bundle and push the microvm sandbox images (multi-arch)
-	hiver bundle ./docker/agent-cli --microvm --tag hiversh/agent-cli:microvm --push --platform $(PLATFORMS)
-	hiver bundle ./docker/playwright --microvm --tag hiversh/playwright:microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/claude --microvm --tag hiversh/claude:microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/codex --microvm --tag hiversh/codex:microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/copilot --microvm --tag hiversh/copilot:microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/opencode --microvm --tag hiversh/opencode:microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/browser --microvm --tag hiversh/browser:microvm --push --platform $(PLATFORMS)
 	hiver bundle python:3.13-alpine --entrypoint="tail -f /dev/null" --microvm --tag hiversh/python:3.13-alpine-microvm --push --platform $(PLATFORMS)
 	hiver bundle node:alpine --entrypoint="tail -f /dev/null" --microvm --tag hiversh/node:alpine-microvm --push --platform $(PLATFORMS)
 
@@ -50,7 +65,6 @@ buildx-builder:
 	@docker buildx inspect hiver-multiarch >/dev/null 2>&1 || \
 		docker buildx create --name hiver-multiarch --driver docker-container --bootstrap
 
-# agent-cli-standalone is included so `bundle-sandbox-images` can pull it per-arch.
 # Run from docker/ so bake resolves the compose file's relative build contexts
 # (e.g. `gateway`, `..`) against that dir rather than the repo root.
 publish-images: buildx-builder ## Build and push multi-arch images to the registry

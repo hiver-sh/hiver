@@ -1,8 +1,7 @@
 // Drive the sandbox's resident Chromium with Playwright, over CDP.
 //
-// The playwright image no longer runs Playwright or any in-guest REPL — it just
-// launches headless Chromium with its DevTools/CDP endpoint open (see
-// docker/playwright/chromehost) and keeps it resident. Under microvm
+// The browser image launches headless Chromium with its DevTools/CDP endpoint
+// open (see docker/browser/chromehost) and keeps it resident. Under microvm
 // isolation that warm browser is captured in the snapshot, so a claimed sandbox
 // resumes with Chromium already listening.
 //
@@ -12,7 +11,7 @@
 // WebSocket (HTTP is used only for the /json/version discovery handshake), so the
 // client's Playwright version is independent of the Chromium baked into the image.
 //
-// Run with: npx tsx examples/playwright-cdp.ts
+// Run with: npx tsx examples/browser-cdp.ts
 import * as hiver from "@hiver.sh/client";
 import { chromium } from "playwright-core";
 
@@ -23,9 +22,9 @@ const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 
 const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
-  "hiver-playwright-cdp",
+  "hiver-browser-cdp",
   {
-    image: "hiversh/playwright:microvm-43",
+    image: "hiversh/browser:microvm-43",
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );

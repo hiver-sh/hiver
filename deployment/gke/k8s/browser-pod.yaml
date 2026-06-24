@@ -1,11 +1,11 @@
-# A standalone sandbox Pod for the hiversh/playwright:microvm-20 image.
+# A standalone sandbox Pod for the hiversh/browser:microvm-20 image.
 apiVersion: v1
 kind: Pod
 metadata:
-  name: playwright-microvm
+  name: browser-microvm
   namespace: hiver-sandbox
   labels:
-    hiver.sandbox.key: playwright-microvm-43
+    hiver.sandbox.key: browser-microvm-43
 spec:
   restartPolicy: Never
   containers:
@@ -16,8 +16,8 @@ spec:
       # re-push to the same tag — so `:microvm-12` + imagePullPolicy:Always
       # still lands on an old image. A digest is content-addressed, so the
       # mirror serves the exact image. Update this to the new digest after each
-      # push (docker buildx imagetools inspect hiversh/playwright:microvm-12).
-      image: hiversh/playwright:microvm-43
+      # push (docker buildx imagetools inspect hiversh/browser:microvm-12).
+      image: hiversh/browser:microvm-43
       imagePullPolicy: IfNotPresent
       args: ["--pack", "--prewarm", "--snapshot-dir", "/snapshots", "--max-concurrent-launches", "4", "--overlay-cow-dir", "/cow"]
       ports:
@@ -33,7 +33,7 @@ spec:
           # guest) ballooned under that contention. Takes effect on the next pod
           # deploy, which rebuilds the base snapshot at the new size.
           value: |
-            {"image":"hiversh/playwright:microvm-43","cpu":1,"memory":1024}
+            {"image":"hiversh/browser:microvm-43","cpu":1,"memory":1024}
 
       securityContext:
         privileged: true

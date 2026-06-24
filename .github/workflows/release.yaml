@@ -167,6 +167,9 @@ jobs:
               hiversh/$img:latest
           done
 
+      - name: Build and push agent-base image
+        run: make build-agent-base PLATFORMS=linux/amd64,linux/arm64
+
   # Bundle each sandbox image in its own job so they build in parallel. The bundler
   # pulls hiversh/core, so the only prerequisite is push-runtime-images (the core
   # image built for this release) — not the package publishing in `publish`.
@@ -177,19 +180,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - source: ./docker/agent-cli
-            tag: hiversh/agent-cli
-          - source: ./docker/playwright
-            tag: hiversh/playwright
+          - source: ./docker/claude
+            tag: hiversh/claude
+          - source: ./docker/codex
+            tag: hiversh/codex
+          - source: ./docker/copilot
+            tag: hiversh/copilot
+          - source: ./docker/opencode
+            tag: hiversh/opencode
+          - source: ./docker/browser
+            tag: hiversh/browser
           - source: python:3.13-alpine
             tag: hiversh/python:3.13-alpine
           - source: node:alpine
             tag: hiversh/node:alpine
-          - source: ./docker/agent-cli
-            tag: hiversh/agent-cli:microvm
+          - source: ./docker/claude
+            tag: hiversh/claude:microvm
             bundler-flags: "--microvm"
-          - source: ./docker/playwright
-            tag: hiversh/playwright:microvm
+          - source: ./docker/codex
+            tag: hiversh/codex:microvm
+            bundler-flags: "--microvm"
+          - source: ./docker/copilot
+            tag: hiversh/copilot:microvm
+            bundler-flags: "--microvm"
+          - source: ./docker/opencode
+            tag: hiversh/opencode:microvm
+            bundler-flags: "--microvm"
+          - source: ./docker/browser
+            tag: hiversh/browser:microvm
             bundler-flags: "--microvm"
           - source: python:3.13-alpine
             tag: hiversh/python:3.13-alpine-microvm
@@ -250,24 +268,20 @@ jobs:
         env:
           VERSION: ${{ needs.push-runtime-images.outputs.version }}
         run: |
-          docker buildx imagetools create \
-            --tag hiversh/agent-cli:$VERSION \
-            hiversh/agent-cli:latest \
-          docker buildx imagetools create \
-            --tag hiversh/playwright:$VERSION \
-            hiversh/playwright:latest \
+          for img in claude codex copilot opencode browser; do
+            docker buildx imagetools create \
+              --tag hiversh/$img:$VERSION \
+              hiversh/$img:latest
+            docker buildx imagetools create \
+              --tag hiversh/$img:$VERSION-microvm \
+              hiversh/$img:microvm
+          done
           docker buildx imagetools create \
             --tag hiversh/python:$VERSION-3.13-alpine \
             hiversh/python:3.13-alpine \
           docker buildx imagetools create \
             --tag hiversh/node:$VERSION-alpine \
             hiversh/node:alpine \
-          docker buildx imagetools create \
-            --tag hiversh/agent-cli:$VERSION-microvm \
-            hiversh/agent-cli:microvm \
-          docker buildx imagetools create \
-            --tag hiversh/playwright:$VERSION-microvm \
-            hiversh/playwright:microvm \
           docker buildx imagetools create \
             --tag hiversh/python:$VERSION-3.13-alpine-microvm \
             hiversh/python:3.13-alpine-microvm \
