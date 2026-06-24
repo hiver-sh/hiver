@@ -25,7 +25,7 @@ const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
   "hiver-playwright-cdp",
   {
-    image: "hiversh/playwright:microvm-42",
+    image: "hiversh/playwright:microvm-43",
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );
@@ -57,6 +57,7 @@ try {
   for (const url of [
     "https://news.ycombinator.com",
     "https://news.ycombinator.com/news?p=2",
+    "https://www.google.com/",
   ]) {
     await page.goto(url, { waitUntil: "domcontentloaded" });
     const titles = await page.$$eval(".titleline > a", (els) =>

@@ -121,7 +121,6 @@ func chromeArgs(chromePort int, userDataDir string) []string {
 		"--disable-gpu",
 		"--disable-software-rasterizer",
 		"--disable-accelerated-2d-canvas",
-		"--blink-settings=imagesEnabled=false",
 		"--enable-low-end-device-mode",
 		"--disk-cache-size=1",
 		"--media-cache-size=1",
@@ -148,7 +147,6 @@ func chromeArgs(chromePort int, userDataDir string) []string {
 		"--disable-client-side-phishing-detection",
 		"--disable-ipc-flooding-protection",
 		"--disable-dev-shm-usage",
-		"--host-resolver-rules=MAP accounts.google.com 0.0.0.0, MAP *.googleapis.com 0.0.0.0, MAP *.clients.google.com 0.0.0.0, MAP mtalk.google.com 0.0.0.0, MAP clients*.google.com 0.0.0.0",
 	}
 }
 

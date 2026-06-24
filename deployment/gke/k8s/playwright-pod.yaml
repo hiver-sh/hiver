@@ -5,7 +5,7 @@ metadata:
   name: playwright-microvm
   namespace: hiver-sandbox
   labels:
-    hiver.sandbox.key: playwright-microvm-42
+    hiver.sandbox.key: playwright-microvm-43
 spec:
   restartPolicy: Never
   containers:
@@ -17,7 +17,7 @@ spec:
       # still lands on an old image. A digest is content-addressed, so the
       # mirror serves the exact image. Update this to the new digest after each
       # push (docker buildx imagetools inspect hiversh/playwright:microvm-12).
-      image: hiversh/playwright:microvm-42
+      image: hiversh/playwright:microvm-43
       imagePullPolicy: IfNotPresent
       args: ["--pack", "--prewarm", "--snapshot-dir", "/snapshots", "--max-concurrent-launches", "4", "--overlay-cow-dir", "/cow"]
       ports:
@@ -33,7 +33,7 @@ spec:
           # guest) ballooned under that contention. Takes effect on the next pod
           # deploy, which rebuilds the base snapshot at the new size.
           value: |
-            {"image":"hiversh/playwright:microvm-42","cpu":1,"memory":1024}
+            {"image":"hiversh/playwright:microvm-43","cpu":1,"memory":1024}
 
       securityContext:
         privileged: true
