@@ -120,6 +120,10 @@ type microvm struct {
 	// dm-snapshot overlay (setupOverlayCoW); "" for cold-boot VMs. teardownOverlayCoW
 	// detaches it.
 	cowLoop string
+	// cowDir, when set (Config.OverlayCoWDir), is where this VM's dm-snapshot COW
+	// store lives instead of the jail dir — e.g. a tmpfs mount to make the guest's
+	// rootfs writes RAM-backed.
+	cowDir string
 
 	// localMounts are the host-side local-backend dirs (for snapshot).
 	localMounts []SnapshotMount
@@ -213,6 +217,7 @@ func newMicroVM(cfg Config) *microvm {
 		netnsName:   netnsName,
 		sourceIP:    sourceIP,
 		prealloc:    prealloc,
+		cowDir:      cfg.OverlayCoWDir,
 		localMounts: cfg.LocalMounts,
 	}
 	// A packed sandbox with a ready base snapshot takes the resume fast path:
@@ -378,7 +383,7 @@ func (m *microvm) UnmountRoot() error {
 		_ = exec.Command("ip", "link", "del", m.tapName).Run()
 	}
 	// Remove the per-VM dm-snapshot + COW loop before deleting the jail (the COW
-	// file lives there). Per-claim, so it runs for prealloc VMs too.
+	// file may live there). Per-claim, so it runs for prealloc VMs too.
 	m.teardownOverlayCoW()
 	return os.RemoveAll(m.jailDir)
 }
@@ -670,21 +675,23 @@ func (m *microvm) withOverlayMount(readonly bool, fn func(upper string, mounts [
 
 	// The sandbox container's /dev has no loop nodes (it is a tmpfs, not
 	// devtmpfs, so the kernel never populates them). Create loop-control and a
-	// pool of loop devices so `mount -o loop` can allocate one; the controller
+	// pool of loop devices so loopMountExt4 can allocate one; the controller
 	// grants the matching device-cgroup rules for microvm sandboxes.
 	if err := ensureLoopNodes(); err != nil {
 		return fmt.Errorf("provision loop devices: %w", err)
 	}
 
-	// Always loop-mount read-write, even for capture: the guest powers off
-	// without cleanly unmounting its ext4 overlay, so the journal is dirty and
-	// a read-only mount is refused ("cannot mount ... read-only") because the
-	// journal cannot be replayed. The image is quiescent here (VM stopped), so
-	// a read-write mount safely recovers it; capture only reads from it.
-	if out, err := exec.Command("mount", "-o", "loop", m.overlayImg, mp).CombinedOutput(); err != nil {
-		return fmt.Errorf("mount overlay image: %w (%s)", err, out)
+	// Loop-mount the overlay via direct loop+mount syscalls (no `mount`/`umount`
+	// subprocess). Always read-write, even for capture: the guest powers off without
+	// cleanly unmounting its ext4 overlay, so the journal is dirty and a read-only
+	// mount is refused ("cannot mount ... read-only") because the journal cannot be
+	// replayed. The image is quiescent here (VM stopped), so a read-write mount
+	// safely recovers it; capture only reads from it.
+	loop, err := loopMountExt4(m.overlayImg, mp)
+	if err != nil {
+		return fmt.Errorf("mount overlay image: %w", err)
 	}
-	defer exec.Command("umount", mp).Run()
+	defer loopUnmount(mp, loop)
 
 	// The agent's non-workspace root writes live in the overlay image's
 	// upper dir; workspace (local-backend) data lives in the host backend
@@ -812,45 +819,18 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 	return wbin, wargs, nil
 }
 
-// cgroupWrap wraps a firecracker invocation in an `sh -c` that places the
-// process in the sandbox cgroup before exec'ing it, so its CPU/memory (the
-// guest runs as VMM threads) are accounted under CgroupPath while the PID —
-// already in the cgroup — survives the exec as the supervised agent process.
-//
-// firecracker's stdout/stderr only ever carry the VMM banner ("Running
-// Firecracker ...") and the few early guest-kernel boot lines the serial console
-// emits before the cmdline disables it — all real workload I/O (exec, file ops,
-// TTYs) runs over vsock. That boot noise would otherwise surface on the
-// published sandbox log stream, so drop it. Gated by the same
-// FIRECRACKER_DEBUG_CONSOLE toggle as the serial console (DefaultBootArgs) so it
-// stays visible when you need to watch a boot failure.
+// cgroupWrap places the firecracker process in the sandbox cgroup (and, for a
+// packed VM, its netns) before exec'ing it, so its CPU/memory (the guest runs as VMM
+// threads) are accounted under CgroupPath. It re-execs ourselves as the
+// namespace-launch helper (nsExecArgs / MaybeRunNSExec) instead of shelling out, so a
+// launch is a SINGLE fork: the helper joins the cgroup/netns and execs firecracker in
+// place. The PID is preserved through that exec as the supervised agent process, and
+// firecracker inherits the supervisor's stdio pipes — which must NOT be redirected:
+// superviseStdio derives agentDone from them reaching EOF, so a `>/dev/null` would
+// fire agentDone at exec time and the teardown goroutine would SIGTERM the VM ~200ms
+// after resume. The helper exec leaves stdio attached, so this is handled for free.
 func (m *microvm) cgroupWrap(bin string, args []string) (string, []string) {
-	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
-	// firecracker MUST inherit the supervisor's stdio pipes — do not redirect them
-	// to /dev/null. superviseStdio derives the agent-exit signal (agentDone) from
-	// those pipes reaching EOF; a `>/dev/null` redirect closes them at exec time, so
-	// agentDone fires immediately and the teardown goroutine SIGTERMs the VM ~200ms
-	// after a resume (the silent "dies shortly after resume" bug — masked only by
-	// FIRECRACKER_DEBUG_CONSOLE, which happens to also skip this redirect). In
-	// non-console mode firecracker emits ~nothing here; the supervisor drains and
-	// discards it (onStdio is nil), so leaving stdio attached costs nothing.
-	redirect := ""
-	// cgroup placement happens first (netns-independent), then — for a packed VM —
-	// enter its netns so firecracker opens the tap there.
-	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %s%s %s %s",
-		shellQuote(cgDir), shellQuote(cgDir), m.netnsExecPrefix(), shellQuote(bin), shellJoin(args), redirect)
-	return "sh", []string{"-c", shell}
-}
-
-// netnsExecPrefix returns "ip netns exec <ns> " for a packed VM (so the wrapped
-// firecracker runs in the VM's netns and can open its tap), or "" for the
-// boot/base VM, which uses the pod netns. cgroup placement is done before this in
-// the wrap, so entering the netns here doesn't disturb cgroup membership.
-func (m *microvm) netnsExecPrefix() string {
-	if m.netnsName == "" {
-		return ""
-	}
-	return "ip netns exec " + shellQuote(m.netnsName) + " "
+	return m.nsExecArgs(bin, args, nil)
 }
 
 // cpuQuotaPeriodUs is the CFS period (µs) the CPU quota is expressed against;
@@ -894,56 +874,48 @@ func (m *microvm) applyCgroupLimits() {
 	}
 }
 
-// cgroupUnshareWrap is the pack-resume variant of cgroupWrap: after placing the
-// process in the cgroup it enters a private mount namespace and bind-mounts each
-// (src→dst) pair before exec'ing the VMM, so the VMM sees this VM's private
-// overlay/vsock at the canonical paths the base snapshot recorded. make-rprivate
-// keeps the binds from propagating back to the host (and to other VMs); the ns and
-// its binds are torn down automatically when the VMM exits. The PID is preserved
-// through the exec chain (sh→unshare→sh→firecracker), so the supervisor still
-// tracks the firecracker process.
+// cgroupUnshareWrap is the pack-resume variant of cgroupWrap: in addition to the
+// cgroup and netns it enters a private mount namespace and bind-mounts each (src→dst)
+// pair, so the VMM sees this VM's private overlay at the canonical path the base
+// snapshot recorded. make-rprivate keeps the binds from propagating back to the host
+// (and to other VMs); the ns and its binds are torn down automatically when the VMM
+// exits. Like cgroupWrap, it's a single fork via the namespace-launch helper, which
+// does the unshare + binds itself before exec'ing firecracker in place.
 func (m *microvm) cgroupUnshareWrap(bin string, args []string, binds [][2]string) (string, []string) {
-	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
-	// firecracker MUST inherit the supervisor's stdio pipes — do not redirect them
-	// to /dev/null. superviseStdio derives the agent-exit signal (agentDone) from
-	// those pipes reaching EOF; a `>/dev/null` redirect closes them at exec time, so
-	// agentDone fires immediately and the teardown goroutine SIGTERMs the VM ~200ms
-	// after a resume (the silent "dies shortly after resume" bug — masked only by
-	// FIRECRACKER_DEBUG_CONSOLE, which happens to also skip this redirect). In
-	// non-console mode firecracker emits ~nothing here; the supervisor drains and
-	// discards it (onStdio is nil), so leaving stdio attached costs nothing.
-	redirect := ""
-	var inner strings.Builder
-	inner.WriteString("mount --make-rprivate / && ")
-	for _, b := range binds {
-		fmt.Fprintf(&inner, "mount --bind %s %s && ", shellQuote(b[0]), shellQuote(b[1]))
-	}
-	fmt.Fprintf(&inner, "exec %s %s %s", shellQuote(bin), shellJoin(args), redirect)
-	// Enter the VM's netns (packed) before the private mount namespace, so the
-	// resumed firecracker opens its tap in the netns and the binds land in a mount
-	// ns nested inside it. cgroup placement stays first (netns-independent).
-	shell := fmt.Sprintf("mkdir -p %s && echo $$ > %s/cgroup.procs && exec %sunshare --mount sh -c %s",
-		shellQuote(cgDir), shellQuote(cgDir), m.netnsExecPrefix(), shellQuote(inner.String()))
-	return "sh", []string{"-c", shell}
+	return m.nsExecArgs(bin, args, binds)
 }
 
-// reflinkCopy copies src to dst, preferring a copy-on-write reflink (fast, space-
-// shared on XFS/btrfs) and falling back to a full copy where the filesystem can't
-// reflink. Used to seed each packed VM's overlay from the shared base overlay so
-// their writes diverge without duplicating the whole image up front.
-// reflinkCopy copies src to dst, using a reflink where the filesystem supports
-// it (instant, metadata-only) and falling back to a full data copy otherwise. The
-// fallback path for setupOverlayCoW when dmsetup is unavailable.
-func reflinkCopy(src, dst string) error {
-	if out, err := exec.Command("cp", "--reflink=auto", "-f", src, dst).CombinedOutput(); err != nil {
-		return fmt.Errorf("cp --reflink %s -> %s: %w (%s)", src, dst, err, bytes.TrimSpace(out))
+// nsExecArg is argv[1] for the namespace-launch helper re-exec (see MaybeRunNSExec).
+const nsExecArg = "__nsexec"
+
+// selfExe is the path the helper re-execs: our own running binary.
+var selfExe = "/proc/self/exe"
+
+// nsExecArgs builds the argv to re-exec ourselves as the namespace-launch helper
+// (MaybeRunNSExec): join the cgroup, optionally enter the VM netns, optionally
+// unshare a private mount ns and bind the per-VM overlay, then exec bin+args. This is
+// a single fork — the helper execs firecracker in place — replacing the former
+// sh→ip netns exec→unshare→sh chain (4 forks). bind pairs are passed as src=dst
+// (neither the dm device path nor the canonical overlay path contains '='); the cmd
+// follows a "--" separator so the helper's flag parser stops before firecracker's
+// own args.
+func (m *microvm) nsExecArgs(bin string, args []string, binds [][2]string) (string, []string) {
+	cgDir := filepath.Join("/sys/fs/cgroup", m.cgroupPath)
+	out := []string{nsExecArg, "-cgroup", cgDir}
+	if m.netnsName != "" {
+		out = append(out, "-netns", m.netnsName)
 	}
-	return nil
+	for _, b := range binds {
+		out = append(out, "-bind", b[0]+"="+b[1])
+	}
+	out = append(out, "--", bin)
+	return selfExe, append(out, args...)
 }
 
 // originLoops memoizes the shared read-only loop device backing each base
 // overlay, so every per-VM dm-snapshot reads unchanged base blocks through one
-// device (and thus one page cache) instead of N.
+// device (and thus one page cache) instead of N — and the base overlay is opened
+// read-only exactly once and never copied.
 var (
 	originLoopMu sync.Mutex
 	originLoops  = map[string]string{}
@@ -958,34 +930,53 @@ func ensureOriginLoop(baseOverlay string) (string, error) {
 	if lp := originLoops[baseOverlay]; lp != "" {
 		return lp, nil
 	}
-	out, err := exec.Command("losetup", "--read-only", "--find", "--show", baseOverlay).Output()
+	lp, err := loopAttach(baseOverlay, true)
 	if err != nil {
-		return "", fmt.Errorf("losetup origin %s: %w", baseOverlay, err)
+		return "", fmt.Errorf("attach origin loop %s: %w", baseOverlay, err)
 	}
-	lp := strings.TrimSpace(string(out))
 	originLoops[baseOverlay] = lp
 	return lp, nil
 }
 
-func (m *microvm) overlayDMName() string { return "sbxovl-" + filepath.Base(m.jailDir) }
+// overlayDMName is the dm-snapshot device name for this VM. filepath.Base(jailDir)
+// (the IP octet) is unique only WITHIN a pod; dm device names and /dev/mapper nodes
+// live in the kernel's single node-global device-mapper namespace (no mount-ns
+// isolation), so two pods on one node would otherwise both create "sbxovl-<octet>"
+// — the second create clashes and, worse, cleanOverlayCoW's recreate-first remove
+// would tear down the other pod's live device. The pod hostname (unique per pod on
+// a node) namespaces it. Stays well under DM_NAME_LEN (128).
+func (m *microvm) overlayDMName() string {
+	return "sbxovl-" + m.hostname + "-" + filepath.Base(m.jailDir)
+}
+
+// cowStorePath is where this VM's dm-snapshot COW store file lives: the jail dir
+// by default (removed with it on teardown), or a per-VM file under cowDir when set
+// (-overlay-cow-dir, e.g. a tmpfs mount for RAM-backed rootfs writes). The name
+// carries the pod hostname + IP octet so it can't collide when cowDir is shared by
+// two pods on one node (e.g. a hostPath); a per-pod emptyDir already isolates it,
+// but this is cheap defense in depth.
+func (m *microvm) cowStorePath() string {
+	if m.cowDir != "" {
+		return filepath.Join(m.cowDir, m.hostname+"-"+filepath.Base(m.jailDir)+".cow")
+	}
+	return filepath.Join(m.jailDir, "overlay.cow")
+}
 
 // setupOverlayCoW gives this resumed VM a copy-on-write view of the shared base
-// overlay without copying it: a per-VM dm-snapshot device whose origin is the
-// shared read-only loop of the base overlay and whose exception (COW) store is a
-// per-VM sparse file. Unchanged blocks are read from the shared origin; the
-// guest's writes land in the per-VM store. It returns the /dev/mapper path to
+// overlay WITHOUT copying it: a per-VM dm-snapshot device whose origin is the shared
+// read-only loop of the base overlay and whose exception (COW) store is a per-VM
+// sparse file. Unchanged blocks are read straight from the shared origin; only the
+// guest's own writes land in the per-VM store. It returns the /dev/mapper path to
 // bind over the canonical overlay path the snapshot references.
 //
-// This replaces a former full per-VM copy of the base overlay: /run/firecracker
-// is on overlayfs, which has no reflink, so `cp --reflink=auto` fell back to a
-// full ~tens-of-MB data copy on the resume critical path, N-way concurrent under a
-// burst. The dm-snapshot setup is metadata-only — no data copy.
+// The base overlay is the read-only origin — it is never copied or written. With
+// -overlay-cow-dir on a tmpfs the COW store is RAM-backed, so the guest's rootfs
+// writes never touch disk either.
+//
+// All of this is done with direct kernel ioctls (loopAttach / dmCreateSnapshot in
+// dmsnapshot_linux.go) — no `losetup`/`dmsetup` subprocess and no fork on the resume
+// critical path.
 func (m *microvm) setupOverlayCoW() (string, error) {
-	// dmsetup may be absent from the host image; the caller falls back to a copy.
-	// Check first so we don't allocate loops then fail.
-	if _, err := exec.LookPath("dmsetup"); err != nil {
-		return "", fmt.Errorf("dmsetup not available: %w", err)
-	}
 	if err := ensureLoopNodes(); err != nil {
 		return "", fmt.Errorf("loop nodes: %w", err)
 	}
@@ -998,9 +989,17 @@ func (m *microvm) setupOverlayCoW() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	dmName := m.overlayDMName()
+	cowPath := m.cowStorePath()
+	if err := os.MkdirAll(filepath.Dir(cowPath), 0o755); err != nil {
+		return "", fmt.Errorf("create cow dir: %w", err)
+	}
+	// Recreate cleanly: drop any dm device or COW loop left by a prior incarnation
+	// of this octet (e.g. a crashed teardown) so the create below doesn't clash on
+	// the dm name — and so os.Create can't truncate a file a stale loop still backs.
+	cleanOverlayCoW(dmName, cowPath)
 	// Per-VM sparse COW store, sized to the origin so it can never overflow (full
 	// divergence = full origin); sparse, so it costs only what the guest writes.
-	cowPath := filepath.Join(m.jailDir, "overlay.cow")
 	f, err := os.Create(cowPath)
 	if err != nil {
 		return "", fmt.Errorf("create cow store: %w", err)
@@ -1010,40 +1009,50 @@ func (m *microvm) setupOverlayCoW() (string, error) {
 		return "", fmt.Errorf("size cow store: %w", err)
 	}
 	f.Close()
-	out, err := exec.Command("losetup", "--find", "--show", cowPath).Output()
+	cowLoop, err := loopAttach(cowPath, false)
 	if err != nil {
-		return "", fmt.Errorf("losetup cow: %w", err)
+		return "", fmt.Errorf("attach cow loop: %w", err)
 	}
-	cowLoop := strings.TrimSpace(string(out))
 	m.cowLoop = cowLoop
-	dmName := m.overlayDMName()
-	// "snapshot <origin> <cow> P 8": persistent on-disk exception metadata,
-	// 8-sector (4 KiB) chunks. Device size = origin size, matching the canonical
-	// overlay the snapshot expects.
-	table := fmt.Sprintf("0 %d snapshot %s %s P 8", fi.Size()/512, origin, cowLoop)
-	if out, err := exec.Command("dmsetup", "create", dmName, "--table", table).CombinedOutput(); err != nil {
-		_ = exec.Command("losetup", "-d", cowLoop).Run()
+	// dm-snapshot: origin = shared RO base-overlay loop, COW = this VM's loop. Device
+	// size = origin size (in 512-byte sectors), matching the canonical overlay the
+	// snapshot expects.
+	dev, err := dmCreateSnapshot(dmName, origin, cowLoop, fi.Size()/512)
+	if err != nil {
+		_ = loopDetach(cowLoop)
 		m.cowLoop = ""
-		return "", fmt.Errorf("dmsetup create %s: %w (%s)", dmName, err, bytes.TrimSpace(out))
+		return "", fmt.Errorf("dm snapshot %s: %w", dmName, err)
 	}
-	// In a tmpfs /dev with no udev running, dmsetup must create the node itself
-	// (same reason ensureLoopNodes mknods the loop devices).
-	_ = exec.Command("dmsetup", "mknodes", dmName).Run()
-	return "/dev/mapper/" + dmName, nil
+	return dev, nil
+}
+
+// cleanOverlayCoW best-effort removes a stale per-VM dm-snapshot device (by name)
+// and detaches any loop device still backing a previous COW file at cowPath. Used
+// as a recreate-first step so a leaked octet (e.g. a crashed teardown) starts clean
+// instead of clashing on the dm name. Order matters: drop the dm device first (it
+// holds the COW loop), then detach the loop.
+func cleanOverlayCoW(dmName, cowPath string) {
+	_ = dmRemove(dmName)
+	for _, lp := range loopFindByBacking(cowPath) {
+		_ = loopDetach(lp)
+	}
 }
 
 // teardownOverlayCoW removes the per-VM dm-snapshot device and detaches its COW
-// loop. The shared origin loop is left in place (reused by other VMs). The COW
-// file itself is removed with the jail dir by UnmountRoot. Best-effort.
+// loop. The shared origin loop is left in place (reused by other VMs). Best-effort.
 func (m *microvm) teardownOverlayCoW() {
-	// cowLoop is set only when setupOverlayCoW built a dm-snapshot for this VM;
-	// cold-boot and copy-fallback VMs have nothing to remove.
 	if m.cowLoop == "" {
 		return
 	}
-	_ = exec.Command("dmsetup", "remove", "--retry", m.overlayDMName()).Run()
-	_ = exec.Command("losetup", "-d", m.cowLoop).Run()
+	_ = dmRemove(m.overlayDMName())
+	_ = loopDetach(m.cowLoop)
 	m.cowLoop = ""
+	// The COW file is removed with the jail dir by UnmountRoot when it lives there;
+	// when redirected (-overlay-cow-dir, e.g. a tmpfs) it's outside the jail, so drop
+	// it here to avoid leaking the backing file.
+	if m.cowDir != "" {
+		_ = os.Remove(m.cowStorePath())
+	}
 }
 
 // WaitReady blocks until the in-guest agent is ready (its readiness port
@@ -1168,19 +1177,17 @@ func (m *microvm) ResumeAgent() (string, []string, error) {
 	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("create jail dir: %w", err)
 	}
-	// Zero-copy CoW: a per-VM dm-snapshot over the shared base overlay, bound over
-	// the canonical overlay path the snapshot opens — no per-VM data copy. When
-	// dmsetup is unavailable (not in the host image) or dm setup fails, fall back
-	// to copying the base overlay (overlayfs has no reflink, so that copy is a full
-	// one — the cost this whole path avoids), so resumes still work either way.
+	// Zero-copy CoW: a per-VM dm-snapshot whose origin is the shared read-only loop of
+	// the base overlay and whose exception store is a per-VM (tmpfs) COW file. The base
+	// overlay is NEVER copied — unchanged blocks are read straight from the shared
+	// origin; only this guest's writes diverge into its own store. Bind the resulting
+	// /dev/mapper device over the canonical overlay path the snapshot opens so the VMM
+	// opens per-VM. There is deliberately no copy fallback: if dm setup fails we error
+	// rather than silently fall back to copying the base overlay per VM.
 	overlayBackend := filepath.Join(m.baseDir, baseOverlayName)
-	dmDev, dmErr := m.setupOverlayCoW()
-	if dmErr != nil {
-		log.Printf("microvm: overlay CoW unavailable (%v); falling back to copy", dmErr)
-		if err := reflinkCopy(overlayBackend, m.overlayImg); err != nil {
-			return "", nil, fmt.Errorf("seed overlay from base: %w", err)
-		}
-		dmDev = m.overlayImg
+	dmDev, err := m.setupOverlayCoW()
+	if err != nil {
+		return "", nil, fmt.Errorf("overlay CoW: %w", err)
 	}
 	binds := [][2]string{
 		{dmDev, overlayBackend},
@@ -1227,65 +1234,86 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 }
 
 // ApplyResumeState delivers the post-resume setup the prewarm snapshot could not
-// carry, in a single guest control RPC: the workload environment (env, so the
-// guest's process PATH resolves the entrypoint and execs) and the config's
-// workspaces (m.fuse, populated by ExportWorkspace during the post-resume
-// reconcile). Both are unknown when the snapshot is taken; see ControlRequest.
+// carry — all unknown at snapshot time (see ControlRequest). It splits the work:
+// the ready-critical state (workload env so guest execs resolve their PATH; the
+// clock, frozen at capture; the pack re-IP) goes in a synchronous control RPC that
+// gates readiness, while the config's workspace mounts (m.fuse) are applied
+// ASYNCHRONOUSLY so a slow 9p mount doesn't hold up "ready". Deferring the mount is
+// safe on the resume path: the entrypoint was started at base-build time, before
+// any per-sandbox workspace existed, so it cannot depend on the mount at its own
+// startup; cold boot (which can) mounts synchronously in bootstrap instead.
 func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 	m.mu.Lock()
 	fuse := append([]firecracker.GuestFuse(nil), m.fuse...)
 	unmounts := append([]string(nil), m.pendingUnmount...)
 	m.mu.Unlock()
-	// Bind each workspace's host 9p listener now (the VM's netns exists and the
-	// guest is resumed). The listener lives in the netns and the guest dials the
-	// gateway over TCP, so — unlike the former 9p-over-vsock, which Firecracker's
-	// /snapshot/load vsock re-init dropped — the mount survives resume and is
-	// delivered live below via the control RPC. No console dependency.
-	if len(fuse) > 0 {
-		tb := time.Now()
-		if err := m.bindWorkspaceListeners(); err != nil {
-			return fmt.Errorf("bind workspace listeners: %w", err)
+	// Phase 1 (gates readiness): env + clock + the pack re-IP, synchronously,
+	// self-healed until the guest acks. A pack base resume always needs this even
+	// with no env (the re-IP), hence the baseDir condition. Workspace mounts are
+	// deliberately excluded here — they go async below.
+	if len(env) > 0 || len(unmounts) > 0 || m.baseDir != "" {
+		if err := m.applyControlRetry(ctx, "resume state", env, nil, unmounts); err != nil {
+			return err
 		}
-		log.Printf("microvm: apply split ip=%s bind=%dms", m.sourceIP, time.Since(tb).Milliseconds())
+		// The guest acked the unmounts; drop them so a later RPC doesn't resend.
+		m.clearPendingUnmount(unmounts)
 	}
-	// A pack base resume always needs the control RPC even with no env/workspaces:
-	// the guest must be re-IP'd off the base snapshot's baked address to this VM's
-	// own pod-local IP before it is marked ready.
-	if len(env) == 0 && len(fuse) == 0 && len(unmounts) == 0 && m.baseDir == "" {
-		return nil
+	// Phase 2 (off the ready path): bring up the host 9p listeners, then mount the
+	// config's workspaces — both deferred off the ready path. Binding the listeners
+	// (serveFuse, which enters the VM netns) is only needed for the guest to attach
+	// during the mount RPC, so it doesn't belong on the ready path; bind-then-mount
+	// here keeps the listener up before the guest dials. Deferring is safe on resume:
+	// the entrypoint started at base-build time, before any per-sandbox workspace
+	// existed, so it can't depend on the mount at startup (cold boot, which can,
+	// mounts synchronously in bootstrap). Self-heals via the retry loop, bounded by
+	// the sandbox ctx (teardown cancels it); the mount is idempotent, so a later
+	// config-apply re-driving it is safe.
+	if len(fuse) > 0 {
+		go func() {
+			tb := time.Now()
+			if err := m.bindWorkspaceListeners(); err != nil {
+				log.Printf("microvm: async bind workspace listeners: %v", err)
+				return
+			}
+			log.Printf("microvm: async bind ip=%s bind=%dms", m.sourceIP, time.Since(tb).Milliseconds())
+			if err := m.applyControlRetry(ctx, "workspace mount", nil, fuse, nil); err != nil {
+				log.Printf("microvm: async workspace mount: %v", err)
+			}
+		}()
 	}
-	// Self-heal: a just-resumed guest under load can reset the control connection
-	// (the response never arrives) or apply the state only partially, leaving
-	// /workspace unmounted. A single best-effort RPC would silently ship that
-	// broken state. Instead re-drive the (idempotent) RPC with capped backoff
-	// until the guest confirms OK; the caller marks the sandbox ready only once
-	// this returns, so the pod converges to the correct state rather than serving
-	// half-configured. Backoff is edge-triggered on failure, not a busy poll;
-	// it ends when ctx is cancelled (sandbox teardown).
+	return nil
+}
+
+// applyControlRetry drives the post-resume control RPC (applyResumeOnce) with
+// capped, edge-triggered backoff until the guest acks OK or ctx is cancelled.
+// Shared by ApplyResumeState's ready-gating phase and its async workspace-mount
+// phase; label distinguishes them in logs. A just-resumed guest under load can
+// reset the connection or apply state only partially, so re-driving the
+// (idempotent) RPC converges the pod to the correct state rather than shipping a
+// half-configured one.
+func (m *microvm) applyControlRetry(ctx context.Context, label string, env []string, fuse []firecracker.GuestFuse, unmounts []string) error {
 	backoff := 50 * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		// Bound each attempt so a hung connection (accepted but never answered)
-		// is abandoned and retried rather than blocking the self-heal forever.
+		// Bound each attempt so a hung connection (accepted but never answered) is
+		// abandoned and retried rather than blocking forever.
 		attemptCtx, cancel := context.WithTimeout(ctx, controlAttemptTimeout)
 		err := m.applyResumeOnce(attemptCtx, env, fuse, unmounts)
 		cancel()
 		if err == nil {
 			if attempt > 1 {
-				log.Printf("microvm: resume state applied after %d attempts", attempt)
+				log.Printf("microvm: %s applied after %d attempts", label, attempt)
 			}
-			// The guest acked the unmounts; drop them so a later RPC doesn't resend.
-			m.clearPendingUnmount(unmounts)
 			return nil
 		}
 		if ctx.Err() != nil {
 			// The VMM exit handler cancels this ctx (agentDone → cancel), so a resume
-			// that dies mid-RPC lands here. Firecracker's own output is redirected to
+			// that dies mid-RPC lands here. Firecracker's output is redirected to
 			// /dev/null + firecracker.log (which teardown then deletes), so dump it
 			// while it still exists — otherwise the crash is invisible.
-			m.dumpResumeDiag(fmt.Sprintf("attempt %d failed, ctx done", attempt))
-			return fmt.Errorf("apply resume state (after %d attempts): %w", attempt, err)
+			m.dumpResumeDiag(fmt.Sprintf("%s attempt %d failed, ctx done", label, attempt))
+			return fmt.Errorf("%s (after %d attempts): %w", label, attempt, err)
 		}
-		log.Printf("microvm: resume state attempt %d failed, retrying: %v", attempt, err)
+		log.Printf("microvm: %s attempt %d failed, retrying: %v", label, attempt, err)
 		select {
 		case <-time.After(backoff):
 			if backoff < 2*time.Second {
@@ -1293,7 +1321,7 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 			}
 		case <-ctx.Done():
 			m.dumpResumeDiag("ctx done while backing off")
-			return fmt.Errorf("apply resume state: %w", ctx.Err())
+			return fmt.Errorf("%s: %w", label, ctx.Err())
 		}
 	}
 }

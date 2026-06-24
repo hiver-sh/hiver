@@ -70,6 +70,8 @@ const (
 	// warmupTimeout bounds the whole pre-snapshot warmup; on timeout we proceed to
 	// signal readiness regardless (warmup is best-effort).
 	warmupTimeout = 10 * time.Second
+
+	readyFile = "/run/hiver/prewarm-ready"
 )
 
 func env(name, def string) string {
@@ -156,7 +158,6 @@ func main() {
 
 	port := envInt("HIVER_BROWSER_PORT", 9223)
 	chromePort := envInt("HIVER_CHROME_CDP_PORT", 9222)
-	readyFile := env("HIVER_PREWARM_READY_FILE", "/run/hiver/prewarm-ready")
 
 	// Fresh, empty throwaway profile per launch — a clean dir has no GCM/sign-in
 	// state for headless Chrome to reload, so it stays quiet.
@@ -196,7 +197,7 @@ func main() {
 		line := scanner.Text()
 		fmt.Fprintln(os.Stderr, line)
 		if strings.Contains(line, "DevTools listening on ws://") {
-			once.Do(func() { go onReady(port, chromePort, readyFile, cmd.Process.Pid) })
+			once.Do(func() { go onReady(port, chromePort, cmd.Process.Pid) })
 		}
 	}
 
@@ -212,7 +213,7 @@ func main() {
 
 // onReady wires up the relay, warms the CDP path, and writes the readiness file,
 // in that order, once Chrome's CDP endpoint is up.
-func onReady(port, chromePort int, readyFile string, chromePid int) {
+func onReady(port, chromePort int, chromePid int) {
 	browserWsPath, err := resolveBrowserWsPath(chromePort)
 	if err != nil {
 		log.Printf("resolve browser ws failed: %v", err)

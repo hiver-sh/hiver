@@ -83,6 +83,13 @@ const (
 )
 
 func main() {
+	// If this process was re-executed as the microvm namespace-launch helper, enter
+	// the requested cgroup/netns/mount-ns, bind the per-VM overlay, and exec the VMM
+	// in place — a single fork in place of the old sh→ip netns exec→unshare→sh chain.
+	// Returns immediately on a normal sandboxd start; never returns on the helper path
+	// (it execs or fatals). Must precede flag parsing — its argv isn't the flag set.
+	isolation.MaybeRunNSExec()
+
 	phase := &bootPhase{last: time.Now()}
 	var (
 		apiServerPort         = flag.String("api-server-port", "8099", "port of the API server")
@@ -91,6 +98,7 @@ func main() {
 		pack                  = flag.Bool("pack", false, "boot in pack mode: bring up the shared sidecars and park as a pod host; each POST /v1/<key> packs a new same-image sandbox (own netns/IP, overlay, egress) into this pod")
 		preallocPool          = flag.Int("prealloc-pool", 10, "pack mode: number of sandbox network slots (netns/veth/iptables + DNS sink) to preallocate and keep warm so a create claims one instead of wiring it on the request path; 0 disables")
 		maxConcurrentLaunches = flag.Int("max-concurrent-launches", 10, "pack mode: cap on concurrent sandbox creates in flight, so a burst doesn't oversubscribe the node's cores during the CPU-bound resume/convergence phases; set near the node's vCPU count; 0 disables (unbounded)")
+		overlayCoWDir         = flag.String("overlay-cow-dir", "", "pack/microvm mode: directory for each VM's dm-snapshot copy-on-write store (the per-VM exception store layered over the shared read-only base overlay — the base is never copied); empty keeps it in the per-VM jail dir (on the container overlayfs). Point it at a tmpfs mount so the guest's rootfs writes are RAM-backed; the store is ephemeral so it never needs persistence")
 	)
 	flag.Parse()
 
@@ -741,22 +749,23 @@ func main() {
 		caData, _ := os.ReadFile(caCertPath)
 		sup.mu.Lock()
 		sup.pack = &packState{
-			ctx:         ctx,
-			children:    &children,
-			isoKind:     isoKind,
-			hostname:    podHostname,
-			soMark:      soMark,
-			proxyPort:   proxyPort,
-			dnsPort:     dnsPort,
-			proxyPID:    proxyCmd.Process.Pid,
-			rulesPath:   rulesTmp,
-			caData:      caData,
-			imgCfg:      imgCfg,
-			fuse:        fuseCtl,
-			workDir:     workDir,
-			snapshotDir: *snapshotDir,
-			router:      packRouter,
-			egressGate:  egressGate,
+			ctx:           ctx,
+			children:      &children,
+			isoKind:       isoKind,
+			hostname:      podHostname,
+			soMark:        soMark,
+			proxyPort:     proxyPort,
+			dnsPort:       dnsPort,
+			proxyPID:      proxyCmd.Process.Pid,
+			rulesPath:     rulesTmp,
+			caData:        caData,
+			imgCfg:        imgCfg,
+			fuse:          fuseCtl,
+			workDir:       workDir,
+			snapshotDir:   *snapshotDir,
+			overlayCoWDir: *overlayCoWDir,
+			router:        packRouter,
+			egressGate:    egressGate,
 		}
 		if *maxConcurrentLaunches > 0 {
 			sup.pack.launchSem = make(chan struct{}, *maxConcurrentLaunches)
@@ -1117,7 +1126,11 @@ func waitForMountReady(ctx context.Context, mp string, d time.Duration) error {
 		if err := syscall.Statfs(mp, &st); err == nil && st.Type == fuseSuperMagic {
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Tight poll: the FUSE mount lands within a few ms of the control-channel
+		// mount command, but this gates the create critical path — a 100ms tick made
+		// every workspace mount cost ~100ms (one full sleep) even though the mount was
+		// ready almost immediately. Statfs is a cheap syscall, so poll fast.
+		time.Sleep(5 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout waiting for FUSE mount %s (statfs did not report fuse magic — sbxfuse likely failed during init)", mp)
 }

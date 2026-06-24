@@ -5,7 +5,7 @@ metadata:
   name: playwright-microvm
   namespace: hiver-sandbox
   labels:
-    hiver.sandbox.key: playwright-microvm-39
+    hiver.sandbox.key: playwright-microvm-42
 spec:
   restartPolicy: Never
   containers:
@@ -17,9 +17,9 @@ spec:
       # still lands on an old image. A digest is content-addressed, so the
       # mirror serves the exact image. Update this to the new digest after each
       # push (docker buildx imagetools inspect hiversh/playwright:microvm-12).
-      image: hiversh/playwright:microvm-39
+      image: hiversh/playwright:microvm-42
       imagePullPolicy: IfNotPresent
-      args: ["--pack", "--prewarm", "--snapshot-dir", "/snapshots", "--max-concurrent-launches", "4"]
+      args: ["--pack", "--prewarm", "--snapshot-dir", "/snapshots", "--max-concurrent-launches", "4", "--overlay-cow-dir", "/cow"]
       ports:
         - containerPort: 8099
       env:
@@ -33,7 +33,7 @@ spec:
           # guest) ballooned under that contention. Takes effect on the next pod
           # deploy, which rebuilds the base snapshot at the new size.
           value: |
-            {"image":"hiversh/playwright:microvm-39","cpu":1,"memory":1024}
+            {"image":"hiversh/playwright:microvm-42","cpu":1,"memory":1024}
 
       securityContext:
         privileged: true
@@ -52,6 +52,21 @@ spec:
       volumeMounts:
         - name: snapshots
           mountPath: /snapshots
+        - name: cow
+          mountPath: /cow
   volumes:
     - name: snapshots
       emptyDir: {}
+    # Per-VM dm-snapshot COW stores (-overlay-cow-dir /cow), RAM-backed (tmpfs):
+    # medium: Memory makes this emptyDir a tmpfs. The base overlay is a single shared
+    # read-only origin (never copied); each resumed VM gets its own sparse exception
+    # store here, so the guest's rootfs writes stay in RAM (no container-overlayfs
+    # copy-up, no disk). The stores are ephemeral (discarded on teardown) and sparse —
+    # they cost only what each guest writes (the resident browser writes little to the
+    # rootfs; workspace data goes to 9p/sbxfuse) — so a modest sizeLimit suffices;
+    # tmpfs usage counts against the pod's memory limit. Drop medium/sizeLimit to put
+    # the stores on the node disk instead.
+    - name: cow
+      emptyDir:
+        medium: Memory
+        sizeLimit: 4Gi

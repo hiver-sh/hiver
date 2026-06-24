@@ -148,6 +148,14 @@ type Config struct {
 	// the pool, which owns the slot's lifecycle and refills it. The boot sandbox
 	// and the synchronous fallback path leave this false.
 	Prealloc bool
+
+	// OverlayCoWDir, when set, is where the microvm backend puts each VM's dm-snapshot
+	// copy-on-write store — the per-VM exception store layered over the shared
+	// read-only base overlay (the base is never copied) — instead of the per-VM jail
+	// dir. Point it at a tmpfs mount to make the guest's rootfs writes RAM-backed; the
+	// store is ephemeral (discarded on teardown), so it never needs persistence. Empty
+	// keeps it in the jail dir.
+	OverlayCoWDir string
 }
 
 // SnapshotMount pairs an agent-visible mount path with the host directory

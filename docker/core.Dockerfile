@@ -54,8 +54,10 @@ FROM debian:bookworm-slim
 #
 # microvm backend (isolation=microvm):
 #   e2fsprogs: mke2fs builds the guest's rootfs/overlay/metadata ext4 drives.
-#   iproute2:  `ip tuntap`/`ip addr` provision the host tap device that carries
-#              guest egress.
+#              (The per-VM copy-on-write overlay — dm-snapshot over a shared
+#              read-only loop of the base overlay, so the base is never copied per
+#              resume — is set up by sandboxd via direct loop/device-mapper ioctls,
+#              not the dmsetup/losetup binaries, so neither is installed here.)
 #   firecracker: the VMM + a matching guest kernel, both installed below. The
 #              guest still needs hardware virt at run time: the host must
 #              expose /dev/kvm and /dev/net/tun into the sandbox container

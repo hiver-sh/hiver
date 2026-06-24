@@ -44,6 +44,12 @@ type packState struct {
 	workDir     string
 	snapshotDir string
 
+	// overlayCoWDir, when set (-overlay-cow-dir), redirects each microvm's dm-snapshot
+	// COW store (the per-VM exception store over the shared read-only base overlay) out
+	// of the per-VM jail dir (container overlayfs) onto a mounted tmpfs volume so the
+	// guest's rootfs writes are RAM-backed. Empty keeps it in the jail.
+	overlayCoWDir string
+
 	router *proxyRouter // routes sbxproxy audit events to per-sandbox broker by src IP
 
 	// egressGate coalesces the per-source rules-file rewrites + SIGHUPs that
@@ -356,6 +362,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		VcpuCount:       ceilVcpu(sp.CPU),
 		MemoryMiB:       intOrZero(sp.Memory),
 		Prealloc:        prealloc,
+		OverlayCoWDir:   p.overlayCoWDir,
 	})
 	if err != nil {
 		cleanup()
@@ -670,34 +677,30 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			}
 		}
 		mountMgr.stopAll()
-		// Remove this key's host-side workspace tree (mountpoints + backend dirs).
-		// stopAll only unmounts the shared sbxfuse; the per-key dir under
-		// /run/sandboxd otherwise leaks (and its backend keeps the workspace files)
-		// for the pod's lifetime. The sbxfuse unmount is async, so RemoveAll can hit
-		// a still-busy mountpoint — retry briefly until it lands. Done after the
-		// snapshot capture above.
-		removed := false
-		for i := 0; i < 50; i++ {
-			if err := os.RemoveAll(keyRoot); err == nil {
-				removed = true
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		// If the async unmount never landed, RemoveAll is permanently wedged on a
-		// stale FUSE mountpoint — it would leak for the pod's life and (worse) block
-		// a same-key re-create with "mkdir: file exists". Force-detach the leftover
-		// mounts so a re-create starts clean.
-		if !removed {
-			log.Printf("sandboxd: pack %q: workspace dir still busy after teardown, force-detaching %s", key, keyRoot)
-			if cerr := clearStaleMount(keyRoot); cerr != nil {
-				log.Printf("sandboxd: pack %q: force-detach %s: %v", key, keyRoot, cerr)
-			}
-		}
+		// Free the reusable network slot + overlay/netns/IP *before* clearing the
+		// per-key workspace tree below, so a still-wedged sbxfuse mountpoint can never
+		// leak them. A leaked pool slot is the costly failure here: it permanently
+		// shrinks the warm pool and pushes later creates onto the slow synchronous
+		// path. UnmountRoot (netns for non-prealloc, dm-snapshot overlay, jail dir)
+		// and the slot release don't depend on the per-key workspace dir, so they run
+		// first and unconditionally.
 		_ = iso.UnmountRoot()
 		p.router.unregister(ip)
 		p.setEgress(ip, nil)
 		p.releaseSlot(octet, prealloc)
+		// Remove this key's host-side workspace tree (mountpoints + backend dirs);
+		// the shared sbxfuse outlives this sandbox, so the per-key dir under
+		// /run/sandboxd otherwise leaks for the pod's lifetime and blocks a same-key
+		// re-create. clearStaleMount lazy-detaches (MNT_DETACH, non-blocking) any
+		// FUSE mountpoints still under keyRoot *before* RemoveAll — covering both the
+		// async-unmount-not-yet-landed case and a genuinely wedged mount. The former
+		// order (RemoveAll first, force-detach only after 50 failures) let a single
+		// wedged unlink syscall block the whole teardown before the force-detach was
+		// ever reached — stalling it before the slot release above and leaking the
+		// netns/overlay/IP/slot.
+		if err := clearStaleMount(keyRoot); err != nil {
+			log.Printf("sandboxd: pack %q: clear workspace dir %s: %v", key, keyRoot, err)
+		}
 		s.mu.Lock()
 		delete(s.sandboxes, key)
 		delete(s.cancels, key)

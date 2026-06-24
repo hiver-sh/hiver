@@ -140,7 +140,70 @@ No headless service is needed for the create path — kube-proxy round-robin is
 fine here since we don't need pod-level affinity until *after* the pod returns
 its UUID.
 
-## 6. Envoy Config Changes
+In the Kubernetes environment, pods are never created manually at runtime — the
+Deployment controller manages the pod pool. Sandbox slots are claimed from
+already-running pods via `POST /v1/{key}`. Manual pod creation (e.g. via the
+controller's `kubectl run` path) is only supported in the Docker environment.
+
+## 6. Image Catalog
+
+Logical image names map to Docker image references. Two variants exist: one for
+container isolation and one for microVM isolation. Kubernetes defaults to microVM.
+
+| Name       | Container                          | microVM                                  |
+|------------|------------------------------------|------------------------------------------|
+| `claude`   | `hiversh/claude:latest`            | `hiversh/claude:latest-microvm`          |
+| `codex`    | `hiversh/codex:latest`             | `hiversh/codex:latest-microvm`           |
+| `copilot`  | `hiversh/copilot:latest`           | `hiversh/copilot:latest-microvm`         |
+| `opencode` | `hiversh/opencode:latest`          | `hiversh/opencode:latest-microvm`        |
+| `node`     | `hiversh/node:alpine`              | `hiversh/node:alpine-microvm`            |
+| `python`   | `hiversh/python:3.13-alpine`       | `hiversh/python:3.13-alpine-microvm`     |
+| `browser`  | `hiversh/chromium:latest`          | `hiversh/chromium:latest-microvm`        |
+
+### Kubernetes Deployments
+
+All images default to `replicas: N` except `browser` which runs a single pod
+(`replicas: 1`) given its heavier resource footprint:
+
+```yaml
+# all images except browser
+replicas: N   # tuned per workload
+
+# browser
+replicas: 1
+```
+
+The microVM image refs are used in all Kubernetes Deployments.
+
+## 7. Controller Pod Discovery
+
+The controller never creates pods in the Kubernetes environment. Instead it
+discovers them through periodic polling and tracks their sandboxes via SSE:
+
+1. **Poll** — every 5s, the controller lists pods in the `hiver-sandbox`
+   namespace (by label selector). Any newly seen pod is registered; any pod that
+   disappears is handled as described below.
+
+2. **SSE connection** — for each live pod the controller opens a persistent
+   connection to `GET /v1/events` on that pod. This stream carries `PodEvent`
+   payloads for every inner-sandbox lifecycle transition (`starting`, `running`,
+   `stopping`, `stopped`). The controller uses these to maintain its own sandbox
+   state and surface them on the controller's event stream (`GET
+   /v1/sandboxes/events`).
+
+3. **Reconnect on failure** — if the SSE connection drops, the controller
+   re-attempts it. The `lastEventId` query parameter is used to resume the
+   stream without replaying already-processed events.
+
+4. **Pod gone** — if a pod is no longer reachable (connection refused, pod
+   removed from the list), all sandboxes believed to be running on that pod are
+   marked dead. There is no attempt to recover them — the pod's memory is gone.
+
+All state transitions collected from pod SSE streams are re-emitted on the
+controller's own `GET /v1/sandboxes/events` stream, making them visible to
+clients such as the inspector.
+
+## 8. Envoy Config Changes
 
 Add a STRICT_DNS cluster per image and a route that matches before `/sandbox/`:
 
@@ -212,7 +275,7 @@ clusters:
                     port_value: 8099
 ```
 
-## 7. Client-Side Image Registration
+## 9. Client-Side Image Registration
 
 Clients that can reach an image's Service directly skip the gateway entirely.
 The client library (`@hiver.sh/client`) exposes an optional registration API to
@@ -248,7 +311,7 @@ This means:
 - The gateway remains the fallback for clients that cannot reach Services directly
   (e.g. browser-based clients, external CI)
 
-## 8. Reaching an Image Service from a Local Machine
+## 10. Reaching an Image Service from a Local Machine
 
 Four options, in order of simplicity:
 
@@ -304,7 +367,59 @@ playwright.sandbox.yourdomain.com  →  34.102.x.x
 Resolves from anywhere — local machines, CI, other clusters — without per-machine
 configuration. The right choice once beyond local dev.
 
-## 9. Upgrades
+## 11. Local Docker Environment (`hiver up`)
+
+In the Docker environment, image-to-source mapping is configured via a JSON
+config file rather than Kubernetes Deployments.
+
+### Config file
+
+The default location is `~/.hiver/config.json`, written by the hiver CLI. It
+maps logical image names to configuration objects. `pack` controls whether the
+pod runs with snapshot/prewarm enabled and defaults to `true`:
+
+```json
+{
+  "images": {
+    "playwright": {
+      "ref":  "hiversh/playwright:microvm-39",
+      "pack": true
+    },
+    "chromium": {
+      "ref":  "hiversh/chromium:latest",
+      "pack": true
+    }
+  }
+}
+```
+
+### `hiver up`
+
+```
+hiver up [--config <path>]
+```
+
+`--config` overrides the default `~/.hiver/config.json`. `hiver up` passes the
+config file path to Docker Compose, which mounts or injects it as an environment
+variable read by the controller container. The controller (Docker runtime) then
+handles spinning up the right image on demand.
+
+### Explicit image names in Docker
+
+In the Docker runtime, the client may also pass the full Docker image reference
+directly instead of a logical name:
+
+```typescript
+await hiver.getOrCreateSandbox("my-sandbox", {
+  image: "hiversh/playwright:microvm-39",   // full reference, bypasses mapping
+});
+```
+
+This is useful during development or when working with custom/private images not
+listed in the config file. The Kubernetes runtime always requires a registered
+image name.
+
+## 12. Upgrades
 
 Rolling out a new image version is a standard Deployment rollout:
 

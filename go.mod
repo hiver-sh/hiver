@@ -10,6 +10,7 @@ require (
 replace github.com/hiver-sh/hiver/client => ./client/go
 
 require (
+	github.com/anatol/devmapper.go v0.0.0-20260315162726-c47dfb6cf674
 	github.com/creack/pty v1.1.24
 	github.com/getkin/kin-openapi v0.135.0
 	github.com/gin-gonic/gin v1.12.0
