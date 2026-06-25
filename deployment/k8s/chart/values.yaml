@@ -18,7 +18,7 @@ sandboxPort: 8099
 controller:
   # Pinned by digest — see the mirror.gcr.io stale-tag hazard note on images
   # below. Overridable at deploy time with --set controller.image=...
-  image: hiversh/controller@sha256:13722a66d5b3798b932dcbd38b7417797904c653e7d08e47eed6581cdcded9f1
+  image: hiversh/controller@sha256:c14d3591b3fd8c3ad8b89eeecbfc2d915161b1e3afefafd19bd7aec4b7b7dcf2
   port: 9000
   env:
     # Selects the Kubernetes backend in NewControllerHandlers(); anything else
@@ -46,7 +46,7 @@ gateway:
   # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
   # overridden by the generated gateway-envoy ConfigMap mounted into the pod so
   # sandboxes resolve across namespaces. Pinned by digest.
-  image: hiversh/gateway@sha256:8db4a6b5d87b16e396bac3a0db33c14b6f9544919907d890d6f8e1e1c301d0b2
+  image: hiversh/gateway@sha256:7632e9161e6d0ebd93f6a607a668ccc923d575742d09bc19526861e746fd934d
   # Envoy listener port (container) and the external LoadBalancer service port.
   listenPort: 10000
   servicePort: 80
@@ -58,19 +58,9 @@ gateway:
       cpu: "500m"
       memory: "256Mi"
 
-# One entry per logical image (design §5/§6). Each entry generates a
-# Deployment+Service in the sandbox namespace AND a matching /v1/sandboxes/
-# route + STRICT_DNS cluster in the gateway Envoy config. Add an image by
-# appending here — nothing in templates/ needs to change.
-#
-# IMPORTANT: pin `image` to a fresh versioned tag or a digest per push. GKE
-# nodes pull docker.io through the mirror.gcr.io pull-through cache, which is
-# eventually consistent and serves a STALE tag→digest mapping after a re-push to
-# the same tag — so a mutable tag + imagePullPolicy:Always still lands on an old
-# image.
 images:
   - name: browser
-    image: hiversh/browser:latest-microvm
+    image: hiversh/browser:latest-microvm@sha256:aac3226681038a7f3d1bafc6edcb2a9919713c62b13c67981ceb06db8a2c801c
     replicas: 1
     # Guest size for the microVM (--instance-cpu / --instance-memory, MiB).
     # firecracker bakes these into the base snapshot, so every resumer inherits
@@ -93,7 +83,7 @@ images:
         memory: 13Gi
 
   - name: python
-    image: hiversh/python:3.13-alpine-microvm
+    image: hiversh/python:3.13-alpine-microvm@sha256:e59c61ab79c1bbef1ab0ec30d204aadfc110ffc74d0ec076ee6d37f993860b19
     replicas: 0
     instanceCpu: 1
     instanceMemory: 512
@@ -108,7 +98,7 @@ images:
         memory: 4Gi
 
   - name: node
-    image: hiversh/node:alpine-microvm
+    image: hiversh/node:alpine-microvm@sha256:af9bd0fdf8d2424cb7932ac55b7b2309de534fc504ab7c46e478ae91b4f799aa
     replicas: 0
     instanceCpu: 1
     instanceMemory: 512

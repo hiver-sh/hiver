@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
 	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/podid"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -163,20 +163,6 @@ func (r *K8sRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sandb
 	return gen.Sandbox{}, fmt.Errorf("k8s runtime does not create sandboxes: creates route directly to the image Service via the gateway (x-hiver-image header)")
 }
 
-// ipID encodes an IPv4 address into a UUID by packing its four octets into the
-// leading bytes (the rest stay zero). The id doubles as the route target: the
-// gateway decodes these bytes back to the pod IP and dials it directly, so no
-// per-sandbox Service or DNS lookup is needed.
-func ipID(ip string) (uuid.UUID, error) {
-	v4 := net.ParseIP(ip).To4()
-	if v4 == nil {
-		return uuid.Nil, fmt.Errorf("pod IP %q is not IPv4", ip)
-	}
-	var u uuid.UUID
-	copy(u[:4], v4)
-	return u, nil
-}
-
 // List returns every sandbox currently hosted by the prewarm pods. Sandboxes
 // live inside the per-image Deployment pods (they aren't their own Pods), so the
 // only place to find the keys is the hosts themselves: ask each (GET /v1) for
@@ -197,7 +183,7 @@ func (r *K8sRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
 		if ip == "" {
 			continue
 		}
-		id, err := ipID(ip)
+		id, err := podid.FromIP(ip)
 		if err != nil {
 			continue
 		}
@@ -253,7 +239,7 @@ func (r *K8sRuntime) eventsPacked(ctx context.Context, out chan<- gen.SandboxLif
 			if _, ok := conns[ip]; ok {
 				continue
 			}
-			id, err := ipID(ip)
+			id, err := podid.FromIP(ip)
 			if err != nil {
 				continue
 			}

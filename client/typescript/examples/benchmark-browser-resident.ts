@@ -154,7 +154,7 @@ async function doRun(
     // floor (one Runtime.evaluate round-trip through the proxy) so we can
     // attribute how much of the goto's overhead is transport vs browser.
     const tp = performance.now();
-    await page.evaluate(() => 1);
+    // await page.evaluate(() => 1);
     const pingMs = performance.now() - tp;
 
     // goto: navigate the pre-opened page to URL and wait for `domcontentloaded` —

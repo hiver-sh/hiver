@@ -10,6 +10,7 @@ import (
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/api/handlers"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // fakeSupervisor is a minimal handlers.Supervisor for routing tests.
@@ -45,6 +46,8 @@ func (f *fakeSupervisor) SubscribeLifecycle() (<-chan gen.PodEvent, func()) {
 	ch := make(chan gen.PodEvent)
 	return ch, func() {}
 }
+
+func (f *fakeSupervisor) RoutingID() openapi_types.UUID { return openapi_types.UUID{} }
 
 // readySandbox builds a sandbox wired with a config store and flipped ready, so
 // keyed routes that only need the store (e.g. GET config) serve through it.

@@ -40,6 +40,15 @@ spec:
             "--instance-cpu", "{{ .instanceCpu }}",
             "--instance-memory", "{{ .instanceMemory }}"
           ]
+          env:
+            # The create response must echo the pod's routing id (its IPv4
+            # packed into a UUID), which sandboxd builds from its own pod IP.
+            # In Kubernetes creates route straight here, so this body is what
+            # the client observes.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           ports:
             - containerPort: {{ $.Values.sandboxPort }}
           securityContext:

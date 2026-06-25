@@ -170,14 +170,14 @@ func (s *Sandbox) SetStopping() { s.stopping.Store(true) }
 // Status reports the sandbox's lifecycle phase for the pod listing: stopping
 // once teardown has begun, running once the workload is serving, otherwise
 // starting.
-func (s *Sandbox) Status() gen.SandboxSummaryStatus {
+func (s *Sandbox) Status() gen.SandboxStatus {
 	switch {
 	case s.stopping.Load():
-		return gen.SandboxSummaryStatusStopping
+		return gen.SandboxStatusStopping
 	case s.Ready():
-		return gen.SandboxSummaryStatusRunning
+		return gen.SandboxStatusRunning
 	default:
-		return gen.SandboxSummaryStatusStarting
+		return gen.SandboxStatusStarting
 	}
 }
 

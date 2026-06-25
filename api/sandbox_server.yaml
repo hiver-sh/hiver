@@ -81,15 +81,15 @@ paths:
             schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
       responses:
         '200':
-          description: A sandbox already exists for this key; its config is returned.
+          description: A sandbox already exists for this key; its ref is returned.
           content:
             application/json:
-              schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+              schema: { $ref: '#/components/schemas/Sandbox' }
         '201':
           description: The sandbox was created and is serving.
           content:
             application/json:
-              schema: { $ref: './config.yaml#/components/schemas/SandboxConfig' }
+              schema: { $ref: '#/components/schemas/Sandbox' }
         '409':
           description: |
             The config names a different image than the pod's, or the pod has no
@@ -759,6 +759,42 @@ components:
       example: agent-1
 
   schemas:
+    Sandbox:
+      type: object
+      description: |
+        A provisioned sandbox. Returned by the create endpoint so the response
+        matches the controller's `POST /v1/sandboxes/{key}` payload: in
+        Kubernetes the gateway routes creates straight to the image pod, so the
+        client observes this body directly.
+      required: [id, key]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: |
+            Server-assigned routing identifier: the host pod's IPv4 address
+            packed into the leading bytes of a UUID. The gateway decodes it back
+            to the pod IP to route keyed requests. In pack mode every sandbox on
+            a pod shares this id.
+          example: 1e9d6c3a-8f4b-4c2e-9a7d-2b5f0c8e1a34
+        key:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: The caller-chosen key supplied at creation.
+          example: agent-1
+        status: { $ref: '#/components/schemas/SandboxStatus' }
+
+    SandboxStatus:
+      type: string
+      enum: [starting, running, stopping]
+      description: |
+        Lifecycle phase reported by the hosting pod's supervisor:
+        - `starting`: created, workload launching, not yet serving.
+        - `running`: workload is up and serving requests.
+        - `stopping`: teardown has begun (DELETE, agent exit, or pod shutdown).
+      example: running
+
     SandboxList:
       type: object
       description: The sandboxes managed by a pod's supervisor.
@@ -782,15 +818,7 @@ components:
         ready:
           type: boolean
           description: Whether the sandbox's workload is up and serving.
-        status:
-          type: string
-          enum: [starting, running, stopping]
-          description: |
-            Lifecycle phase of the sandbox:
-            - `starting`: created, workload launching, not yet serving.
-            - `running`: workload is up and serving requests.
-            - `stopping`: teardown has begun (DELETE, agent exit, or pod shutdown).
-          example: running
+        status: { $ref: '#/components/schemas/SandboxStatus' }
 
     PodEvent:
       type: object

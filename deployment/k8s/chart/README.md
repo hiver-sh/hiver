@@ -28,6 +28,36 @@ Other platforms and package managers are covered in the
 helm version
 ```
 
+## Install
+
+From this directory, install (or upgrade) the release. The chart creates its own
+`hiver` and `hiver-sandbox` namespaces, so no `--create-namespace` is needed.
+
+```sh
+cd deployment/k8s/chart
+helm upgrade --install hiver .
+```
+
+Override any value at install time with `--set` or a values file, e.g. to pin a
+different controller image:
+
+```sh
+helm upgrade --install hiver . --set controller.image=hiversh/controller:v0.1.18
+```
+
+Check the rollout, then grab the gateway's public IP (see below):
+
+```sh
+kubectl rollout status deploy/controller -n hiver
+kubectl rollout status deploy/gateway -n hiver
+```
+
+To tear the release down:
+
+```sh
+helm uninstall hiver
+```
+
 It deploys:
 
 - **controller** — runs the Kubernetes runtime (`HIVE_RUNTIME=k8s`), provisioning

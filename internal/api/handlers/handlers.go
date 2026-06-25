@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // ErrApplyInProgress reports that a previous ApplyConfig call is still
@@ -52,6 +53,13 @@ type Supervisor interface {
 	// SubscribeLifecycle streams inner-sandbox lifecycle transitions for the
 	// pod-level GET /v1/events stream. The returned func unsubscribes.
 	SubscribeLifecycle() (events <-chan gen.PodEvent, cancel func())
+	// RoutingID is this pod's sandbox routing id: its IPv4 address packed into a
+	// UUID (podid.FromIP). CreateSandbox echoes it so the response matches the
+	// controller's getOrCreateSandbox payload — in Kubernetes creates route
+	// straight to the pod, so the client reads this body. uuid.Nil when the pod
+	// IP is unknown (e.g. the Docker runtime, where the controller assigns the id
+	// and ignores this body).
+	RoutingID() openapi_types.UUID
 }
 
 // SandboxHandlers implements the generated ServerInterface as a thin dispatcher:
@@ -153,11 +161,7 @@ func (h *SandboxHandlers) StreamPodEvents(c *gin.Context) {
 // only its image is checked against the pod's image.
 func (h *SandboxHandlers) CreateSandbox(c *gin.Context, key gen.Key) {
 	if sb, ok := h.sup.Sandbox(key); ok {
-		if cur, err := sb.store.Get(); err == nil {
-			c.JSON(http.StatusOK, cur)
-			return
-		}
-		c.Status(http.StatusOK)
+		c.JSON(http.StatusOK, h.sandboxRef(sb))
 		return
 	}
 
@@ -180,11 +184,17 @@ func (h *SandboxHandlers) CreateSandbox(c *gin.Context, key gen.Key) {
 		}
 		return
 	}
-	if applied, err := sb.store.Get(); err == nil {
-		c.JSON(http.StatusCreated, applied)
-		return
-	}
-	c.Status(http.StatusCreated)
+	c.JSON(http.StatusCreated, h.sandboxRef(sb))
+}
+
+// sandboxRef builds the create response: the host pod's routing id, the sandbox
+// key, and its current lifecycle status. It mirrors the controller's Sandbox so
+// the client observes the same shape whether the create went through the
+// controller (Docker) or straight to the pod (Kubernetes, where the gateway
+// rewrites POST /v1/sandboxes/{key} to this handler).
+func (h *SandboxHandlers) sandboxRef(sb *Sandbox) gen.Sandbox {
+	status := sb.Status()
+	return gen.Sandbox{Id: h.sup.RoutingID(), Key: sb.Key(), Status: &status}
 }
 
 // DeleteSandbox tears the sandbox for key down.

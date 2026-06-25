@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"log"
+	"os"
 	"sync"
 
+	"github.com/google/uuid"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/api/handlers"
+	"github.com/hiver-sh/hiver/internal/podid"
 	"github.com/hiver-sh/hiver/internal/spec"
 )
 
@@ -44,6 +48,12 @@ type supervisor struct {
 	// lifecycle fans inner-sandbox lifecycle transitions out to GET /v1/events
 	// subscribers (the controller holds one connection per pod).
 	lifecycle *lifecycleBroker
+
+	// routingID is this pod's sandbox routing id: its IPv4 (POD_IP) packed into a
+	// UUID. CreateSandbox returns it so the create response matches the
+	// controller's. uuid.Nil when POD_IP is unset (e.g. the Docker runtime, where
+	// the controller assigns the id).
+	routingID uuid.UUID
 }
 
 func newSupervisor(prewarm bool) *supervisor {
@@ -53,11 +63,21 @@ func newSupervisor(prewarm bool) *supervisor {
 		bootDone:  make(chan struct{}),
 		lifecycle: newLifecycleBroker(),
 	}
+	if ip := os.Getenv("POD_IP"); ip != "" {
+		if id, err := podid.FromIP(ip); err != nil {
+			log.Printf("sandboxd: POD_IP %q: %v; create responses will omit the routing id", ip, err)
+		} else {
+			s.routingID = id
+		}
+	}
 	if prewarm {
 		s.claims = make(chan *claim)
 	}
 	return s
 }
+
+// RoutingID reports this pod's sandbox routing id. Satisfies handlers.Supervisor.
+func (s *supervisor) RoutingID() uuid.UUID { return s.routingID }
 
 // bootComplete signals that the pod's mode is set; Create may proceed. Idempotent.
 func (s *supervisor) bootComplete() { s.bootOnce.Do(func() { close(s.bootDone) }) }
