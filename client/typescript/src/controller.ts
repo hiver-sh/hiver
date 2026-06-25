@@ -2,8 +2,23 @@ import { ApiError, SandboxConfig, SandboxRef } from "./schemas";
 import { Sandbox, SandboxError, toError } from "./sandbox";
 import { parseSSE } from "./sse";
 
-/** Gateway URL used when none is supplied via {@link GatewayOptions}. */
+/** Gateway URL used when none is supplied and `HIVER_GATEWAY_URL` is unset. */
 export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
+
+/** Env var that overrides {@link DEFAULT_GATEWAY_URL} when no explicit URL is given. */
+export const GATEWAY_URL_ENV = "HIVER_GATEWAY_URL";
+
+/**
+ * Resolve the gateway base URL. An explicit `gatewayUrl` (e.g. from
+ * {@link GatewayOptions}) always wins; otherwise the `HIVER_GATEWAY_URL` env var
+ * is used, falling back to {@link DEFAULT_GATEWAY_URL}. The env lookup is guarded
+ * so the client also works where `process` is undefined (e.g. the browser).
+ */
+export function resolveGatewayUrl(gatewayUrl?: string): string {
+  const fromEnv =
+    typeof process !== "undefined" ? process.env?.[GATEWAY_URL_ENV] : undefined;
+  return gatewayUrl ?? fromEnv ?? DEFAULT_GATEWAY_URL;
+}
 
 const SANDBOX_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -16,7 +31,10 @@ export const DEFAULT_IMAGE_NAME = "agent-base";
 
 
 export interface GatewayOptions {
-  /** Base URL of the gateway. Defaults to `http://localhost:10000`. */
+  /**
+   * Base URL of the gateway. When omitted, the `HIVER_GATEWAY_URL` env var is
+   * used, else {@link DEFAULT_GATEWAY_URL} (`http://localhost:10000`).
+   */
   gatewayUrl?: string;
   /** Override the global fetch (e.g. for testing or custom transports). */
   fetch?: typeof fetch;
@@ -56,10 +74,7 @@ export async function getOrCreateSandbox(
     egress: [{ host: "*", access: "allow" }],
     ...config,
   });
-  const gatewayBase = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(
-    /\/+$/,
-    "",
-  );
+  const gatewayBase = resolveGatewayUrl(opts.gatewayUrl).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -147,7 +162,7 @@ async function provisionSandbox(
 export async function listSandboxes(
   opts: GatewayOptions = {},
 ): Promise<Sandbox[]> {
-  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
+  const base = resolveGatewayUrl(opts.gatewayUrl).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -197,7 +212,7 @@ export async function* watchSandboxEvents(
   opts: GatewayOptions = {},
   signal?: AbortSignal,
 ): AsyncGenerator<SandboxLifecycleEvent, void, void> {
-  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
+  const base = resolveGatewayUrl(opts.gatewayUrl).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
 
   let res: Response;

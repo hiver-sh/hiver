@@ -1,4 +1,10 @@
-from .controller import DEFAULT_GATEWAY_URL, get_or_create_sandbox, list_sandboxes
+from .controller import (
+    DEFAULT_GATEWAY_URL,
+    GATEWAY_URL_ENV,
+    get_or_create_sandbox,
+    list_sandboxes,
+    resolve_gateway_url,
+)
 from .sandbox import ExecProcess, Sandbox, SandboxError
 from .schemas import (
     ACLRule,
@@ -31,6 +37,8 @@ from .utils import allowed_npm_packages, allowed_python_packages
 __all__ = [
     # controller
     "DEFAULT_GATEWAY_URL",
+    "GATEWAY_URL_ENV",
+    "resolve_gateway_url",
     "get_or_create_sandbox",
     "list_sandboxes",
     # sandbox

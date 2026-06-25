@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from typing import AsyncGenerator, Optional
 
@@ -11,8 +12,20 @@ from .sandbox import Sandbox, SandboxError, _to_error
 from .schemas import SandboxConfig, SandboxRef
 from .sse import parse_sse
 
+# Gateway URL used when none is passed and HIVER_GATEWAY_URL is unset.
 DEFAULT_GATEWAY_URL = "http://localhost:10000"
+# Env var that overrides DEFAULT_GATEWAY_URL when no explicit URL is given.
+GATEWAY_URL_ENV = "HIVER_GATEWAY_URL"
 DEFAULT_IMAGE_NAME = "agent-base"
+
+
+def resolve_gateway_url(gateway_url: Optional[str] = None) -> str:
+    """Resolve the gateway base URL.
+
+    An explicit *gateway_url* always wins; otherwise the ``HIVER_GATEWAY_URL``
+    env var is used, falling back to :data:`DEFAULT_GATEWAY_URL`.
+    """
+    return gateway_url or os.environ.get(GATEWAY_URL_ENV) or DEFAULT_GATEWAY_URL
 
 _SANDBOX_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -22,7 +35,7 @@ _DEFAULT_TIMEOUT_S = 60.0
 async def get_or_create_sandbox(
     key: str,
     config: SandboxConfig = SandboxConfig(),
-    gateway_url: str = DEFAULT_GATEWAY_URL,
+    gateway_url: Optional[str] = None,
     client: Optional[httpx.AsyncClient] = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> Sandbox:
@@ -47,7 +60,7 @@ async def get_or_create_sandbox(
         **config.model_dump(exclude_none=True),
     }
     validated = SandboxConfig.model_validate(data)
-    base = gateway_url.rstrip("/")
+    base = resolve_gateway_url(gateway_url).rstrip("/")
     owns_client = client is None
     http = client or httpx.AsyncClient()
     req_timeout = timeout_s if timeout_s > 0 else None
@@ -94,12 +107,12 @@ async def get_or_create_sandbox(
 
 
 async def list_sandboxes(
-    gateway_url: str = DEFAULT_GATEWAY_URL,
+    gateway_url: Optional[str] = None,
     client: Optional[httpx.AsyncClient] = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
 ) -> list[Sandbox]:
     """Return all currently running sandboxes."""
-    base = gateway_url.rstrip("/")
+    base = resolve_gateway_url(gateway_url).rstrip("/")
     owns_client = client is None
     http = client or httpx.AsyncClient()
     req_timeout = timeout_s if timeout_s > 0 else None
@@ -128,7 +141,7 @@ async def list_sandboxes(
 
 
 async def watch_sandbox_events(
-    gateway_url: str = DEFAULT_GATEWAY_URL,
+    gateway_url: Optional[str] = None,
     client: Optional[httpx.AsyncClient] = None,
     abort: Optional[asyncio.Event] = None,
 ) -> AsyncGenerator[dict, None]:
@@ -138,7 +151,7 @@ async def watch_sandbox_events(
     ``{"id": "<uuid>", "key": "<key>", "status": "start|stop|die|destroy"}``
     until *abort* is set or the stream ends.
     """
-    base = gateway_url.rstrip("/")
+    base = resolve_gateway_url(gateway_url).rstrip("/")
     owns_client = client is None
     http = client or httpx.AsyncClient()
 

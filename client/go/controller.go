@@ -7,13 +7,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 )
 
-// DefaultGatewayURL is the URL used when no gateway URL is provided.
+// DefaultGatewayURL is the URL used when no gateway URL is provided and
+// GatewayURLEnv is unset.
 const DefaultGatewayURL = "http://localhost:10000"
+
+// GatewayURLEnv is the env var that overrides DefaultGatewayURL when NewClient
+// is given an empty gateway URL.
+const GatewayURLEnv = "HIVER_GATEWAY_URL"
+
+// ResolveGatewayURL resolves the gateway base URL. An explicit gatewayURL always
+// wins; otherwise the HIVER_GATEWAY_URL env var is used, falling back to
+// DefaultGatewayURL.
+func ResolveGatewayURL(gatewayURL string) string {
+	if gatewayURL != "" {
+		return gatewayURL
+	}
+	if env := os.Getenv(GatewayURLEnv); env != "" {
+		return env
+	}
+	return DefaultGatewayURL
+}
 
 // DefaultImageName is the image used when SandboxConfig.Image is empty.
 const DefaultImageName = "agent-base"
@@ -44,10 +63,12 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *Client) { c.timeout = d }
 }
 
-// NewClient creates a controller client pointed at gatewayURL.
+// NewClient creates a controller client pointed at gatewayURL. An empty
+// gatewayURL falls back to the HIVER_GATEWAY_URL env var, then DefaultGatewayURL
+// (see ResolveGatewayURL).
 func NewClient(gatewayURL string, opts ...Option) *Client {
 	c := &Client{
-		baseURL: strings.TrimRight(gatewayURL, "/"),
+		baseURL: strings.TrimRight(ResolveGatewayURL(gatewayURL), "/"),
 		http:    &http.Client{},
 		timeout: defaultTimeout,
 	}

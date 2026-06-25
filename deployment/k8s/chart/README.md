@@ -38,26 +38,6 @@ cd deployment/k8s/chart
 helm upgrade --install hiver .
 ```
 
-Override any value at install time with `--set` or a values file, e.g. to pin a
-different controller image:
-
-```sh
-helm upgrade --install hiver . --set controller.image=hiversh/controller:v0.1.18
-```
-
-Check the rollout, then grab the gateway's public IP (see below):
-
-```sh
-kubectl rollout status deploy/controller -n hiver
-kubectl rollout status deploy/gateway -n hiver
-```
-
-To tear the release down:
-
-```sh
-helm uninstall hiver
-```
-
 It deploys:
 
 - **controller** — runs the Kubernetes runtime (`HIVE_RUNTIME=k8s`), provisioning
@@ -106,6 +86,34 @@ hiver start --image claude
 Because the gateway is remote, the CLI does **not** pull or build images
 locally — the in-cluster controller resolves and pulls them itself. To switch
 back to a local stack, run `hiver up` (or `hiver connect http://localhost:10000`).
+
+### Pointing the client at the gateway
+
+The TypeScript, Python, and Go clients read the gateway from the
+`HIVER_GATEWAY_URL` environment variable, so the same address works without
+changing code. An explicit URL passed in code still wins; otherwise the env var
+is used, falling back to `http://localhost:10000`.
+
+```sh
+export HIVER_GATEWAY_URL="http://$GW"
+```
+
+```ts
+// TypeScript — no gatewayUrl needed; picks up HIVER_GATEWAY_URL
+await getOrCreateSandbox("my-key", { image: "claude" });
+```
+
+```py
+# Python
+await get_or_create_sandbox("my-key", SandboxConfig(image="claude"))
+```
+
+```go
+// Go — empty string falls back to HIVER_GATEWAY_URL, then the default
+import hiver "github.com/hiver-sh/hiver/client"
+
+c := hiver.NewClient("")
+```
 
 ## Namespaces
 
