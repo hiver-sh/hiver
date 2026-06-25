@@ -14,7 +14,7 @@ import * as hiver from "@hiver.sh/client";
 const gatewayUrl = process.env.HIVER_GATEWAY_URL ?? "http://localhost:10000";
 
 const sandboxConfig: hiver.SandboxConfig = {
-  image: "hiversh/node:alpine-microvm",
+  image: "node",
   // Allow GET to example.com; everything else (e.g. example.org below) is
   // denied by default and should surface as an `egress.request` with
   // access: "denied".

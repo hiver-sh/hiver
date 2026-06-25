@@ -1,5 +1,22 @@
 {
-  "agent-cli": "hiversh/agent-cli:latest",
-  "python": "hiversh/python:3.13-alpine",
-  "node": "hiversh/node:alpine"
+  "container": {
+    "agent-base": "hiversh/agent-base:latest",
+    "claude": "hiversh/claude:latest",
+    "codex": "hiversh/codex:latest",
+    "copilot": "hiversh/copilot:latest",
+    "opencode": "hiversh/opencode:latest",
+    "browser": "hiversh/browser:latest",
+    "python": "hiversh/python:3.13-alpine",
+    "node": "hiversh/node:alpine"
+  },
+  "microvm": {
+    "agent-base": "hiversh/agent-base:latest-microvm",
+    "claude": "hiversh/claude:latest-microvm",
+    "codex": "hiversh/codex:latest-microvm",
+    "copilot": "hiversh/copilot:latest-microvm",
+    "opencode": "hiversh/opencode:latest-microvm",
+    "browser": "hiversh/browser:latest-microvm",
+    "python": "hiversh/python:3.13-alpine-microvm",
+    "node": "hiversh/node:alpine-microvm"
+  }
 }

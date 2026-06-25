@@ -5,6 +5,7 @@ import type { ApplyResult, SandboxConfig } from "./schemas";
 const GATEWAY = "http://gateway:10000";
 const REF = { id: "11111111-1111-1111-1111-111111111111", key: "sb-1" };
 const SANDBOX_BASE = `${GATEWAY}/sandbox/${REF.id}`;
+const SANDBOX_V1 = `${SANDBOX_BASE}/v1/${REF.key}`;
 
 function makeSandbox(mockFetch: ReturnType<typeof vi.fn>): Sandbox {
   return new Sandbox(REF, {
@@ -58,7 +59,7 @@ it("ping sends GET /v1/ping", async () => {
     .mockResolvedValue(new Response(null, { status: 200 }));
   await makeSandbox(mockFetch).ping();
   const [url] = mockFetch.mock.calls[0] as [string];
-  expect(url).toBe(`${SANDBOX_BASE}/v1/ping`);
+  expect(url).toBe(`${SANDBOX_V1}/ping`);
 });
 
 it("ping throws SandboxError on non-200", async () => {
@@ -78,7 +79,7 @@ it("getPorts sends GET /v1/ports and returns the port list", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp([8080, 9000]));
   const ports = await makeSandbox(mockFetch).getPorts();
   const [url] = mockFetch.mock.calls[0] as [string];
-  expect(url).toBe(`${SANDBOX_BASE}/v1/ports`);
+  expect(url).toBe(`${SANDBOX_V1}/ports`);
   expect(ports).toEqual([8080, 9000]);
 });
 
@@ -99,7 +100,7 @@ it("getConfig sends GET /v1/config and returns parsed SandboxConfig", async () =
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(MIN_CONFIG));
   const config = await makeSandbox(mockFetch).getConfig();
   const [url] = mockFetch.mock.calls[0] as [string];
-  expect(url).toBe(`${SANDBOX_BASE}/v1/config`);
+  expect(url).toBe(`${SANDBOX_V1}/config`);
   expect(config).toMatchObject(MIN_CONFIG);
 });
 
@@ -120,7 +121,7 @@ it("applyConfig sends PUT /v1/config with JSON body", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(MIN_APPLY_RESULT));
   await makeSandbox(mockFetch).applyConfig(MIN_CONFIG);
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(`${SANDBOX_BASE}/v1/config`);
+  expect(url).toBe(`${SANDBOX_V1}/config`);
   expect(init.method).toBe("PUT");
   expect((init.headers as Record<string, string>)["content-type"]).toBe(
     "application/json",
@@ -160,7 +161,7 @@ it("readFile sends GET /v1/file?path=<encoded> and returns Uint8Array", async ()
   const result = await makeSandbox(mockFetch).readFile("/workspace/hello.txt");
   const [url] = mockFetch.mock.calls[0] as [URL];
   expect(url.toString()).toBe(
-    `${SANDBOX_BASE}/v1/file?path=%2Fworkspace%2Fhello.txt`,
+    `${SANDBOX_V1}/file?path=%2Fworkspace%2Fhello.txt`,
   );
   expect(result).toBeInstanceOf(Uint8Array);
   expect(result).toEqual(content);
@@ -191,7 +192,7 @@ it("writeFile sends POST /v1/file with multipart form containing destination and
     "hello",
   );
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(`${SANDBOX_BASE}/v1/file`);
+  expect(url).toBe(`${SANDBOX_V1}/file`);
   expect(init.method).toBe("POST");
   expect(init.body).toBeInstanceOf(FormData);
   const form = init.body as FormData;
@@ -229,7 +230,7 @@ it("getEventsStream sends GET /v1/events with accept: text/event-stream header",
   await gen.next();
   ac.abort();
   const [url, init] = mockFetch.mock.calls[0] as [URL, RequestInit];
-  expect(url.toString()).toBe(`${SANDBOX_BASE}/v1/events`);
+  expect(url.toString()).toBe(`${SANDBOX_V1}/events`);
   expect((init.headers as Record<string, string>).accept).toBe(
     "text/event-stream",
   );

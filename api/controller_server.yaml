@@ -48,7 +48,7 @@ paths:
                 $ref: '#/components/schemas/SandboxLifecycleEvent'
 
   /v1/sandboxes/{key}:
-    put:
+    post:
       tags: [Sandboxes]
       summary: Get or create a sandbox.
       operationId: getOrCreateSandbox

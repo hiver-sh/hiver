@@ -48,6 +48,18 @@ static_resources:
                     - name: gateway
                       domains: ["*"]
                       routes:
+                        # Create leg (design §3, §11). Docker has no per-image
+                        # Services, so every create is routed to the controller,
+                        # which resolves the logical image (x-hiver-image header /
+                        # config.image) via ~/.hiver/config.json and packs into or
+                        # boots the right pod. The path is preserved so it lands on
+                        # the controller's POST /v1/sandboxes/{key}. Must precede
+                        # the /controller/ catch-all and the /sandbox/ execute leg.
+                        - match:
+                            prefix: "/v1/sandboxes/"
+                          route:
+                            cluster: controller
+                            timeout: 0s
                         - match:
                             prefix: "/controller/"
                           route:

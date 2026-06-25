@@ -158,7 +158,7 @@ container isolation and one for microVM isolation. Kubernetes defaults to microV
 | `opencode` | `hiversh/opencode:latest`          | `hiversh/opencode:latest-microvm`        |
 | `node`     | `hiversh/node:alpine`              | `hiversh/node:alpine-microvm`            |
 | `python`   | `hiversh/python:3.13-alpine`       | `hiversh/python:3.13-alpine-microvm`     |
-| `browser`  | `hiversh/chromium:latest`          | `hiversh/chromium:latest-microvm`        |
+| `browser`  | `hiversh/browser:latest`           | `hiversh/browser:latest-microvm`         |
 
 ### Kubernetes Deployments
 

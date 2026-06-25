@@ -4,7 +4,7 @@
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-node-exec-stream", {
-  image: "hiversh/node:alpine",
+  image: "node",
 });
 
 async function greet(name: string): Promise<void> {

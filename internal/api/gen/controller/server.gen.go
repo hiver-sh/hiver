@@ -111,7 +111,7 @@ type ServerInterface interface {
 	// (GET /v1/sandboxes/events)
 	StreamSandboxEvents(c *gin.Context)
 	// Get or create a sandbox.
-	// (PUT /v1/sandboxes/{key})
+	// (POST /v1/sandboxes/{key})
 	GetOrCreateSandbox(c *gin.Context, key string)
 }
 
@@ -204,7 +204,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 
 	router.GET(options.BaseURL+"/v1/sandboxes", wrapper.ListSandboxes)
 	router.GET(options.BaseURL+"/v1/sandboxes/events", wrapper.StreamSandboxEvents)
-	router.PUT(options.BaseURL+"/v1/sandboxes/:key", wrapper.GetOrCreateSandbox)
+	router.POST(options.BaseURL+"/v1/sandboxes/:key", wrapper.GetOrCreateSandbox)
 }
 
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
@@ -302,14 +302,14 @@ var swaggerSpec = []string{
 	"9xDW5d9aZ8CBzaWcEe5lWfeUls8N2p3mbF9wWoejY9fcv5Ox/tmyQceNhjL/gqAhZ/M9tBd/P3zB/dsD",
 	"lK5QRndhIJIwOKrap8pSJK57KgwGYXAD69aP+LfmN/dMl34m1Pqrsar4ayLgr/7RbxjcR15pPJXG8rVh",
 	"KF6slFZkTvidH5oIEyspIa4ckK5UXNIKnndTx6VHZcPCrXUs9Q5rVzieIBMbr9V7JOLycvqUS9gQkUvP",
-	"kJ3Dnygvdzewvqf+u7JHXE4TyAuF3GiUj/oheSscsgsWEZz7t3WhpLquGfjAVpMy0xv5ypvei14dHLDz",
-	"P0f71dum+r3LTCVr6rOs2oRxO6nswLevttzvqqpMEEn2yP87D6HcgEva8JAduwl+14quUShDebVSHkUN",
-	"0zxGK61k80LwBtYu8JspdL9m1FhSNfjmtcE+csaRutaqA1XmRFi/o2FITOTcE0rShLL1y0HE2u+fpFoN",
-	"iZ/uNWusdNIn3idgz7U7X4VGiLrV2xVKw3bv9rjzTwQ88o927PgXAoSkmjS9wZY8x5HuCX4T5bjKUKMz",
-	"zzfzX9xyYOwPKlk/Ab092aTTFCm7HscWvqIzSI/vWbuQQsE+jkwdv1wT6ufmtbF7ju+egLVrMPeDR8eM",
-	"X76k8mpdjq7fVXtvv7PeF8KJpwFNb7H1vhtq4iXcf6UlfJIB3Ia3yQNI4RpAIHnr30V0pJxAoMaOXphY",
-	"8c5rgvtB8Org8Lc5VBuKkIydWOTDcKqLv/6GLO+8NNrhaDhmY2i1AYfCsJxn/onUhmU5AYtTvB/K2/9i",
-	"SK9Fua+/33oVue1bjhqgaBa5/3L/vwEAAP//",
+	"kJ3Dnygvdzewvqf+u96O5tME8kIhOxrto4ZI3oqH7IJFhOf+cV0oqbBrBj6y1aTN9Ei+cqf3olcHB+z8",
+	"z9F+9bipfvAyU8maGi2rPmHcTio78P2rLf+7KisTRpJB8v/QQyg38JI2PGTHboLftaJrFMpQXq2Uh1HD",
+	"NI/RTCvZPBG8gbWL/GYK/a8ZdZZUHb55bbGPnHWktrXqQJU9EdbvaBgSEzn/hLI0oWz9chCx9gMoqVZD",
+	"4qd7zhornfTJ9wnYc+3OV8ERwm71eIXysN27Pe78GwGP/KsdO/6JACGpKE2PsCXPcaR7g9+EOa401CjN",
+	"8+38F7ccGPuDStZPgG9PNik1hcquybEFsOgN0ut71q6kULSPI1PHL9eF+rl5buze47s3YO0izP3g0THj",
+	"ly+pvlrXo+uH1d7d76z3hYDiaUjTW22978aaeAn3X2kKn2QBt/Ft8gBSuA4QSN76hxEdKScQqLGjFyZW",
+	"vPOc4H4QvDo4/G0O1YYiJGMnFvk4nArjr78hyztPjXZ4Go7ZGFttwKEwLOeZfyO1YVpOwOIU74jy9j8Z",
+	"0mtS7uvvt55FbjuXowYomkXuv9z/bwAAAP//",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

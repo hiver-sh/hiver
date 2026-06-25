@@ -16,7 +16,7 @@ Run agents autonomously with controlled network access, auditable file operation
 
 Hiver is a runtime for running AI agents as untrusted workloads, with visibility and control over their file, network, command, and model interactions. It has two parts:
 
-- **The runtime** boots each agent into an isolated sandbox with its own file systems, network egress policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel and hardware-virtualization boundary, or lightweight container isolation for faster, trusted workloads. Both run behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
+- **The runtime** boots each agent into an isolated sandbox in milliseconds, with its own file systems, network policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel and hardware-virtualization boundary, or lightweight container isolation for faster, trusted workloads. Both run behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
 - **The inspector** is a live, DevTools-style UI over a running sandbox. It decodes the agent’s LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit sandbox policy on the fly — all over the same event stream and API used by the SDKs.
 
 Hiver supports both local development and cloud deployment. The same client library and runtime work whether you run hiver start on your machine or deploy to a cluster. Bring your own Docker image and run it in Hiver with no application changes.
@@ -63,7 +63,7 @@ Hiver ships first-party clients for **TypeScript**, **Python**, and **Go**. Laun
 // npm install --save @hiver.sh/client
 import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hiver.getOrCreateSandbox("agent-1");
+const sandbox = await hiver.getOrCreateSandbox("agent-1", { image: "claude" });
 const result = await sandbox.exec(["claude", "-p", "Write a poem and save it as pdf"]);
 console.log(result.stdout);
 ```
@@ -76,7 +76,7 @@ import asyncio
 import hiver
 
 async def main():
-    sandbox = await hiver.get_or_create_sandbox("agent-1")
+    sandbox = await hiver.get_or_create_sandbox("agent-1", {"image": "claude"})
     result = await sandbox.exec(["claude", "-p", "Write a poem and save it as pdf"])
     print(result["stdout"])
 
@@ -90,16 +90,32 @@ asyncio.run(main())
 import "github.com/hiver-sh/hiver/client"
 
 c := client.NewClient("http://localhost:10000")
-sandbox, _ := c.GetOrCreateSandbox(context.Background(), "agent-1", client.SandboxConfig{})
+sandbox, _ := c.GetOrCreateSandbox(context.Background(), "agent-1", client.SandboxConfig{Image: "claude"})
 
 result, _ := sandbox.Exec(context.Background(),
     client.ExecRequest{Command: []string{"claude", "-p", "Write a poem and save it as pdf"} })
 fmt.Println(result.Stdout)
 ```
 
+### Built-in images
+
+Hiver ships ready-to-run images for either containers or microvms:
+
+| Name         | Description                                                                                                                |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `claude`     | [Claude Code](https://github.com/anthropics/claude-code) (`@anthropic-ai/claude-code`) installed.                         |
+| `codex`      | [Codex](https://github.com/openai/codex) (`@openai/codex`) installed.                                                      |
+| `copilot`    | [GitHub Copilot CLI](https://github.com/github/copilot) (`@github/copilot`) installed.                                     |
+| `opencode`   | [OpenCode](https://github.com/sst/opencode) installed.                                                                     |
+| `browser`    | Chromium with CDP (Chrome DevTools Protocol) exposed for agentic web navigation.                                           |
+| `node`       | Minimal Node.js runtime for running JavaScript/TypeScript workloads.                                                       |
+| `python`     | Minimal Python 3.13 runtime for running Python workloads.                                                                  |
+
+Bring your own image too — bundle any Docker image with `hiver bundle` (see [Isolation](#isolation)) and point a sandbox at it.
+
 ## Inspector
 
-The inspector is the fastest way to understand what your agent is *actually* doing. Launch it with a single command:
+The inspector is the fastest way to understand what your agent is _actually_ doing. Launch it with a single command:
 
 ```sh
 hiver inspect
@@ -107,18 +123,17 @@ hiver inspect
 
 It opens a live, DevTools-style UI over a running sandbox. In one place you get:
 
-* **Timeline**: a waterfall of every event the agent generates, laid out over time with per-request durations. Click any bar to inspect the full request and response (headers, body, and verdict) and see exactly where the run spent its time.
-* **LLM**: the inspector decodes the model traffic itself and renders the conversation as **system**, **user**, and **assistant** messages, tool calls and all, with no agent-side hooks required. Built-in decoders cover Claude Code / Anthropic, Codex / ChatGPT, and Gemini, and the provider interface is pluggable, so GitHub Copilot, OpenCode, or your own CLI drop in with a few lines.
-* **Network**: every egress request the agent makes, with the host, path, and whether it was **allowed** or **denied** by policy. TLS is decrypted transparently, so you see the real requests, not opaque CONNECT tunnels.
-* **Files**: every read and write the agent performs, across local, Google Drive, GCS, S3, and other backends, with the same allowed/denied verdicts.
-* **Exec**: the commands the agent runs and their output.
-* **Terminal**: drop into an interactive shell inside the sandbox to poke around mid-run.
-* **Config**: view and edit the sandbox's network and filesystem policy live, then watch the agent react.
+- **Timeline**: a waterfall of every event the agent generates, laid out over time with per-request durations. Click any bar to inspect the full request and response (headers, body, and verdict) and see exactly where the run spent its time.
+- **LLM**: the inspector decodes the model traffic itself and renders the conversation as **system**, **user**, and **assistant** messages, tool calls and all, with no agent-side hooks required. Built-in decoders cover Claude Code / Anthropic, Codex / ChatGPT, and Gemini, and the provider interface is pluggable, so GitHub Copilot, OpenCode, or your own CLI drop in with a few lines.
+- **Network**: every egress request the agent makes, with the host, path, and whether it was **allowed** or **denied** by policy. TLS is decrypted transparently, so you see the real requests, not opaque CONNECT tunnels.
+- **Files**: every read and write the agent performs, across local, Google Drive, GCS, S3, and other backends, with the same allowed/denied verdicts.
+- **Exec**: the commands the agent runs and their output.
+- **Terminal**: drop into an interactive shell inside the sandbox to poke around mid-run.
+- **Config**: view and edit the sandbox's network and filesystem policy live, then watch the agent react.
 
 Because the inspector is just a client over the same event stream and API the SDKs use, anything you see in the UI you can also script.
 
 ## Events
-
 
 Every sandbox emits a structured, ordered, replayable stream of audit events. Stream them live from the CLI:
 
@@ -136,11 +151,11 @@ hiver events claude-code-an \
 
 ## Isolation
 
-Every sandbox runs the agent as an untrusted workload, but you can pick *how* it's confined. Both backends sit behind the same API, file systems, ACLs, egress policy, and audit stream; only the boundary around the workload differs:
+Every sandbox runs the agent as an untrusted workload, but you can pick _how_ it's confined. Both backends sit behind the same API, file systems, ACLs, egress policy, and audit stream; only the boundary around the workload differs:
 
-* **Container** (the default): the lightest option, fastest to start and lowest overhead, ideal for development and trusted images.
+- **Container** (the default): the lightest option, fastest to start and lowest overhead, ideal for development and trusted images.
 
-* **MicroVM**: runs the agent behind a hardware-virtualization boundary with its own kernel, the stronger choice for fully untrusted code. Requires KVM on the host; in a virtualized environment (cloud VM, CI runner) that means **nested virtualization** must be enabled.
+- **MicroVM**: runs the agent behind a hardware-virtualization boundary with its own kernel, the stronger choice for fully untrusted code. Requires KVM on the host; in a virtualized environment (cloud VM, CI runner) that means **nested virtualization** must be enabled.
 
 You choose which one you get when you bundle your Docker image into a Hiver runtime image with `hiver bundle`:
 
@@ -186,11 +201,13 @@ console.log(stdout.trim()); // 42
 The simplest version is an interactive interpreter:
 
 ```ts
-const exec = await sandbox.execStream(["python3", "-iq"], { cwd: "/workspace" });
+const exec = await sandbox.execStream(["python3", "-iq"], {
+  cwd: "/workspace",
+});
 
 const commands = [
-  "import math; total = 0",                    // setup runs once...
-  "total += math.factorial(5); print(total)",  // ...and is reused
+  "import math; total = 0", // setup runs once...
+  "total += math.factorial(5); print(total)", // ...and is reused
   "total += math.factorial(6); print(total)",
   "exit()",
 ];
@@ -209,6 +226,7 @@ A sandbox's filesystem is assembled from mounts you declare, each backed by loca
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
   fs: [
     // Org knowledge base, mounted from a shared bucket (read-only).
     {
@@ -239,7 +257,10 @@ Point a mount at any HTTP host that implements the [file system interface](api/e
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1", {
-  fs: [{ backend: "external", mount: "/data", host: "https://fs.internal:8080" }],
+  image: "node",
+  fs: [
+    { backend: "external", mount: "/data", host: "https://fs.internal:8080" },
+  ],
 });
 ```
 
@@ -251,6 +272,7 @@ A snapshot is the sandbox's working tree captured to a tarball on shutdown and r
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
   fs: [
     // The snapshot target, backed by GCS. `internal` keeps it out of the
     // agent's view — it exists only for the runtime to read/write snapshots.
@@ -263,9 +285,9 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
     },
   ],
   snapshot: {
-    restore_key: "agent-1",      // tarball to restore on start
-    mount: "/snapshots",         // pull it from the GCS-backed mount
-    include: ["/workspace/**"],  // paths to capture on shutdown
+    restore_key: "agent-1", // tarball to restore on start
+    mount: "/snapshots", // pull it from the GCS-backed mount
+    include: ["/workspace/**"], // paths to capture on shutdown
   },
 });
 ```
@@ -278,7 +300,14 @@ The file API lets you move files in and out of a sandbox's from outside the work
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1", {
-  fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/**", access: "rw" }] }],
+  image: "node",
+  fs: [
+    {
+      backend: "local",
+      mount: "/workspace",
+      acls: [{ path: "/**", access: "rw" }],
+    },
+  ],
 });
 
 // Seed an input file before the agent runs.
@@ -303,6 +332,7 @@ The egress proxy can **rewrite** requests on the way out. Attach an `override` t
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
   egress: [
     {
       access: "allow",
@@ -320,12 +350,13 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
 
 #### Redirecting to a mock server
 
-`host` and `prefix_path` rewrite *where* the request goes, so you can transparently point an agent at a local mock or stub server without touching its code:
+`host` and `prefix_path` rewrite _where_ the request goes, so you can transparently point an agent at a local mock or stub server without touching its code:
 
 ```typescript
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
   egress: [
     {
       access: "allow",
@@ -351,7 +382,7 @@ Subscribe to a sandbox's audit stream from any client and react to events as the
 ```typescript
 import * as hiver from "@hiver.sh/client";
 
-const sandbox = await hiver.getOrCreateSandbox("agent-1");
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {"image": "node"});
 
 for await (const event of sandbox.getEventsStream()) {
   console.log(event.type, event.access ?? "");
@@ -377,7 +408,7 @@ Run the full stack (controller, gateway, and sandboxes) on a managed Kubernetes 
 
 ## Full documentation
 
-* [Docs](https://hiver.sh/docs)
+- [Docs](https://hiver.sh/docs)
 
 ### Architecture
 

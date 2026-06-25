@@ -74,6 +74,40 @@ data:
                         - name: gateway
                           domains: ["*"]
                           routes:
+                            # Create leg (design §3, §8). Routed on the
+                            # x-hiver-image header to the per-image Service (one
+                            # STRICT_DNS cluster below per image). The path is
+                            # rewritten /v1/sandboxes/ → /v1/ so the pod's sandboxd
+                            # receives it on its native POST /v1/{key} pack
+                            # endpoint. These must precede the /sandbox/ execute leg
+                            # and the /controller/ catch-all. Add one route +
+                            # cluster per image with a Deployment+Service.
+                            - match:
+                                prefix: "/v1/sandboxes/"
+                                headers:
+                                  - name: "x-hiver-image"
+                                    string_match:
+                                      exact: "browser"
+                              route:
+                                cluster: browser
+                                regex_rewrite:
+                                  pattern:
+                                    regex: "^/v1/sandboxes/"
+                                  substitution: "/v1/"
+                                timeout: 0s
+                            - match:
+                                prefix: "/v1/sandboxes/"
+                                headers:
+                                  - name: "x-hiver-image"
+                                    string_match:
+                                      exact: "python"
+                              route:
+                                cluster: python
+                                regex_rewrite:
+                                  pattern:
+                                    regex: "^/v1/sandboxes/"
+                                  substitution: "/v1/"
+                                timeout: 0s
                             - match:
                                 prefix: "/controller/"
                               route:
@@ -103,6 +137,37 @@ data:
                         socket_address:
                           address: controller
                           port_value: 9000
+
+        # One STRICT_DNS cluster per image with a Deployment+Service in the
+        # hiver-sandbox namespace. The create route above matches the
+        # x-hiver-image header to one of these; kube-proxy round-robins across
+        # the Service's pods (design §5, §8). Cross-namespace FQDN so the gateway
+        # in "hiver" can resolve Services in "hiver-sandbox".
+        - name: browser
+          connect_timeout: 30s
+          type: STRICT_DNS
+          load_assignment:
+            cluster_name: browser
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: browser.hiver-sandbox.svc.cluster.local
+                          port_value: 8099
+
+        - name: python
+          connect_timeout: 30s
+          type: STRICT_DNS
+          load_assignment:
+            cluster_name: python
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: python.hiver-sandbox.svc.cluster.local
+                          port_value: 8099
 
         - name: dynamic_forward_proxy
           connect_timeout: 30s

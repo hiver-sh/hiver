@@ -15,6 +15,9 @@ import (
 // DefaultGatewayURL is the URL used when no gateway URL is provided.
 const DefaultGatewayURL = "http://localhost:10000"
 
+// DefaultImageName is the image used when SandboxConfig.Image is empty.
+const DefaultImageName = "agent-base"
+
 var sandboxKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 const defaultTimeout = 60 * time.Second
@@ -83,12 +86,17 @@ func (c *Client) GetOrCreateSandbox(ctx context.Context, key string, config Sand
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/controller/v1/sandboxes/%s", c.baseURL, key)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
+	image := config.Image
+	if image == "" {
+		image = DefaultImageName
+	}
+	url := fmt.Sprintf("%s/v1/sandboxes/%s", c.baseURL, key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-hiver-image", image)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

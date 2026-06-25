@@ -56,17 +56,6 @@ func TestSupervisorCreateOccupied(t *testing.T) {
 	}
 }
 
-func TestSupervisorCreateImageMismatch(t *testing.T) {
-	sup := newSupervisor(false)
-	sup.bootComplete()
-	sup.register(handlers.NewSandbox("default", 0), "img:1", func() {})
-
-	_, err := sup.Create(context.Background(), "other", gen.SandboxConfig{Image: strptr("img:2")})
-	if !errors.Is(err, handlers.ErrImageMismatch) {
-		t.Fatalf("Create(mismatched image) err = %v; want ErrImageMismatch", err)
-	}
-}
-
 func TestSupervisorCreatePrewarmClaim(t *testing.T) {
 	// A prewarmed pod hands the claim to a consumer (here standing in for main),
 	// which registers the sandbox under the claimed key and signals completion.

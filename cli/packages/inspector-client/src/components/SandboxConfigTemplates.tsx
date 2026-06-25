@@ -5,12 +5,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { DEFAULT_SANDBOX_IMAGES } from "@/types";
-
-const injected = (
-  window as { __HIVE_SANDBOX_IMAGES__?: Record<string, string> }
-).__HIVE_SANDBOX_IMAGES__;
-const sandboxImages: Record<string, string> = { ...DEFAULT_SANDBOX_IMAGES, ...injected };
 
 export type AnyConfig = Record<string, unknown>;
 
@@ -28,8 +22,8 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Claude Code",
         idPrefix: "claude-code",
         apply: () => ({
-          image: sandboxImages["agent-cli"],
-          entrypoint: ["claude"],
+          image: "claude",
+          entrypoint: "claude",
           cwd: "/workspace",
           tty: true,
           snapshot: {
@@ -42,8 +36,8 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Codex",
         idPrefix: "codex",
         apply: () => ({
-          image: sandboxImages["agent-cli"],
-          entrypoint: ["codex"],
+          image: "codex",
+          entrypoint: "codex",
           cwd: "/workspace",
           tty: true,
           snapshot: {
@@ -53,15 +47,15 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
-        label: "Gemini CLI",
-        idPrefix: "gemini",
+        label: "OpenCode",
+        idPrefix: "opencode",
         apply: () => ({
-          image: sandboxImages["agent-cli"],
-          entrypoint: ["gemini"],
+          image: "opencode",
+          entrypoint: "opencode",
           cwd: "/workspace",
           tty: true,
           snapshot: {
-            restore_key: "gemini-agent",
+            restore_key: "opencode-agent",
             include: ["/home/agent/*"],
           },
         }),
@@ -70,8 +64,8 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "GitHub Copilot",
         idPrefix: "copilot",
         apply: () => ({
-          image: sandboxImages["agent-cli"],
-          entrypoint: ["copilot"],
+          image: "github",
+          entrypoint: "copilot",
           cwd: "/workspace",
           tty: true,
           snapshot: {
@@ -81,12 +75,10 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
-        label: "Chromium (Web Browser)",
-        idPrefix: "chromium",
+        label: "Web browser",
+        idPrefix: "browser",
         apply: () => ({
-          image: sandboxImages["playwright"],
-          entrypoint: ["node"],
-          cwd: "/workspace",
+          image: "browser",
           tty: true,
         }),
       },
@@ -94,18 +86,18 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "Node.js",
         idPrefix: "nodejs",
         apply: () => ({
-          image: sandboxImages["node"],
-          entrypoint: ["node"],
+          image: "node",
+          entrypoint: "node",
           cwd: "/workspace",
           tty: true,
         }),
       },
       {
-        label: "Python 3.13",
+        label: "Python",
         idPrefix: "python",
         apply: () => ({
-          image: sandboxImages["python"],
-          entrypoint: ["python"],
+          image: "python",
+          entrypoint: "python",
           cwd: "/workspace",
           tty: true,
         }),

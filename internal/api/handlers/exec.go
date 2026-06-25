@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -91,9 +92,18 @@ func (h *Sandbox) ExecStream(c *gin.Context, id string) {
 	// An empty command attaches to the entrypoint TTY rather than running a
 	// new command. No readiness check: the server gates every handler behind
 	// NotifyReady, so reaching execStreamAttach already implies the agent is up.
+	// Exception: when tty is requested and the entrypoint is a tail keepalive,
+	// spawn /bin/sh instead — attaching to tail is useless.
 	if command == "" {
-		h.execStreamAttach(c, id, flusher)
-		return
+		hasTTY := h.entrypointTTY.Load() != nil
+		ttyReq := req.Tty != nil && *req.Tty
+		log.Printf("sandboxd: exec-stream %s %s: empty command hasTTY=%v ttyReq=%v", h.key, id, hasTTY, ttyReq)
+		if !hasTTY && ttyReq {
+			command = "/bin/sh"
+		} else {
+			h.execStreamAttach(c, id, flusher)
+			return
+		}
 	}
 	// Readiness is guaranteed by /v1/ping (which blocks until the workload is
 	// running), so exec doesn't re-check it here.
@@ -107,12 +117,7 @@ func (h *Sandbox) ExecStream(c *gin.Context, id string) {
 	}
 }
 
-// execStreamTTY starts command in a fresh pty and streams its terminal output
-// as SSE. The session ends when the process exits; the final exit frame
-// carries its exit code.
 func (h *Sandbox) execStreamTTY(c *gin.Context, id, command string, req gen.ExecStreamRequest, flusher http.Flusher) {
-	// Tie the exec to the sandbox lifecycle so a DELETE kills it mid-flight
-	// (otherwise the microvm bridge blocks forever on the dead guest).
 	ctx, cancelCtx := h.execContext(c.Request.Context())
 	defer cancelCtx()
 	cmd, cleanup, err := h.iso.ExecCmd(ctx, isolation.ExecConfig{

@@ -5,7 +5,7 @@
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-python-exec-tty", {
-  image: "hiversh/python:3.13-alpine",
+  image: "python",
   ttl: 0,
 });
 

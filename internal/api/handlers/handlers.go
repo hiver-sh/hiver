@@ -21,9 +21,6 @@ var ErrApplyInProgress = errors.New("a previous apply is still in progress")
 var (
 	// ErrSandboxNotFound is returned by Delete when no sandbox exists for the key.
 	ErrSandboxNotFound = errors.New("sandbox not found")
-	// ErrImageMismatch is returned by Create when the config names a different
-	// image than the pod's fixed image (the same-image invariant, design §5).
-	ErrImageMismatch = errors.New("config image does not match the pod's image")
 	// ErrPodOccupied is returned by Create when the pod has no free slot for the
 	// key: it already hosts its (single) sandbox, created from the env config at
 	// boot, and is not a prewarmed pod awaiting a claim.
@@ -46,8 +43,7 @@ type Supervisor interface {
 	// Sandbox resolves a running sandbox by key.
 	Sandbox(key string) (*Sandbox, bool)
 	// Create boots a sandbox for key from cfg (the pod's fixed image). Returns
-	// ErrImageMismatch on an image conflict and ErrCreateUnsupported when a
-	// sandbox for a new key cannot yet be allocated.
+	// ErrPodOccupied when a sandbox for a new key cannot yet be allocated.
 	Create(ctx context.Context, key string, cfg gen.SandboxConfig) (*Sandbox, error)
 	// Delete tears the sandbox for key down. Returns ErrSandboxNotFound if absent.
 	Delete(ctx context.Context, key string) error
@@ -173,7 +169,7 @@ func (h *SandboxHandlers) CreateSandbox(c *gin.Context, key gen.Key) {
 	sb, err := h.sup.Create(c.Request.Context(), key, cfg)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrImageMismatch), errors.Is(err, ErrPodOccupied):
+		case errors.Is(err, ErrPodOccupied):
 			c.JSON(http.StatusConflict, gen.Error{Error: err.Error()})
 		default:
 			// Log server-side: the error is returned in the body, but the controller

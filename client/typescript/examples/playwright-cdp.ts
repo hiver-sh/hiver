@@ -24,7 +24,7 @@ const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
   "hiver-browser-cdp",
   {
-    image: "browser",
+    image: "node",
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );

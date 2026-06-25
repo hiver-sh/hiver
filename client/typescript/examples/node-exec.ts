@@ -4,7 +4,7 @@
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-node-exec", {
-  image: "hiversh/node:alpine",
+  image: "node",
 });
 
 const result = await sandbox.exec(

@@ -12,6 +12,7 @@ from .schemas import SandboxConfig, SandboxRef
 from .sse import parse_sse
 
 DEFAULT_GATEWAY_URL = "http://localhost:10000"
+DEFAULT_IMAGE_NAME = "agent-base"
 
 _SANDBOX_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -53,9 +54,10 @@ async def get_or_create_sandbox(
 
     try:
         try:
-            res = await http.put(
-                f"{base}/controller/v1/sandboxes/{key}",
+            res = await http.post(
+                f"{base}/v1/sandboxes/{key}",
                 json=validated.model_dump(exclude_none=True),
+                headers={"x-hiver-image": validated.image or DEFAULT_IMAGE_NAME},
                 timeout=req_timeout,
             )
         except httpx.ConnectError as err:

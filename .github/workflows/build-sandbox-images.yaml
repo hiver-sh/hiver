@@ -54,7 +54,7 @@ jobs:
       - name: Save sandbox images as artifact
         run: |
           docker save \
-            hiversh/agent-cli:latest \
+            hiversh/claude:latest \
             hiversh/python:3.13-alpine \
             hiversh/node:alpine \
             -o sandbox-images.tar

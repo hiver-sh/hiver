@@ -29,10 +29,6 @@ app.use("/api/trace", traceRoutes);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const clientDist = join(__dirname, "../../inspector-client/dist");
-const sandboxImagesPath = join(__dirname, "../../../container-config/sandbox-images.json");
-const sandboxImages: Record<string, string> = existsSync(sandboxImagesPath)
-  ? (JSON.parse(readFileSync(sandboxImagesPath, "utf8")) as Record<string, string>)
-  : {};
 
 if (existsSync(clientDist)) {
   // Hashed assets (index-<hash>.js/.css) are immutable — their name changes on
@@ -50,7 +46,6 @@ if (existsSync(clientDist)) {
   const renderIndex = () => {
     const globals = [
       `window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}`,
-      `window.__HIVE_SANDBOX_IMAGES__=${JSON.stringify(sandboxImages)}`,
     ].join(";");
     return readFileSync(join(clientDist, "index.html"), "utf8").replace(
       "</head>",

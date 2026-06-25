@@ -66,20 +66,15 @@ async function openExecStreamSession(
   await waitForSandbox(sandbox, { signal: ac.signal });
   const config = await sandbox.getConfig().catch(() => null);
 
-  // When the sandbox runs its entrypoint on a TTY (config `tty: true`), attach
-  // to that entrypoint terminal: send an empty command so the server routes us
-  // to the entrypoint's pty. cwd/env don't apply to an attach (the entrypoint
-  // is already running) so they're omitted there. Otherwise open an
-  // interactive shell.
+  const cwd = config?.cwd ?? config?.fs?.[0]?.mount ?? undefined;
+  const env = {
+    TERM: "xterm-256color",
+    COLORTERM: "truecolor",
+  };
   let exec;
   if (config?.tty === true) {
-    exec = await sandbox.execStream("", { signal: ac.signal });
+    exec = await sandbox.execStream("", { tty: true, cwd, signal: ac.signal, env });
   } else {
-    const cwd = config?.cwd ?? config?.fs?.[0]?.mount ?? undefined;
-    const env = {
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
-    };
     exec = await sandbox.execStream("/bin/sh", {
       tty: true,
       cwd,

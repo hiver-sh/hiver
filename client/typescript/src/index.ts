@@ -39,6 +39,7 @@ export {
 
 export {
   DEFAULT_GATEWAY_URL,
+  DEFAULT_IMAGE_NAME,
   getOrCreateSandbox,
   listSandboxes,
   watchSandboxEvents,

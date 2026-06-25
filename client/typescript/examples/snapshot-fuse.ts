@@ -40,7 +40,7 @@ const KEY = `snapshot-fuse-example-${Date.now()}`;
 //   - snapshot.mount routes the tarball through /snapshot-drive (→ GCS).
 //   - /root is captured on shutdown and restored on start.
 const config: hiver.SandboxConfig = {
-  image: "hiversh/node:alpine",
+  image: "node",
   fs: [
     {
       backend: "gcs",

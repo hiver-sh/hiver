@@ -12,6 +12,7 @@ from hiver.schemas import SandboxRef
 GATEWAY = "http://gateway:10000"
 REF = SandboxRef(id="11111111-1111-1111-1111-111111111111", key="sb-1")
 SANDBOX_BASE = f"{GATEWAY}/sandbox/{REF.id}"
+SANDBOX_V1 = f"{SANDBOX_BASE}/v1/{REF.key}"
 
 MIN_CONFIG = {"fs": [{"backend": "local", "mount": "/workspace"}]}
 MIN_APPLY_RESULT = {
@@ -63,17 +64,17 @@ def sse_response(*events: object, status: int = 200) -> httpx.Response:
 @pytest.mark.asyncio
 @respx.mock
 async def test_ping_sends_get_v1_ping() -> None:
-    route = respx.get(f"{SANDBOX_BASE}/v1/ping").mock(return_value=httpx.Response(200))
+    route = respx.get(f"{SANDBOX_V1}/ping").mock(return_value=httpx.Response(200))
     async with httpx.AsyncClient() as client:
         await make_sandbox(client).ping()
     assert route.called
-    assert route.calls[0].request.url == f"{SANDBOX_BASE}/v1/ping"
+    assert route.calls[0].request.url == f"{SANDBOX_V1}/ping"
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_ping_raises_sandbox_error_on_non_200() -> None:
-    respx.get(f"{SANDBOX_BASE}/v1/ping").mock(
+    respx.get(f"{SANDBOX_V1}/ping").mock(
         return_value=httpx.Response(503, json={"error": "service unavailable"})
     )
     async with httpx.AsyncClient() as client:
@@ -89,7 +90,7 @@ async def test_ping_raises_sandbox_error_on_non_200() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_ports_sends_get_v1_ports_and_returns_list() -> None:
-    route = respx.get(f"{SANDBOX_BASE}/v1/ports").mock(
+    route = respx.get(f"{SANDBOX_V1}/ports").mock(
         return_value=httpx.Response(200, json=[8080, 9000])
     )
     async with httpx.AsyncClient() as client:
@@ -101,7 +102,7 @@ async def test_get_ports_sends_get_v1_ports_and_returns_list() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_ports_raises_sandbox_error_on_non_200() -> None:
-    respx.get(f"{SANDBOX_BASE}/v1/ports").mock(
+    respx.get(f"{SANDBOX_V1}/ports").mock(
         return_value=httpx.Response(500, json={"error": "internal"})
     )
     async with httpx.AsyncClient() as client:
@@ -117,7 +118,7 @@ async def test_get_ports_raises_sandbox_error_on_non_200() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_config_sends_get_v1_config_and_returns_config() -> None:
-    route = respx.get(f"{SANDBOX_BASE}/v1/config").mock(
+    route = respx.get(f"{SANDBOX_V1}/config").mock(
         return_value=httpx.Response(200, json=MIN_CONFIG)
     )
     async with httpx.AsyncClient() as client:
@@ -129,7 +130,7 @@ async def test_get_config_sends_get_v1_config_and_returns_config() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_config_raises_sandbox_error_on_non_200() -> None:
-    respx.get(f"{SANDBOX_BASE}/v1/config").mock(
+    respx.get(f"{SANDBOX_V1}/config").mock(
         return_value=httpx.Response(404, json={"error": "not found"})
     )
     async with httpx.AsyncClient() as client:
@@ -145,7 +146,7 @@ async def test_get_config_raises_sandbox_error_on_non_200() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_apply_config_sends_put_v1_config_with_json_body() -> None:
-    route = respx.put(f"{SANDBOX_BASE}/v1/config").mock(
+    route = respx.put(f"{SANDBOX_V1}/config").mock(
         return_value=httpx.Response(200, json=MIN_APPLY_RESULT)
     )
     from hiver.schemas import SandboxConfig
@@ -164,7 +165,7 @@ async def test_apply_config_sends_put_v1_config_with_json_body() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_apply_config_returns_apply_result() -> None:
-    respx.put(f"{SANDBOX_BASE}/v1/config").mock(
+    respx.put(f"{SANDBOX_V1}/config").mock(
         return_value=httpx.Response(200, json=MIN_APPLY_RESULT)
     )
     from hiver.schemas import SandboxConfig
@@ -179,7 +180,7 @@ async def test_apply_config_returns_apply_result() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_apply_config_raises_sandbox_error_on_non_200() -> None:
-    respx.put(f"{SANDBOX_BASE}/v1/config").mock(
+    respx.put(f"{SANDBOX_V1}/config").mock(
         return_value=httpx.Response(400, json={"error": "bad config"})
     )
     from hiver.schemas import SandboxConfig
@@ -199,7 +200,7 @@ async def test_apply_config_raises_sandbox_error_on_non_200() -> None:
 @respx.mock
 async def test_read_file_sends_get_with_path_param_and_returns_bytes() -> None:
     content = b"hello"
-    route = respx.get(f"{SANDBOX_BASE}/v1/file").mock(
+    route = respx.get(f"{SANDBOX_V1}/file").mock(
         return_value=httpx.Response(200, content=content)
     )
     async with httpx.AsyncClient() as client:
@@ -213,7 +214,7 @@ async def test_read_file_sends_get_with_path_param_and_returns_bytes() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_read_file_raises_sandbox_error_on_non_200() -> None:
-    respx.get(f"{SANDBOX_BASE}/v1/file").mock(
+    respx.get(f"{SANDBOX_V1}/file").mock(
         return_value=httpx.Response(404, json={"error": "not found"})
     )
     async with httpx.AsyncClient() as client:
@@ -229,7 +230,7 @@ async def test_read_file_raises_sandbox_error_on_non_200() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_write_file_sends_post_with_multipart_form() -> None:
-    route = respx.post(f"{SANDBOX_BASE}/v1/file").mock(
+    route = respx.post(f"{SANDBOX_V1}/file").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/hello.txt", "bytes": 5})
     )
     async with httpx.AsyncClient() as client:
@@ -247,7 +248,7 @@ async def test_write_file_sends_post_with_multipart_form() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_write_file_accepts_str_content() -> None:
-    respx.post(f"{SANDBOX_BASE}/v1/file").mock(
+    respx.post(f"{SANDBOX_V1}/file").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/f.txt", "bytes": 4})
     )
     async with httpx.AsyncClient() as client:
@@ -258,7 +259,7 @@ async def test_write_file_accepts_str_content() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_write_file_raises_sandbox_error_on_non_200() -> None:
-    respx.post(f"{SANDBOX_BASE}/v1/file").mock(
+    respx.post(f"{SANDBOX_V1}/file").mock(
         return_value=httpx.Response(400, json={"error": "destination not mounted"})
     )
     async with httpx.AsyncClient() as client:
@@ -282,7 +283,7 @@ async def test_events_stream_sends_get_with_accept_header() -> None:
             abort.set()
 
     req = transport.requests[0]
-    assert str(req.url).startswith(f"{SANDBOX_BASE}/v1/events")
+    assert str(req.url).startswith(f"{SANDBOX_V1}/events")
     assert req.headers["accept"] == "text/event-stream"
 
 

@@ -8,7 +8,7 @@ import { createShutdown } from "./utils/index.js";
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hive-files-example", {
-  image: "hiversh/node:alpine",
+  image: "node",
 });
 
 const { shutdown } = createShutdown(sandbox);

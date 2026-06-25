@@ -493,6 +493,9 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		log.Printf("sandboxd: pack %q: tty: ignoring tty option (only supported for %q isolation, got %q)", key, isolation.KindContainer, p.isoKind)
 		ttyEnabled = false
 	}
+	if ttyEnabled && entrypointIsTail(&imgCfg) {
+		ttyEnabled = false
+	}
 	if ttyEnabled {
 		if _, ok := agentEnv["TERM"]; !ok {
 			agentEnv["TERM"] = "xterm-256color"

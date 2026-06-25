@@ -45,8 +45,11 @@ func TestClient_GetOrCreateSandbox_InvalidKey(t *testing.T) {
 
 func TestClient_GetOrCreateSandbox_201(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertMethod(t, r, http.MethodPut)
-		assertPath(t, r, "/controller/v1/sandboxes/my-key")
+		assertMethod(t, r, http.MethodPost)
+		assertPath(t, r, "/v1/sandboxes/my-key")
+		if got := r.Header.Get("x-hiver-image"); got != DefaultImageName {
+			t.Errorf("x-hiver-image: got %q, want %q", got, DefaultImageName)
+		}
 		writeJSON(w, http.StatusCreated, SandboxRef{ID: "id-1", Key: "my-key"})
 	}))
 	defer srv.Close()

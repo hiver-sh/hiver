@@ -103,9 +103,7 @@ func (s *supervisor) SubscribeLifecycle() (<-chan gen.PodEvent, func()) {
 // sandbox. On a prewarmed, unclaimed pod it hands the claim to main, which
 // restores the snapshot into a sandbox under key and signals completion. A pod
 // that is not prewarmed (its sandbox came from env at boot) has no free slot, so
-// a request for a different key returns ErrPodOccupied. The config currently
-// comes from the env spec, so cfg is only used to enforce the same-image
-// invariant (design §5).
+// a request for a different key returns ErrPodOccupied.
 func (s *supervisor) Create(ctx context.Context, key string, cfg gen.SandboxConfig) (*handlers.Sandbox, error) {
 	// Wait until main has set the pod's mode, so a POST that races the boot sees
 	// pack mode rather than falling through to ErrPodOccupied.
@@ -119,10 +117,6 @@ func (s *supervisor) Create(ctx context.Context, key string, cfg gen.SandboxConf
 	if sb, ok := s.sandboxes[key]; ok {
 		s.mu.Unlock()
 		return sb, nil
-	}
-	if img := configImage(cfg); img != "" && s.image != "" && img != s.image {
-		s.mu.Unlock()
-		return nil, handlers.ErrImageMismatch
 	}
 	pack := s.pack
 	ch := s.claims
@@ -176,13 +170,6 @@ func (s *supervisor) Delete(_ context.Context, key string) error {
 }
 
 // configImage returns the image named by a config, or "" when unset.
-func configImage(cfg gen.SandboxConfig) string {
-	if cfg.Image != nil {
-		return *cfg.Image
-	}
-	return ""
-}
-
 // specImage returns the image named by the boot spec, or "".
 func specImage(sp *spec.Spec) string {
 	return sp.Image

@@ -13,7 +13,7 @@ import { createShutdown } from "./utils/index.js";
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-terminal-attach", {
-  image: "hiversh/node:alpine",
+  image: "node",
   entrypoint: ["tail", "-f", "/dev/null"],
   ttl: 0,
 });

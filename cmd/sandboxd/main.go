@@ -99,16 +99,28 @@ func main() {
 		preallocPool          = flag.Int("prealloc-pool", 10, "pack mode: number of sandbox network slots (netns/veth/iptables + DNS sink) to preallocate and keep warm so a create claims one instead of wiring it on the request path; 0 disables")
 		maxConcurrentLaunches = flag.Int("max-concurrent-launches", 10, "pack mode: cap on concurrent sandbox creates in flight, so a burst doesn't oversubscribe the node's cores during the CPU-bound resume/convergence phases; set near the node's vCPU count; 0 disables (unbounded)")
 		overlayCoWDir         = flag.String("overlay-cow-dir", "", "pack/microvm mode: directory for each VM's dm-snapshot copy-on-write store (the per-VM exception store layered over the shared read-only base overlay — the base is never copied); empty keeps it in the per-VM jail dir (on the container overlayfs). Point it at a tmpfs mount so the guest's rootfs writes are RAM-backed; the store is ephemeral so it never needs persistence")
+		instanceCPU           = flag.Float64("instance-cpu", 0, "microVM guest sizing: vCPU count, rounded up to a whole core. firecracker bakes this into the base snapshot so every resumer inherits it; comes from here, not the pod resources. 0 lets the isolation backend apply its default. Overrides any cpu in HIVE_SPEC")
+		instanceMemory        = flag.Int("instance-memory", 0, "microVM guest sizing: RAM in MiB. firecracker bakes this into the base snapshot so every resumer inherits it. 0 lets the isolation backend apply its default. Overrides any memory in HIVE_SPEC")
 	)
 	flag.Parse()
 
 	// The spec is delivered as JSON in the HIVE_SPEC env var (injected by the
-	// runtime), not a mounted file — required in every mode. In pack/prewarm the
-	// pod has no boot workload, but the env still carries a base spec (at least
-	// the image); each sandbox's full config arrives later over the API.
+	// runtime), not a mounted file. It is optional: in pack/prewarm the pod has
+	// no boot workload and the image is whatever is bundled in the pod, so
+	// HIVE_SPEC is redundant there — each sandbox's full config arrives later
+	// over the API. The guest's vCPU/RAM sizing comes from HIVE_INSTANCE_CPU /
+	// HIVE_INSTANCE_MEMORY regardless (LoadEnv overlays them onto the spec).
 	sp, err := spec.LoadEnv()
 	if err != nil {
 		log.Fatalf("spec: %v", err)
+	}
+	// Guest sizing comes from flags, overriding any cpu/memory carried in the
+	// (now-optional) HIVE_SPEC. firecracker bakes these into the base snapshot.
+	if *instanceCPU > 0 {
+		sp.CPU = instanceCPU
+	}
+	if *instanceMemory > 0 {
+		sp.Memory = instanceMemory
 	}
 
 	// Construct the API server and start serving immediately — before any
@@ -521,6 +533,11 @@ func main() {
 			}
 		}
 
+		// A keepalive-only entrypoint (e.g. tail -f /dev/null) has no interactive
+		// output to attach to; skip the pty so entrypointTTY stays nil.
+		if ttyEnabled && entrypointIsTail(imgCfg) {
+			ttyEnabled = false
+		}
 		// Hand the agent workload off to the isolation backend: it writes any
 		// runtime config it needs (the OCI bundle for runc) and returns the
 		// command that launches the workload, which we run through our own
@@ -1057,6 +1074,25 @@ func superviseStdio(wg *sync.WaitGroup, name string, cmd *exec.Cmd, onStdio func
 //
 // The Session's Done channel stands in for startChild's stdioDone: it closes
 // once the master reaches EOF (the agent's output is finished).
+// entrypointIsTail reports whether the effective container entrypoint is the
+// `tail` keepalive pattern (ENTRYPOINT or CMD starting with tail). When true
+// there is no interactive process to attach a pty to.
+func entrypointIsTail(imgCfg *runc.ImageConfig) bool {
+	var first string
+	if len(imgCfg.Entrypoint) > 0 {
+		first = imgCfg.Entrypoint[0]
+	} else if len(imgCfg.Cmd) > 0 {
+		first = imgCfg.Cmd[0]
+	}
+	if first == "" {
+		return false
+	}
+	if i := strings.LastIndex(first, "/"); i >= 0 {
+		first = first[i+1:]
+	}
+	return first == "tail"
+}
+
 func startAgentTTY(ctx context.Context, bin string, args []string) (*exec.Cmd, *pty.Session, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }

@@ -43,7 +43,7 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-router.put("/:key", async (req: Request, res: Response) => {
+router.post("/:key", async (req: Request, res: Response) => {
   try {
     const sandbox = await getOrCreateSandbox(
       req.params.key,

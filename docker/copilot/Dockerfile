@@ -1,3 +1,3 @@
-FROM hiversh/agent-base
+FROM agent-base
 
 RUN npm install -g @github/copilot

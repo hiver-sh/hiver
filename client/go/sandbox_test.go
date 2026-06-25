@@ -23,8 +23,8 @@ func writeSSEFrame(w http.ResponseWriter, v interface{}) {
 }
 
 func TestSandbox_ProxyURL(t *testing.T) {
-	s := &Sandbox{apiURL: "http://gw/sandbox/k"}
-	if got := s.ProxyURL(8080); got != "http://gw/sandbox/k/v1/proxy/8080" {
+	s := &Sandbox{apiURL: "http://gw/sandbox/k", Key: "mykey"}
+	if got := s.ProxyURL(8080); got != "http://gw/sandbox/k/v1/mykey/proxy/8080" {
 		t.Errorf("got %q", got)
 	}
 }
@@ -33,7 +33,7 @@ func TestSandbox_ProxyURL(t *testing.T) {
 func TestSandbox_Ping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
-		assertPath(t, r, "/sandbox/k/v1/ping")
+		assertPath(t, r, "/sandbox/k/v1/test-key/ping")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -59,7 +59,7 @@ func TestSandbox_GetConfig(t *testing.T) {
 	cfg := SandboxConfig{Image: "my-image:latest", CPU: 2}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
-		assertPath(t, r, "/sandbox/k/v1/config")
+		assertPath(t, r, "/sandbox/k/v1/test-key/config")
 		writeJSON(w, http.StatusOK, cfg)
 	}))
 	defer srv.Close()
@@ -77,7 +77,7 @@ func TestSandbox_ApplyConfig(t *testing.T) {
 	result := ApplyResult{Applied: true, Config: SandboxConfig{Image: "new:v2"}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPut)
-		assertPath(t, r, "/sandbox/k/v1/config")
+		assertPath(t, r, "/sandbox/k/v1/test-key/config")
 		writeJSON(w, http.StatusOK, result)
 	}))
 	defer srv.Close()
@@ -93,7 +93,7 @@ func TestSandbox_ApplyConfig(t *testing.T) {
 
 func TestSandbox_GetPorts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertPath(t, r, "/sandbox/k/v1/ports")
+		assertPath(t, r, "/sandbox/k/v1/test-key/ports")
 		writeJSON(w, http.StatusOK, []int{8080, 9000})
 	}))
 	defer srv.Close()
@@ -110,7 +110,7 @@ func TestSandbox_GetPorts(t *testing.T) {
 func TestSandbox_Exec(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
-		assertPath(t, r, "/sandbox/k/v1/exec")
+		assertPath(t, r, "/sandbox/k/v1/test-key/exec")
 
 		var req ExecRequest
 		json.NewDecoder(r.Body).Decode(&req)
@@ -173,7 +173,7 @@ func TestSandbox_ListDirectory(t *testing.T) {
 		{Name: "subdir", Path: "/workspace/subdir", IsDir: true, Size: 0},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertPath(t, r, "/sandbox/k/v1/directories")
+		assertPath(t, r, "/sandbox/k/v1/test-key/directories")
 		if r.URL.Query().Get("path") != "/workspace" {
 			t.Errorf("unexpected path param: %q", r.URL.Query().Get("path"))
 		}
@@ -192,7 +192,7 @@ func TestSandbox_ListDirectory(t *testing.T) {
 
 func TestSandbox_ReadFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertPath(t, r, "/sandbox/k/v1/file")
+		assertPath(t, r, "/sandbox/k/v1/test-key/file")
 		if r.URL.Query().Get("path") != "/workspace/data.csv" {
 			t.Errorf("unexpected path param: %q", r.URL.Query().Get("path"))
 		}
@@ -213,7 +213,7 @@ func TestSandbox_ReadFile(t *testing.T) {
 func TestSandbox_WriteFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
-		assertPath(t, r, "/sandbox/k/v1/file")
+		assertPath(t, r, "/sandbox/k/v1/test-key/file")
 
 		r.ParseMultipartForm(1 << 20)
 		if dst := r.FormValue("destination"); dst != "/workspace" {
@@ -234,7 +234,7 @@ func TestSandbox_WriteFile(t *testing.T) {
 
 func TestSandbox_WatchEvents(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertPath(t, r, "/sandbox/k/v1/events")
+		assertPath(t, r, "/sandbox/k/v1/test-key/events")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		writeSSEFrame(w, SandboxEvent{ID: 1, Type: "stdio", Stdout: "hello\n"})

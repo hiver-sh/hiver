@@ -17,10 +17,7 @@ import { Label } from "@/components/ui/label";
 import { SandboxConfigTemplates } from "@/components/SandboxConfigTemplates";
 import type { AnyConfig } from "@/components/SandboxConfigTemplates";
 
-const DEFAULT_CONFIG = {
-  fs: [{ backend: "local", mount: "/workspace" }],
-  env: {},
-};
+const DEFAULT_CONFIG = {};
 
 interface Props {
   serverUrl: string;
@@ -65,7 +62,7 @@ export function CreateSandboxDialog({
         `${serverUrl}/api/sandboxes/${encodeURIComponent(key)}`,
       );
       const res = await transport.fetch(url, {
-        method: "PUT",
+        method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(config),
       });
@@ -114,7 +111,7 @@ export function CreateSandboxDialog({
         <DialogHeader>
           <DialogTitle>Create Sandbox</DialogTitle>
           <DialogDescription>
-            Provision a new sandbox on the controller.
+            Provision a new sandbox
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-4 py-2">

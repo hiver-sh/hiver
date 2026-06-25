@@ -6,7 +6,7 @@
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-node-internal-service", {
-  image: "hiversh/node:alpine",
+  image: "node",
   egress: [{ access: "deny", host: "*" }],
 });
 

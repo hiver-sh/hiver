@@ -32,11 +32,13 @@ export const SANDBOX_CONFIG_SCHEMA = {
           examples: [512],
         },
         entrypoint: {
-          type: "array",
-          items: { type: "string" },
+          oneOf: [
+            { type: "string" },
+            { type: "array", items: { type: "string" } },
+          ],
           description:
-            'Override the entrypoint used when the container is run, as an argv array (each element is a separate argument, not shell-split). When omitted, the image\'s default entrypoint is used. e.g. ["tail", "-f", "/dev/null"] blocks indefinitely with near-zero CPU.',
-          examples: [["tail", "-f", "/dev/null"]],
+            'Override the entrypoint used when the container is run. Provide a single string (split on whitespace by the sandbox) or an argv array (each element is a separate argument, not shell-split). When omitted, the image\'s default entrypoint is used. e.g. ["tail", "-f", "/dev/null"] blocks indefinitely with near-zero CPU.',
+          examples: ["claude", ["tail", "-f", "/dev/null"]],
         },
         cwd: {
           type: "string",

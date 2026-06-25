@@ -43,7 +43,7 @@ npm install --save @hiver.sh/client
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("my-sandbox", {
-  image: "hiversh/node:alpine",
+  image: "node",
   ttl: 1800,
   fs: [
     {
@@ -498,7 +498,7 @@ host-backed mount. Configure it with `snapshot`:
 
 ```ts
 const config: hiver.SandboxConfig = {
-  image: "hiversh/node:alpine",
+  image: "node",
   snapshot: {
     restore_key: "session-42", // restored on start
     write_key: "session-42", // saved on shutdown; defaults to restore_key

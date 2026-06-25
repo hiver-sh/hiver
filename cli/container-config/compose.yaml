@@ -12,10 +12,12 @@ services:
     # The controller spawns sandbox containers via the host docker daemon.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    # HIVE_PACK=1 (set by `hiver up --pack`) makes the controller pack N
-    # same-image sandboxes into one container instead of one container per key.
+    # HIVE_IMAGES_CONFIG carries the images config as inline JSON (logical name →
+    # ref/pack, design §11), injected by `hiver up` from ~/.hiver/config.json.
+    # Packing is config-driven (file-wide pack default true); there is no global
+    # pack switch.
     environment:
-      HIVE_PACK: ${HIVE_PACK:-}
+      HIVE_IMAGES_CONFIG: ${HIVE_IMAGES_CONFIG:-}
     restart: unless-stopped
 
   gateway:

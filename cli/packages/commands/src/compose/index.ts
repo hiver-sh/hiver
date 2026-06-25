@@ -4,7 +4,7 @@ import { DEFAULT_GATEWAY_URL } from "@hiver.sh/client";
 import { createLoader } from "../hive.js";
 import { requireDocker } from "../docker.js";
 import { dim, bright } from "../theme.js";
-import { writeConfig } from "../config.js";
+import { writeConfig, type HiveConfig } from "../config.js";
 import { subcommand, run } from "../args.js";
 import { missingImages, pullImage } from "./images.js";
 import { findAvailablePort } from "./port.js";
@@ -13,7 +13,7 @@ import {
   publishedPort,
   removeNamespaceContainers,
 } from "./stack.js";
-import { composePath } from "../container-config.js";
+import { composePath, sandboxImages, sandboxImagesMicrovm } from "../container-config.js";
 
 // Shared by `up` and `down`; the command name selects the action. Unknown args
 // (e.g. `hiver up --build`) are forwarded to docker compose.
@@ -33,12 +33,14 @@ if (action === "up") {
     "--no-pack",
     "Disable packing mode: give each sandbox its own container instead of packing N same-image sandboxes into one.",
   );
+  cli.option("--microvm", "Use microVM image variants instead of container images (requires KVM).");
 }
 run(cli); // exits here on --help
 // Packing is the default; `--no-pack` opts out (Commander sets pack=false).
 const pack = action === "up" && cli.opts().pack !== false;
-// --no-pack is ours, not a docker compose flag — don't forward it.
-const extra = process.argv.slice(3).filter((a) => a !== "--no-pack");
+const microvm = action === "up" && !!cli.opts().microvm;
+// --no-pack and --microvm are ours, not docker compose flags — don't forward them.
+const extra = process.argv.slice(3).filter((a) => a !== "--no-pack" && a !== "--microvm");
 
 // Parsed (so `--help` works without Docker) — now require Docker.
 await requireDocker();
@@ -72,8 +74,19 @@ if (action === "up") {
   gatewayPort = await findAvailablePort(DEFAULT_PORT);
   env.GATEWAY_PORT = String(gatewayPort);
 
-  // Packing (default) → controller packs same-image sandboxes into one container.
-  if (pack) env.HIVE_PACK = "1";
+  // Build the images config (logical name → ref) straight from the bundled
+  // catalog (sandbox-images.json) and inject it into the controller as inline
+  // JSON (HIVE_IMAGES_CONFIG). Reading the catalog directly means new bundled
+  // images (e.g. a new default) always reach the controller without depending on
+  // a previously-seeded ~/.hiver/config.json. Packing: --no-pack sets the
+  // file-wide pack default to false; otherwise the controller's default (true)
+  // applies.
+  const catalog = microvm ? sandboxImagesMicrovm : sandboxImages;
+  const images: NonNullable<HiveConfig["images"]> = {};
+  for (const [name, ref] of Object.entries(catalog)) images[name] = { ref };
+  const imagesEnv: { pack?: boolean; images: HiveConfig["images"] } = { images };
+  if (!pack) imagesEnv.pack = false;
+  env.HIVE_IMAGES_CONFIG = JSON.stringify(imagesEnv);
 
   // The stack images must be present locally; pull any that are missing.
   for (const image of missingImages(composeFile)) {

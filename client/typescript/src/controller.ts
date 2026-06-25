@@ -7,6 +7,14 @@ export const DEFAULT_GATEWAY_URL = "http://localhost:10000";
 
 const SANDBOX_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * Logical image name the gateway routes on when `config.image` is unset. The
+ * gateway matches the `x-hiver-image` header against its per-image clusters, so
+ * every create must carry one; this is the fallback.
+ */
+export const DEFAULT_IMAGE_NAME = "agent-base";
+
+
 export interface GatewayOptions {
   /** Base URL of the gateway. Defaults to `http://localhost:10000`. */
   gatewayUrl?: string;
@@ -48,15 +56,35 @@ export async function getOrCreateSandbox(
     egress: [{ host: "*", access: "allow" }],
     ...config,
   });
-  const base = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(/\/+$/, "");
+  const gatewayBase = (opts.gatewayUrl ?? DEFAULT_GATEWAY_URL).replace(
+    /\/+$/,
+    "",
+  );
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  const imageName = config.image ?? DEFAULT_IMAGE_NAME;
+  const base = gatewayBase;
+
   try {
-    return await provisionSandbox(key, validated, base, fetchImpl, timeout);
+    return await provisionSandbox(
+      key,
+      validated,
+      base,
+      imageName,
+      fetchImpl,
+      timeout,
+    );
   } catch (err) {
     if (err instanceof SandboxError && err.status === 0 && timeout > 0) {
-      return provisionSandbox(key, validated, base, fetchImpl, timeout);
+      return provisionSandbox(
+        key,
+        validated,
+        base,
+        imageName,
+        fetchImpl,
+        timeout,
+      );
     }
     throw err;
   }
@@ -66,16 +94,20 @@ async function provisionSandbox(
   key: string,
   config: SandboxConfig,
   base: string,
+  imageName: string,
   fetchImpl: typeof fetch,
   timeout: number,
 ): Promise<Sandbox> {
   let res: Response;
   try {
     res = await fetchImpl(
-      `${base}/controller/v1/sandboxes/${encodeURIComponent(key)}`,
+      `${base}/v1/sandboxes/${encodeURIComponent(key)}`,
       {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-hiver-image": imageName,
+        },
         body: JSON.stringify(config),
         signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,
       },

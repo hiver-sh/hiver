@@ -13,7 +13,7 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 const sandbox = await hiver.getOrCreateSandbox("hive-claude-exec", {
-  image: "hiversh/agent-cli:latest",
+  image: "claude",
   env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
 });
 

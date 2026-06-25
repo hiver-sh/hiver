@@ -30,6 +30,7 @@ build-agent-base: buildx-builder ## Build and push the agent base image (multi-a
 
 # Run build-agent-base first so the per-agent images can resolve FROM hiversh/agent-base.
 bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
+	hiver bundle ./docker/agent-base --tag hiversh/agent-base:latest --push --platform $(PLATFORMS)
 	hiver bundle ./docker/claude --tag hiversh/claude:latest --push --platform $(PLATFORMS)
 	hiver bundle ./docker/codex --tag hiversh/codex:latest --push --platform $(PLATFORMS)
 	hiver bundle ./docker/copilot --tag hiversh/copilot:latest --push --platform $(PLATFORMS)
@@ -39,11 +40,12 @@ bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch
 	hiver bundle node:alpine --entrypoint="tail -f /dev/null" --tag hiversh/node:alpine --push --platform $(PLATFORMS)
 
 bundle-microvm-sandbox-images: ## Bundle and push the microvm sandbox images (multi-arch)
-	hiver bundle ./docker/claude --microvm --tag hiversh/claude:microvm --push --platform $(PLATFORMS)
-	hiver bundle ./docker/codex --microvm --tag hiversh/codex:microvm --push --platform $(PLATFORMS)
-	hiver bundle ./docker/copilot --microvm --tag hiversh/copilot:microvm --push --platform $(PLATFORMS)
-	hiver bundle ./docker/opencode --microvm --tag hiversh/opencode:microvm --push --platform $(PLATFORMS)
-	hiver bundle ./docker/browser --microvm --tag hiversh/browser:microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/agent-base --microvm --tag hiversh/agent-base:latest-microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/claude --microvm --tag hiversh/claude:latest-microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/codex --microvm --tag hiversh/codex:latest-microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/copilot --microvm --tag hiversh/copilot:latest-microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/opencode --microvm --tag hiversh/opencode:latest-microvm --push --platform $(PLATFORMS)
+	hiver bundle ./docker/browser --microvm --tag hiversh/browser:latest-microvm --push --platform $(PLATFORMS)
 	hiver bundle python:3.13-alpine --entrypoint="tail -f /dev/null" --microvm --tag hiversh/python:3.13-alpine-microvm --push --platform $(PLATFORMS)
 	hiver bundle node:alpine --entrypoint="tail -f /dev/null" --microvm --tag hiversh/node:alpine-microvm --push --platform $(PLATFORMS)
 

@@ -12,9 +12,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,8 +26,10 @@ import (
 )
 
 const (
-	composeProject      = "hiver"
-	defaultSandboxImage = "hiversh/agent-cli:latest"
+	composeProject = "hiver"
+	// defaultImageName is the logical image used when a create omits the image;
+	// it resolves through the config (resolveImage).
+	defaultImageName = "agent-base"
 	// labelSandboxKey holds the caller-chosen key; labelSandboxID holds the
 	// server-assigned uuid. The container name is derived from the key, so
 	// idempotent lookups resolve by key while the uuid travels as a label.
@@ -46,11 +50,13 @@ func hostHasKVM() bool {
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.
 type DockerRuntime struct {
-	// packing enables multi-sandbox pods (HIVE_PACK=1): instead of one container
-	// per (image,key), keys of the same image are packed into one container
-	// running sandboxd --pack, and each is created via POST /v1/<key> (design §6,
-	// §10). Mirrors the k8s pod-per-image placement.
-	packing bool
+	// images is the logical-name → ref/pack mapping from HIVE_IMAGES_CONFIG
+	// (design §11), plus its file-wide pack default (true unless disabled). A
+	// create's image name is resolved through it (resolveImage); an unmapped name
+	// is treated as a full ref. When packing, keys of the same image are packed
+	// into one container running sandboxd --pack, each created via POST /v1/<key>
+	// (design §6, §10); otherwise each key gets its own container.
+	images config
 	// snapshotHostDir is the host path bind-mounted as /snapshots in sandbox
 	// containers. Set from HIVE_SNAPSHOT_DIR env var. When empty, the named
 	// docker volume hiver_snapshots is used as a fallback (no-op on macOS Docker
@@ -60,9 +66,18 @@ type DockerRuntime struct {
 
 func newDockerRuntime() *DockerRuntime {
 	return &DockerRuntime{
-		packing:         os.Getenv("HIVE_PACK") == "1",
+		images:          loadImagesConfig(),
 		snapshotHostDir: os.Getenv("HIVE_SNAPSHOT_DIR"),
 	}
+}
+
+// imageName returns the logical image name (or full ref) from a config, or empty
+// when unset.
+func imageName(cfg sandboxgen.SandboxConfig) string {
+	if cfg.Image != nil {
+		return *cfg.Image
+	}
+	return ""
 }
 
 // snapshotVolumeArg returns the docker -v argument to mount the snapshot
@@ -90,11 +105,10 @@ func shortHash(s string) string {
 }
 
 func (r *DockerRuntime) Lookup(ctx context.Context, key string) (bool, gen.Sandbox, error) {
-	if r.packing {
-		// In pack mode placement is by image, not by a per-key container; let
-		// Start resolve-or-create the pod and POST the key (both idempotent).
-		return false, gen.Sandbox{}, nil
-	}
+	// A single-container (non-pack) sandbox has a per-key container we can resolve
+	// here. A packed sandbox has none — placement is by image, not a per-key
+	// container — so this returns not-running and Start resolves-or-creates the
+	// pod and POSTs the key (both idempotent).
 	name := containerNameFor(key)
 	_, running, err := containerState(ctx, name)
 	if err != nil {
@@ -115,9 +129,25 @@ func (r *DockerRuntime) Lookup(ctx context.Context, key string) (bool, gen.Sandb
 }
 
 func (r *DockerRuntime) List(ctx context.Context) ([]gen.Sandbox, error) {
-	if r.packing {
-		return r.listPacked(ctx)
+	// Enumerate both placements: packed sandboxes live inside per-image pods (asked
+	// via their supervisor), single-container sandboxes are their own containers
+	// (found by label). The two sets never overlap — a pack pod carries no
+	// per-key label — so combining can't double-count. This covers a mixed
+	// deployment where some images pack and others don't (per-image pack flag).
+	packed, err := r.listPacked(ctx)
+	if err != nil {
+		return nil, err
 	}
+	labeled, err := r.listLabeled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(packed, labeled...), nil
+}
+
+// listLabeled enumerates single-container (non-pack) sandboxes by the per-key
+// label `docker ps` can see.
+func (r *DockerRuntime) listLabeled(ctx context.Context) ([]gen.Sandbox, error) {
 	format := `{{.Label "` + labelSandboxKey + `"}} {{.Label "` + labelSandboxID + `"}}`
 	out, err := exec.CommandContext(ctx, "docker", "ps", "--filter", "label="+labelSandboxKey, "--format", format).Output()
 	if err != nil {
@@ -198,8 +228,13 @@ func podSandboxes(ctx context.Context, host string) ([]sandboxgen.SandboxSummary
 }
 
 func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
-	if r.packing {
-		return r.startPacked(ctx, key, cfg)
+	// Resolve the logical image name (or full ref) to the Docker ref to run and
+	// whether to pack it (design §11). cfg.Image is intentionally NOT overwritten
+	// so the logical name the caller sent ("python") is preserved in the spec
+	// sandboxd receives and in any stored/returned config.
+	ref, pack := resolveImage(r.images, imageName(cfg))
+	if pack {
+		return r.startPacked(ctx, key, cfg, ref)
 	}
 	id := uuid.New()
 	specBytes, err := json.Marshal(cfg)
@@ -213,10 +248,7 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// with a name conflict. No-op if nothing matches.
 	_ = exec.CommandContext(ctx, "docker", "rm", "-f", containerName).Run()
 
-	var image = defaultSandboxImage
-	if cfg.Image != nil && *cfg.Image != "" {
-		image = *cfg.Image
-	}
+	image := ref
 
 	serviceLabel := "sandbox-" + key
 	createArgs := []string{
@@ -372,11 +404,8 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 // startPacked resolves-or-creates the pack pod hosting cfg's image, then creates
 // the sandbox for key inside it via POST /v1/<key>. All keys of an image share
 // one pod (and one routing id), so the returned id is the pod's.
-func (r *DockerRuntime) startPacked(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
-	image := defaultSandboxImage
-	if cfg.Image != nil && *cfg.Image != "" {
-		image = *cfg.Image
-	}
+func (r *DockerRuntime) startPacked(ctx context.Context, key string, cfg sandboxgen.SandboxConfig, ref string) (gen.Sandbox, error) {
+	image := ref
 	podName := podNameForImage(image)
 
 	exists, running, err := containerState(ctx, podName)
@@ -594,10 +623,43 @@ type dockerRawEvent struct {
 	} `json:"Actor"`
 }
 
+// Events merges the lifecycle streams of both placements: packed sandboxes
+// (each per-image pod's GET /v1/events SSE, via eventsPacked) and
+// single-container sandboxes (the docker events label stream, via
+// eventsLabeled). Both run unconditionally so a mixed deployment surfaces
+// everything; the streams are disjoint (pack pods carry no per-key label).
 func (r *DockerRuntime) Events(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
-	if r.packing {
-		return r.eventsPacked(ctx), nil
+	packed := r.eventsPacked(ctx)
+	labeled, err := r.eventsLabeled(ctx)
+	if err != nil {
+		return nil, err
 	}
+	out := make(chan gen.SandboxLifecycleEvent, 64)
+	go func() {
+		defer close(out)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		forward := func(in <-chan gen.SandboxLifecycleEvent) {
+			defer wg.Done()
+			for ev := range in {
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		go forward(packed)
+		go forward(labeled)
+		wg.Wait()
+	}()
+	return out, nil
+}
+
+// eventsLabeled streams lifecycle transitions of single-container (non-pack)
+// sandboxes from `docker events`, filtered to containers carrying the per-key
+// sandbox label.
+func (r *DockerRuntime) eventsLabeled(ctx context.Context) (<-chan gen.SandboxLifecycleEvent, error) {
 	cmd := exec.CommandContext(ctx, "docker", "events",
 		"--filter", "label="+labelSandboxKey,
 		"--filter", "type=container",
@@ -745,9 +807,13 @@ const podStreamDeadAfter = 30 * time.Second
 func streamPodEvents(streamCtx, sendCtx context.Context, host string, id uuid.UUID, out chan<- gen.SandboxLifecycleEvent) {
 	url := fmt.Sprintf("http://%s:%d/v1/events", host, sandboxdPort)
 	hosted := map[string]bool{} // sandbox keys this pod currently hosts
+	// lastID is the id of the most recent event consumed from this pod. It is
+	// passed back as ?lastEventId= on reconnect so a transient drop resumes after
+	// the last processed event instead of replaying the whole backlog (design §7).
+	var lastID string
 	var downSince time.Time
 	for streamCtx.Err() == nil {
-		err := readPodEventStream(streamCtx, url, id, out, hosted)
+		err := readPodEventStream(streamCtx, url, id, out, hosted, &lastID)
 		if streamCtx.Err() != nil {
 			break
 		}
@@ -792,8 +858,15 @@ func emitPodDestroyed(ctx context.Context, id uuid.UUID, hosted map[string]bool,
 // forwarding events and maintaining hosted (the pod's live sandbox set): a key is
 // added when it starts and dropped when it is destroyed, so on pod death the
 // remaining keys are exactly the sandboxes still believed running.
-func readPodEventStream(ctx context.Context, url string, id uuid.UUID, out chan<- gen.SandboxLifecycleEvent, hosted map[string]bool) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func readPodEventStream(ctx context.Context, url string, id uuid.UUID, out chan<- gen.SandboxLifecycleEvent, hosted map[string]bool, lastID *string) error {
+	// Resume after the last event we processed (set on a prior connection) so a
+	// reconnect doesn't replay the backlog. sandboxd serves the monotonic event id
+	// on the SSE `id:` line and accepts it back as ?lastEventId=.
+	reqURL := url
+	if *lastID != "" {
+		reqURL = url + "?lastEventId=" + neturl.QueryEscape(*lastID)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return err
 	}
@@ -809,7 +882,13 @@ func readPodEventStream(ctx context.Context, url string, id uuid.UUID, out chan<
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
-		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		line := scanner.Text()
+		// Track the SSE event id so a reconnect can resume past it.
+		if evID, ok := strings.CutPrefix(line, "id: "); ok {
+			*lastID = evID
+			continue
+		}
+		data, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
 			continue
 		}

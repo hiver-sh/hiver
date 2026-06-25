@@ -23,19 +23,15 @@ const config = await sandbox.getConfig().catch(() => null);
 
 const ac = new AbortController();
 
+const cwd = config?.cwd ?? (config?.fs?.[0] as { mount?: string } | undefined)?.mount ?? undefined;
+const env = { TERM: process.env.TERM ?? "xterm-256color", COLORTERM: "truecolor" };
+
 let exec: ExecProcess;
 if (!command && config?.tty === true) {
-  // Attach to the entrypoint's TTY (empty command routes to its pty)
-  exec = await sandbox.execStream("", { signal: ac.signal });
+  exec = await sandbox.execStream("", { tty: true, cwd, env, signal: ac.signal });
 } else {
   const shell = command ?? "/bin/sh";
-  const cwd = config?.cwd ?? (config?.fs?.[0] as { mount?: string } | undefined)?.mount ?? undefined;
-  exec = await sandbox.execStream(shell, {
-    tty: true,
-    cwd,
-    env: { TERM: process.env.TERM ?? "xterm-256color", COLORTERM: "truecolor" },
-    signal: ac.signal,
-  });
+  exec = await sandbox.execStream(shell, { tty: true, cwd, env, signal: ac.signal });
 }
 
 exec.exitCode.catch(() => {});

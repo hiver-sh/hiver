@@ -5,7 +5,7 @@
 import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox("hiver-node-exec-tty", {
-  image: "hiversh/node:alpine",
+  image: "node",
 });
 
 const exec = await sandbox.execStream("node", { cwd: "/workspace", tty: true });

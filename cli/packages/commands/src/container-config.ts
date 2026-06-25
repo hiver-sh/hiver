@@ -6,6 +6,9 @@ const configDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../con
 
 export const composePath = resolve(configDir, "compose.yaml");
 
-export const sandboxImages: Record<string, string> = JSON.parse(
+const allSandboxImages: { container: Record<string, string>; microvm: Record<string, string> } = JSON.parse(
   readFileSync(resolve(configDir, "sandbox-images.json"), "utf8"),
 );
+
+export const sandboxImages = allSandboxImages.container;
+export const sandboxImagesMicrovm = allSandboxImages.microvm;

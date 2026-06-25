@@ -53,7 +53,7 @@ const URL = process.env.BENCH_URL ?? "https://example.com";
 // reached via the ingress proxy. Keep in sync with chromehost.
 const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 const sandboxConfig: hiver.SandboxConfig = {
-  image: "hiversh/browser:microvm-43",
+  image: "browser",
 };
 
 // With BENCH_NAV_TIMING on (default) the goto stage also reads the browser's

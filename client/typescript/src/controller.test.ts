@@ -1,5 +1,9 @@
 import { expect, it, vi } from "vitest";
-import { getOrCreateSandbox, DEFAULT_GATEWAY_URL } from "./controller";
+import {
+  getOrCreateSandbox,
+  DEFAULT_GATEWAY_URL,
+  DEFAULT_IMAGE_NAME,
+} from "./controller";
 import { Sandbox } from "./sandbox";
 import type { SandboxConfig } from "./schemas";
 
@@ -18,7 +22,7 @@ function jsonResp(body: unknown, status = 200): Response {
 
 // getOrCreateSandbox
 
-it("getOrCreateSandbox sends PUT /controller/v1/sandboxes/{id} with JSON body", async () => {
+it("getOrCreateSandbox sends POST /v1/sandboxes/{id} with JSON body and x-hiver-image", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
   await getOrCreateSandbox("test-sandbox", BASE_CONFIG, {
     fetch: mockFetch as unknown as typeof fetch,
@@ -27,15 +31,28 @@ it("getOrCreateSandbox sends PUT /controller/v1/sandboxes/{id} with JSON body", 
 
   expect(mockFetch).toHaveBeenCalledOnce();
   const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(
-    `${DEFAULT_GATEWAY_URL}/controller/v1/sandboxes/test-sandbox`,
-  );
-  expect(init.method).toBe("PUT");
-  expect((init.headers as Record<string, string>)["content-type"]).toBe(
-    "application/json",
-  );
+  expect(url).toBe(`${DEFAULT_GATEWAY_URL}/v1/sandboxes/test-sandbox`);
+  expect(init.method).toBe("POST");
+  const headers = init.headers as Record<string, string>;
+  expect(headers["content-type"]).toBe("application/json");
+  // No image in config → the default logical image name routes the create.
+  expect(headers["x-hiver-image"]).toBe(DEFAULT_IMAGE_NAME);
   expect(JSON.parse(init.body as string)).toMatchObject(BASE_CONFIG);
 });
+
+it("getOrCreateSandbox sends config.image as the x-hiver-image header", async () => {
+  const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
+  await getOrCreateSandbox(
+    "test-sandbox",
+    { ...BASE_CONFIG, image: "browser" },
+    { fetch: mockFetch as unknown as typeof fetch, timeoutMs: 0 },
+  );
+  const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+  expect((init.headers as Record<string, string>)["x-hiver-image"]).toBe(
+    "browser",
+  );
+});
+
 
 it("getOrCreateSandbox returns Sandbox with correct id, key and apiServerUrl on 200", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
@@ -68,9 +85,7 @@ it("getOrCreateSandbox uses custom gatewayUrl", async () => {
     timeoutMs: 0,
   });
   const [url] = mockFetch.mock.calls[0] as [string];
-  expect(url).toBe(
-    "http://custom-gateway:1234/controller/v1/sandboxes/test-sandbox",
-  );
+  expect(url).toBe("http://custom-gateway:1234/v1/sandboxes/test-sandbox");
 });
 
 it("getOrCreateSandbox throws Error for id that does not match pattern", async () => {
