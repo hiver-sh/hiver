@@ -1,4 +1,4 @@
-FROM agent-base
+FROM hiversh/agent-base-standalone
 
 # Tell Claude Code it's already sandboxed so --dangerously-skip-permissions
 # is allowed despite the uid-0 check.

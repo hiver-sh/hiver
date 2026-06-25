@@ -91,6 +91,22 @@ curl "http://$GW/sandbox/<id>/..."   # a specific sandbox
 
 A `<pending>` external IP just means the load balancer is still provisioning.
 
+## Connecting the CLI
+
+Point the `hiver` CLI at the deployed gateway with `hiver connect`:
+
+```sh
+GW=$(kubectl get svc gateway -n hiver -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+hiver connect "http://$GW"   # gateway listens on port 80
+
+hiver list                   # now hits the deployed gateway
+hiver start --image claude
+```
+
+Because the gateway is remote, the CLI does **not** pull or build images
+locally — the in-cluster controller resolves and pulls them itself. To switch
+back to a local stack, run `hiver up` (or `hiver connect http://localhost:10000`).
+
 ## Namespaces
 
 | Namespace       | Contents            | Pod Security |

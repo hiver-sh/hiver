@@ -16,21 +16,21 @@ npx -y @hiver.sh/cli
 
 ### Commands
 ```sh
-⬢ Hiver · Agent Runtime v0.1.9
+⬢ Hiver · Agent Runtime v0.1.19
 
   Usage: hiver <command> [options]
 
   Commands
-    up       Bring up the stack
-    down     Bring down the stack
+    up       Bring up local stack
+    down     Bring down local stack
+    connect  Connect to remote stack
     start    Start a sandbox
     stop     Stop a sandbox
+    shell    Open an interactive shell in a sandbox
     list     List the sandboxes
     events   Stream a sandbox's events live as they happen
     inspect  Launch the inspector
     bundle   Bundle a Docker image into a Hiver runtime image
-
-  Run hiver <command> --help for command details.
 ```
 
 ### Hiver Inspector: Chrome DevTools for Agents

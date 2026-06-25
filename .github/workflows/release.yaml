@@ -167,7 +167,7 @@ jobs:
               hiversh/$img:latest
           done
 
-      - name: Build and push agent-base image
+      - name: Build and push agent-base-standalone image
         run: make build-agent-base PLATFORMS=linux/amd64,linux/arm64
 
   # Bundle each sandbox image in its own job so they build in parallel. The bundler
@@ -180,6 +180,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - source: ./docker/agent-base
+            tag: hiversh/agent-base
           - source: ./docker/claude
             tag: hiversh/claude
           - source: ./docker/codex
@@ -194,6 +196,9 @@ jobs:
             tag: hiversh/python:3.13-alpine
           - source: node:alpine
             tag: hiversh/node:alpine
+          - source: ./docker/agent-base
+            tag: hiversh/agent-base:microvm
+            bundler-flags: "--microvm"
           - source: ./docker/claude
             tag: hiversh/claude:microvm
             bundler-flags: "--microvm"
@@ -268,7 +273,7 @@ jobs:
         env:
           VERSION: ${{ needs.push-runtime-images.outputs.version }}
         run: |
-          for img in claude codex copilot opencode browser; do
+          for img in agent-base claude codex copilot opencode browser; do
             docker buildx imagetools create \
               --tag hiversh/$img:$VERSION \
               hiversh/$img:latest

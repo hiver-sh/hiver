@@ -476,16 +476,26 @@ export function TransportProvider({
   const [player, setPlayer] = useState<TracePlayer | null>(null);
   const [playbackSpeed, setPlaybackSpeedState] = useState(speed);
   const [gatewayUrl, setGatewayUrlState] = useState(() => {
-    // A user override (set via the UI) wins; otherwise use the value the server
-    // injected from its GATEWAY_URL, falling back to the built-in default.
+    // The server injects the CLI-resolved gateway as a global on every page
+    // load (from its GATEWAY_URL, set by `hiver inspect` to the gateway you
+    // `hiver connect`-ed to). When it differs from the one we last adopted it's
+    // a fresh signal from the CLI — it wins and becomes the new override, so it
+    // supersedes any stale value saved by a previous session. When it's
+    // unchanged, a user's in-UI override (saved to localStorage) takes
+    // precedence so it survives reloads. Falls back to the built-in default.
+    const injected = (window as { __HIVE_GATEWAY_URL__?: string })
+      .__HIVE_GATEWAY_URL__;
     try {
+      if (injected && injected !== localStorage.getItem("inspector:gatewayInjected")) {
+        localStorage.setItem("inspector:gatewayInjected", injected);
+        localStorage.setItem("inspector:gatewayUrl", injected);
+        return injected;
+      }
       const stored = localStorage.getItem("inspector:gatewayUrl");
       if (stored) return stored;
     } catch {
       /* localStorage unavailable */
     }
-    const injected = (window as { __HIVE_GATEWAY_URL__?: string })
-      .__HIVE_GATEWAY_URL__;
     return injected || DEFAULT_GATEWAY_URL;
   });
 

@@ -18,17 +18,19 @@ build-images: ## Build docker images
 PLATFORMS ?= linux/amd64,linux/arm64
 KERNEL_VERSION ?= 6.1.102
 
-# Build and push hiversh/agent-base (plain docker image; prerequisite for the
-# per-agent bundle targets below, which all FROM hiversh/agent-base).
-build-agent-base: buildx-builder ## Build and push the agent base image (multi-arch)
+# Build and push hiversh/agent-base-standalone (plain docker image; prerequisite
+# for the per-agent bundle targets below, which all FROM hiversh/agent-base-standalone).
+# This is the plain FROM base, distinct from the bundled `hiversh/agent-base`
+# runtime image (the default sandbox) produced by the bundle targets below.
+build-agent-base: buildx-builder ## Build and push the standalone agent base image (multi-arch)
 	docker buildx build \
 		--builder hiver-multiarch \
 		--platform $(PLATFORMS) \
 		--push \
-		-t hiversh/agent-base:latest \
+		-t hiversh/agent-base-standalone:latest \
 		docker/agent-base
 
-# Run build-agent-base first so the per-agent images can resolve FROM hiversh/agent-base.
+# Run build-agent-base first so the per-agent images can resolve FROM hiversh/agent-base-standalone.
 bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
 	hiver bundle ./docker/agent-base --tag hiversh/agent-base:latest --push --platform $(PLATFORMS)
 	hiver bundle ./docker/claude --tag hiversh/claude:latest --push --platform $(PLATFORMS)

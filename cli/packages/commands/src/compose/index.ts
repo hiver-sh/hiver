@@ -4,7 +4,7 @@ import { DEFAULT_GATEWAY_URL } from "@hiver.sh/client";
 import { createLoader } from "../hive.js";
 import { requireDocker } from "../docker.js";
 import { dim, bright } from "../theme.js";
-import { writeConfig, type HiveConfig } from "../config.js";
+import { writeConfig } from "../config.js";
 import { subcommand, run } from "../args.js";
 import { missingImages, pullImage } from "./images.js";
 import { findAvailablePort } from "./port.js";
@@ -82,9 +82,9 @@ if (action === "up") {
   // file-wide pack default to false; otherwise the controller's default (true)
   // applies.
   const catalog = microvm ? sandboxImagesMicrovm : sandboxImages;
-  const images: NonNullable<HiveConfig["images"]> = {};
+  const images: Record<string, { ref: string }> = {};
   for (const [name, ref] of Object.entries(catalog)) images[name] = { ref };
-  const imagesEnv: { pack?: boolean; images: HiveConfig["images"] } = { images };
+  const imagesEnv: { pack?: boolean; images: typeof images } = { images };
   if (!pack) imagesEnv.pack = false;
   env.HIVE_IMAGES_CONFIG = JSON.stringify(imagesEnv);
 
@@ -140,7 +140,9 @@ child.on("exit", (code) => {
   if (code === 0) {
     if (action === "up") {
       loader.succeed("Local stack up");
-      writeConfig({ gatewayUrl: gatewayUrl(gatewayPort) });
+      // Persist the variant so `start` resolves logical image names against the
+      // matching catalog (container vs microvm).
+      writeConfig({ gatewayUrl: gatewayUrl(gatewayPort), microvm });
       console.log(`  ${dim("gateway")} → ${bright(gatewayUrl(gatewayPort))}\n`);
     } else {
       loader.succeed(

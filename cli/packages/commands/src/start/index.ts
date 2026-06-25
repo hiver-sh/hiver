@@ -10,11 +10,10 @@ import {
 } from "../compose/images.js";
 import { bundleImage, isDirectory } from "../bundle/bundle.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
-import { ensureGateway } from "../gateway.js";
-import {
-  selectAgentEntrypoint,
-  applyAgentCliDefaults,
-} from "./agent-cli.js";
+import { ensureGateway, isLocalGateway } from "../gateway.js";
+import { readConfig } from "../config.js";
+import { resolveSandboxImage, imageConfig } from "../container-config.js";
+import { selectImage } from "./agent-cli.js";
 
 const DEFAULT_IMAGE = "agent-base";
 
@@ -46,12 +45,12 @@ if (ttlFlag !== undefined) {
   }
 }
 
-const imageArg = image ?? DEFAULT_IMAGE;
+// With no `--image` (and no `--entrypoint`), let the user pick an image to
+// launch; otherwise honour the flag, falling back to the base image.
+const pickImage = image === undefined && entrypoint === undefined;
+const imageArg = pickImage ? await selectImage() : (image ?? DEFAULT_IMAGE);
 
-let resolvedEntrypoint: string | undefined = entrypoint;
-if (imageArg === DEFAULT_IMAGE && entrypoint === undefined) {
-  resolvedEntrypoint = await selectAgentEntrypoint();
-}
+const resolvedEntrypoint: string | undefined = entrypoint;
 
 console.log();
 
@@ -60,46 +59,63 @@ console.log();
 gatewayUrl = await ensureGateway(gatewayUrl);
 
 // A sandbox runtime image must be a Hiver bundle (it boots `sandboxd`, which
-// reads the unpacked agent tar under /mnt). Resolve the requested image to one:
+// reads the unpacked agent tar under /mnt). For a local gateway — which shares
+// this host's docker daemon — the CLI resolves the requested image to a bundle:
 // a directory is built + bundled; an image ref is used as-is when it already is
-// a bundle, otherwise it's bundled automatically.
-await requireDocker();
+// a bundle, otherwise it's bundled automatically. A remote gateway pulls images
+// itself, so the CLI touches no local docker and hands the image through as-is
+// (a logical catalog name is resolved by the remote controller's own config).
 let resolvedImage: string;
-try {
+if (!isLocalGateway(gatewayUrl)) {
   if (isDirectory(imageArg)) {
-    resolvedImage = await bundleImage(imageArg);
-  } else {
-    // Need it locally to inspect for the bundle markers; pull if absent.
-    if (!imageExistsLocally(imageArg)) {
-      const pull = createLoader(`Pulling ${imageArg}`).start();
-      const { ok, output } = await pullImage(imageArg);
-      if (!ok) {
-        pull.fail(`could not pull ${imageArg}`);
-        if (output.trim()) process.stderr.write("\n" + output.trimEnd() + "\n");
-        process.exit(1);
-      }
-      pull.succeed(`Pulled ${imageArg}`);
-    }
-    resolvedImage = isHiverBundle(imageArg)
-      ? imageArg
-      : await bundleImage(imageArg);
+    console.error(
+      `\n  ${red("✖")} cannot build a local Dockerfile directory (${imageArg}) for a remote gateway ${dim(gatewayUrl)}\n`,
+    );
+    process.exit(1);
   }
-} catch (err) {
-  console.error(
-    `  ${red("✖")} ${err instanceof Error ? err.message : String(err)}\n`,
-  );
-  process.exit(1);
+  resolvedImage = imageArg;
+} else {
+  await requireDocker();
+  try {
+    if (isDirectory(imageArg)) {
+      resolvedImage = await bundleImage(imageArg);
+    } else {
+      // A logical catalog name (e.g. `browser`) resolves to its concrete ref from
+      // sandbox-images.json, matching the variant the local stack was brought up
+      // with (container vs microvm). Raw refs and unknown names pass through.
+      const ref =
+        resolveSandboxImage(imageArg, Boolean(readConfig().microvm)) ?? imageArg;
+      // Need it locally to inspect for the bundle markers; pull if absent.
+      if (!imageExistsLocally(ref)) {
+        const pull = createLoader(`Pulling ${ref}`).start();
+        const { ok, output } = await pullImage(ref);
+        if (!ok) {
+          pull.fail(`could not pull ${ref}`);
+          if (output.trim()) process.stderr.write("\n" + output.trimEnd() + "\n");
+          process.exit(1);
+        }
+        pull.succeed(`Pulled ${ref}`);
+      }
+      resolvedImage = isHiverBundle(ref) ? ref : await bundleImage(ref);
+    }
+  } catch (err) {
+    console.error(
+      `  ${red("✖")} ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(1);
+  }
 }
 
-// Only forward flags the caller actually set, so the controller's defaults
-// apply otherwise.
-const config: SandboxConfig = { image: resolvedImage };
+// Start from the logical image's launch defaults from sandbox-images.json (e.g.
+// tty/cwd for the agent images); empty for raw refs / Dockerfile dirs. The
+// resolved ref and any flags the caller set are layered on top, so explicit
+// flags win and the controller's defaults apply to anything left unset.
+const config: SandboxConfig = { ...imageConfig(imageArg), image: resolvedImage };
 // entrypoint accepts a string (the sandbox splits it on whitespace) or an
 // argv array; the flag and agent picker both yield a string, so pass it as-is.
 if (resolvedEntrypoint !== undefined) config.entrypoint = resolvedEntrypoint;
 if (ttl !== undefined) config.ttl = ttl;
 if (tty) config.tty = true;
-if (imageArg === DEFAULT_IMAGE) applyAgentCliDefaults(config);
 
 // Cap the provision + readiness wait so a sandbox that never comes up (e.g. an
 // image that exits on start) fails fast instead of hanging on the default 30s.

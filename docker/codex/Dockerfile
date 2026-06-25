@@ -1,4 +1,4 @@
-FROM agent-base
+FROM hiversh/agent-base-standalone
 
 RUN npm install -g @openai/codex
 

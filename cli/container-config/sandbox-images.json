@@ -1,22 +1,42 @@
 {
-  "container": {
-    "agent-base": "hiversh/agent-base:latest",
-    "claude": "hiversh/claude:latest",
-    "codex": "hiversh/codex:latest",
-    "copilot": "hiversh/copilot:latest",
-    "opencode": "hiversh/opencode:latest",
-    "browser": "hiversh/browser:latest",
-    "python": "hiversh/python:3.13-alpine",
-    "node": "hiversh/node:alpine"
+  "agent-base": {
+    "image": "hiversh/agent-base:latest",
+    "microvm": "hiversh/agent-base:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace" }
   },
-  "microvm": {
-    "agent-base": "hiversh/agent-base:latest-microvm",
-    "claude": "hiversh/claude:latest-microvm",
-    "codex": "hiversh/codex:latest-microvm",
-    "copilot": "hiversh/copilot:latest-microvm",
-    "opencode": "hiversh/opencode:latest-microvm",
-    "browser": "hiversh/browser:latest-microvm",
-    "python": "hiversh/python:3.13-alpine-microvm",
-    "node": "hiversh/node:alpine-microvm"
+  "claude": {
+    "image": "hiversh/claude:latest",
+    "microvm": "hiversh/claude:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "claude" }
+  },
+  "codex": {
+    "image": "hiversh/codex:latest",
+    "microvm": "hiversh/codex:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "codex" }
+  },
+  "copilot": {
+    "image": "hiversh/copilot:latest",
+    "microvm": "hiversh/copilot:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "copilot" }
+  },
+  "opencode": {
+    "image": "hiversh/opencode:latest",
+    "microvm": "hiversh/opencode:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "opencode" }
+  },
+  "browser": {
+    "image": "hiversh/browser:latest",
+    "microvm": "hiversh/browser:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "/bin/sh" }
+  },
+  "python": {
+    "image": "hiversh/python:3.13-alpine",
+    "microvm": "hiversh/python:3.13-alpine-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "python" }
+  },
+  "node": {
+    "image": "hiversh/node:alpine",
+    "microvm": "hiversh/node:alpine-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "node" }
   }
 }

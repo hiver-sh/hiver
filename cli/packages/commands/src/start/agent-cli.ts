@@ -1,22 +1,19 @@
-import { SandboxConfig } from "@hiver.sh/client";
 import { select } from "../prompt.js";
 
-export const AGENTS = [
+export const IMAGES = [
   { label: "Claude Code", value: "claude" },
   { label: "Codex", value: "codex" },
-  { label: "GitHub Copilot", value: "copilot" },
-  { label: "Gemini CLI", value: "gemini" },
+  { label: "Copilot", value: "copilot" },
+  { label: "OpenCode", value: "opencode" },
+  { label: "Web browser", value: "browser" },
+  { label: "Node.js", value: "node" },
+  { label: "Python", value: "python" },
 ] as const;
 
-export type AgentEntrypoint = (typeof AGENTS)[number]["value"];
+export type ImageName = (typeof IMAGES)[number]["value"];
 
-export async function selectAgentEntrypoint(): Promise<AgentEntrypoint> {
-  return select<AgentEntrypoint>("Which agent would you like to launch?", [
-    ...AGENTS,
+export async function selectImage(): Promise<ImageName> {
+  return select<ImageName>("Which image would you like to launch?", [
+    ...IMAGES,
   ]);
-}
-
-export function applyAgentCliDefaults(config: SandboxConfig): void {
-  config.tty = true;
-  config.cwd = "/workspace";
 }

@@ -8,19 +8,14 @@ export const HIVER_DIR = join(homedir(), ".hiver");
 /** Persistent CLI config, in a user-writable location. */
 export const CONFIG_PATH = join(HIVER_DIR, "config.json");
 
-/** A logical image's source: the Docker ref and whether to pack/prewarm it. */
-export interface ImageEntry {
-  ref: string;
-  /** Per-image pack override; falls back to the file-wide `pack` (default true). */
-  pack?: boolean;
-}
-
 export interface HiveConfig {
   gatewayUrl?: string;
-  /** File-wide default pack mode applied to images that don't set their own. */
-  pack?: boolean;
-  /** Logical image name → source (design §11). Mounted into the controller. */
-  images?: Record<string, ImageEntry>;
+  /**
+   * How the local stack was last brought up: `true` ⇒ `hiver up --microvm`
+   * (microVM image variants), `false`/absent ⇒ container variants. `start` reads
+   * this to resolve a logical image name to the matching ref in sandbox-images.json.
+   */
+  microvm?: boolean;
 }
 
 export function readConfig(path = CONFIG_PATH): HiveConfig {

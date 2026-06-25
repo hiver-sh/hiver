@@ -27,6 +27,27 @@ export async function gatewayReachable(url: string): Promise<boolean> {
   }
 }
 
+/**
+ * Whether a gateway runs on this machine. Only a local gateway shares the host
+ * docker daemon, so image pulling/bundling is the CLI's job there; a remote
+ * gateway pulls images itself. Unparseable URLs count as non-local.
+ */
+export function isLocalGateway(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "[::1]" ||
+    host === "0.0.0.0"
+  );
+}
+
 // Run `hiver up` (the CLI's own entry), inheriting stdio so its output shows.
 function runUp(): Promise<boolean> {
   return new Promise((res) => {

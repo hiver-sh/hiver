@@ -18,15 +18,21 @@ export interface CommandSpec {
 export const COMMANDS: CommandSpec[] = [
   {
     name: "up",
-    summary: "Bring up the stack",
+    summary: "Bring up local stack",
     entry: "compose/index.ts",
     usage: ["hiver up"],
   },
   {
     name: "down",
-    summary: "Bring down the stack",
+    summary: "Bring down local stack",
     entry: "compose/index.ts",
     usage: ["hiver down"],
+  },
+  {
+    name: "connect",
+    summary: "Connect to remote stack",
+    entry: "connect/index.ts",
+    usage: ["hiver connect <url>", "hiver connect http://gateway"],
   },
   {
     name: "start",
