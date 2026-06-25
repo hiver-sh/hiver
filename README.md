@@ -402,9 +402,15 @@ stdio
 
 Run the full stack (controller, gateway, and sandboxes) on a managed Kubernetes cluster, and drive it from the same client library you use locally.
 
-### GKE
+Deployment is split into two pieces: provisioning a cluster, and installing the control plane onto it.
 
-[`deployment/gke`](deployment/gke/README.md) provisions a GKE cluster with Terraform and deploys the control plane to it. The node pool is configured for microVM isolation out of the box: nested virtualization is enabled so KVM works inside the nodes, and nodes are backed by Local SSD for fast snapshot and prewarm I/O. See the [GKE deployment guide](deployment/gke/README.md) for prerequisites and `terraform apply` steps.
+### Google Kubernetes Engine (GKE)
+
+[`deployment/gke`](deployment/gke/README.md) provisions a GKE cluster with Terraform. The node pool is configured for microVM isolation out of the box: nested virtualization is enabled so KVM works inside the nodes, and nodes are backed by Local SSD for fast snapshot and prewarm I/O. See the [GKE deployment guide](deployment/gke/README.md) for prerequisites and `terraform apply` steps.
+
+### Helm Chart
+
+[`deployment/k8s/chart`](deployment/k8s/chart/README.md) is a Helm chart that deploys the controller, the Envoy gateway, and the per-image sandbox pools onto any Kubernetes cluster. The gateway's per-image routes and each image's Deployment+Service are generated from a single `images` list, so adding an image is one entry. Install with `helm upgrade --install hiver deployment/k8s/chart`; see the [chart README](deployment/k8s/chart/README.md) for prerequisites and configuration.
 
 ## Full documentation
 

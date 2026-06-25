@@ -1,0 +1,80 @@
+{{- /*
+Per-image sandbox pools (design §5/§6). One Deployment+Service per entry in
+.Values.images, all in the sandbox namespace. The gateway routes creates
+carrying `x-hiver-image: <name>` to the matching Service (see gateway.yaml),
+which round-robins across the Deployment's prewarm pods. The controller never
+creates these pods.
+*/ -}}
+{{- range .Values.images }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespaces.sandbox }}
+  labels:
+    app: {{ .name }}
+spec:
+  replicas: {{ .replicas }}
+  selector:
+    matchLabels:
+      app: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .name }}
+    spec:
+      containers:
+        - name: sandbox
+          image: {{ .image }}
+          imagePullPolicy: IfNotPresent
+          # --pack + --prewarm mark this as a multi-tenant prewarm host. Guest
+          # size (--instance-cpu / --instance-memory) is baked into the base
+          # snapshot, so every resumer inherits it. No HIVE_SPEC: the image is
+          # bundled in the pod and each sandbox's config arrives over the API.
+          args: [
+            "--pack",
+            "--prewarm",
+            "--snapshot-dir", "/snapshots",
+            "--max-concurrent-launches", "{{ .maxConcurrentLaunches }}",
+            "--overlay-cow-dir", "/cow",
+            "--instance-cpu", "{{ .instanceCpu }}",
+            "--instance-memory", "{{ .instanceMemory }}"
+          ]
+          ports:
+            - containerPort: {{ $.Values.sandboxPort }}
+          securityContext:
+            privileged: true
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          volumeMounts:
+            - name: snapshots
+              mountPath: /snapshots
+            - name: cow
+              mountPath: /cow
+      volumes:
+        - name: snapshots
+          emptyDir: {}
+        # Per-VM dm-snapshot COW stores (--overlay-cow-dir /cow), RAM-backed
+        # (tmpfs): the base overlay is a single shared read-only origin; each
+        # resumed VM gets its own sparse exception store here, so guest rootfs
+        # writes stay in RAM. tmpfs usage counts against the pod's memory limit.
+        - name: cow
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .cowSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespaces.sandbox }}
+  labels:
+    app: {{ .name }}
+spec:
+  selector:
+    app: {{ .name }}
+  ports:
+    - port: {{ $.Values.sandboxPort }}
+      targetPort: {{ $.Values.sandboxPort }}
+---
+{{- end }}

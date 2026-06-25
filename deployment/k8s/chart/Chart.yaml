@@ -1,0 +1,11 @@
+apiVersion: v2
+name: hiver
+description: |
+  Hiver control plane (controller + Envoy gateway) plus the per-image sandbox
+  pools. Replaces the hand-maintained k8s/ kustomize manifests; the gateway's
+  per-image Envoy routes/clusters and the per-image Deployment+Service are both
+  generated from a single .Values.images list, so adding an image is one entry.
+type: application
+version: 0.1.0
+# Not a released artifact; appVersion tracks the images pinned in values.yaml.
+appVersion: "0.1.0"

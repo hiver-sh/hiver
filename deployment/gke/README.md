@@ -51,55 +51,16 @@ Then point `kubectl` at the cluster:
 $(terraform output -raw get_credentials_command)
 ```
 
-## Workloads (`k8s/`)
+## Workloads
 
-The `k8s/` directory deploys the control plane with `kubectl apply -k k8s`:
-
-- **controller** — runs the Kubernetes runtime (`HIVE_RUNTIME=k8s`), provisioning
-  each sandbox as a ConfigMap + privileged Pod + Service.
-- **gateway** — envoy front door (LoadBalancer `:80` → `:10000`) routing
-  `/controller/*` to the controller and `/sandbox/<id>/*` to per-sandbox Services.
-
-### Gateway public IP
-
-The gateway is a `LoadBalancer` Service, so GCP assigns it an external IP (takes
-a minute after `apply`). Fetch it with:
+Once `kubectl` points at the cluster, deploy the control plane with the Helm
+chart in [`../k8s/chart`](../k8s/chart) — see its
+[README](../k8s/chart/README.md) for the install command, how to add an image,
+finding the gateway's public IP, and the namespace layout.
 
 ```sh
-kubectl get svc gateway -n hiver -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+helm upgrade --install hiver ../k8s/chart
 ```
-
-Then reach the API at that IP on port 80:
-
-```sh
-GW=$(kubectl get svc gateway -n hiver -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-curl "http://$GW/controller/..."     # controller API
-curl "http://$GW/sandbox/<id>/..."   # a specific sandbox
-```
-
-A `<pending>` external IP just means the load balancer is still provisioning.
-
-### Namespaces
-
-| Namespace       | Contents            | Pod Security |
-| --------------- | ------------------- | ------------ |
-| `hiver`         | controller, gateway | `baseline`   |
-| `hiver-sandbox` | sandbox Pods        | `privileged` |
-
-Sandboxes run in a separate `privileged` namespace so privileged execution is
-confined to sandboxes, not the control plane. The controller's ServiceAccount
-lives in `hiver` but is granted a Role in `hiver-sandbox` via a cross-namespace
-RoleBinding. `baseline` (not `restricted`) is used for `hiver` because the
-controller and gateway images run as root.
-
-### Gateway envoy config is duplicated
-
-`k8s/gateway.yaml` ships a `gateway-envoy` ConfigMap that **mirrors
-`docker/gateway/envoy.yaml`** with one change: the sandbox `:authority` is
-rewritten to a fully-qualified cross-namespace name
-(`hiver-sandbox-<id>.hiver-sandbox.svc.cluster.local:8099`) so the gateway in
-`hiver` can reach sandbox Services in `hiver-sandbox`. **If the source
-`docker/gateway/envoy.yaml` changes, update this ConfigMap to match.**
 
 ## Notes
 

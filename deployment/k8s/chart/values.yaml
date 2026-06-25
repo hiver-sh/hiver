@@ -1,0 +1,114 @@
+# Single source of truth for the Hiver deployment. `helm template` from this
+# file reproduces the former k8s/ kustomize output; the per-image workloads and
+# the gateway's Envoy routes/clusters are both generated from `images` below.
+
+namespaces:
+  # Control plane: controller + gateway. Root but not privileged, so "baseline"
+  # PodSecurity fits ("restricted" would reject the root-running images).
+  controlPlane: hiver
+  # Sandbox pods run privileged: true (internal/api/controller/k8s_runtime.go),
+  # so this namespace must allow the "privileged" Pod Security Standard. Kept
+  # separate from the control plane to limit privileged execution to sandboxes.
+  sandbox: hiver-sandbox
+
+# Port every sandbox pod's sandboxd listens on. Used by the per-image Services
+# and by the gateway's per-image STRICT_DNS clusters.
+sandboxPort: 8099
+
+controller:
+  # Pinned by digest — see the mirror.gcr.io stale-tag hazard note on images
+  # below. Overridable at deploy time with --set controller.image=...
+  image: hiversh/controller@sha256:13722a66d5b3798b932dcbd38b7417797904c653e7d08e47eed6581cdcded9f1
+  port: 9000
+  env:
+    # Selects the Kubernetes backend in NewControllerHandlers(); anything else
+    # falls through to the Docker (docker.sock) runtime.
+    - name: HIVE_RUNTIME
+      value: "k8s"
+    - name: HIVE_NAMESPACE
+      value: "hiver-sandbox"
+    # How long a completed (Succeeded/Failed) sandbox pod is held before the
+    # recycler deletes it and reclaims its resources. "0" disables.
+    - name: HIVE_COMPLETED_POD_TTL
+      value: "5m"
+    # Client-side rate limiter for the controller's Kubernetes client. Above the
+    # client-go defaults (QPS 5 / Burst 10) so a concurrent claim burst (one pod
+    # Update per claim) isn't self-throttled.
+    - name: HIVE_CLIENT_QPS
+      value: "50"
+    - name: HIVE_CLIENT_BURST
+      value: "100"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "512Mi"
+
+gateway:
+  # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
+  # overridden by the generated gateway-envoy ConfigMap mounted into the pod so
+  # sandboxes resolve across namespaces. Pinned by digest.
+  image: hiversh/gateway@sha256:8db4a6b5d87b16e396bac3a0db33c14b6f9544919907d890d6f8e1e1c301d0b2
+  # Envoy listener port (container) and the external LoadBalancer service port.
+  listenPort: 10000
+  servicePort: 80
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# One entry per logical image (design §5/§6). Each entry generates a
+# Deployment+Service in the sandbox namespace AND a matching /v1/sandboxes/
+# route + STRICT_DNS cluster in the gateway Envoy config. Add an image by
+# appending here — nothing in templates/ needs to change.
+#
+# IMPORTANT: pin `image` to a fresh versioned tag or a digest per push. GKE
+# nodes pull docker.io through the mirror.gcr.io pull-through cache, which is
+# eventually consistent and serves a STALE tag→digest mapping after a re-push to
+# the same tag — so a mutable tag + imagePullPolicy:Always still lands on an old
+# image.
+images:
+  - name: browser
+    image: hiversh/browser:microvm-latest
+    replicas: 1
+    # Guest size for the microVM (--instance-cpu / --instance-memory, MiB).
+    # firecracker bakes these into the base snapshot, so every resumer inherits
+    # them; sizing comes from here, not the pod resources.
+    instanceCpu: 1
+    instanceMemory: 1024
+    # --max-concurrent-launches
+    maxConcurrentLaunches: 4
+    # Per-VM dm-snapshot COW store size, RAM-backed (tmpfs). Counts against the
+    # pod memory limit.
+    cowSizeLimit: 4Gi
+    resources:
+      # request = guest size (what the scheduler reserves). limit = node
+      # allocatable ceiling on an n2-standard-4 (4 vCPU / 16 GiB).
+      requests:
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "4"
+        memory: 13Gi
+
+  - name: python
+    # Default image the client routes to when config.image is unset.
+    image: hiversh/python:3.13-alpine-microvm
+    # Prewarm pool starts empty; the controller never creates these pods.
+    replicas: 0
+    instanceCpu: 1
+    instanceMemory: 512
+    maxConcurrentLaunches: 4
+    cowSizeLimit: 2Gi
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi

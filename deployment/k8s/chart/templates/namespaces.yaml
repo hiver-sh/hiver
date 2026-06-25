@@ -4,7 +4,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: hiver
+  name: {{ .Values.namespaces.controlPlane }}
   labels:
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: baseline
@@ -17,7 +17,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: hiver-sandbox
+  name: {{ .Values.namespaces.sandbox }}
   labels:
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: privileged

@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-envoy
+  namespace: {{ .Values.namespaces.controlPlane }}
+data:
+  envoy.yaml: |
+    {{- include "hiver.envoyConfig" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Values.namespaces.controlPlane }}
+  labels:
+    app: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
+          # overridden by the gateway-envoy ConfigMap mounted below so sandboxes
+          # resolve across namespaces.
+          image: {{ .Values.gateway.image }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.listenPort }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.gateway.listenPort }}
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.gateway.listenPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: gateway-envoy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: {{ .Values.namespaces.controlPlane }}
+  labels:
+    app: gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: {{ .Values.gateway.servicePort }}
+      targetPort: {{ .Values.gateway.listenPort }}
