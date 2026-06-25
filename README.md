@@ -16,8 +16,8 @@ Run agents autonomously with controlled network access, auditable file operation
 
 Hiver is a runtime for running AI agents as untrusted workloads, with visibility and control over their file, network, command, and model interactions. It has two parts:
 
-- **The runtime** boots each agent into an isolated sandbox in milliseconds, with its own file systems, network policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel and hardware-virtualization boundary, or lightweight container isolation for faster, trusted workloads. Both run behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
-- **The inspector** is a live, DevTools-style UI over a running sandbox. It decodes the agent’s LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit sandbox policy on the fly — all over the same event stream and API used by the SDKs.
+- **The runtime** boots each agent into an isolated sandbox in milliseconds, with its own file systems, network policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel or containers for local development behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
+- **The inspector** is a live, DevTools-style UI over running sandboxes. It decodes the agent’s LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit sandbox policy on the fly — all over the same event stream and API used by the SDKs.
 
 Hiver supports both local development and cloud deployment. The same client library and runtime work whether you run hiver start on your machine or deploy to a cluster. Bring your own Docker image and run it in Hiver with no application changes.
 
