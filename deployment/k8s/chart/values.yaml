@@ -27,10 +27,6 @@ controller:
       value: "k8s"
     - name: HIVE_NAMESPACE
       value: "hiver-sandbox"
-    # How long a completed (Succeeded/Failed) sandbox pod is held before the
-    # recycler deletes it and reclaims its resources. "0" disables.
-    - name: HIVE_COMPLETED_POD_TTL
-      value: "5m"
     # Client-side rate limiter for the controller's Kubernetes client. Above the
     # client-go defaults (QPS 5 / Burst 10) so a concurrent claim burst (one pod
     # Update per claim) isn't self-throttled.
@@ -74,7 +70,7 @@ gateway:
 # image.
 images:
   - name: browser
-    image: hiversh/browser:microvm-latest
+    image: hiversh/browser:latest-microvm
     replicas: 1
     # Guest size for the microVM (--instance-cpu / --instance-memory, MiB).
     # firecracker bakes these into the base snapshot, so every resumer inherits
@@ -97,9 +93,22 @@ images:
         memory: 13Gi
 
   - name: python
-    # Default image the client routes to when config.image is unset.
     image: hiversh/python:3.13-alpine-microvm
-    # Prewarm pool starts empty; the controller never creates these pods.
+    replicas: 0
+    instanceCpu: 1
+    instanceMemory: 512
+    maxConcurrentLaunches: 4
+    cowSizeLimit: 2Gi
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+
+  - name: node
+    image: hiversh/node:alpine-microvm
     replicas: 0
     instanceCpu: 1
     instanceMemory: 512
