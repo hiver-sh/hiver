@@ -23,6 +23,13 @@ spec:
       labels:
         app: {{ .name }}
     spec:
+      # On SIGTERM, sandboxd runs a serial graceful shutdown (FS flush →
+      # snapshot capture → FUSE oplog drain → http drain → sidecar SIGTERM
+      # grace; see cmd/sandboxd/main.go finalizeShutdown). The snapshot
+      # capture is unbounded (workspace size / remote backend), so the
+      # default 30s grace can SIGKILL the pod mid-upload and lose the
+      # snapshot. Size this to the worst-case shutdown budget.
+      terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds | default $.Values.terminationGracePeriodSeconds }}
       containers:
         - name: sandbox
           image: {{ .image }}

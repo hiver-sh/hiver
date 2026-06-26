@@ -64,9 +64,24 @@ static_resources:
                   - name: envoy.filters.http.dynamic_forward_proxy
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                      # Keep this block byte-identical to the dynamic_forward_proxy
+                      # cluster's dns_cache_config below — Envoy keys the shared
+                      # cache by name and rejects mismatched configs.
                       dns_cache_config:
                         name: dynamic_forward_proxy_cache_config
                         dns_lookup_family: V4_ONLY
+                        # Asymmetric TTL. A successful resolve is cached long
+                        # (host_ttl) and refreshed lazily (dns_refresh_rate) — a
+                        # sandbox's pod IP is stable for its lifetime, so there's no
+                        # value in churning it. A *failure* is retried fast
+                        # (dns_failure_refresh_rate), so a sandbox dialed before its
+                        # record exists re-resolves within ~1s instead of serving
+                        # the cached failure for the full host_ttl.
+                        host_ttl: 300s
+                        dns_refresh_rate: 60s
+                        dns_failure_refresh_rate:
+                          base_interval: 1s
+                          max_interval: 1s
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -97,6 +112,18 @@ static_resources:
                                 regex: "^/v1/sandboxes/"
                               substitution: "/v1/"
                             timeout: 0s
+                            # The prewarm pods carry no readiness probe, so the
+                            # Service endpoint is live before sandboxd is listening
+                            # (connection-refused window). Retry instead of failing
+                            # the create: connection-level retries re-load-balance
+                            # across the Service's endpoints, and the create is
+                            # idempotent by key so re-attempting is safe.
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset,unavailable"
+                              num_retries: 5
+                              retry_back_off:
+                                base_interval: 0.5s
+                                max_interval: 5s
                         {{- end }}
                         - match:
                             prefix: "/controller/"
@@ -113,6 +140,16 @@ static_resources:
                                 regex: "^/sandbox/[^/]+"
                               substitution: ""
                             timeout: 0s
+                            # Re-attempt a resumed sandbox that refused the first
+                            # connection rather than returning the cached failure;
+                            # paired with the short DNS host_ttl above so the retry
+                            # resolves fresh.
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset,unavailable"
+                              num_retries: 5
+                              retry_back_off:
+                                base_interval: 0.5s
+                                max_interval: 5s
 
   clusters:
     - name: controller
@@ -154,7 +191,13 @@ static_resources:
         name: envoy.clusters.dynamic_forward_proxy
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+          # Must match the filter's dns_cache_config above (shared by name).
           dns_cache_config:
             name: dynamic_forward_proxy_cache_config
             dns_lookup_family: V4_ONLY
+            host_ttl: 300s
+            dns_refresh_rate: 60s
+            dns_failure_refresh_rate:
+              base_interval: 1s
+              max_interval: 1s
 {{- end -}}

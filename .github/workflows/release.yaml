@@ -132,10 +132,40 @@ jobs:
               --latest=false
           fi
 
+  # The microvm runtime (hiversh/core) is built `FROM hiversh/vmlinux:<KERNEL_VERSION>`
+  # and copies the guest kernel into the image, so the core build below can't resolve
+  # its FROM unless this tag exists in the registry. Compiling a kernel from source is
+  # slow and only changes on a version bump, so build+push only when the tag is missing.
+  push-vmlinux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push guest kernel if missing
+        run: |
+          # Single source of truth for the kernel version is the Makefile.
+          KERNEL_VERSION=$(grep -E '^KERNEL_VERSION' Makefile | head -1 | awk '{print $NF}')
+          if docker manifest inspect "hiversh/vmlinux:${KERNEL_VERSION}" >/dev/null 2>&1; then
+            echo "hiversh/vmlinux:${KERNEL_VERSION} already exists, skipping."
+          else
+            make buildx-builder
+            make publish-vmlinux KERNEL_VERSION="${KERNEL_VERSION}" PLATFORMS=linux/amd64,linux/arm64
+          fi
+
   # Build and push the runtime images (controller/core/gateway). The bundler
   # (`FROM hiversh/core`) pulls hiversh/core, so this is the only prerequisite for
   # sandbox bundling — it runs in parallel with the package publishing in `publish`.
+  # Needs push-vmlinux so the core build can resolve `FROM hiversh/vmlinux`.
   push-runtime-images:
+    needs: [push-vmlinux]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.current }}
@@ -283,13 +313,13 @@ jobs:
           done
           docker buildx imagetools create \
             --tag hiversh/python:$VERSION-3.13-alpine \
-            hiversh/python:3.13-alpine \
+            hiversh/python:3.13-alpine
           docker buildx imagetools create \
             --tag hiversh/node:$VERSION-alpine \
-            hiversh/node:alpine \
+            hiversh/node:alpine
           docker buildx imagetools create \
             --tag hiversh/python:$VERSION-3.13-alpine-microvm \
-            hiversh/python:3.13-alpine-microvm \
+            hiversh/python:3.13-alpine-microvm
           docker buildx imagetools create \
             --tag hiversh/node:$VERSION-alpine-microvm \
             hiversh/node:alpine-microvm

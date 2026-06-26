@@ -15,6 +15,8 @@ namespaces:
 # and by the gateway's per-image STRICT_DNS clusters.
 sandboxPort: 8099
 
+terminationGracePeriodSeconds: 120
+
 controller:
   # Pinned by digest — see the mirror.gcr.io stale-tag hazard note on images
   # below. Overridable at deploy time with --set controller.image=...
@@ -59,6 +61,21 @@ gateway:
       memory: "256Mi"
 
 images:
+  - name: claude
+    image: hiversh/claude:latest-microvm@sha256:34480f55814b5f32501ab492efefd9d1ce9222df0dd62ceed5dc51650ba169cf
+    replicas: 1
+    instanceCpu: 1
+    instanceMemory: 512
+    maxConcurrentLaunches: 4
+    cowSizeLimit: 2Gi
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+
   - name: browser
     image: hiversh/browser:latest-microvm@sha256:aac3226681038a7f3d1bafc6edcb2a9919713c62b13c67981ceb06db8a2c801c
     replicas: 1

@@ -143,6 +143,14 @@ type microvm struct {
 	// them in the control RPC (UnmountWorkspaces) and clears them on success — the
 	// host-side 9p teardown alone leaves the guest mountpoint behind.
 	pendingUnmount []string
+	// ttyEntrypoint, when set, is a `tty: true` config's entrypoint override
+	// recorded by ApplyResumeState: it is NOT launched guest-side over the control
+	// channel (which has no terminal), but on demand by EntrypointTTYBridge, which
+	// runs it as a tty exec session so /v1/exec-stream can attach to it. ttyEnv is
+	// the workload env (KEY=VALUE) it runs with.
+	ttyEntrypoint []string
+	ttyCwd        string
+	ttyEnv        []string
 	// nextFusePort hands out vsock ports monotonically so a mount removed at
 	// runtime doesn't free a port a later add would reuse while the guest may
 	// still reference it.
@@ -1242,17 +1250,38 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 // safe on the resume path: the entrypoint was started at base-build time, before
 // any per-sandbox workspace existed, so it cannot depend on the mount at its own
 // startup; cold boot (which can) mounts synchronously in bootstrap instead.
-func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
+func (m *microvm) ApplyResumeState(ctx context.Context, rs ResumeState) error {
 	m.mu.Lock()
 	fuse := append([]firecracker.GuestFuse(nil), m.fuse...)
 	unmounts := append([]string(nil), m.pendingUnmount...)
 	m.mu.Unlock()
-	// Phase 1 (gates readiness): env + clock + the pack re-IP, synchronously,
-	// self-healed until the guest acks. A pack base resume always needs this even
-	// with no env (the re-IP), hence the baseDir condition. Workspace mounts are
-	// deliberately excluded here — they go async below.
-	if len(env) > 0 || len(unmounts) > 0 || m.baseDir != "" {
-		if err := m.applyControlRetry(ctx, "resume state", env, nil, unmounts); err != nil {
+	// A tty override is not launched guest-side (the control channel has no
+	// terminal); record it for EntrypointTTYBridge, which runs it as a tty exec
+	// session the host wraps in a pty. A non-tty override is launched guest-side
+	// over the control RPC below.
+	guestEntrypoint, guestCmd, guestCwd := rs.Entrypoint, rs.Cmd, rs.Cwd
+	if rs.Tty && len(rs.Entrypoint) > 0 {
+		m.mu.Lock()
+		m.ttyEntrypoint = append(append([]string(nil), rs.Entrypoint...), rs.Cmd...)
+		m.ttyCwd = rs.Cwd
+		m.ttyEnv = append([]string(nil), rs.Env...)
+		m.mu.Unlock()
+		guestEntrypoint, guestCmd, guestCwd = nil, nil, ""
+	}
+	// Phase 1 (gates readiness): env + clock + the pack re-IP + any non-tty
+	// entrypoint override, synchronously, self-healed until the guest acks. A pack
+	// base resume always needs this even with no env (the re-IP), hence the baseDir
+	// condition; a non-tty override forces it too so the resumed workload actually
+	// runs. Workspace mounts are deliberately excluded here — they go async below.
+	if len(rs.Env) > 0 || len(unmounts) > 0 || len(guestEntrypoint) > 0 || m.baseDir != "" {
+		req := firecracker.ControlRequest{
+			Env:               rs.Env,
+			UnmountWorkspaces: unmounts,
+			Entrypoint:        guestEntrypoint,
+			Cmd:               guestCmd,
+			WorkingDir:        guestCwd,
+		}
+		if err := m.applyControlRetry(ctx, "resume state", req); err != nil {
 			return err
 		}
 		// The guest acked the unmounts; drop them so a later RPC doesn't resend.
@@ -1276,7 +1305,7 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 				return
 			}
 			log.Printf("microvm: async bind ip=%s bind=%dms", m.sourceIP, time.Since(tb).Milliseconds())
-			if err := m.applyControlRetry(ctx, "workspace mount", nil, fuse, nil); err != nil {
+			if err := m.applyControlRetry(ctx, "workspace mount", firecracker.ControlRequest{MountWorkspaces: fuse}); err != nil {
 				log.Printf("microvm: async workspace mount: %v", err)
 			}
 		}()
@@ -1291,13 +1320,13 @@ func (m *microvm) ApplyResumeState(ctx context.Context, env []string) error {
 // reset the connection or apply state only partially, so re-driving the
 // (idempotent) RPC converges the pod to the correct state rather than shipping a
 // half-configured one.
-func (m *microvm) applyControlRetry(ctx context.Context, label string, env []string, fuse []firecracker.GuestFuse, unmounts []string) error {
+func (m *microvm) applyControlRetry(ctx context.Context, label string, req firecracker.ControlRequest) error {
 	backoff := 50 * time.Millisecond
 	for attempt := 1; ; attempt++ {
 		// Bound each attempt so a hung connection (accepted but never answered) is
 		// abandoned and retried rather than blocking forever.
 		attemptCtx, cancel := context.WithTimeout(ctx, controlAttemptTimeout)
-		err := m.applyResumeOnce(attemptCtx, env, fuse, unmounts)
+		err := m.applyResumeOnce(attemptCtx, req)
 		cancel()
 		if err == nil {
 			if attempt > 1 {
@@ -1346,11 +1375,12 @@ func (m *microvm) dumpResumeDiag(reason string) {
 	log.Printf("microvm: resume diag (%s):\nfirecracker.log tail:\n%s", reason, logTail)
 }
 
-// applyResumeOnce performs one control RPC: deliver env + workspaces + clock and
-// read the guest's ack. A connection error, a lost response, or OK=false all
-// return an error so ApplyResumeState retries. Idempotent guest-side (env/clock
-// re-apply cleanly; mountWorkspaces skips already-mounted paths).
-func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []firecracker.GuestFuse, unmounts []string) error {
+// applyResumeOnce performs one control RPC: deliver the request (env, workspaces,
+// entrypoint override) plus the per-attempt clock + re-IP, and read the guest's
+// ack. A connection error, a lost response, or OK=false all return an error so
+// ApplyResumeState retries. Idempotent guest-side (env/clock re-apply cleanly;
+// mountWorkspaces skips already-mounted paths; the override launches at most once).
+func (m *microvm) applyResumeOnce(ctx context.Context, req firecracker.ControlRequest) error {
 	tDial := time.Now()
 	conn, err := m.dialGuest(ctx, firecracker.GuestControlPort)
 	if err != nil {
@@ -1362,8 +1392,8 @@ func (m *microvm) applyResumeOnce(ctx context.Context, env []string, fuse []fire
 		_ = conn.SetDeadline(dl)
 	}
 	// UnixNano corrects the guest's post-resume clock skew (frozen at snapshot
-	// capture). Sent in the same RPC so it lands before the workload runs.
-	req := firecracker.ControlRequest{Env: env, MountWorkspaces: fuse, UnmountWorkspaces: unmounts, UnixNano: time.Now().UnixNano()}
+	// capture). Stamped per attempt so it lands before the workload runs.
+	req.UnixNano = time.Now().UnixNano()
 	if m.baseDir != "" {
 		// Re-address eth0 to this VM's pod-local /30 (the base snapshot baked the
 		// builder's address) so egress carries a distinct source for sbxproxy's
@@ -1435,6 +1465,40 @@ func (m *microvm) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, func(
 	// agent reaps the workload child when its session ends, so no host-side
 	// process-tree teardown is needed.
 	return cmd, func() {}, nil
+}
+
+// EntrypointTTYBridge runs the recorded `tty: true` entrypoint override (stashed
+// by ApplyResumeState) as a tty exec session in the guest, returning the host
+// bridge command the caller wraps in a pty so /v1/exec-stream can attach to it.
+// The override runs under the guest's exec handler (a guest pty over the exec
+// channel) rather than guest-side on the control channel, which has no terminal.
+// Returns a nil command when the config requested no tty override.
+func (m *microvm) EntrypointTTYBridge(ctx context.Context) (*exec.Cmd, func(), error) {
+	m.mu.Lock()
+	argv := append([]string(nil), m.ttyEntrypoint...)
+	cwd := m.ttyCwd
+	env := envSliceToMap(m.ttyEnv)
+	m.mu.Unlock()
+	if len(argv) == 0 {
+		return nil, func() {}, nil
+	}
+	// The guest exec handler runs the command via `sh -c`; exec into the override
+	// argv so the workload — not a lingering shell — is the terminal's foreground
+	// process, matching how the cold/container path runs the entrypoint directly.
+	// shellJoin single-quotes each arg so the exact argv survives the `sh -c`.
+	command := "exec " + shellJoin(argv)
+	return m.ExecCmd(ctx, ExecConfig{Command: command, Cwd: &cwd, Env: &env, TTY: true})
+}
+
+// envSliceToMap turns "KEY=VALUE" entries into the map ExecConfig.Env wants.
+func envSliceToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, kv := range env {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			m[kv[:i]] = kv[i+1:]
+		}
+	}
+	return m
 }
 
 // buildParamsDrive serialises params to a small ext4 image with the file at

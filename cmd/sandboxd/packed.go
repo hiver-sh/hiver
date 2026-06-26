@@ -314,6 +314,41 @@ func (p *packState) setEgress(ip string, rules []proxy.EgressRule) uint64 {
 // IP, build a per-key isolation instance (own netns/overlay/cgroup), mount its
 // workspaces, register its egress, and launch the workload. Returns once the
 // workload is ready.
+// setupEntrypointTTY publishes the resumed sandbox's entrypoint terminal when the
+// config requested a tty override. The backend returns a host bridge command (the
+// microvm runs the override as a tty exec session in a guest pty; the container
+// backend returns nil, having wired its entrypoint pty at launch). The bridge is
+// wrapped in a pty.Session and published via SetEntrypointTTY so /v1/exec-stream
+// with an empty command attaches to it. When the session ends — the override
+// exited (pty EOF) or the sandbox was torn down — onExit cancels the lifecycle so
+// the override's exit ends the sandbox, mirroring an entrypoint exit. A no-op when
+// the backend returns no bridge (no tty override).
+func setupEntrypointTTY(ctx context.Context, key string, iso isolation.Isolation, sb *handlers.Sandbox, onExit context.CancelFunc) {
+	bridge, cleanup, err := iso.EntrypointTTYBridge(ctx)
+	if err != nil {
+		log.Printf("sandboxd: %s: entrypoint tty bridge: %v", key, err)
+		return
+	}
+	if bridge == nil {
+		return
+	}
+	master, err := pty.Start(bridge)
+	if err != nil {
+		cleanup()
+		log.Printf("sandboxd: %s: start entrypoint tty: %v", key, err)
+		return
+	}
+	sess := pty.NewSession(master, nil)
+	sb.SetEntrypointTTY(sess)
+	log.Printf("sandboxd: %s: entrypoint attached to tty (microvm bridge)", key)
+	go func() {
+		<-sess.Done()
+		sess.Close()
+		cleanup()
+		onExit()
+	}()
+}
+
 func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.SandboxConfig) (*handlers.Sandbox, error) {
 	p := s.pack
 	sp, err := specFromConfig(cfg)
@@ -484,15 +519,14 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 
 	// A tty entrypoint (e.g. node's REPL, an interactive shell) stays alive only
 	// when attached to a real terminal; launched on plain pipes it reads EOF on
-	// stdin and exits immediately. Only the container backend can wrap the
-	// entrypoint in a pty; the microvm backend ignores TTY (all guest I/O is over
-	// vsock), so drop the request there. Advertise a terminal so programs enable
-	// colour/cursor control; user-supplied env wins.
+	// stdin and exits immediately. The container backend wraps the entrypoint in a
+	// host pty at launch; the microvm backend honours it on the resume path by
+	// running the override as a tty exec session in a guest pty (see
+	// EntrypointTTYBridge below), which needs an actual override — attaching to the
+	// image's default keepalive (tail) is useless, so drop tty in that case for both
+	// backends. Advertise a terminal so programs enable colour/cursor control;
+	// user-supplied env wins.
 	ttyEnabled := sp.Tty != nil && *sp.Tty
-	if ttyEnabled && p.isoKind != isolation.KindContainer {
-		log.Printf("sandboxd: pack %q: tty: ignoring tty option (only supported for %q isolation, got %q)", key, isolation.KindContainer, p.isoKind)
-		ttyEnabled = false
-	}
 	if ttyEnabled && entrypointIsTail(&imgCfg) {
 		ttyEnabled = false
 	}
@@ -723,11 +757,28 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		for k, v := range agentEnv {
 			envSlice = append(envSlice, k+"="+v)
 		}
-		if err := iso.ApplyResumeState(sbCtx, envSlice); err != nil {
+		rs := isolation.ResumeState{Env: envSlice}
+		// A config that overrides the entrypoint must run on resume too — the
+		// snapshot is running the image's default entrypoint, not this command. Only
+		// send it when overridden (imgCfg.Entrypoint already carries the override, set
+		// above); otherwise the default is already running in the snapshot and
+		// relaunching it would duplicate it.
+		if len(sp.Entrypoint) > 0 {
+			rs.Entrypoint = imgCfg.Entrypoint
+			rs.Cmd = imgCfg.Cmd
+			rs.Cwd = imgCfg.WorkingDir
+			rs.Tty = ttyEnabled
+		}
+		if err := iso.ApplyResumeState(sbCtx, rs); err != nil {
 			cleanup()
 			return nil, fmt.Errorf("apply resume state: %w", err)
 		}
 		phase.mark("pack " + key + ": apply resume state")
+		// A tty entrypoint override runs as a tty exec session in the guest (the
+		// control channel above has no terminal); wrap the host bridge in a pty and
+		// publish it so /v1/exec-stream attach reaches the entrypoint terminal. Its
+		// exit (pty EOF) ends the sandbox, mirroring an entrypoint exit.
+		setupEntrypointTTY(sbCtx, key, iso, sb, cancel)
 	} else if err := iso.WaitReady(sbCtx); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("wait ready: %w", err)

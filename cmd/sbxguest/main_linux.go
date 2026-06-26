@@ -602,8 +602,15 @@ func hasDefaultRouteVia(link netlink.Link, gw net.IP) bool {
 // stdio to the guest console, and returns its exit code.
 func runWorkload(p firecracker.GuestParams) int {
 	argv := append(append([]string{}, p.Entrypoint...), p.Cmd...)
+	return execWorkload(argv, p.WorkingDir)
+}
+
+// execWorkload execs argv as a child wired to the guest console (cwd defaulting
+// to "/") and returns its exit code. Shared by the boot path (runWorkload) and
+// the resume path (an entrypoint override delivered over the control channel).
+func execWorkload(argv []string, cwd string) int {
 	if len(argv) == 0 {
-		log.Printf("no entrypoint/cmd in params; nothing to run")
+		log.Printf("no entrypoint/cmd; nothing to run")
 		return 0
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -613,9 +620,10 @@ func runWorkload(p firecracker.GuestParams) int {
 	// ($HOME/.pki/nssdb) so it accepts sbxproxy's TLS interception — without it,
 	// TLS interception is rejected. Exec sessions already run with os.Environ();
 	// the entrypoint must match (the former prewarm hook inherited it by running
-	// as sbxguest's child).
+	// as sbxguest's child). The resume path re-applies the config's env over
+	// os.Environ before reaching here, so an override entrypoint sees it too.
 	cmd.Env = os.Environ()
-	cmd.Dir = orDefault(p.WorkingDir, "/")
+	cmd.Dir = orDefault(cwd, "/")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -628,6 +636,34 @@ func runWorkload(p firecracker.GuestParams) int {
 		return 1
 	}
 	return 0
+}
+
+// resumeWorkloadOnce guards the entrypoint-override launch: the control RPC
+// self-heals (the host re-drives it until the guest acks), so without this a
+// retry would spawn a second copy of the override workload.
+var resumeWorkloadOnce sync.Once
+
+// startResumeWorkload launches the config's entrypoint override (delivered over
+// the control channel on resume) exactly once, on console stdio. The prewarm
+// snapshot booted the image's default entrypoint — a config-independent keepalive
+// (e.g. agent-base's `tail -f /dev/null`) or resident service — which keeps the VM
+// alive as runWorkload; the override is the workload the config actually asked
+// for, so its exit ends the sandbox: sync the overlay and power off, exactly as a
+// boot-path entrypoint exit does in main. Runs in a goroutine so the control RPC
+// returns promptly to ack the host. A `tty: true` override is NOT delivered here —
+// the host launches it as a tty exec session (a guest pty over the exec channel)
+// so /v1/exec-stream can attach to its terminal.
+func startResumeWorkload(req firecracker.ControlRequest) {
+	resumeWorkloadOnce.Do(func() {
+		argv := append(append([]string{}, req.Entrypoint...), req.Cmd...)
+		log.Printf("resume: launching entrypoint override %q", argv)
+		go func() {
+			code := execWorkload(argv, req.WorkingDir)
+			log.Printf("resume workload exited with code %d", code)
+			unix.Sync()
+			_ = unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+		}()
+	})
 }
 
 // guestListenTCP binds a guest-network TCP listener on eth0 (all interfaces) for
@@ -739,6 +775,15 @@ func handleControl(conn io.ReadWriter) error {
 			log.Printf("control: re-ip eth0: %v", err)
 			return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: false, Error: err.Error()})
 		}
+	}
+	// Launch the config's entrypoint override (unknown when the prewarm snapshot
+	// was taken). After the clock/env/re-IP above so the override resolves its
+	// command, sees the workload env, and has working egress; before the workspace
+	// mounts below, which the prewarm model already treats as post-entrypoint
+	// (they arrive in a later async RPC anyway). Guarded so the self-healing RPC
+	// launches it at most once.
+	if len(req.Entrypoint) > 0 {
+		startResumeWorkload(req)
 	}
 	if len(req.MountWorkspaces) > 0 {
 		log.Printf("control: mounting %d workspace(s) post-resume", len(req.MountWorkspaces))

@@ -47,6 +47,21 @@ type ControlRequest struct {
 	// to in-guest clients. Setting it here, before the workload runs, corrects it.
 	UnixNano int64 `json:"unix_nano,omitempty"`
 
+	// Entrypoint/Cmd/WorkingDir, when Entrypoint is non-empty, carry the config's
+	// entrypoint override the prewarm snapshot could not bake in: the VM was
+	// snapshotted running the image's default entrypoint (config-independent), so a
+	// config that overrides it — its argv, cmd, and working dir — is unknown until
+	// the first config arrives. The guest launches it once (the RPC self-heals, so
+	// the launch is guarded) on console stdio as the workload whose exit ends the
+	// sandbox, on top of the warm snapshot. Empty when the config keeps the image
+	// entrypoint (already running in the snapshot — relaunching it would duplicate
+	// it) or requests a tty: a `tty: true` override is launched host-side as a tty
+	// exec session instead (see Isolation.EntrypointTTYBridge), since the control
+	// channel has no terminal to attach to.
+	Entrypoint []string `json:"entrypoint,omitempty"`
+	Cmd        []string `json:"cmd,omitempty"`
+	WorkingDir string   `json:"working_dir,omitempty"`
+
 	// GuestIP/GatewayIP, when set, re-address the guest's eth0 after a pack-mode
 	// resume. Every VM resumes from the same per-image base snapshot, whose kernel
 	// cmdline baked in the base builder's address — so each resumed guest comes up

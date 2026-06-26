@@ -187,6 +187,21 @@ type AgentConfig struct {
 	Prewarm bool
 }
 
+// ResumeState carries the post-resume setup the prewarm snapshot could not bake
+// in — all unknown when the workload was prewarmed (see ApplyResumeState). Env is
+// the workload environment (for exec sessions, and for resolving an override
+// entrypoint). Entrypoint, when non-empty, is the config's entrypoint override
+// (with Cmd/Cwd/Tty): the snapshot runs the image's default entrypoint, so an
+// overriding config's command is launched on resume instead. Leave Entrypoint nil
+// to keep the snapshot's already-running entrypoint.
+type ResumeState struct {
+	Env        []string
+	Entrypoint []string
+	Cmd        []string
+	Cwd        string
+	Tty        bool
+}
+
 // ExecConfig describes a command to run inside the running workload.
 type ExecConfig struct {
 	Command string
@@ -339,10 +354,13 @@ type Isolation interface {
 	// ApplyResumeState delivers post-resume setup the prewarm step could not
 	// carry: the config's workspaces (microvm: their 9p-over-vsock mounts don't
 	// survive a snapshot/restore; container: bind them into the running mount ns)
-	// and, for the microvm, the workload environment + clock fix. The already-
-	// running entrypoint doesn't pick up late env, so env matters only for exec
-	// sessions; unknown when the workload was prewarmed.
-	ApplyResumeState(ctx context.Context, env []string) error
+	// and, for the microvm, the workload environment + clock fix + any entrypoint
+	// override. The image's default entrypoint runs in the snapshot and doesn't
+	// pick up late env (env matters for exec sessions), but a config that overrides
+	// the entrypoint (rs.Entrypoint) is launched here as the workload — unknown when
+	// the workload was prewarmed. The container backend ignores env/entrypoint (its
+	// entrypoint container already launched at prewarm).
+	ApplyResumeState(ctx context.Context, rs ResumeState) error
 
 	// StopAgent stops a workload started by PrewarmSnapshot on the resume teardown
 	// path. The container backend kills + deletes the running runc container; the
@@ -363,6 +381,17 @@ type Isolation interface {
 	// func reaps the in-workload process tree if ctx was cancelled (client
 	// abort) and removes scratch state; the caller must defer it.
 	ExecCmd(ctx context.Context, cfg ExecConfig) (cmd *exec.Cmd, cleanup func(), err error)
+
+	// EntrypointTTYBridge returns a host-side command that, started under a pty,
+	// runs the resume config's entrypoint override as the sandbox's entrypoint
+	// terminal — so a `tty: true` config is attachable via /v1/exec-stream. The
+	// microvm backend returns it only when ApplyResumeState carried a tty override
+	// (the override runs in a guest pty over the exec channel, bridged here); the
+	// caller wraps it in a pty.Session and publishes it via SetEntrypointTTY. cmd
+	// is nil (a no-op) when there is no tty override or the backend wires its
+	// entrypoint tty at launch instead (container). The cleanup func reaps the
+	// bridge; the caller must defer it when cmd is non-nil.
+	EntrypointTTYBridge(ctx context.Context) (cmd *exec.Cmd, cleanup func(), err error)
 
 	// Files exposes the workload filesystem to the /v1/file* handlers.
 	Files() FileBridge

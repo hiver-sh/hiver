@@ -8,6 +8,7 @@ import (
 	"os"
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/isolation"
 	"github.com/hiver-sh/hiver/internal/snapshot"
 	"github.com/hiver-sh/hiver/internal/spec"
 )
@@ -128,9 +129,10 @@ func (m *mountManager) Reconcile(sp *spec.Spec) error {
 	// runc/the guest only act on mounts at launch otherwise. No-op at boot
 	// (workloadLive is set after launch) and when nothing changed.
 	if m.workloadLive.Load() {
-		// nil env: the workload's environment is fixed at launch (env is delivered
-		// once, at resume); only the mount add/remove set changes here.
-		if err := m.iso.ApplyResumeState(m.ctx, nil); err != nil {
+		// Empty state: the workload's environment and entrypoint are fixed at launch
+		// (both delivered once, at resume); only the mount add/remove set changes
+		// here, which the backend reads from its own queued state.
+		if err := m.iso.ApplyResumeState(m.ctx, isolation.ResumeState{}); err != nil {
 			errs = append(errs, fmt.Errorf("apply workspace changes live: %w", err))
 		}
 	}

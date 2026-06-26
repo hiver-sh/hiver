@@ -701,13 +701,39 @@ func main() {
 		}
 		maps.Copy(env, sp.Env)
 		env["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
+		// A tty entrypoint override runs on a terminal; advertise one so programs
+		// enable colour/cursor control (user-supplied env wins).
+		ttyReq := len(sp.Entrypoint) > 0 && sp.Tty != nil && *sp.Tty
+		if ttyReq {
+			if _, ok := env["TERM"]; !ok {
+				env["TERM"] = "xterm-256color"
+			}
+			if _, ok := env["COLORTERM"]; !ok {
+				env["COLORTERM"] = "truecolor"
+			}
+		}
 		envSlice := make([]string, 0, len(env))
 		for k, v := range env {
 			envSlice = append(envSlice, k+"="+v)
 		}
-		if err := iso.ApplyResumeState(ctx, envSlice); err != nil {
+		rs := isolation.ResumeState{Env: envSlice}
+		// A config that overrides the entrypoint must run on resume too — the
+		// snapshot is running the image's default entrypoint, not this command.
+		// Only send it when overridden; otherwise the default is already running in
+		// the snapshot and relaunching it would duplicate it.
+		if len(sp.Entrypoint) > 0 {
+			rs.Entrypoint = sp.Entrypoint
+			rs.Cwd = sp.Cwd
+			rs.Tty = ttyReq
+		}
+		if err := iso.ApplyResumeState(ctx, rs); err != nil {
 			log.Printf("sandboxd: apply resume state: %v", err)
 		}
+		// A tty entrypoint override runs as a tty exec session in the guest (the
+		// control channel has no terminal); wrap the host bridge in a pty and
+		// publish it so /v1/exec-stream attach reaches the entrypoint terminal. Its
+		// exit (pty EOF) cancels the lifecycle ctx, ending the sandbox.
+		setupEntrypointTTY(ctx, "boot", iso, sb, cancel)
 
 		// The workload is committed; freeze boot-time config fields, mark the
 		// workload live, flip the server to started, and announce readiness (the
@@ -1075,22 +1101,36 @@ func superviseStdio(wg *sync.WaitGroup, name string, cmd *exec.Cmd, onStdio func
 // The Session's Done channel stands in for startChild's stdioDone: it closes
 // once the master reaches EOF (the agent's output is finished).
 // entrypointIsTail reports whether the effective container entrypoint is the
-// `tail` keepalive pattern (ENTRYPOINT or CMD starting with tail). When true
-// there is no interactive process to attach a pty to.
+// `tail` keepalive pattern, either bare (ENTRYPOINT/CMD starting with tail) or
+// wrapped in a shell that execs it. When true there is no interactive process to
+// attach a pty to.
 func entrypointIsTail(imgCfg *runc.ImageConfig) bool {
-	var first string
-	if len(imgCfg.Entrypoint) > 0 {
-		first = imgCfg.Entrypoint[0]
-	} else if len(imgCfg.Cmd) > 0 {
-		first = imgCfg.Cmd[0]
+	argv := imgCfg.Entrypoint
+	if len(argv) == 0 {
+		argv = imgCfg.Cmd
 	}
-	if first == "" {
+	if len(argv) == 0 {
 		return false
 	}
+	first := argv[0]
 	if i := strings.LastIndex(first, "/"); i >= 0 {
 		first = first[i+1:]
 	}
-	return first == "tail"
+	if first == "tail" {
+		return true
+	}
+	// A keepalive can also be wrapped in a shell that runs some setup and then
+	// execs the tail keepalive — e.g. the claude image's prewarm entrypoint warms
+	// its binary and signals readiness before `exec tail -f /dev/null`. Recognize
+	// that shape too so the tty-attach drop still fires: there is still no
+	// interactive process to attach a pty to.
+	switch first {
+	case "sh", "bash", "dash", "ash":
+		if len(argv) >= 3 && argv[1] == "-c" {
+			return strings.HasSuffix(strings.TrimSpace(argv[len(argv)-1]), "tail -f /dev/null")
+		}
+	}
+	return false
 }
 
 func startAgentTTY(ctx context.Context, bin string, args []string) (*exec.Cmd, *pty.Session, error) {

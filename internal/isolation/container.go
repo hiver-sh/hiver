@@ -601,10 +601,10 @@ func (c *container) StopAgent(ctx context.Context) error {
 // container launched with no workspaces — becomes visible to the workload
 // (launch-time ones are already bound by runc). Idempotent: each is bound at most
 // once. The injection runs in a re-exec'd helper because it leaves a thread in
-// the container's mount ns. The env argument is ignored: the entrypoint already
-// launched (cold via runc, or warm at prewarm), so late env can't reach it;
-// exec sessions get env per-call.
-func (c *container) ApplyResumeState(ctx context.Context, _ []string) error {
+// the container's mount ns. The ResumeState is ignored: the entrypoint already
+// launched (cold via runc, or warm at prewarm), so late env and any entrypoint
+// override can't reach it; exec sessions get env per-call.
+func (c *container) ApplyResumeState(ctx context.Context, _ ResumeState) error {
 	c.mu.Lock()
 	if c.bound == nil {
 		c.bound = map[string]bool{}
@@ -672,6 +672,13 @@ func (c *container) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, fun
 		os.Remove(pidPath)
 	}
 	return cmd, cleanup, nil
+}
+
+// EntrypointTTYBridge is a no-op for the container backend: it wraps its
+// entrypoint in a host pty at launch (LaunchAgent with AgentConfig.TTY), so there
+// is nothing to bridge on resume.
+func (c *container) EntrypointTTYBridge(ctx context.Context) (*exec.Cmd, func(), error) {
+	return nil, func() {}, nil
 }
 
 // execArgs constructs the argument slice for `runc exec`.
