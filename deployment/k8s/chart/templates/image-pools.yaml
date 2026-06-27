@@ -15,6 +15,14 @@ metadata:
     app: {{ .name }}
 spec:
   replicas: {{ .replicas }}
+  # These pack hosts are privileged and sized to ~fill a node, so the cluster
+  # can't hold an old + new pod at once. The default RollingUpdate (maxSurge
+  # 25% -> 1 for replicas:1) schedules the new pod before terminating the old
+  # one, which then sits Pending forever for want of capacity while the old pod
+  # never drains. Recreate tears the old pod down first, freeing the node for
+  # the replacement. Accepts a brief gap in that image's prewarm pool per roll.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: {{ .name }}
@@ -34,18 +42,15 @@ spec:
         - name: sandbox
           image: {{ .image }}
           imagePullPolicy: IfNotPresent
-          # --pack + --prewarm mark this as a multi-tenant prewarm host. Guest
-          # size (--instance-cpu / --instance-memory) is baked into the base
-          # snapshot, so every resumer inherits it. No HIVE_SPEC: the image is
-          # bundled in the pod and each sandbox's config arrives over the API.
+          # --pack marks this as a multi-tenant pack host: it parks and serves
+          # same-image sandboxes created on demand via POST /v1/{key}. Guest size
+          # comes from each sandbox's config (cpu/memory) and is baked into any VM
+          # snapshot the client captures. No HIVE_SPEC: the image is bundled in the
+          # pod and each sandbox's config arrives over the API.
           args: [
             "--pack",
-            "--prewarm",
             "--snapshot-dir", "/snapshots",
-            "--max-concurrent-launches", "{{ .maxConcurrentLaunches }}",
-            "--overlay-cow-dir", "/cow",
-            "--instance-cpu", "{{ .instanceCpu }}",
-            "--instance-memory", "{{ .instanceMemory }}"
+            "--max-concurrent-launches", "{{ .maxConcurrentLaunches }}"
           ]
           env:
             # The create response must echo the pod's routing id (its IPv4
@@ -65,19 +70,13 @@ spec:
           volumeMounts:
             - name: snapshots
               mountPath: /snapshots
-            - name: cow
-              mountPath: /cow
       volumes:
+        # The source of truth for VM-state snapshots: each keyed VM's
+        # overlay/metadata/snapshot live here (/snapshots/vm-<key>), captured and
+        # resumed in place. Node-ephemeral (per-pod), so snapshots don't survive a
+        # pod restart and aren't shared across replicas.
         - name: snapshots
           emptyDir: {}
-        # Per-VM dm-snapshot COW stores (--overlay-cow-dir /cow), RAM-backed
-        # (tmpfs): the base overlay is a single shared read-only origin; each
-        # resumed VM gets its own sparse exception store here, so guest rootfs
-        # writes stay in RAM. tmpfs usage counts against the pod's memory limit.
-        - name: cow
-          emptyDir:
-            medium: Memory
-            sizeLimit: {{ .cowSizeLimit }}
 ---
 apiVersion: v1
 kind: Service

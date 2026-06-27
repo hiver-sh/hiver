@@ -31,6 +31,12 @@ type Sandbox struct {
 	iso      isolation.Isolation // runtime boundary: exec + filesystem access
 	netMark  int                 // SO_MARK for the reverse proxy dialer, bypasses iptables REDIRECT
 
+	// snapshotDir is the host's local snapshot directory (-snapshot-dir), where
+	// the snapshot action writes files tarballs and VM-state snapshots unless the
+	// files part routes itself to a FUSE drive via its mount. Empty when no local
+	// snapshot dir is configured.
+	snapshotDir string
+
 	// lifecycleCtx is the sandbox's lifecycle context; it's cancelled when the
 	// sandbox is torn down (DELETE, agent exit, or pod shutdown). Exec sessions
 	// tie their host-side bridge process to it (via execContext) so a delete
@@ -109,6 +115,7 @@ func (s *Sandbox) SetBroker(b *events.Broker)           { s.broker = b }
 func (s *Sandbox) SetStore(st configStore)              { s.store = st }
 func (s *Sandbox) SetLifetime(l lifetime)               { s.lifetime = l }
 func (s *Sandbox) SetIsolation(iso isolation.Isolation) { s.iso = iso }
+func (s *Sandbox) SetSnapshotDir(dir string)            { s.snapshotDir = dir }
 
 // SetLifecycleContext wires the sandbox's lifecycle context so exec sessions
 // can be cancelled when the sandbox is torn down. Called once, before

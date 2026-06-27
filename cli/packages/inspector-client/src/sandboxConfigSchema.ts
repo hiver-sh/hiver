@@ -88,20 +88,45 @@ export const SANDBOX_CONFIG_SCHEMA = {
     Snapshot: {
       type: "object",
       description:
-        "Snapshot configuration. Captured automatically before the sandbox shuts down and restored before it starts.",
+        "Snapshot configuration. Two independent parts: vm (full microVM state, a no-op on container isolation) and files (the writable filesystem as a tarball). Captured by the snapshot action (and, for files, optionally on shutdown) and restored when the sandbox starts.",
       additionalProperties: false,
       properties: {
-        restore_key: {
+        vm: { $ref: "#/definitions/SnapshotVM" },
+        files: { $ref: "#/definitions/SnapshotFiles" },
+      },
+    },
+
+    SnapshotVM: {
+      type: "object",
+      description:
+        "microVM-state snapshot. When a VM snapshot exists under key, a get-or-create resumes it instead of cold-booting; otherwise the VM cold-boots and the client captures the snapshot explicitly. Ignored by the container backend.",
+      additionalProperties: false,
+      required: ["key"],
+      properties: {
+        key: {
           type: "string",
           pattern: "^[A-Za-z0-9_-]{1,64}$",
-          description:
-            "Key identifying the snapshot to restore when the sandbox starts. When omitted, no snapshot is restored.",
+          description: "Key identifying the VM-state snapshot.",
         },
-        write_key: {
+      },
+    },
+
+    SnapshotFiles: {
+      type: "object",
+      description:
+        "Writable-filesystem snapshot, captured as a portable tarball. Restored when the sandbox starts and written by the snapshot action (or on shutdown when write_on_shutdown is set).",
+      additionalProperties: false,
+      required: ["key"],
+      properties: {
+        key: {
           type: "string",
           pattern: "^[A-Za-z0-9_-]{1,64}$",
+          description: "Key identifying the files snapshot.",
+        },
+        write_on_shutdown: {
+          type: "boolean",
           description:
-            "Key under which the snapshot is saved on shutdown. When omitted, restore_key is used.",
+            "When true, the files snapshot is captured on shutdown or termination. When false (the default), files are captured only by an explicit snapshot action.",
         },
         include: {
           type: "array",
@@ -115,7 +140,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
           type: "string",
           pattern: "^/.+",
           description:
-            "Mount path of a file system (see fs) where snapshot tarballs are written and read, instead of the host's local snapshot directory. Point it at an internal, remote-backed file system to persist and restore snapshots through a FUSE drive.",
+            "Mount path of a file system (see fs) where the files tarball is written and read, instead of the host's local snapshot directory. Point it at an internal, remote-backed file system to persist and restore through a FUSE drive.",
           examples: ["/snapshots"],
         },
       },
@@ -377,5 +402,18 @@ export const SANDBOX_CONFIG_SCHEMA = {
       type: "string",
       enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
     },
+  },
+};
+
+// The Snapshot object on its own, for the snapshot-capture editor (the body of
+// the snapshot action is a Snapshot, not a full SandboxConfig). Reuses the same
+// definitions so the two stay in sync.
+export const SNAPSHOT_SCHEMA = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  title: "Snapshot",
+  ...SANDBOX_CONFIG_SCHEMA.definitions.Snapshot,
+  definitions: {
+    SnapshotVM: SANDBOX_CONFIG_SCHEMA.definitions.SnapshotVM,
+    SnapshotFiles: SANDBOX_CONFIG_SCHEMA.definitions.SnapshotFiles,
   },
 };

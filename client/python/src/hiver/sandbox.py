@@ -14,6 +14,8 @@ from .schemas import (
     SandboxEventAdapter,
     SandboxInfo,
     SandboxRef,
+    Snapshot,
+    SnapshotResult,
 )
 from .sse import parse_sse
 
@@ -180,6 +182,22 @@ class Sandbox:
         if not res.is_success:
             raise _to_error(res, "apply_config")
         return ApplyResult.model_validate(res.json())
+
+    async def snapshot(self, request: Snapshot) -> SnapshotResult:
+        """
+        Capture a snapshot of the running sandbox now, without stopping it. The
+        request selects which parts to capture: ``vm`` (full microVM state, keyed
+        for a later resume; a no-op on container isolation) and/or ``files`` (the
+        writable filesystem). Each part is reported independently in the result.
+        """
+        validated = Snapshot.model_validate(request.model_dump(exclude_none=True))
+        res = await self._client.post(
+            f"{self.api_server_url}/v1/{self.key}/snapshot",
+            json=validated.model_dump(exclude_none=True),
+        )
+        if not res.is_success:
+            raise _to_error(res, "snapshot")
+        return SnapshotResult.model_validate(res.json())
 
     async def exec(
         self,

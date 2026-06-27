@@ -101,22 +101,60 @@ type FileSystem struct {
 	Host string `json:"host,omitempty"`
 }
 
-// Snapshot configures automatic sandbox snapshots. A snapshot is captured
-// before the sandbox shuts down and restored before it starts.
+// Snapshot configures sandbox snapshots. It has two independent parts: VM
+// captures the full microVM state (a no-op for the container backend) and Files
+// captures the writable filesystem as a portable tarball. Either may be present
+// alone, both, or neither. Snapshots are captured by the snapshot action (and,
+// for Files, optionally on shutdown) and restored when the sandbox starts.
 type Snapshot struct {
-	// RestoreKey identifies the snapshot to restore when the sandbox starts.
-	// When omitted, no snapshot is restored on start.
-	RestoreKey string `json:"restore_key,omitempty"`
-	// WriteKey is the key under which the snapshot is saved on shutdown. When
-	// omitted, RestoreKey is used.
-	WriteKey string `json:"write_key,omitempty"`
+	// VM names the microVM-state snapshot. A get-or-create resumes the keyed VM
+	// snapshot if one exists, else cold-boots. Ignored by the container backend.
+	VM *SnapshotVM `json:"vm,omitempty"`
+	// Files names the writable-filesystem snapshot.
+	Files *SnapshotFiles `json:"files,omitempty"`
+}
+
+// SnapshotVM names a microVM-state snapshot.
+type SnapshotVM struct {
+	// Key identifies the VM-state snapshot.
+	Key string `json:"key"`
+}
+
+// SnapshotFiles names a writable-filesystem snapshot and what it covers.
+type SnapshotFiles struct {
+	// Key identifies the files snapshot.
+	Key string `json:"key"`
 	// Include are glob patterns for the paths to capture (e.g. "/home/user/*").
 	Include []string `json:"include,omitempty"`
-	// Mount is the mount path of a FileSystem (see SandboxConfig.FS) where
-	// snapshot tarballs are written and read, instead of the host's local
-	// snapshot directory. Point it at an Internal, remote-backed file system
-	// to persist and restore snapshots through a FUSE drive.
+	// WriteOnShutdown, when true, captures the files snapshot on shutdown or
+	// termination. When false (the default), files are captured only by an
+	// explicit snapshot action.
+	WriteOnShutdown bool `json:"write_on_shutdown,omitempty"`
+	// Mount is the mount path of a FileSystem (see SandboxConfig.FS) where the
+	// files tarball is written and read, instead of the host's local snapshot
+	// directory. Point it at an Internal, remote-backed file system to persist
+	// and restore through a FUSE drive.
 	Mount string `json:"mount,omitempty"`
+}
+
+// SnapshotResult is the outcome of a Snapshot action, reported per requested
+// part. A part the request omitted is nil.
+type SnapshotResult struct {
+	VM    *SnapshotPartResult `json:"vm,omitempty"`
+	Files *SnapshotPartResult `json:"files,omitempty"`
+}
+
+// SnapshotPartResult is the outcome of capturing one snapshot part.
+type SnapshotPartResult struct {
+	// Captured reports whether the part was captured. False (with Reason) when
+	// the part is unsupported on the active backend, e.g. VM on a container.
+	Captured bool `json:"captured"`
+	// Key is the key the part was written under.
+	Key string `json:"key"`
+	// Bytes is the captured artifact size in bytes, when known.
+	Bytes int64 `json:"bytes,omitempty"`
+	// Reason explains why the part was not captured, when Captured is false.
+	Reason string `json:"reason,omitempty"`
 }
 
 // SandboxConfig is the configuration for a sandbox.

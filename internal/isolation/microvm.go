@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -63,7 +64,10 @@ type microvm struct {
 	// reads /sys/fs/cgroup<cgroupPath>.
 	cgroupPath string
 
-	// Host-side artifact paths, all under jailDir.
+	// Host-side artifact paths. apiSock/configFile/logFile live in the ephemeral
+	// jailDir; rootfsImg is the shared read-only image. overlayImg/paramsImg/
+	// snapFile/memFile live in stateDir when this VM is keyed (snapshot.vm.key),
+	// else in the jail.
 	jailDir    string
 	apiSock    string
 	configFile string
@@ -71,13 +75,15 @@ type microvm struct {
 	rootfsImg  string
 	overlayImg string
 	paramsImg  string
+	snapFile   string
+	memFile    string
 
-	// baseDir, when non-empty, is the shared per-image base snapshot this VM
-	// resumes from (pack mode, design §7): ResumeAgent binds per-VM overlay/vsock
-	// over the base's canonical paths and ResumeReady loads base/{snapshot,mem}.bin
-	// with a per-VM tap override. Empty for cold boot and the in-place prewarm
-	// resume (which reuses this VM's own snapshot files).
-	baseDir string
+	// stateDir, when non-empty (Config.VMStateDir), is this VM's persistent state
+	// directory under the snapshot dir (/snapshots/vm-<key>). The writable overlay,
+	// metadata drive, and firecracker snapshot.bin/mem.bin all live here, so a
+	// snapshot captures in place and a resume reopens these exact paths directly —
+	// no copy, no per-VM CoW. Empty keeps the overlay ephemeral in the jail.
+	stateDir string
 
 	// Compute allocation for the guest, fixed at boot (SandboxConfig.cpu /
 	// .memory). New defaults these before construction.
@@ -109,21 +115,12 @@ type microvm struct {
 	// unless packed.
 	sourceIP string
 
-	// prealloc marks a packed VM claiming a preallocated slot whose
-	// netns/veth/tap/iptables (+DNS sink) and CoW overlay image were provisioned
-	// ahead of time by the pod's prealloc pool (Config.Prealloc). RedirectEgress
-	// and the overlay build in MountRoot are then no-ops, and UnmountRoot leaves
-	// the netns teardown to the pool, which resets the slot and returns it.
+	// prealloc marks a packed VM claiming a preallocated network slot
+	// (netns/veth/tap/iptables + DNS sink) provisioned ahead of time by the pod's
+	// prealloc pool (Config.Prealloc) — only the network is preallocated, not the
+	// overlay. RedirectEgress is then a no-op, and UnmountRoot leaves the netns
+	// teardown to the pool, which resets the slot and returns it.
 	prealloc bool
-
-	// cowLoop is the per-VM COW-store loop device backing this resumed VM's
-	// dm-snapshot overlay (setupOverlayCoW); "" for cold-boot VMs. teardownOverlayCoW
-	// detaches it.
-	cowLoop string
-	// cowDir, when set (Config.OverlayCoWDir), is where this VM's dm-snapshot COW
-	// store lives instead of the jail dir — e.g. a tmpfs mount to make the guest's
-	// rootfs writes RAM-backed.
-	cowDir string
 
 	// localMounts are the host-side local-backend dirs (for snapshot).
 	localMounts []SnapshotMount
@@ -163,12 +160,8 @@ type microvm struct {
 	// to the guest via the params drive so Chromium/Playwright trust sbxproxy.
 	nssDB map[string][]byte
 
-	// Prewarm snapshot-resume state. snapFile/memFile hold the full VM snapshot
-	// PrewarmSnapshot writes (device/vCPU state and guest memory respectively);
-	// haveSnapshot gates the resume path. All under jailDir, so UnmountRoot's
-	// RemoveAll reclaims them.
-	snapFile     string
-	memFile      string
+	// haveSnapshot gates the resume path: set in newMicroVM when Config.VMStateDir
+	// holds a complete VM snapshot (a keyed snapshot the client captured).
 	haveSnapshot bool
 }
 
@@ -209,11 +202,7 @@ func newMicroVM(cfg Config) *microvm {
 		configFile:  filepath.Join(jail, "config.json"),
 		logFile:     filepath.Join(jail, "firecracker.log"),
 		rootfsImg:   filepath.Join(jail, "rootfs.ext4"),
-		overlayImg:  filepath.Join(jail, baseOverlayName),
-		paramsImg:   filepath.Join(jail, "metadata.ext4"),
-		snapFile:    filepath.Join(jail, baseSnapshotName),
-		memFile:     filepath.Join(jail, baseMemName),
-		baseDir:     cfg.BaseSnapshotDir,
+		stateDir:    cfg.VMStateDir,
 		guestIP:     gIP,
 		gatewayIP:   gwIP,
 		guestMAC:    mac,
@@ -225,86 +214,63 @@ func newMicroVM(cfg Config) *microvm {
 		netnsName:   netnsName,
 		sourceIP:    sourceIP,
 		prealloc:    prealloc,
-		cowDir:      cfg.OverlayCoWDir,
 		localMounts: cfg.LocalMounts,
 	}
-	// A packed sandbox with a ready base snapshot takes the resume fast path:
-	// HasPrewarmSnapshot reports true so the caller resumes instead of cold-booting.
-	if m.baseDir != "" && baseSnapshotReady(m.baseDir) {
+	// The overlay/metadata/snapshot live in the per-key state dir when this VM is
+	// keyed (snapshot.vm.key) — the source of truth, captured and reopened in place.
+	// Otherwise they are ephemeral in the jail and the VM can't be VM-snapshotted.
+	drivesDir := jail
+	if m.stateDir != "" {
+		drivesDir = m.stateDir
+	}
+	m.overlayImg = filepath.Join(drivesDir, baseOverlayName)
+	m.paramsImg = filepath.Join(drivesDir, baseMetadataName)
+	m.snapFile = filepath.Join(drivesDir, baseSnapshotName)
+	m.memFile = filepath.Join(drivesDir, baseMemName)
+	// A keyed VM whose state dir already holds a snapshot resumes from it (in place)
+	// instead of cold-booting; HasPrewarmSnapshot reports this to the caller.
+	if m.stateDir != "" && baseSnapshotReady(m.stateDir) {
 		m.haveSnapshot = true
 	}
 	return m
 }
 
-// Canonical artifact names shared by a VM's jail and the pack-mode base snapshot.
-// Using one set of names means the base builder's jail layout already matches what
-// a resumer binds over, so no path rewriting is needed.
+// Artifact names inside a VM's state dir. snapshot.bin/mem.bin are the firecracker
+// state + memory (written by the snapshot action); overlay.ext4 is the writable
+// filesystem; metadata.ext4 is the params drive. firecracker bakes these paths
+// into the snapshot and reopens them on restore — and because they live in the
+// stable state dir (not the ephemeral jail), resume reopens them in place.
 const (
 	baseSnapshotName = "snapshot.bin"
 	baseMemName      = "mem.bin"
 	baseOverlayName  = "overlay.ext4"
+	baseMetadataName = "metadata.ext4"
 )
 
-// baseSnapshotReady reports whether a base dir holds a complete snapshot triple
-// (state + memory + the warm overlay each VM copies-on-write from).
+// snapshotControlTimeout bounds the VMM pause/create-snapshot/resume calls during
+// a live snapshot. Generous because CreateSnapshot writes the full guest memory
+// file, but finite so a wedged VMM can't strand the cycle (and the guest) forever.
+const snapshotControlTimeout = 5 * time.Minute
+
+// VMSnapshotReady reports whether dir holds a complete VM-state snapshot (state
+// + memory + the warm overlay), so a caller can decide to resume from it instead
+// of cold-booting. A keyed VM snapshot (written by the snapshot action) uses the
+// same triple layout as a pack base snapshot, so resume reuses the base path.
+func VMSnapshotReady(dir string) bool { return baseSnapshotReady(dir) }
+
+// baseSnapshotReady reports whether dir holds a complete, resumable VM snapshot:
+// the firecracker state + memory plus the overlay and metadata drives the restore
+// reopens. snapshot.bin is written only by a successful snapshot action, so its
+// presence (with the rest) means the dir holds a snapshot to resume; a state dir
+// that only cold-booted (no snapshot.bin yet) is not ready, so the caller
+// cold-boots into it.
 func baseSnapshotReady(dir string) bool {
-	for _, f := range []string{baseSnapshotName, baseMemName, baseOverlayName} {
+	for _, f := range []string{baseSnapshotName, baseMemName, baseOverlayName, baseMetadataName} {
 		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.Size() == 0 {
 			return false
 		}
 	}
 	return true
-}
-
-// baseBuilderID is the jail id (hence dir/tap/cgroup name) of the transient VM
-// that builds a pod's shared base snapshot. It must not collide with any packed
-// sandbox: those are keyed by their guest-IP index (172.16.<n>.2, n≥2), so the
-// builder's hostname-derived id and its 172.16.0.x boot network are disjoint.
-const baseBuilderID = "base"
-
-// MicroVMBaseDir is the shared dir a pod's base snapshot lives in — the transient
-// builder's jail. Both the builder (which writes it) and every resumer (which
-// binds its canonical overlay/vsock paths) resolve it the same way.
-func MicroVMBaseDir() string {
-	return filepath.Join(envOr("FIRECRACKER_RUN_DIR", "/run/firecracker"), baseBuilderID)
-}
-
-// BuildMicroVMBaseSnapshot boots a transient firecracker guest running the image
-// prewarm entrypoint with the pod's shared sidecars (proxy/DNS), snapshots it into
-// MicroVMBaseDir, and tears the guest down. Packed sandboxes then resume from this
-// base (Config.BaseSnapshotDir) instead of cold-booting (design §7). vcpu/memMiB
-// size the base guest; every resumer inherits that sizing (firecracker fixes
-// vCPU/RAM in the snapshot). Returns the base dir on success; on failure the
-// caller cold-boots each VM. Safe to call once per pod.
-func BuildMicroVMBaseSnapshot(ctx context.Context, certPEM []byte, imgCfg *runc.ImageConfig, vcpu, memMiB, proxyPort, dnsPort, mark int) (string, error) {
-	baseDir := MicroVMBaseDir()
-	_ = os.RemoveAll(baseDir) // discard any stale base from a prior incarnation
-	b := newMicroVM(Config{Hostname: baseBuilderID, VcpuCount: vcpu, MemoryMiB: memMiB})
-	if err := b.MountRoot(); err != nil {
-		return "", fmt.Errorf("base: mount root: %w", err)
-	}
-	if len(certPEM) > 0 {
-		if err := b.InstallCA(certPEM); err != nil {
-			return "", fmt.Errorf("base: install CA: %w", err)
-		}
-	}
-	// Wire the builder's egress to the shared sidecars so the prewarm workload can
-	// reach the network as it warms up; the rules key on the builder's own tap.
-	if err := b.RedirectEgress(ctx, proxyPort, dnsPort, mark); err != nil {
-		_ = exec.Command("ip", "link", "del", b.tapName).Run()
-		return "", fmt.Errorf("base: egress: %w", err)
-	}
-	if err := b.PrewarmSnapshot(ctx, imgCfg); err != nil {
-		_ = exec.Command("ip", "link", "del", b.tapName).Run()
-		return "", fmt.Errorf("base: prewarm snapshot: %w", err)
-	}
-	// The transient VM is stopped; drop its tap (the snapshot/mem/overlay remain in
-	// baseDir, and the vsock dir stays as the canonical bind target for resumers).
-	_ = exec.Command("ip", "link", "del", b.tapName).Run()
-	if !baseSnapshotReady(baseDir) {
-		return "", fmt.Errorf("base: snapshot incomplete in %s", baseDir)
-	}
-	return baseDir, nil
 }
 
 // gatewayForGuest returns the host (gateway) end of a packed sandbox's /30 link:
@@ -362,12 +328,18 @@ func (m *microvm) MountRoot() error {
 		return fmt.Errorf("bundled rootfs image %s is empty", bundledRootfsImg)
 	}
 	m.rootfsImg = bundledRootfsImg
-	// A base-snapshot resume seeds its per-VM overlay by copying the base overlay
-	// in ResumeAgent, which overwrites whatever is at overlayImg — so building an
-	// empty ext4 here is wasted work (formatting ~2 GiB) on the claim critical
-	// path. Only the cold-boot path (no base snapshot) needs the empty upper built.
+	// A resume reopens the overlay already in the state dir (it IS the captured
+	// filesystem), so there's nothing to build — skip the ~2 GiB format.
 	if m.haveSnapshot {
 		return nil
+	}
+	// Cold boot: build a fresh empty overlay where the drives live (the per-key
+	// state dir for a keyed VM, else the jail). A keyed cold boot writes its overlay
+	// into the state dir so a later snapshot captures it in place.
+	if m.stateDir != "" {
+		if err := os.MkdirAll(m.stateDir, 0o755); err != nil {
+			return fmt.Errorf("create vm state dir: %w", err)
+		}
 	}
 	if err := buildEmptyExt4(m.overlayImg, 2048); err != nil { // 2 GiB writable upper
 		return fmt.Errorf("build overlay image: %w", err)
@@ -381,8 +353,8 @@ func (m *microvm) UnmountRoot() error {
 	// the boot/base VM's tap is in the pod netns and is deleted directly.
 	// A prealloc slot's netns (and the tap inside it) is owned by the pod's
 	// prealloc pool, which resets and reuses it; tearing it down here would race
-	// that. The jailDir (incl. the dirty CoW overlay) is still removed — the pool
-	// rebuilds an empty overlay when it resets the slot.
+	// that. The jailDir is still removed; a keyed VM's overlay/snapshot live in the
+	// state dir (under -snapshot-dir), the source of truth, and are NOT removed here.
 	if m.netnsName != "" {
 		if !m.prealloc {
 			m.teardownPackedNetMicrovm(context.Background())
@@ -390,9 +362,9 @@ func (m *microvm) UnmountRoot() error {
 	} else {
 		_ = exec.Command("ip", "link", "del", m.tapName).Run()
 	}
-	// Remove the per-VM dm-snapshot + COW loop before deleting the jail (the COW
-	// file may live there). Per-claim, so it runs for prealloc VMs too.
-	m.teardownOverlayCoW()
+	// The jail holds only ephemeral runtime state (sockets, logs). A keyed VM's
+	// overlay/snapshot live in the state dir under -snapshot-dir, which is the source
+	// of truth and deliberately NOT removed here.
 	return os.RemoveAll(m.jailDir)
 }
 
@@ -433,6 +405,18 @@ func (m *microvm) ExportWorkspace(ctx context.Context, hostMount, guestMount str
 		return nil
 	}
 	return m.serveFuse(ctx, hostMount, guestMount, port)
+}
+
+// BindWorkspaces binds the host-side 9p listeners after the per-VM netns exists,
+// so a cold-booting guest's boot-time workspace mounts (from the params drive)
+// reach a live listener. For a boot microvm (no netns) the listeners were already
+// served at ExportWorkspace, so this is a no-op; the resume path binds via
+// ApplyResumeState instead. Idempotent.
+func (m *microvm) BindWorkspaces(ctx context.Context) error {
+	if m.netnsName == "" {
+		return nil
+	}
+	return m.bindWorkspaceListeners()
 }
 
 // bindWorkspaceListeners starts the host-side 9p listener for every recorded
@@ -661,6 +645,119 @@ func (m *microvm) CaptureSnapshot(dst string, include []string) error {
 	})
 }
 
+// SnapshotLive captures snapshot parts from the running guest without stopping
+// it. It pauses the guest once so every part is read from one consistent,
+// quiescent instant, then resumes: a paused guest issues no block-device writes,
+// so the overlay can be safely copied and the VM state safely snapshotted. The
+// files tarball is captured from a copy of the overlay (never the guest's in-use
+// image) so the host loop-mount can't race the guest's filesystem. The caller
+// flushes the guest (FlushAgent) before calling so the overlay is current.
+func (m *microvm) SnapshotLive(ctx context.Context, vmDir, filesDst string, include []string) (bool, error) {
+	if vmDir == "" && filesDst == "" {
+		return false, nil
+	}
+	// Validate the VM snapshot key before disrupting the guest: the snapshot is
+	// captured in place into the VM's own state dir, so the requested key must be the
+	// one this sandbox was created with (its overlay/metadata already live there).
+	if vmDir != "" {
+		if m.stateDir == "" {
+			return false, fmt.Errorf("vm snapshot unavailable: this sandbox was created without snapshot.vm.key, so its overlay is ephemeral. Create the sandbox with snapshot.vm.key=%q (its overlay must live under -snapshot-dir to be captured and resumed in place)", strings.TrimPrefix(filepath.Base(vmDir), "vm-"))
+		}
+		if vmDir != m.stateDir {
+			return false, fmt.Errorf("vm snapshot key mismatch: this sandbox was created with key %q but the snapshot requests key %q — they must match", strings.TrimPrefix(filepath.Base(m.stateDir), "vm-"), strings.TrimPrefix(filepath.Base(vmDir), "vm-"))
+		}
+	}
+	// The pause→snapshot→resume cycle must complete even if the caller's request
+	// context is canceled mid-capture (e.g. the client hit its timeout): a skipped
+	// Resume leaves the guest paused, which looks like the VM stopped. Insulate the
+	// VMM control calls from request cancellation, bounding them with their own
+	// timeout so a wedged VMM can't hang the cycle forever.
+	vmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotControlTimeout)
+	defer cancel()
+	client := firecracker.NewClient(m.apiSock)
+
+	// The workspace 9p mounts are LEFT MOUNTED in the snapshot. sbxguest owns the
+	// kernel v9fs transport (a socketpair), so on resume the mount survives and the
+	// guest only re-establishes the host-facing connection (ReconnectWorkspaces) —
+	// no unmount/remount, so the workload's cwd is never stranded. The caller flushes
+	// the guest (FlushAgent) before this, and an interactive workload is idle at
+	// capture, so the 9p stream is quiescent at the pause (no in-flight request
+	// straddles the cut — see the nineproxy quiesce assumption).
+	if err := client.Pause(vmCtx); err != nil {
+		return false, fmt.Errorf("pause guest: %w", err)
+	}
+	// Always resume, even on a capture error: a paused guest otherwise looks stopped.
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		restored = true
+		if err := client.Resume(vmCtx); err != nil {
+			log.Printf("microvm: snapshot: resume guest: %v", err)
+		}
+	}
+	defer restore()
+
+	// VM snapshot: capture in place. The overlay + metadata drives already live in
+	// the state dir, and CreateSnapshot writes snapshot.bin/mem.bin alongside them,
+	// so firecracker records — and on resume reopens — every drive at its real path.
+	vmCaptured := false
+	if vmDir != "" {
+		if err := client.CreateSnapshot(vmCtx, m.snapFile, m.memFile); err != nil {
+			return false, fmt.Errorf("create vm snapshot: %w", err)
+		}
+		vmCaptured = true
+	}
+
+	// Files snapshot is a separate, portable tarball. It loop-mounts a copy of the
+	// overlay (taken under pause for a consistent instant) so the host never mounts
+	// the guest's live image — independent of the VM snapshot above.
+	var tempOverlay string
+	if filesDst != "" {
+		f, err := os.CreateTemp("", "sbx-snap-overlay-*.ext4")
+		if err != nil {
+			return vmCaptured, fmt.Errorf("temp overlay: %w", err)
+		}
+		tempOverlay = f.Name()
+		f.Close()
+		if err := copyFile(m.overlayImg, tempOverlay); err != nil {
+			os.Remove(tempOverlay)
+			return vmCaptured, fmt.Errorf("copy overlay: %w", err)
+		}
+	}
+	// Resume before the (slower) files loop-mount + tar.
+	restore()
+	if tempOverlay != "" {
+		defer os.Remove(tempOverlay)
+		if err := m.withOverlayMountAt(tempOverlay, false, func(upper string, mounts []snapshot.MountSource) error {
+			return snapshot.Capture(filesDst, upper, mounts, include)
+		}); err != nil {
+			return vmCaptured, fmt.Errorf("capture files: %w", err)
+		}
+	}
+	return vmCaptured, nil
+}
+
+// copyFile copies src to dst, creating dst (truncating if present). Used to
+// freeze a paused guest's overlay into a per-key VM snapshot or a temp file.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 // RestoreSnapshot extracts a captured snapshot into the freshly built overlay
 // drive before boot, so the guest comes up on the prior writable state. Must
 // run after MountRoot (which created the empty overlay) and before LaunchAgent.
@@ -675,6 +772,13 @@ func (m *microvm) RestoreSnapshot(src string) error {
 // sources resolved inside it (matching how the guest lays them out under the
 // overlay root). The mount is always unmounted and the temp dir removed.
 func (m *microvm) withOverlayMount(readonly bool, fn func(upper string, mounts []snapshot.MountSource) error) error {
+	return m.withOverlayMountAt(m.overlayImg, readonly, fn)
+}
+
+// withOverlayMountAt is withOverlayMount against an explicit overlay image path,
+// so the live snapshot action can capture from a paused-and-copied overlay
+// rather than the guest's in-use one.
+func (m *microvm) withOverlayMountAt(overlayImg string, readonly bool, fn func(upper string, mounts []snapshot.MountSource) error) error {
 	mp, err := os.MkdirTemp("", "sbx-snap-")
 	if err != nil {
 		return err
@@ -695,7 +799,7 @@ func (m *microvm) withOverlayMount(readonly bool, fn func(upper string, mounts [
 	// mount is refused ("cannot mount ... read-only") because the journal cannot be
 	// replayed. The image is quiescent here (VM stopped), so a read-write mount
 	// safely recovers it; capture only reads from it.
-	loop, err := loopMountExt4(m.overlayImg, mp)
+	loop, err := loopMountExt4(overlayImg, mp)
 	if err != nil {
 		return fmt.Errorf("mount overlay image: %w", err)
 	}
@@ -717,14 +821,10 @@ func (m *microvm) withOverlayMount(readonly bool, fn func(upper string, mounts [
 	return fn(upper, mounts)
 }
 
-// loopDevicePoolSize is how many /dev/loopN nodes ensureLoopNodes creates.
-// `mount -o loop` allocates the first free one via /dev/loop-control; a small
-// pool covers concurrent snapshot mounts within a sandbox.
-// loopDevicePoolSize must cover every loop device alive at once: the shared
-// read-only base-overlay origin plus one COW-store loop per *running* resumed VM
-// (setupOverlayCoW), which at high qps is arrival-rate x lifetime (~tens), well
-// above the handful a single sandbox's snapshot mounts need. Loop nodes are just
-// device nodes — cheap to pre-create — so size generously.
+// loopDevicePoolSize is how many /dev/loopN nodes ensureLoopNodes creates for the
+// files-snapshot loop-mount (withOverlayMountAt). `mount -o loop` allocates the
+// first free one via /dev/loop-control; loop nodes are just device nodes — cheap
+// to pre-create — so size generously to cover concurrent files captures.
 const loopDevicePoolSize = 256
 
 // ensureLoopNodes creates the loop-control char device and a pool of loop
@@ -775,7 +875,6 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 		Cmd:            cfg.ImageConfig.Cmd,
 		Env:            envSlice(cfg.ImageConfig.Env, cfg.Env),
 		WorkingDir:     cfg.ImageConfig.WorkingDir,
-		Prewarm:        cfg.Prewarm,
 		Fuse:           m.fuse,
 		ProxyPort:      m.proxyPort,
 		Mark:           m.mark,
@@ -920,158 +1019,14 @@ func (m *microvm) nsExecArgs(bin string, args []string, binds [][2]string) (stri
 	return selfExe, append(out, args...)
 }
 
-// originLoops memoizes the shared read-only loop device backing each base
-// overlay, so every per-VM dm-snapshot reads unchanged base blocks through one
-// device (and thus one page cache) instead of N — and the base overlay is opened
-// read-only exactly once and never copied.
-var (
-	originLoopMu sync.Mutex
-	originLoops  = map[string]string{}
-)
-
-// ensureOriginLoop returns a shared read-only loop device for the base overlay
-// image, creating it once per path. The origin is never written (every VM CoWs
-// to its own store), so a single RO loop is safe to share across all snapshots.
-func ensureOriginLoop(baseOverlay string) (string, error) {
-	originLoopMu.Lock()
-	defer originLoopMu.Unlock()
-	if lp := originLoops[baseOverlay]; lp != "" {
-		return lp, nil
-	}
-	lp, err := loopAttach(baseOverlay, true)
-	if err != nil {
-		return "", fmt.Errorf("attach origin loop %s: %w", baseOverlay, err)
-	}
-	originLoops[baseOverlay] = lp
-	return lp, nil
-}
-
-// overlayDMName is the dm-snapshot device name for this VM. filepath.Base(jailDir)
-// (the IP octet) is unique only WITHIN a pod; dm device names and /dev/mapper nodes
-// live in the kernel's single node-global device-mapper namespace (no mount-ns
-// isolation), so two pods on one node would otherwise both create "sbxovl-<octet>"
-// — the second create clashes and, worse, cleanOverlayCoW's recreate-first remove
-// would tear down the other pod's live device. The pod hostname (unique per pod on
-// a node) namespaces it. Stays well under DM_NAME_LEN (128).
-func (m *microvm) overlayDMName() string {
-	return "sbxovl-" + m.hostname + "-" + filepath.Base(m.jailDir)
-}
-
-// cowStorePath is where this VM's dm-snapshot COW store file lives: the jail dir
-// by default (removed with it on teardown), or a per-VM file under cowDir when set
-// (-overlay-cow-dir, e.g. a tmpfs mount for RAM-backed rootfs writes). The name
-// carries the pod hostname + IP octet so it can't collide when cowDir is shared by
-// two pods on one node (e.g. a hostPath); a per-pod emptyDir already isolates it,
-// but this is cheap defense in depth.
-func (m *microvm) cowStorePath() string {
-	if m.cowDir != "" {
-		return filepath.Join(m.cowDir, m.hostname+"-"+filepath.Base(m.jailDir)+".cow")
-	}
-	return filepath.Join(m.jailDir, "overlay.cow")
-}
-
-// setupOverlayCoW gives this resumed VM a copy-on-write view of the shared base
-// overlay WITHOUT copying it: a per-VM dm-snapshot device whose origin is the shared
-// read-only loop of the base overlay and whose exception (COW) store is a per-VM
-// sparse file. Unchanged blocks are read straight from the shared origin; only the
-// guest's own writes land in the per-VM store. It returns the /dev/mapper path to
-// bind over the canonical overlay path the snapshot references.
-//
-// The base overlay is the read-only origin — it is never copied or written. With
-// -overlay-cow-dir on a tmpfs the COW store is RAM-backed, so the guest's rootfs
-// writes never touch disk either.
-//
-// All of this is done with direct kernel ioctls (loopAttach / dmCreateSnapshot in
-// dmsnapshot_linux.go) — no `losetup`/`dmsetup` subprocess and no fork on the resume
-// critical path.
-func (m *microvm) setupOverlayCoW() (string, error) {
-	if err := ensureLoopNodes(); err != nil {
-		return "", fmt.Errorf("loop nodes: %w", err)
-	}
-	baseOverlay := filepath.Join(m.baseDir, baseOverlayName)
-	fi, err := os.Stat(baseOverlay)
-	if err != nil {
-		return "", fmt.Errorf("stat base overlay: %w", err)
-	}
-	origin, err := ensureOriginLoop(baseOverlay)
-	if err != nil {
-		return "", err
-	}
-	dmName := m.overlayDMName()
-	cowPath := m.cowStorePath()
-	if err := os.MkdirAll(filepath.Dir(cowPath), 0o755); err != nil {
-		return "", fmt.Errorf("create cow dir: %w", err)
-	}
-	// Recreate cleanly: drop any dm device or COW loop left by a prior incarnation
-	// of this octet (e.g. a crashed teardown) so the create below doesn't clash on
-	// the dm name — and so os.Create can't truncate a file a stale loop still backs.
-	cleanOverlayCoW(dmName, cowPath)
-	// Per-VM sparse COW store, sized to the origin so it can never overflow (full
-	// divergence = full origin); sparse, so it costs only what the guest writes.
-	f, err := os.Create(cowPath)
-	if err != nil {
-		return "", fmt.Errorf("create cow store: %w", err)
-	}
-	if err := f.Truncate(fi.Size()); err != nil {
-		f.Close()
-		return "", fmt.Errorf("size cow store: %w", err)
-	}
-	f.Close()
-	cowLoop, err := loopAttach(cowPath, false)
-	if err != nil {
-		return "", fmt.Errorf("attach cow loop: %w", err)
-	}
-	m.cowLoop = cowLoop
-	// dm-snapshot: origin = shared RO base-overlay loop, COW = this VM's loop. Device
-	// size = origin size (in 512-byte sectors), matching the canonical overlay the
-	// snapshot expects.
-	dev, err := dmCreateSnapshot(dmName, origin, cowLoop, fi.Size()/512)
-	if err != nil {
-		_ = loopDetach(cowLoop)
-		m.cowLoop = ""
-		return "", fmt.Errorf("dm snapshot %s: %w", dmName, err)
-	}
-	return dev, nil
-}
-
-// cleanOverlayCoW best-effort removes a stale per-VM dm-snapshot device (by name)
-// and detaches any loop device still backing a previous COW file at cowPath. Used
-// as a recreate-first step so a leaked octet (e.g. a crashed teardown) starts clean
-// instead of clashing on the dm name. Order matters: drop the dm device first (it
-// holds the COW loop), then detach the loop.
-func cleanOverlayCoW(dmName, cowPath string) {
-	_ = dmRemove(dmName)
-	for _, lp := range loopFindByBacking(cowPath) {
-		_ = loopDetach(lp)
-	}
-}
-
-// teardownOverlayCoW removes the per-VM dm-snapshot device and detaches its COW
-// loop. The shared origin loop is left in place (reused by other VMs). Best-effort.
-func (m *microvm) teardownOverlayCoW() {
-	if m.cowLoop == "" {
-		return
-	}
-	_ = dmRemove(m.overlayDMName())
-	_ = loopDetach(m.cowLoop)
-	m.cowLoop = ""
-	// The COW file is removed with the jail dir by UnmountRoot when it lives there;
-	// when redirected (-overlay-cow-dir, e.g. a tmpfs) it's outside the jail, so drop
-	// it here to avoid leaking the backing file.
-	if m.cowDir != "" {
-		_ = os.Remove(m.cowStorePath())
-	}
-}
-
 // WaitReady blocks until the in-guest agent is ready (its readiness port
 // accepts a connection) or ctx is cancelled.
 func (m *microvm) WaitReady(ctx context.Context) error { return m.acceptReady(ctx) }
 
 // acceptReady polls the guest's readiness port (GuestReadyPort), which the guest
-// opens only once warm (sbxguest.serveReady, gated on prewarmReady). A successful
-// TCP connect is the ready edge — readiness by polling, since the guest can no
-// longer dial out over vsock. Shared by the cold-boot WaitReady and
-// PrewarmSnapshot, which both wait for the same edge.
+// opens once its agent is serving (sbxguest.serveReady). A successful TCP connect
+// is the ready edge — readiness by polling, since the guest can no longer dial out
+// over vsock.
 func (m *microvm) acceptReady(ctx context.Context) error {
 	for {
 		dialCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
@@ -1089,79 +1044,21 @@ func (m *microvm) acceptReady(ctx context.Context) error {
 	}
 }
 
-// PrewarmSnapshot boots a guest running the image entrypoint from the
-// eagerly-prepared overlay (no workspaces yet — they aren't known), waits for it
-// to signal ready (which sbxguest delays, on a prewarm boot, until the workload
-// writes /run/hiver/prewarm-ready), pauses it, writes a full VM snapshot, and
-// stops the transient VMM. The resumed guest inherits the warm, already-running
-// workload. The overlay drive and snapshot/mem files are left in place for a
-// later ResumeAgent. See the Isolation interface for how this fits the prewarm
-// path.
-func (m *microvm) PrewarmSnapshot(ctx context.Context, imgCfg *runc.ImageConfig) error {
-	// Boot the workload with the image entrypoint and the prewarm flag: the guest
-	// comes up, assembles its root, runs the entrypoint, and signals ready only
-	// once the workload is warm. This also opens the readiness-beacon listener
-	// (m.readyLn).
-	bin, args, err := m.LaunchAgent(AgentConfig{ImageConfig: imgCfg, Prewarm: true})
-	if err != nil {
-		return fmt.Errorf("prepare prewarm boot: %w", err)
-	}
-
-	proc := exec.CommandContext(ctx, bin, args...)
-	proc.Stdout, proc.Stderr = os.Stderr, os.Stderr
-	if err := proc.Start(); err != nil {
-		return fmt.Errorf("start prewarm vm: %w", err)
-	}
-	// Always tear the transient VM down and clear the API socket + vsock UDS so
-	// ResumeAgent's fresh VMM can bind them. Idempotent (callable on the success
-	// path and via defer).
-	var stopOnce bool
-	stop := func() {
-		if stopOnce {
-			return
-		}
-		stopOnce = true
-		_ = proc.Process.Kill()
-		_ = proc.Wait()
-		_ = os.Remove(m.apiSock)
-	}
-	defer stop()
-
-	client := firecracker.NewClient(m.apiSock)
-	if err := client.WaitAPIReady(ctx); err != nil {
-		return fmt.Errorf("prewarm vm api: %w", err)
-	}
-	if err := m.acceptReady(ctx); err != nil {
-		return fmt.Errorf("prewarm vm ready: %w", err)
-	}
-	// Pause quiesces guest memory so the snapshot is consistent; CreateSnapshot
-	// rejects a running VM.
-	if err := client.Pause(ctx); err != nil {
-		return fmt.Errorf("pause prewarm vm: %w", err)
-	}
-	if err := client.CreateSnapshot(ctx, m.snapFile, m.memFile); err != nil {
-		return fmt.Errorf("create snapshot: %w", err)
-	}
-	stop()
-
-	m.mu.Lock()
-	m.haveSnapshot = true
-	m.mu.Unlock()
-	return nil
-}
-
-// HasPrewarmSnapshot reports whether PrewarmSnapshot produced a snapshot.
+// HasPrewarmSnapshot reports whether this VM's state dir holds a snapshot
+// (set in newMicroVM), so the resume path is taken instead of a cold boot.
 func (m *microvm) HasPrewarmSnapshot() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.haveSnapshot
 }
 
-// ResumeAgent prepares a snapshot resume: it returns a cgroup-wrapped firecracker
-// command started with only an API socket (no --config-file), into which
-// ResumeReady loads the snapshot. The same overlay/tap/cgroup/vsock UDS from the
-// prewarm boot are reused (the resume stays in-pod), so only the snapshot's
-// machine + memory state needs restoring.
+// ResumeAgent prepares a VM-snapshot resume: it returns a cgroup-wrapped
+// firecracker command started with only an API socket (no --config-file), into
+// which ResumeReady loads the snapshot from the state dir. The overlay/metadata
+// drives still live in the state dir at the paths firecracker recorded, so the
+// resume reopens them in place — no copy, no per-VM CoW, no bind. (Single owner
+// per key: the overlay is written in place by the resumed VM.) The tap is remapped
+// on load (ResumeReady).
 func (m *microvm) ResumeAgent() (string, []string, error) {
 	// Firecracker opens the log file for appending rather than creating it.
 	if err := os.WriteFile(m.logFile, nil, 0o644); err != nil {
@@ -1169,45 +1066,17 @@ func (m *microvm) ResumeAgent() (string, []string, error) {
 	}
 	m.applyCgroupLimits()
 	bin, args := firecracker.CommandNoConfig(m.fcBin, m.apiSock)
-	if m.baseDir == "" {
-		// In-place prewarm resume: this VM reuses its own snapshot/overlay/tap/vsock
-		// from PrewarmSnapshot, so no per-VM remapping is needed.
-		wbin, wargs := m.cgroupWrap(bin, args)
-		return wbin, wargs, nil
-	}
-	// Pack base resume: every VM loads the same base snapshot, which recorded the
-	// base builder's canonical overlay path. Give this VM a private copy-on-write
-	// overlay seeded from the base and bind it over that canonical path inside a
-	// per-VM mount namespace so the VMM opens per-VM files. The tap is remapped on
-	// load (ResumeReady); guest memory is the shared base mem.bin, kept COW-private
-	// per VM by the File backend. (Host<->guest channels are TCP over the netns, so
-	// there is no vsock dir to bind.)
 	if err := os.MkdirAll(m.jailDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("create jail dir: %w", err)
 	}
-	// Zero-copy CoW: a per-VM dm-snapshot whose origin is the shared read-only loop of
-	// the base overlay and whose exception store is a per-VM (tmpfs) COW file. The base
-	// overlay is NEVER copied — unchanged blocks are read straight from the shared
-	// origin; only this guest's writes diverge into its own store. Bind the resulting
-	// /dev/mapper device over the canonical overlay path the snapshot opens so the VMM
-	// opens per-VM. There is deliberately no copy fallback: if dm setup fails we error
-	// rather than silently fall back to copying the base overlay per VM.
-	overlayBackend := filepath.Join(m.baseDir, baseOverlayName)
-	dmDev, err := m.setupOverlayCoW()
-	if err != nil {
-		return "", nil, fmt.Errorf("overlay CoW: %w", err)
-	}
-	binds := [][2]string{
-		{dmDev, overlayBackend},
-	}
-	wbin, wargs := m.cgroupUnshareWrap(bin, args, binds)
+	wbin, wargs := m.cgroupWrap(bin, args)
 	return wbin, wargs, nil
 }
 
-// ResumeReady loads the prewarm snapshot into the VMM started by ResumeAgent and
-// resumes the guest (resume_vm=true). The resumed guest is already past its
-// readiness beacon, so a successful load is the ready edge — there is no beacon
-// to wait on as on the cold path.
+// ResumeReady loads the staged VM snapshot into the VMM started by ResumeAgent and
+// resumes the guest (resume_vm=true). The resumed guest is already serving, so a
+// successful load is the ready edge — there is no beacon to wait on as on the cold
+// path.
 func (m *microvm) ResumeReady(ctx context.Context) error {
 	client := firecracker.NewClient(m.apiSock)
 	if err := client.WaitAPIReady(ctx); err != nil {
@@ -1224,27 +1093,21 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 	if err := client.PutLogger(ctx, firecracker.Logger{LogPath: m.logFile, Level: "Info"}); err != nil {
 		log.Printf("microvm: resume: configure logger: %v", err)
 	}
-	snap, mem := m.snapFile, m.memFile
-	var overrides []firecracker.NetworkOverride
-	if m.baseDir != "" {
-		// Pack base resume: load the shared base snapshot + memory, and repoint the
-		// snapshotted eth0 (recorded on the base builder's tap) at this VM's own tap
-		// so its egress carries a distinct source IP. The overlay/vsock are already
-		// remapped via the mount-namespace binds set up in ResumeAgent.
-		snap = filepath.Join(m.baseDir, baseSnapshotName)
-		mem = filepath.Join(m.baseDir, baseMemName)
-		overrides = append(overrides, firecracker.NetworkOverride{IfaceID: "eth0", HostDevName: m.tapName})
-	}
-	if err := client.LoadSnapshot(ctx, snap, mem, true, overrides...); err != nil {
+	// Load the snapshot + memory from the state dir, and repoint the snapshotted
+	// eth0 (recorded on the capturing VM's tap) at this VM's own tap so its egress
+	// carries a distinct source IP. The overlay/metadata drives are reopened at
+	// their recorded state-dir paths directly.
+	override := firecracker.NetworkOverride{IfaceID: "eth0", HostDevName: m.tapName}
+	if err := client.LoadSnapshot(ctx, m.snapFile, m.memFile, true, override); err != nil {
 		return fmt.Errorf("load snapshot: %w", err)
 	}
 	return nil
 }
 
-// ApplyResumeState delivers the post-resume setup the prewarm snapshot could not
-// carry — all unknown at snapshot time (see ControlRequest). It splits the work:
-// the ready-critical state (workload env so guest execs resolve their PATH; the
-// clock, frozen at capture; the pack re-IP) goes in a synchronous control RPC that
+// ApplyResumeState delivers the post-resume setup the VM snapshot could not carry
+// — all unknown at snapshot time (see ControlRequest). It splits the work: the
+// ready-critical state (workload env so guest execs resolve their PATH; the clock,
+// frozen at capture; the per-VM re-IP) goes in a synchronous control RPC that
 // gates readiness, while the config's workspace mounts (m.fuse) are applied
 // ASYNCHRONOUSLY so a slow 9p mount doesn't hold up "ready". Deferring the mount is
 // safe on the resume path: the entrypoint was started at base-build time, before
@@ -1261,19 +1124,14 @@ func (m *microvm) ApplyResumeState(ctx context.Context, rs ResumeState) error {
 	// over the control RPC below.
 	guestEntrypoint, guestCmd, guestCwd := rs.Entrypoint, rs.Cmd, rs.Cwd
 	if rs.Tty && len(rs.Entrypoint) > 0 {
-		m.mu.Lock()
-		m.ttyEntrypoint = append(append([]string(nil), rs.Entrypoint...), rs.Cmd...)
-		m.ttyCwd = rs.Cwd
-		m.ttyEnv = append([]string(nil), rs.Env...)
-		m.mu.Unlock()
+		m.PrepareEntrypointTTY(append(append([]string(nil), rs.Entrypoint...), rs.Cmd...), rs.Cwd, rs.Env)
 		guestEntrypoint, guestCmd, guestCwd = nil, nil, ""
 	}
-	// Phase 1 (gates readiness): env + clock + the pack re-IP + any non-tty
-	// entrypoint override, synchronously, self-healed until the guest acks. A pack
-	// base resume always needs this even with no env (the re-IP), hence the baseDir
-	// condition; a non-tty override forces it too so the resumed workload actually
-	// runs. Workspace mounts are deliberately excluded here — they go async below.
-	if len(rs.Env) > 0 || len(unmounts) > 0 || len(guestEntrypoint) > 0 || m.baseDir != "" {
+	// Phase 1 (gates readiness): env + clock + the per-VM re-IP + any non-tty
+	// entrypoint override + queued unmounts, synchronously, self-healed until the
+	// guest acks. A resume always needs this even with no env (the clock fix + re-IP),
+	// hence the haveSnapshot condition.
+	if len(rs.Env) > 0 || len(unmounts) > 0 || len(guestEntrypoint) > 0 || m.haveSnapshot {
 		req := firecracker.ControlRequest{
 			Env:               rs.Env,
 			UnmountWorkspaces: unmounts,
@@ -1287,29 +1145,42 @@ func (m *microvm) ApplyResumeState(ctx context.Context, rs ResumeState) error {
 		// The guest acked the unmounts; drop them so a later RPC doesn't resend.
 		m.clearPendingUnmount(unmounts)
 	}
-	// Phase 2 (off the ready path): bring up the host 9p listeners, then mount the
-	// config's workspaces — both deferred off the ready path. Binding the listeners
-	// (serveFuse, which enters the VM netns) is only needed for the guest to attach
-	// during the mount RPC, so it doesn't belong on the ready path; bind-then-mount
-	// here keeps the listener up before the guest dials. Deferring is safe on resume:
-	// the entrypoint started at base-build time, before any per-sandbox workspace
-	// existed, so it can't depend on the mount at startup (cold boot, which can,
-	// mounts synchronously in bootstrap). Self-heals via the retry loop, bounded by
-	// the sandbox ctx (teardown cancels it); the mount is idempotent, so a later
-	// config-apply re-driving it is safe.
-	if len(fuse) > 0 {
-		go func() {
-			tb := time.Now()
-			if err := m.bindWorkspaceListeners(); err != nil {
-				log.Printf("microvm: async bind workspace listeners: %v", err)
-				return
-			}
-			log.Printf("microvm: async bind ip=%s bind=%dms", m.sourceIP, time.Since(tb).Milliseconds())
-			if err := m.applyControlRetry(ctx, "workspace mount", firecracker.ControlRequest{MountWorkspaces: fuse}); err != nil {
-				log.Printf("microvm: async workspace mount: %v", err)
-			}
-		}()
+	if len(fuse) == 0 {
+		return nil
 	}
+	// Bring up the host 9p listeners (serveFuse enters the VM netns), then attach the
+	// guest to them. Two cases:
+	//
+	//   - Initial resume (MountWorkspacesSync): the guest kept its 9p mounts alive
+	//     across the snapshot (sbxguest owns the kernel transport via a socketpair),
+	//     so the mount — and the entrypoint's cwd on it — never broke. We only
+	//     RE-ESTABLISH the host-facing connection: the guest dials the re-bound
+	//     listener and replays the live 9p session (ReconnectWorkspaces). Synchronous
+	//     so the workspace is serving again before readiness. If the guest has no live
+	//     proxy for a path (e.g. it was never mounted), it falls back to a fresh mount.
+	//   - Live config-apply: a workspace ADDED to a running sandbox has no guest mount
+	//     yet, so it is a fresh MountWorkspaces, applied asynchronously (idempotent
+	//     re-drive) to keep the apply off the ready path.
+	bindAndAttach := func(reconnect bool) error {
+		tb := time.Now()
+		if err := m.bindWorkspaceListeners(); err != nil {
+			return fmt.Errorf("bind workspace listeners: %w", err)
+		}
+		log.Printf("microvm: bind ip=%s bind=%dms reconnect=%v", m.sourceIP, time.Since(tb).Milliseconds(), reconnect)
+		req := firecracker.ControlRequest{MountWorkspaces: fuse}
+		if reconnect {
+			req = firecracker.ControlRequest{ReconnectWorkspaces: fuse}
+		}
+		return m.applyControlRetry(ctx, "workspace attach", req)
+	}
+	if rs.MountWorkspacesSync {
+		return bindAndAttach(true)
+	}
+	go func() {
+		if err := bindAndAttach(false); err != nil {
+			log.Printf("microvm: async workspace mount: %v", err)
+		}
+	}()
 	return nil
 }
 
@@ -1394,9 +1265,9 @@ func (m *microvm) applyResumeOnce(ctx context.Context, req firecracker.ControlRe
 	// UnixNano corrects the guest's post-resume clock skew (frozen at snapshot
 	// capture). Stamped per attempt so it lands before the workload runs.
 	req.UnixNano = time.Now().UnixNano()
-	if m.baseDir != "" {
-		// Re-address eth0 to this VM's pod-local /30 (the base snapshot baked the
-		// builder's address) so egress carries a distinct source for sbxproxy's
+	if m.haveSnapshot {
+		// Re-address eth0 to this VM's pod-local /30 (the snapshot baked the
+		// capturing VM's address) so egress carries a distinct source for sbxproxy's
 		// per-source ACL, and DNS follows the new gateway.
 		req.GuestIP, req.GatewayIP = m.guestIP, m.gatewayIP
 	}
@@ -1455,6 +1326,9 @@ func (m *microvm) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, func(
 	if cfg.TTY {
 		args = append(args, "-tty")
 	}
+	if cfg.SessionID != "" {
+		args = append(args, "-session", cfg.SessionID)
+	}
 	if cfg.Env != nil {
 		for k, v := range *cfg.Env {
 			args = append(args, "-env", k+"="+v)
@@ -1467,9 +1341,26 @@ func (m *microvm) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, func(
 	return cmd, func() {}, nil
 }
 
+// entrypointSessionID is the fixed detachable-session id for the tty entrypoint,
+// so a resume re-attaches the warm process rather than relaunching it.
+const entrypointSessionID = "entrypoint"
+
+// PrepareEntrypointTTY records a tty entrypoint override so EntrypointTTYBridge
+// can run it as a guest tty exec session. Used on the cold-boot path (where the
+// guest console runs the image default keepalive); ApplyResumeState records the
+// same on the resume path.
+func (m *microvm) PrepareEntrypointTTY(argv []string, cwd string, env []string) {
+	m.mu.Lock()
+	m.ttyEntrypoint = append([]string(nil), argv...)
+	m.ttyCwd = cwd
+	m.ttyEnv = append([]string(nil), env...)
+	m.mu.Unlock()
+}
+
 // EntrypointTTYBridge runs the recorded `tty: true` entrypoint override (stashed
-// by ApplyResumeState) as a tty exec session in the guest, returning the host
-// bridge command the caller wraps in a pty so /v1/exec-stream can attach to it.
+// by ApplyResumeState or PrepareEntrypointTTY) as a tty exec session in the guest,
+// returning the host bridge command the caller wraps in a pty so /v1/exec-stream
+// can attach to it.
 // The override runs under the guest's exec handler (a guest pty over the exec
 // channel) rather than guest-side on the control channel, which has no terminal.
 // Returns a nil command when the config requested no tty override.
@@ -1487,7 +1378,9 @@ func (m *microvm) EntrypointTTYBridge(ctx context.Context) (*exec.Cmd, func(), e
 	// process, matching how the cold/container path runs the entrypoint directly.
 	// shellJoin single-quotes each arg so the exact argv survives the `sh -c`.
 	command := "exec " + shellJoin(argv)
-	return m.ExecCmd(ctx, ExecConfig{Command: command, Cwd: &cwd, Env: &env, TTY: true})
+	// entrypointSessionID names the detachable session so a snapshot resume
+	// re-attaches the warm entrypoint process instead of relaunching it cold.
+	return m.ExecCmd(ctx, ExecConfig{Command: command, Cwd: &cwd, Env: &env, TTY: true, SessionID: entrypointSessionID})
 }
 
 // envSliceToMap turns "KEY=VALUE" entries into the map ExecConfig.Env wants.

@@ -245,38 +245,92 @@ export const EgressRule = z.object({
 });
 type _AssertEgressRule = Expect<Equal<z.infer<typeof EgressRule>, EgressRule>>;
 
-/**
- * Snapshot configuration. A snapshot is captured automatically before the sandbox shuts down
- * and restored before the sandbox starts.
- */
-export interface Snapshot {
-  /** Key identifying the snapshot to restore when the sandbox starts. When omitted, no snapshot is restored on start. */
-  restore_key?: string;
-  /** Key under which the snapshot is saved on shutdown. When omitted, `restore_key` is used. */
-  write_key?: string;
+/** microVM-state snapshot. When a VM snapshot exists under `key`, a get-or-create
+ * resumes it instead of cold-booting; otherwise the VM cold-boots and the client
+ * captures the snapshot explicitly. Ignored by the container backend. */
+export interface SnapshotVM {
+  /** Key identifying the VM-state snapshot. */
+  key: string;
+}
+export const SnapshotVM = z.object({
+  key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+});
+type _AssertSnapshotVM = Expect<Equal<z.infer<typeof SnapshotVM>, SnapshotVM>>;
+
+/** Writable-filesystem snapshot, captured as a portable gzip-tar. Restored when
+ * the sandbox starts and written by the snapshot action (or on shutdown when
+ * `write_on_shutdown` is set). */
+export interface SnapshotFiles {
+  /** Key identifying the files snapshot. */
+  key: string;
+  /** When true, the files snapshot is captured on shutdown or termination. When
+   * false (the default), files are captured only by an explicit snapshot action. */
+  write_on_shutdown?: boolean;
   /** Glob patterns specifying which paths to include in the snapshot (e.g. `/home/user/*`). */
   include?: string[];
   /**
-   * Mount path of a file system (see `SandboxConfig.fs`) where snapshot
-   * tarballs are written and read, instead of the host's local snapshot
-   * directory. Point it at an `internal`, remote-backed file system to persist
-   * and restore snapshots through a FUSE drive.
+   * Mount path of a file system (see `SandboxConfig.fs`) where the files tarball
+   * is written and read, instead of the host's local snapshot directory. Point it
+   * at an `internal`, remote-backed file system to persist and restore through a
+   * FUSE drive.
    */
   mount?: string;
 }
-export const Snapshot = z.object({
-  restore_key: z
-    .string()
-    .regex(/^[A-Za-z0-9_-]{1,64}$/)
-    .optional(),
-  write_key: z
-    .string()
-    .regex(/^[A-Za-z0-9_-]{1,64}$/)
-    .optional(),
+export const SnapshotFiles = z.object({
+  key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  write_on_shutdown: z.boolean().optional(),
   include: z.array(z.string()).min(1).optional(),
   mount: z.string().regex(/^\/.+/).optional(),
 });
+type _AssertSnapshotFiles = Expect<Equal<z.infer<typeof SnapshotFiles>, SnapshotFiles>>;
+
+/**
+ * Snapshot configuration. It has two independent parts: `vm` captures the full
+ * microVM state (a no-op for the container backend) and `files` captures the
+ * writable filesystem as a portable tarball. Either may be present alone, both,
+ * or neither.
+ */
+export interface Snapshot {
+  /** microVM-state snapshot (a no-op for the container backend). */
+  vm?: SnapshotVM;
+  /** Writable-filesystem snapshot. */
+  files?: SnapshotFiles;
+}
+export const Snapshot = z.object({
+  vm: SnapshotVM.optional(),
+  files: SnapshotFiles.optional(),
+});
 type _AssertSnapshot = Expect<Equal<z.infer<typeof Snapshot>, Snapshot>>;
+
+/** Outcome of capturing one snapshot part. */
+export interface SnapshotPartResult {
+  /** Whether this part was captured. False (with `reason`) when unsupported on the active backend. */
+  captured: boolean;
+  /** Key the part was written under. */
+  key: string;
+  /** Size of the captured artifact in bytes, when known. */
+  bytes?: number;
+  /** Why the part was not captured, when `captured` is false. */
+  reason?: string;
+}
+export const SnapshotPartResult = z.object({
+  captured: z.boolean(),
+  key: z.string(),
+  bytes: z.number().optional(),
+  reason: z.string().optional(),
+});
+type _AssertSnapshotPartResult = Expect<Equal<z.infer<typeof SnapshotPartResult>, SnapshotPartResult>>;
+
+/** Outcome of a snapshot action, reported independently per requested part. */
+export interface SnapshotResult {
+  vm?: SnapshotPartResult;
+  files?: SnapshotPartResult;
+}
+export const SnapshotResult = z.object({
+  vm: SnapshotPartResult.optional(),
+  files: SnapshotPartResult.optional(),
+});
+type _AssertSnapshotResult = Expect<Equal<z.infer<typeof SnapshotResult>, SnapshotResult>>;
 
 /** Hive sandbox configuration. */
 export interface SandboxConfig {

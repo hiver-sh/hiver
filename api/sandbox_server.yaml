@@ -715,6 +715,36 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SandboxInfo' }
 
+  /v1/{key}/snapshot:
+    parameters:
+      - $ref: '#/components/parameters/Key'
+    post:
+      tags: [Configuration]
+      summary: Capture a snapshot of the running sandbox.
+      operationId: snapshot
+      description: |
+        Captures a snapshot of the running sandbox now, without stopping it. The
+        request body selects which parts to capture: `vm` (full microVM state,
+        keyed for later resume; a no-op on container isolation) and/or `files`
+        (the writable filesystem as a tarball). Each part is keyed independently
+        and reported independently in the response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './config.yaml#/components/schemas/Snapshot' }
+      responses:
+        '200':
+          description: Snapshot captured.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/SnapshotResult' }
+        '400':
+          description: The request did not select any snapshot part.
+          content:
+            application/json:
+              schema: { $ref: './config.yaml#/components/schemas/Error' }
+
   /v1/{key}/ping:
     parameters:
       - $ref: '#/components/parameters/Key'

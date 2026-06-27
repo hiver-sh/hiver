@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/api/handlers"
@@ -13,7 +12,7 @@ import (
 func strptr(s string) *string { return &s }
 
 func TestSupervisorRegisterAndResolve(t *testing.T) {
-	sup := newSupervisor(false)
+	sup := newSupervisor()
 	sup.bootComplete()
 	sb := handlers.NewSandbox("default", 0)
 	sup.register(sb, "img:1", func() {})
@@ -31,7 +30,7 @@ func TestSupervisorRegisterAndResolve(t *testing.T) {
 }
 
 func TestSupervisorCreateIdempotent(t *testing.T) {
-	sup := newSupervisor(false)
+	sup := newSupervisor()
 	sup.bootComplete()
 	sb := handlers.NewSandbox("default", 0)
 	sup.register(sb, "img:1", func() {})
@@ -44,57 +43,19 @@ func TestSupervisorCreateIdempotent(t *testing.T) {
 }
 
 func TestSupervisorCreateOccupied(t *testing.T) {
-	// A non-prewarmed pod (claims==nil) already hosts its sandbox; a new key has
-	// no free slot.
-	sup := newSupervisor(false)
+	// A non-pack pod already hosts its single sandbox; a new key has no free slot.
+	sup := newSupervisor()
 	sup.bootComplete()
 	sup.register(handlers.NewSandbox("default", 0), "img:1", func() {})
 
 	_, err := sup.Create(context.Background(), "other", gen.SandboxConfig{Image: strptr("img:1")})
 	if !errors.Is(err, handlers.ErrPodOccupied) {
-		t.Fatalf("Create(new key, non-prewarm) err = %v; want ErrPodOccupied", err)
-	}
-}
-
-func TestSupervisorCreatePrewarmClaim(t *testing.T) {
-	// A prewarmed pod hands the claim to a consumer (here standing in for main),
-	// which registers the sandbox under the claimed key and signals completion.
-	sup := newSupervisor(true)
-	sup.bootComplete()
-
-	go func() {
-		cl := <-sup.claims
-		sb := handlers.NewSandbox(cl.key, 0)
-		sup.register(sb, "img:1", func() {})
-		cl.done <- nil
-	}()
-
-	sb, err := sup.Create(context.Background(), "agent-1", gen.SandboxConfig{})
-	if err != nil {
-		t.Fatalf("Create(prewarm claim) err = %v; want nil", err)
-	}
-	if sb == nil || sb.Key() != "agent-1" {
-		t.Fatalf("Create(prewarm claim) sandbox = %v; want key agent-1", sb)
-	}
-	// register closed the claim window: a second create finds no free slot.
-	if _, err := sup.Create(context.Background(), "agent-2", gen.SandboxConfig{}); !errors.Is(err, handlers.ErrPodOccupied) {
-		t.Fatalf("second Create err = %v; want ErrPodOccupied", err)
-	}
-}
-
-func TestSupervisorCreateClaimCancel(t *testing.T) {
-	// With no consumer, Create blocks on the claim handoff until ctx is cancelled.
-	sup := newSupervisor(true)
-	sup.bootComplete()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := sup.Create(ctx, "agent-1", gen.SandboxConfig{}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Create(no consumer) err = %v; want DeadlineExceeded", err)
+		t.Fatalf("Create(new key, non-pack) err = %v; want ErrPodOccupied", err)
 	}
 }
 
 func TestSupervisorDelete(t *testing.T) {
-	sup := newSupervisor(false)
+	sup := newSupervisor()
 	sup.bootComplete()
 	cancelled := false
 	sup.register(handlers.NewSandbox("default", 0), "img:1", func() { cancelled = true })

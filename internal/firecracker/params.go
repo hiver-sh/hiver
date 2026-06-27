@@ -16,13 +16,6 @@ type GuestParams struct {
 	Env        []string `json:"env"`
 	WorkingDir string   `json:"working_dir"`
 
-	// Prewarm marks a prewarm boot: the guest runs the entrypoint as usual but
-	// delays its host readiness beacon until the workload writes
-	// prewarmReadyFile (/run/hiver/prewarm-ready), so the host snapshots a warm
-	// guest. On a cold/resume boot it is false and the beacon fires as soon as
-	// the workload is launched.
-	Prewarm bool `json:"prewarm,omitempty"`
-
 	// Fuse lists the workspaces the guest mounts over 9p-over-vsock before
 	// starting the workload. The sbxfuse daemons run on the host; each mount
 	// is exported on its own vsock port (GuestFuse.Port) which the guest

@@ -1,5 +1,6 @@
 import {
   Activity,
+  Camera,
   Filter,
   FolderTree,
   Loader2,
@@ -27,6 +28,7 @@ import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
 import type { ConfigProposal } from "@/components/SandboxConfigDialog";
 import { Terminal, type TerminalSink } from "@/components/Terminal";
 import { PortUsageDialog } from "@/components/PortUsageDialog";
+import { SnapshotDialog } from "@/components/SnapshotDialog";
 import { FileExplorer } from "@/components/FileExplorer";
 import {
   TimelineView,
@@ -164,6 +166,7 @@ export function SandboxDetail({
   // side. `contentWidth === 0` means we haven't measured yet — stay horizontal.
   const vertical = contentWidth > 0 && contentWidth < requiredWidth;
   const [showConfig, setShowConfig] = useState(false);
+  const [showSnapshot, setShowSnapshot] = useState(false);
   const [configProposal, setConfigProposal] = useState<
     ConfigProposal | undefined
   >();
@@ -385,7 +388,8 @@ export function SandboxDetail({
                     if (last && last.id >= event.id) return prev;
                     return [...prev, event];
                   });
-                  if (!player) void appendEvent(`${sandbox.id}:${sandbox.key}`, event);
+                  if (!player)
+                    void appendEvent(`${sandbox.id}:${sandbox.key}`, event);
                 } catch {
                   // ignore malformed frame
                 }
@@ -567,6 +571,14 @@ export function SandboxDetail({
             title="Toggle file explorer"
           >
             <FolderTree className="h-4 w-4" />
+          </Button>
+          <Button
+            size="sm"
+            variant={showSnapshot ? "secondary" : "ghost"}
+            onClick={() => setShowSnapshot(true)}
+            title="Capture snapshot"
+          >
+            <Camera className="h-4 w-4" />
           </Button>
           <Button
             size="sm"
@@ -941,6 +953,15 @@ export function SandboxDetail({
           if (!open) setConfigProposal(undefined);
         }}
         proposal={configProposal}
+      />
+
+      <SnapshotDialog
+        sandboxId={sandbox.id}
+        sandboxKey={sandbox.key}
+        serverUrl={serverUrl}
+        gatewayUrl={gatewayUrl}
+        open={showSnapshot}
+        onOpenChange={setShowSnapshot}
       />
     </div>
   );

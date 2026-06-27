@@ -30,16 +30,15 @@ const (
 	// read its args and image.
 	sandboxContainerName = "sandbox"
 
-	// packArg and prewarmArg are the sandboxd flags that mark a pod as a parked,
-	// multi-tenant prewarm host: --pack runs many sandboxes in the one pod, and
-	// --prewarm boots sandboxd and waits for the first POST /v1/{key} before
-	// launching a workload. A pod can serve prewarmed sandboxes for an image only
-	// when its container carries BOTH flags, so prewarm discovery requires both.
-	// In the Kubernetes runtime every sandbox pod is a prewarm host managed by a
-	// per-image Deployment — the controller never creates pods itself (design §7);
-	// creates are routed by the gateway straight to the image's Service.
-	packArg    = "--pack"
-	prewarmArg = "--prewarm"
+	// packArg is the sandboxd flag that marks a pod as a parked, multi-tenant pack
+	// host: --pack brings up the shared sidecars and parks, then runs many
+	// same-image sandboxes in the one pod, each created on demand by a POST
+	// /v1/{key}. A pod can serve sandboxes for an image only when its container
+	// carries this flag, so pack discovery requires it. In the Kubernetes runtime
+	// every sandbox pod is a pack host managed by a per-image Deployment — the
+	// controller never creates pods itself (design §7); creates are routed by the
+	// gateway straight to the image's Service.
+	packArg = "--pack"
 )
 
 // sandboxHTTPClient talks to sandboxd over the pod network. A keep-alive
@@ -287,14 +286,13 @@ func (r *K8sRuntime) listPackPods(ctx context.Context) ([]*corev1.Pod, error) {
 	return packs, nil
 }
 
-// prewarmPodImage reports the image a pod can serve as a prewarm host, or
-// ok=false when the pod is not one. A pod qualifies only when its sandbox
-// container carries BOTH the --pack and --prewarm args; the served image is then
-// that container's image. A pod missing either arg, or with no image, does not
-// qualify.
+// prewarmPodImage reports the image a pod can serve as a pack host, or ok=false
+// when the pod is not one. A pod qualifies when its sandbox container carries the
+// --pack arg; the served image is then that container's image. A pod missing the
+// arg, or with no image, does not qualify.
 func prewarmPodImage(pod *corev1.Pod) (string, bool) {
 	c := sandboxContainer(pod)
-	if c == nil || !hasArg(c.Args, packArg) || !hasArg(c.Args, prewarmArg) {
+	if c == nil || !hasArg(c.Args, packArg) {
 		return "", false
 	}
 	return c.Image, c.Image != ""

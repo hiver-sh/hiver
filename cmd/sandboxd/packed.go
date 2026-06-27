@@ -44,12 +44,6 @@ type packState struct {
 	workDir     string
 	snapshotDir string
 
-	// overlayCoWDir, when set (-overlay-cow-dir), redirects each microvm's dm-snapshot
-	// COW store (the per-VM exception store over the shared read-only base overlay) out
-	// of the per-VM jail dir (container overlayfs) onto a mounted tmpfs volume so the
-	// guest's rootfs writes are RAM-backed. Empty keeps it in the jail.
-	overlayCoWDir string
-
 	router *proxyRouter // routes sbxproxy audit events to per-sandbox broker by src IP
 
 	// egressGate coalesces the per-source rules-file rewrites + SIGHUPs that
@@ -76,34 +70,6 @@ type packState struct {
 	// -max-concurrent-launches; nil disables the cap (unbounded). Held from the
 	// start of createPacked until the sandbox is ready (or the create errors).
 	launchSem chan struct{}
-
-	// baseOnce builds the shared microvm base snapshot exactly once (design §7);
-	// baseDir is its location ("" if not microvm or the build failed, in which case
-	// every VM cold-boots). Read after baseOnce.Do.
-	baseOnce sync.Once
-	baseDir  string
-}
-
-// ensureBase builds the pod's shared microvm base snapshot on first call and
-// returns its dir (empty when not applicable or the build failed — the caller
-// then cold-boots). vcpu/memMiB size the base guest; because firecracker fixes
-// vCPU/RAM in the snapshot, every resumed VM inherits this sizing (per-sandbox
-// cpu/mem is enforced at the cgroup, not the guest). Concurrent first creates
-// block on the once until the base is ready.
-func (p *packState) ensureBase(ctx context.Context, vcpu, memMiB int) string {
-	p.baseOnce.Do(func() {
-		if p.isoKind != isolation.KindMicroVM {
-			return
-		}
-		dir, err := isolation.BuildMicroVMBaseSnapshot(ctx, p.caData, p.imgCfg, vcpu, memMiB, p.proxyPort, p.dnsPort, p.soMark)
-		if err != nil {
-			log.Printf("sandboxd: pack: base snapshot build failed, will cold-boot each VM: %v", err)
-			return
-		}
-		p.baseDir = dir
-		log.Printf("sandboxd: pack: base snapshot ready at %s", dir)
-	})
-	return p.baseDir
 }
 
 // allocIP hands out the next free pod-local IP (172.16.0.2 …).
@@ -380,24 +346,26 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	sbCtx, cancel := context.WithCancel(p.ctx)
 	cleanup := func() { cancel() }
 
-	// microvm pack mode resumes each sandbox from a shared per-image base snapshot
-	// (design §7): the first create builds it (sized from this config), the rest
-	// resume it. A build failure leaves baseDir empty and every VM cold-boots.
-	baseDir := ""
+	// A packed microvm resumes from a per-sandbox VM snapshot when the config names
+	// one (snapshot.vm.key) whose state dir under -snapshot-dir already holds a
+	// snapshot — captured earlier via the snapshot action. Otherwise it cold-boots
+	// into that state dir (its overlay lives there, the source of truth), so a later
+	// snapshot captures in place. Guest sizing comes from this sandbox's config;
+	// isolation.New applies its defaults when cpu/memory are unset.
+	stateDir := ""
 	if p.isoKind == isolation.KindMicroVM {
-		baseDir = p.ensureBase(sbCtx, ceilVcpu(sp.CPU), intOrZero(sp.Memory))
+		stateDir = vmStateDir(p.snapshotDir, sp)
 	}
 
 	iso, err := isolation.New(p.isoKind, isolation.Config{
-		Key:             key,
-		GuestIP:         ip,
-		Hostname:        p.hostname,
-		BaseSnapshotDir: baseDir,
-		LocalMounts:     isolationLocalMounts(sp.FS),
-		VcpuCount:       ceilVcpu(sp.CPU),
-		MemoryMiB:       intOrZero(sp.Memory),
-		Prealloc:        prealloc,
-		OverlayCoWDir:   p.overlayCoWDir,
+		Key:         key,
+		GuestIP:     ip,
+		Hostname:    p.hostname,
+		VMStateDir:  stateDir,
+		LocalMounts: isolationLocalMounts(sp.FS),
+		VcpuCount:   ceilVcpu(sp.CPU),
+		MemoryMiB:   intOrZero(sp.Memory),
+		Prealloc:    prealloc,
 	})
 	if err != nil {
 		cleanup()
@@ -452,6 +420,17 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	}
 	egressGen := p.setEgress(ip, sp.Egress)
 	phase.mark("pack " + key + ": egress (netns + iptables)")
+	// Now the per-VM netns exists, bring up the host-side 9p workspace listeners
+	// (deferred at ExportWorkspace, which ran before the netns). A cold-booting guest
+	// mounts its workspaces from the params drive during boot, so the listeners must
+	// be live before the VMM starts below. No-op for containers; the resume path also
+	// binds these via ApplyResumeState. Without this a cold-booted packed microvm has
+	// no workspace serving (no fs.request/fs.response events).
+	if err := iso.BindWorkspaces(sbCtx); err != nil {
+		cleanup()
+		p.releaseSlot(octet, prealloc)
+		return nil, fmt.Errorf("bind workspaces: %w", err)
+	}
 	// Route sbxproxy audit events for this source IP to the sandbox's own broker.
 	p.router.register(ip, broker)
 
@@ -506,30 +485,39 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	}
 
 	imgCfg := *p.imgCfg
+
+	// A tty entrypoint (e.g. node's REPL, an interactive shell) stays alive only
+	// when attached to a real terminal; launched on plain pipes it reads EOF on
+	// stdin and exits immediately. The container backend wraps the entrypoint in a
+	// host pty at launch; the microvm backend runs the override as a tty exec
+	// session in a guest pty (EntrypointTTYBridge) — which needs an actual override
+	// (attaching to the image's default keepalive is useless, so drop tty then).
+	// Decide tty against the effective entrypoint (override if set, else default).
+	effCfg := imgCfg
 	if len(sp.Entrypoint) > 0 {
+		effCfg.Entrypoint = sp.Entrypoint
+		effCfg.Cmd = nil
+	}
+	ttyEnabled := sp.Tty != nil && *sp.Tty
+	if ttyEnabled && entrypointIsTail(&effCfg) {
+		ttyEnabled = false
+	}
+	// For a microvm, a tty entrypoint override runs as a host-driven guest tty exec
+	// session (so /v1/exec-stream can attach), NOT as the guest's console workload —
+	// the console keeps the image default keepalive. So don't bake the override into
+	// the params drive in that case; record it for EntrypointTTYBridge instead (at
+	// launch, below). Every other case bakes the override as the console workload.
+	ttyExecEntrypoint := ttyEnabled && len(sp.Entrypoint) > 0 && p.isoKind == isolation.KindMicroVM
+	if len(sp.Entrypoint) > 0 && !ttyExecEntrypoint {
 		imgCfg.Entrypoint = sp.Entrypoint
 		imgCfg.Cmd = nil
 	}
-	if sp.Cwd != "" {
+	if sp.Cwd != "" && !ttyExecEntrypoint {
 		imgCfg.WorkingDir = sp.Cwd
 	}
 	agentEnv := make(map[string]string, len(sp.Env)+1)
 	maps.Copy(agentEnv, sp.Env)
 	agentEnv["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
-
-	// A tty entrypoint (e.g. node's REPL, an interactive shell) stays alive only
-	// when attached to a real terminal; launched on plain pipes it reads EOF on
-	// stdin and exits immediately. The container backend wraps the entrypoint in a
-	// host pty at launch; the microvm backend honours it on the resume path by
-	// running the override as a tty exec session in a guest pty (see
-	// EntrypointTTYBridge below), which needs an actual override — attaching to the
-	// image's default keepalive (tail) is useless, so drop tty in that case for both
-	// backends. Advertise a terminal so programs enable colour/cursor control;
-	// user-supplied env wins.
-	ttyEnabled := sp.Tty != nil && *sp.Tty
-	if ttyEnabled && entrypointIsTail(&imgCfg) {
-		ttyEnabled = false
-	}
 	if ttyEnabled {
 		if _, ok := agentEnv["TERM"]; !ok {
 			agentEnv["TERM"] = "xterm-256color"
@@ -632,6 +620,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	// proxy there so /proxy/<port> reaches this key's workload (and only this one).
 	sb.SetProxyHost(ip)
 	sb.SetIsolation(iso)
+	sb.SetSnapshotDir(p.snapshotDir)
 	sb.SetBroker(broker)
 	sb.SetStore(store)
 	// Tie exec sessions to this sandbox's lifecycle: a DELETE (sbCtx cancel)
@@ -690,26 +679,23 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		// boot sandbox. Must run while the overlay and FUSE mounts are still up.
 		if cfg, err := store.Get(); err != nil {
 			log.Printf("sandboxd: pack %q: snapshot: read config: %v", key, err)
-		} else if sn := cfg.Snapshot; sn != nil {
-			writeKey := ""
-			if sn.WriteKey != nil && *sn.WriteKey != "" {
-				writeKey = *sn.WriteKey
-			} else if sn.RestoreKey != nil {
-				writeKey = *sn.RestoreKey
-			}
-			dir := p.snapshotDir
-			if sn.Mount != nil && *sn.Mount != "" {
-				dir = *sn.Mount
-			}
-			if writeKey != "" && dir != "" {
-				var include []string
-				if sn.Include != nil {
-					include = *sn.Include
+		} else if sn := cfg.Snapshot; sn != nil && sn.Files != nil {
+			f := sn.Files
+			if f.Key != "" && f.WriteOnShutdown != nil && *f.WriteOnShutdown {
+				dir := p.snapshotDir
+				if f.Mount != nil && *f.Mount != "" {
+					dir = *f.Mount
 				}
-				dst := snapshot.SnapshotPath(dir, writeKey)
-				log.Printf("sandboxd: pack %q: snapshot: capturing %v → %s", key, include, dst)
-				if err := iso.CaptureSnapshot(dst, include); err != nil {
-					log.Printf("sandboxd: pack %q: snapshot capture: %v", key, err)
+				if dir != "" {
+					var include []string
+					if f.Include != nil {
+						include = *f.Include
+					}
+					dst := snapshot.SnapshotPath(dir, f.Key)
+					log.Printf("sandboxd: pack %q: snapshot: capturing %v → %s", key, include, dst)
+					if err := iso.CaptureSnapshot(dst, include); err != nil {
+						log.Printf("sandboxd: pack %q: snapshot capture: %v", key, err)
+					}
 				}
 			}
 		}
@@ -757,31 +743,42 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		for k, v := range agentEnv {
 			envSlice = append(envSlice, k+"="+v)
 		}
-		rs := isolation.ResumeState{Env: envSlice}
-		// A config that overrides the entrypoint must run on resume too — the
-		// snapshot is running the image's default entrypoint, not this command. Only
-		// send it when overridden (imgCfg.Entrypoint already carries the override, set
-		// above); otherwise the default is already running in the snapshot and
-		// relaunching it would duplicate it.
-		if len(sp.Entrypoint) > 0 {
-			rs.Entrypoint = imgCfg.Entrypoint
-			rs.Cmd = imgCfg.Cmd
-			rs.Cwd = imgCfg.WorkingDir
-			rs.Tty = ttyEnabled
+		rs := isolation.ResumeState{Env: envSlice, MountWorkspacesSync: true}
+		// The snapshot restores the workload it captured running — the config's own
+		// entrypoint, captured at cold-boot. We do NOT relaunch it: a non-tty
+		// entrypoint comes back on the guest console (relaunching would duplicate the
+		// workload), and changing the entrypoint/cwd of a resumed (already-running)
+		// workload is a no-op, like changing it on any started sandbox.
+		//
+		// A tty entrypoint is the one exception: it ran as a guest tty exec session
+		// whose host-side pty bridge does not survive a snapshot/restore, so re-establish
+		// it below (setupEntrypointTTY runs the recorded override as a fresh session).
+		if ttyEnabled && len(sp.Entrypoint) > 0 {
+			iso.PrepareEntrypointTTY(sp.Entrypoint, sp.Cwd, envSlice)
 		}
 		if err := iso.ApplyResumeState(sbCtx, rs); err != nil {
 			cleanup()
 			return nil, fmt.Errorf("apply resume state: %w", err)
 		}
 		phase.mark("pack " + key + ": apply resume state")
-		// A tty entrypoint override runs as a tty exec session in the guest (the
-		// control channel above has no terminal); wrap the host bridge in a pty and
-		// publish it so /v1/exec-stream attach reaches the entrypoint terminal. Its
-		// exit (pty EOF) ends the sandbox, mirroring an entrypoint exit.
 		setupEntrypointTTY(sbCtx, key, iso, sb, cancel)
-	} else if err := iso.WaitReady(sbCtx); err != nil {
-		cleanup()
-		return nil, fmt.Errorf("wait ready: %w", err)
+	} else {
+		if err := iso.WaitReady(sbCtx); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("wait ready: %w", err)
+		}
+		// Cold boot: a microvm tty entrypoint override runs as a host-driven guest
+		// tty exec session (the guest console runs the image default keepalive), so
+		// record it and publish the bridge for /v1/exec-stream attach — its exit ends
+		// the sandbox. No-op when there's no such override (ttyExecEntrypoint false).
+		if ttyExecEntrypoint {
+			envSlice := make([]string, 0, len(agentEnv))
+			for k, v := range agentEnv {
+				envSlice = append(envSlice, k+"="+v)
+			}
+			iso.PrepareEntrypointTTY(sp.Entrypoint, sp.Cwd, envSlice)
+			setupEntrypointTTY(sbCtx, key, iso, sb, cancel)
+		}
 	}
 	// Gate readiness on the egress reload landing in sbxproxy. The reload was
 	// kicked off (coalesced) right after RedirectEgress and runs concurrently

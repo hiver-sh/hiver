@@ -27,8 +27,14 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           cwd: "/workspace",
           tty: true,
           snapshot: {
-            restore_key: "claude-code-agent",
-            include: ["/home/agent/.claude/*", "/home/agent/.claude.json"],
+            vm: {
+              key: "claude-code-vm",
+            },
+            files: {
+              key: "claude-code-files",
+              write_on_shutdown: true,
+              include: ["/home/agent/.claude/*", "/home/agent/.claude.json"],
+            },
           },
         }),
       },
@@ -41,8 +47,14 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           cwd: "/workspace",
           tty: true,
           snapshot: {
-            restore_key: "codex-agent",
-            include: ["/home/agent/.codex/*"],
+            vm: {
+              key: "codex-vm"
+            },
+            files: {
+              key: "codex-files",
+              write_on_shutdown: true,
+              include: ["/home/agent/.codex/*"],
+            },
           },
         }),
       },
@@ -55,8 +67,14 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           cwd: "/workspace",
           tty: true,
           snapshot: {
-            restore_key: "opencode-agent",
-            include: ["/home/agent/*"],
+            vm: {
+              key: "opencode-vm",
+            },
+            files: {
+              key: "opencode-files",
+              write_on_shutdown: true,
+              include: ["/home/agent/*"],
+            },
           },
         }),
       },
@@ -69,8 +87,14 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           cwd: "/workspace",
           tty: true,
           snapshot: {
-            restore_key: "copilot-agent",
-            include: ["/home/agent/*"],
+            vm: {
+              key: "copilot-vm",
+            },
+            files: {
+              key: "copilot-files",
+              write_on_shutdown: true,
+              include: ["/home/agent/*"],
+            },
           },
         }),
       },
@@ -80,6 +104,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         apply: () => ({
           image: "browser",
           tty: true,
+          snapshot: {
+            vm: {
+              key: "browser-vm",
+            },
+          },
         }),
       },
       {
@@ -90,6 +119,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           entrypoint: "node",
           cwd: "/workspace",
           tty: true,
+          snapshot: {
+            vm: {
+              key: "node-vm",
+            },
+          },
         }),
       },
       {
@@ -100,6 +134,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
           entrypoint: "python",
           cwd: "/workspace",
           tty: true,
+          snapshot: {
+            vm: {
+              key: "python-vm",
+            },
+          },
         }),
       },
     ],

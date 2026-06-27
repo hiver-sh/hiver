@@ -66,31 +66,45 @@ func (e *Entrypoint) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Snapshot controls how the sandbox upper layer is persisted and restored.
+// Snapshot controls how sandbox state is persisted and restored. It has two
+// independent parts: VM captures the full microVM state (firecracker
+// snapshot.bin/mem.bin + warm overlay; a no-op for the container backend), and
+// Files captures the writable filesystem as a portable gzip-tar. Either may be
+// present alone, both, or neither.
 type Snapshot struct {
-	// RestoreKey identifies which snapshot file to restore on start.
-	// When empty, no restore is performed.
-	RestoreKey string `json:"restore_key,omitempty"`
-	// WriteKey is the key used when saving the snapshot on shutdown.
-	// When empty, RestoreKey is used as the write key.
-	WriteKey string `json:"write_key,omitempty"`
+	// VM, when set, names the microVM-state snapshot. A get-or-create resumes the
+	// keyed VM snapshot if one exists under this key, else cold-boots; the client
+	// captures it explicitly via the snapshot action. Ignored by the container
+	// backend.
+	VM *SnapshotVM `json:"vm,omitempty"`
+	// Files, when set, names the writable-filesystem snapshot.
+	Files *SnapshotFiles `json:"files,omitempty"`
+}
+
+// SnapshotVM names a firecracker VM-state snapshot.
+type SnapshotVM struct {
+	// Key identifies the VM snapshot under -snapshot-dir. Restored on start when a
+	// snapshot exists for it; written by the snapshot action.
+	Key string `json:"key"`
+}
+
+// SnapshotFiles names a writable-filesystem snapshot and what it covers.
+type SnapshotFiles struct {
+	// Key identifies the files tarball, restored on start and written by the
+	// snapshot action (or on shutdown when WriteOnShutdown is set).
+	Key string `json:"key"`
 	// Include is a list of absolute container paths or glob patterns
 	// (e.g. /home/user/*) whose parent directories are snapshotted.
 	Include []string `json:"include,omitempty"`
-	// Mount is the mount path of an FS entry where snapshot tarballs are
-	// written and read, instead of the host's local snapshot directory.
-	// Point it at an internal, remote-backed FS to persist and restore
-	// snapshots through a FUSE drive. When empty, the host's local snapshot
-	// directory is used.
+	// WriteOnShutdown, when true, captures the files snapshot on shutdown or
+	// termination of the sandbox. When false, files are captured only by an
+	// explicit snapshot action.
+	WriteOnShutdown bool `json:"write_on_shutdown,omitempty"`
+	// Mount is the mount path of an FS entry where the files tarball is written
+	// and read, instead of the host's local snapshot directory. Point it at an
+	// internal, remote-backed FS to persist and restore through a FUSE drive.
+	// When empty, the host's local snapshot directory is used.
 	Mount string `json:"mount,omitempty"`
-}
-
-// EffectiveWriteKey returns the key to use when saving the snapshot.
-func (s *Snapshot) EffectiveWriteKey() string {
-	if s.WriteKey != "" {
-		return s.WriteKey
-	}
-	return s.RestoreKey
 }
 
 // FS defines one FUSE workspace. A spec carries a list of these so
@@ -447,27 +461,31 @@ func (s *Spec) Validate() error {
 		}
 	}
 	if sn := s.Snapshot; sn != nil {
-		if sn.RestoreKey != "" && !snapshotKeyRE.MatchString(sn.RestoreKey) {
-			return fmt.Errorf("snapshot.restore_key: must match %s", snapshotKeyRE)
-		}
-		if sn.WriteKey != "" && !snapshotKeyRE.MatchString(sn.WriteKey) {
-			return fmt.Errorf("snapshot.write_key: must match %s", snapshotKeyRE)
-		}
-		if sn.Mount != "" {
-			if !strings.HasPrefix(sn.Mount, "/") {
-				return fmt.Errorf("snapshot.mount: must be an absolute path, got %q", sn.Mount)
+		if vm := sn.VM; vm != nil {
+			if vm.Key == "" || !snapshotKeyRE.MatchString(vm.Key) {
+				return fmt.Errorf("snapshot.vm.key: must match %s", snapshotKeyRE)
 			}
-			// Must name a declared FS mount so the tarball lands on a real
-			// FUSE drive rather than a stray host directory.
-			found := false
-			for i := range s.FS {
-				if s.FS[i].Mount == sn.Mount {
-					found = true
-					break
+		}
+		if f := sn.Files; f != nil {
+			if f.Key == "" || !snapshotKeyRE.MatchString(f.Key) {
+				return fmt.Errorf("snapshot.files.key: must match %s", snapshotKeyRE)
+			}
+			if f.Mount != "" {
+				if !strings.HasPrefix(f.Mount, "/") {
+					return fmt.Errorf("snapshot.files.mount: must be an absolute path, got %q", f.Mount)
 				}
-			}
-			if !found {
-				return fmt.Errorf("snapshot.mount %q does not match any fs[].mount", sn.Mount)
+				// Must name a declared FS mount so the tarball lands on a real
+				// FUSE drive rather than a stray host directory.
+				found := false
+				for i := range s.FS {
+					if s.FS[i].Mount == f.Mount {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("snapshot.files.mount %q does not match any fs[].mount", f.Mount)
+				}
 			}
 		}
 	}

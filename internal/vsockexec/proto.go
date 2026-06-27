@@ -48,6 +48,14 @@ type Start struct {
 	TTY     bool              `json:"tty,omitempty"`
 	Rows    uint16            `json:"rows,omitempty"`
 	Cols    uint16            `json:"cols,omitempty"`
+
+	// SessionID, when non-empty, names a DETACHABLE session: the guest agent
+	// keeps the process + pty alive across a dropped connection (a snapshot
+	// resume cuts the host's exec TCP), and a later Start with the same id
+	// re-attaches the live process instead of launching a new one. The entrypoint
+	// tty uses a fixed id so a resume re-attaches warm rather than relaunching.
+	// An empty id is an ordinary one-shot exec (reaped when the connection ends).
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // Winsize is the payload of a FrameResize frame.

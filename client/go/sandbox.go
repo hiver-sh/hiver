@@ -155,6 +155,36 @@ func (s *Sandbox) GetInfo(ctx context.Context) (*SandboxInfo, error) {
 	return &info, nil
 }
 
+// Snapshot captures a snapshot of the running sandbox now, without stopping it.
+// The request selects which parts to capture: VM (full microVM state, keyed for
+// a later resume; a no-op on container isolation) and/or Files (the writable
+// filesystem). Each part is reported independently in the result.
+func (s *Sandbox) Snapshot(ctx context.Context, req Snapshot) (*SnapshotResult, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("Snapshot: encode: %w", err)
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.keyed("/snapshot"), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.http.Do(hreq)
+	if err != nil {
+		return nil, fmt.Errorf("Snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	if !isSuccess(resp.StatusCode) {
+		return nil, fmt.Errorf("Snapshot: %w", readAPIError(resp))
+	}
+	var result SnapshotResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("Snapshot: decode: %w", err)
+	}
+	return &result, nil
+}
+
 // ApplyConfig applies a desired SandboxConfig. The result's Applied field
 // reports whether the change was committed or rolled back.
 func (s *Sandbox) ApplyConfig(ctx context.Context, config SandboxConfig) (*ApplyResult, error) {

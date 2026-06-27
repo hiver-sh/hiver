@@ -29,10 +29,10 @@ import (
 // falls back to allocating + wiring an octet synchronously, exactly as before.
 //
 // Only the network is preallocated, for both backends. The overlay is not: a
-// microvm base-snapshot resume seeds its per-VM overlay from the base overlay in
-// ResumeAgent on claim (so a prebuilt one would just be overwritten), and the
-// container overlay is keyed by the sandbox key, unknown until claim. The FUSE
-// workspace is likewise key-coupled (host dirs live under /run/sandboxd/<key>).
+// microvm resume reopens its overlay in place from the per-key state dir and a
+// cold boot builds it there on claim, while the container overlay is keyed by the
+// sandbox key — both unknown until claim. The FUSE workspace is likewise
+// key-coupled (host dirs live under /run/sandboxd/<key>).
 type preallocPool struct {
 	p      *packState
 	target int
@@ -96,9 +96,8 @@ func (pp *preallocPool) run() {
 // provision wires a slot's packed network for the first time. The DNS sink it
 // starts is bound to the pod context, so it persists across claims — it is
 // tenant-agnostic (answers every lookup with the proxy placeholder). The per-VM
-// overlay is intentionally not preallocated: a base-snapshot resume seeds it by
-// copying the base overlay in ResumeAgent on claim, so any overlay built here
-// would just be overwritten.
+// overlay is intentionally not preallocated: a resume reopens it in place and a
+// cold boot builds it on claim, so any overlay built here would be unused.
 func (pp *preallocPool) provision(octet int) error {
 	ip := slotIP(octet)
 	iso, err := isolation.New(pp.p.isoKind, isolation.Config{GuestIP: ip, Hostname: pp.p.hostname})
@@ -113,9 +112,8 @@ func (pp *preallocPool) provision(octet int) error {
 
 // reset returns a released slot to its original state without re-wiring the
 // network (which is octet-deterministic and persists): it flushes per-tenant
-// conntrack for the slot's source IP. The overlay needs no reset here — the
-// claimant's UnmountRoot removed it and the next claim re-seeds it (ResumeAgent
-// for a base resume, MountRoot for cold boot). Best-effort.
+// conntrack for the slot's source IP. The overlay needs no reset here — the next
+// claim reopens it in place (resume) or builds it (cold boot). Best-effort.
 func (pp *preallocPool) reset(octet int) {
 	flushConntrack(pp.p.ctx, slotIP(octet))
 }

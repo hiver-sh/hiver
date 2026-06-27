@@ -151,20 +151,29 @@ func (m *mountManager) maybeRestore(sp *spec.Spec) {
 	if !m.restored.CompareAndSwap(false, true) {
 		return
 	}
-	if sp.Snapshot == nil || sp.Snapshot.RestoreKey == "" {
+	if sp.Snapshot == nil || sp.Snapshot.Files == nil || sp.Snapshot.Files.Key == "" {
 		return
 	}
-	// snapshot.mount points the tarball at a FUSE drive (e.g. an internal
+	// When a VM snapshot is being resumed, its overlay already carries the full
+	// filesystem state — a pre-boot files restore would extract into the (unused,
+	// possibly absent) cold-boot overlay and conflict with the resumed overlay. The
+	// files snapshot is the cold-boot path only.
+	if m.iso.HasPrewarmSnapshot() {
+		log.Printf("sandboxd: snapshot: resuming VM snapshot, skipping files restore for %q", sp.Snapshot.Files.Key)
+		return
+	}
+	f := sp.Snapshot.Files
+	// snapshot.files.mount points the tarball at a FUSE drive (e.g. an internal
 	// remote-backed mount started just above); otherwise fall back to the
 	// host's local snapshot directory.
 	dir := m.snapshotDir
-	if sp.Snapshot.Mount != "" {
-		dir = sp.Snapshot.Mount
+	if f.Mount != "" {
+		dir = f.Mount
 	}
 	if dir == "" {
 		return
 	}
-	src := snapshot.SnapshotPath(dir, sp.Snapshot.RestoreKey)
+	src := snapshot.SnapshotPath(dir, f.Key)
 	if _, err := os.Stat(src); err != nil {
 		log.Printf("sandboxd: snapshot: no snapshot found at %s, starting fresh", src)
 		return

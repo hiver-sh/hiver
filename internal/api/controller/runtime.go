@@ -10,13 +10,14 @@ import (
 	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
-// usesSnapshotMount reports whether the config routes snapshots to a FUSE drive
-// (snapshot.mount) rather than the runtime's local snapshot directory. When it
-// does, the runtime skips provisioning the local /snapshots volume entirely:
-// the volume would be unnecessary and, if the FUSE drive is mounted at the same
-// path, would be shadowed by it.
+// usesSnapshotMount reports whether the config routes the files snapshot to a
+// FUSE drive (snapshot.files.mount) rather than the runtime's local snapshot
+// directory. When it does, the runtime skips provisioning the local /snapshots
+// volume entirely: the volume would be unnecessary and, if the FUSE drive is
+// mounted at the same path, would be shadowed by it.
 func usesSnapshotMount(cfg sandboxgen.SandboxConfig) bool {
-	return cfg.Snapshot != nil && cfg.Snapshot.Mount != nil && *cfg.Snapshot.Mount != ""
+	return cfg.Snapshot != nil && cfg.Snapshot.Files != nil &&
+		cfg.Snapshot.Files.Mount != nil && *cfg.Snapshot.Files.Mount != ""
 }
 
 const (

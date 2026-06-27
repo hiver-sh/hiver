@@ -97,12 +97,20 @@ func TestBaseSnapshotReady(t *testing.T) {
 	if baseSnapshotReady(dir) {
 		t.Fatal("empty dir should not be ready")
 	}
-	for _, f := range []string{baseSnapshotName, baseMemName, baseOverlayName} {
+	all := []string{baseSnapshotName, baseMemName, baseOverlayName, baseMetadataName}
+	// All but the last present → still not ready (each artifact is required).
+	for _, f := range all[:len(all)-1] {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if baseSnapshotReady(dir) {
+		t.Fatalf("dir missing %q should not be ready", all[len(all)-1])
+	}
+	if err := os.WriteFile(filepath.Join(dir, all[len(all)-1]), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if !baseSnapshotReady(dir) {
-		t.Fatal("dir with all three non-empty artifacts should be ready")
+		t.Fatal("dir with all artifacts non-empty should be ready")
 	}
 }

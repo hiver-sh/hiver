@@ -1,12 +1,11 @@
 // Command chromehost is the resident Chrome host, driven over CDP. It is the
-// playwright image entrypoint, so it runs during the prewarm boot and stays
-// resident — every sandbox claimed from the warm pool inherits Chromium already
-// launched and listening (captured in the microvm snapshot, or kept alive in the
-// runc container).
+// playwright image entrypoint, so it launches Chromium and stays resident — a
+// sandbox that captures a VM snapshot (via the snapshot API) resumes with Chromium
+// already launched and listening.
 //
 // It is the stdlib-only Go replacement for the former Node.js chrome-cdp.cjs: a
-// static binary with no dependencies, so the resident process captured in every
-// sandbox snapshot is lean instead of a Node + V8 + playwright-core heap. It does
+// static binary with no dependencies, so the resident process captured in a VM
+// snapshot is lean instead of a Node + V8 + playwright-core heap. It does
 // exactly what the .cjs did:
 //
 //   - spawn the Playwright-managed Chromium binary directly with its DevTools
@@ -19,8 +18,8 @@
 //
 //     reached through the sandbox ingress proxy (/v1/<key>/proxy/9223/cdp);
 //
-//   - warm the CDP attach path + open a page once before the snapshot, so a
-//     resumed sandbox starts warm.
+//   - warm the CDP attach path + open a page once, so a sandbox that later
+//     captures a VM snapshot resumes warm.
 //
 // Why a relay (not a plain forwarder): Chrome's real browser endpoint is
 // /devtools/browser/<uuid>, with a fresh <uuid> each launch, so a normal client
@@ -31,11 +30,9 @@
 // so a cross-netns dial to the guest IP gets "connection refused"; the relay is
 // what the ingress proxy actually reaches.
 //
-// Readiness signal: Chrome prints "DevTools listening on ws://..." to stderr once
-// the endpoint is up; only then do we resolve the stable path, bring up the relay,
-// warm it, and write READY_FILE. Under microvm isolation sbxguest waits for that
-// file before letting the host snapshot the (now warm) VM. Under runc isolation
-// the file is unused — container readiness is the poststart fifo.
+// Readiness: Chrome prints "DevTools listening on ws://..." to stderr once the
+// endpoint is up; only then do we resolve the stable path, bring up the relay, and
+// warm it. The process then stays resident as the workload.
 package main
 
 import (
@@ -52,7 +49,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,11 +63,9 @@ const (
 	// chromeBin is the stable symlink to the Chromium binary, created at image
 	// build time so nothing at runtime depends on Playwright.
 	chromeBin = "/opt/hiver/chrome"
-	// warmupTimeout bounds the whole pre-snapshot warmup; on timeout we proceed to
-	// signal readiness regardless (warmup is best-effort).
+	// warmupTimeout bounds the whole warmup; on timeout we proceed regardless
+	// (warmup is best-effort).
 	warmupTimeout = 10 * time.Second
-
-	readyFile = "/run/hiver/prewarm-ready"
 )
 
 func env(name, def string) string {
@@ -223,16 +217,10 @@ func onReady(port, chromePort int, chromePid int) {
 	}
 	go serveRelay(ln, chromePort, browserWsPath)
 
-	// Warm the CDP attach path + open a page through the relay before the snapshot,
-	// so a resumed sandbox is already warm on the first client attach.
+	// Warm the CDP attach path + open a page through the relay, so a sandbox that
+	// later captures a VM snapshot resumes already warm on the first client attach.
 	warmup(port)
 
-	if err := os.MkdirAll(filepath.Dir(readyFile), 0o755); err != nil {
-		log.Printf("mkdir ready dir: %v", err)
-	}
-	if err := os.WriteFile(readyFile, []byte(strconv.Itoa(chromePid)), 0o644); err != nil {
-		log.Printf("write ready file: %v", err)
-	}
 	disp := browserWsPath
 	if disp == "" {
 		disp = "/devtools/browser/<uuid>"

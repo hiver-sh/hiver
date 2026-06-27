@@ -77,9 +77,12 @@ func TestSnapshotFuseE2E(t *testing.T) {
 		ExtraHosts: []string{"external-fs:host-gateway"},
 		FS:         []hiverclient.FileSystem{snapshotDrive},
 		Snapshot: &hiverclient.Snapshot{
-			WriteKey: key,
-			Mount:    "/snapshot-drive",
-			Include:  []string{"/workspace/**"},
+			Files: &hiverclient.SnapshotFiles{
+				Key:             key,
+				WriteOnShutdown: true,
+				Mount:           "/snapshot-drive",
+				Include:         []string{"/workspace/**"},
+			},
 		},
 	})
 	if err != nil {
@@ -139,8 +142,10 @@ func TestSnapshotFuseE2E(t *testing.T) {
 		ExtraHosts: []string{"external-fs:host-gateway"},
 		FS:         []hiverclient.FileSystem{snapshotDrive},
 		Snapshot: &hiverclient.Snapshot{
-			RestoreKey: key,
-			Mount:      "/snapshot-drive",
+			Files: &hiverclient.SnapshotFiles{
+				Key:   key,
+				Mount: "/snapshot-drive",
+			},
 		},
 	})
 	if err != nil {

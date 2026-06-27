@@ -492,23 +492,28 @@ within the bucket.
 
 ### Snapshots
 
-A snapshot captures part of the sandbox's filesystem automatically before
-shutdown and restores it before the next start — even for paths outside a
-host-backed mount. Configure it with `snapshot`:
+A snapshot has two independent parts: `files` captures part of the sandbox's
+filesystem (restored before the next start — even for paths outside a host-backed
+mount — and, with `write_on_shutdown`, captured automatically before shutdown),
+and `vm` captures the full microVM state (a no-op on container isolation).
+Configure it with `snapshot`:
 
 ```ts
 const config: hiver.SandboxConfig = {
   image: "node",
   snapshot: {
-    restore_key: "session-42", // restored on start
-    write_key: "session-42", // saved on shutdown; defaults to restore_key
-    include: ["/root/**"], // glob paths to capture
+    files: {
+      key: "session-42", // restored on start, written on shutdown
+      write_on_shutdown: true, // capture on shutdown (else use sandbox.snapshot())
+      include: ["/root/**"], // glob paths to capture
+    },
   },
 };
 ```
 
-Boot the sandbox under the same `restore_key` later to bring the captured files
-back.
+Boot the sandbox under the same `files.key` later to bring the captured files
+back, or capture on demand without stopping the sandbox with
+`await sandbox.snapshot({ files: { key: "session-42" } })`.
 
 ---
 

@@ -117,12 +117,16 @@ type Config struct {
 	// Empty keeps the workload in the shared pod netns (the boot sandbox).
 	GuestIP string
 
-	// BaseSnapshotDir, when set, is the shared per-image base snapshot a packed
-	// microvm resumes from instead of cold-booting (design §7): all VMs in the pod
-	// LoadSnapshot the same base/{snapshot.bin, mem.bin} (guest memory shared COW
-	// via the File backend) with a per-VM CoW overlay, tap, and vsock. Only the
-	// microvm backend uses it; the container backend ignores it. Empty cold-boots.
-	BaseSnapshotDir string
+	// VMStateDir, when set, is this VM's persistent state directory under the
+	// snapshot dir (e.g. /snapshots/vm-<key>), keyed by the config's
+	// snapshot.vm.key. It is the source of truth for the microvm: the writable
+	// overlay, the metadata drive, and the firecracker snapshot.bin/mem.bin all
+	// live here, so a snapshot captures in place (no copy) and a resume reopens
+	// these exact paths directly (no per-VM CoW/rewrite). When it already holds a
+	// snapshot the VM resumes from it; otherwise the VM cold-boots into it. Only the
+	// microvm backend uses it; the container backend ignores it. Empty puts the
+	// (ephemeral) overlay in the jail, with no VM snapshots.
+	VMStateDir string
 
 	// LocalMounts lists each local-backend FUSE workspace as (agent path,
 	// host backend dir). The container backend snapshots these dirs
@@ -138,24 +142,15 @@ type Config struct {
 	VcpuCount int
 	MemoryMiB int
 
-	// Prealloc marks an instance claiming a preallocated slot: its packed network
-	// (netns/veth/iptables + DNS sink) and — for the microvm backend — its CoW
-	// overlay image were provisioned ahead of time by the pod's prealloc pool
-	// (cmd/sandboxd, gated by -prealloc-pool), keyed by the same GuestIP octet.
-	// This preallocates host resources only; no workload is kept running (that is
-	// the separate -prewarm snapshot path). When set, RedirectEgress and MountRoot
-	// skip that work (already done), and UnmountRoot leaves the netns teardown to
-	// the pool, which owns the slot's lifecycle and refills it. The boot sandbox
-	// and the synchronous fallback path leave this false.
+	// Prealloc marks an instance claiming a preallocated network slot
+	// (netns/veth/iptables + DNS sink) provisioned ahead of time by the pod's
+	// prealloc pool (cmd/sandboxd, gated by -prealloc-pool), keyed by the same
+	// GuestIP octet. Only the network is preallocated; no workload is kept running
+	// and no overlay is provisioned. When set, RedirectEgress skips that work
+	// (already done), and UnmountRoot leaves the netns teardown to the pool, which
+	// owns the slot's lifecycle and refills it. The boot sandbox and the synchronous
+	// fallback path leave this false.
 	Prealloc bool
-
-	// OverlayCoWDir, when set, is where the microvm backend puts each VM's dm-snapshot
-	// copy-on-write store — the per-VM exception store layered over the shared
-	// read-only base overlay (the base is never copied) — instead of the per-VM jail
-	// dir. Point it at a tmpfs mount to make the guest's rootfs writes RAM-backed; the
-	// store is ephemeral (discarded on teardown), so it never needs persistence. Empty
-	// keeps it in the jail dir.
-	OverlayCoWDir string
 }
 
 // SnapshotMount pairs an agent-visible mount path with the host directory
@@ -180,26 +175,27 @@ type AgentConfig struct {
 	// returned command's stdio to a pty (see internal/pty). Only the container
 	// backend honours this; the microvm backend ignores it.
 	TTY bool
-
-	// Prewarm marks a prewarm launch: the workload runs as usual but readiness
-	// is delayed until it writes /run/hiver/prewarm-ready, so the host snapshots
-	// (microvm) or adopts (container) a warm workload. Set only by PrewarmSnapshot.
-	Prewarm bool
 }
 
-// ResumeState carries the post-resume setup the prewarm snapshot could not bake
-// in — all unknown when the workload was prewarmed (see ApplyResumeState). Env is
-// the workload environment (for exec sessions, and for resolving an override
-// entrypoint). Entrypoint, when non-empty, is the config's entrypoint override
-// (with Cmd/Cwd/Tty): the snapshot runs the image's default entrypoint, so an
-// overriding config's command is launched on resume instead. Leave Entrypoint nil
-// to keep the snapshot's already-running entrypoint.
+// ResumeState carries the post-resume setup the VM snapshot could not bake in
+// (see ApplyResumeState). Env is the workload environment (for exec sessions, and
+// for resolving an override entrypoint). Entrypoint, when non-empty, is the
+// config's entrypoint override (with Cmd/Cwd/Tty), launched on resume when it
+// differs from the entrypoint already running in the snapshot. Leave Entrypoint
+// nil to keep the snapshot's already-running entrypoint.
 type ResumeState struct {
 	Env        []string
 	Entrypoint []string
 	Cmd        []string
 	Cwd        string
 	Tty        bool
+	// MountWorkspacesSync marks the initial resume (not a later live config-apply):
+	// the VM snapshot was captured with the guest's workspaces unmounted (SnapshotLive
+	// unmounts them before CreateSnapshot so no stale 9p mount is frozen in), so the
+	// resumed guest has none. Set true so the microvm backend mounts the config's
+	// workspaces synchronously — before the entrypoint relaunches into its (possibly
+	// workspace) cwd. The live config-apply path leaves it false (async mount).
+	MountWorkspacesSync bool
 }
 
 // ExecConfig describes a command to run inside the running workload.
@@ -208,6 +204,12 @@ type ExecConfig struct {
 	Cwd     *string
 	Env     *map[string]string
 	TTY     bool
+
+	// SessionID, when non-empty, names a detachable guest session: the guest keeps
+	// the process alive across a dropped exec connection and re-attaches it on
+	// reconnect (used by the entrypoint tty so a snapshot resume re-attaches the
+	// warm process instead of relaunching it). Empty = one-shot exec.
+	SessionID string
 }
 
 // FileEntry is one directory child returned by FileBridge.List.
@@ -286,6 +288,15 @@ type Isolation interface {
 	// daemon that served the mount.
 	UnexportWorkspace(ctx context.Context, mount string) error
 
+	// BindWorkspaces brings up host-side serving for every exported workspace whose
+	// transport could not be started at ExportWorkspace time. For a packed microvm
+	// the 9p listeners live in the per-VM netns, which doesn't exist until
+	// RedirectEgress runs — so they are bound here, after the netns is up and before
+	// the cold-booting guest mounts them from its params drive. A no-op for the
+	// container backend and for a boot microvm (which serves at ExportWorkspace);
+	// the resume path also binds via ApplyResumeState. Idempotent.
+	BindWorkspaces(ctx context.Context) error
+
 	// InstallCA installs the sandbox CA (PEM) into the workload's trust
 	// store so sbxproxy can terminate TLS. The container backend splices it
 	// into the merged rootfs; the microvm backend hands it to the guest
@@ -312,6 +323,19 @@ type Isolation interface {
 	RestoreSnapshot(src string) error
 	CaptureSnapshot(dst string, include []string) error
 
+	// SnapshotLive captures snapshot parts from the RUNNING workload without
+	// stopping it, for the explicit snapshot action. When vmDir != "" a full
+	// microVM-state snapshot (firecracker device/vCPU state + guest memory + the
+	// writable overlay) is written there, keyed for a later resume — a no-op for
+	// the container backend, which has no VM state. When filesDst != "" the
+	// writable-FS tarball is written there with the given include set. The backend
+	// quiesces the workload as needed: the microvm pauses the guest so both parts
+	// are captured from one consistent instant, then resumes it; the container
+	// reads its host-side overlay upper directly. The caller flushes the workload
+	// (FlushAgent) first. Returns whether the VM part was captured (always false
+	// for a container).
+	SnapshotLive(ctx context.Context, vmDir, filesDst string, include []string) (vmCaptured bool, err error)
+
 	// LaunchAgent prepares any runtime config the backend needs and
 	// returns the command (bin + args) that starts the agent workload.
 	// sandboxd runs it through its own child supervisor, so the command is
@@ -321,51 +345,36 @@ type Isolation interface {
 	// WaitReady blocks until the workload is running or ctx is cancelled.
 	WaitReady(ctx context.Context) error
 
-	// PrewarmSnapshot brings up the image entrypoint off the claim path so a
-	// claimed sandbox inherits a warm, already-running workload. The microvm
-	// backend boots a guest running the entrypoint, waits for it to write
-	// /run/hiver/prewarm-ready, pauses it, writes a full VM snapshot, and stops
-	// the transient guest. The container backend starts the runc container
-	// running the entrypoint and keeps it alive (gated on its poststart fifo).
-	// Either way the entrypoint runs before the config is known, so it must be
-	// config-independent (a resident service like the browser host). On failure a
-	// backend degrades to cold launch (HasPrewarmSnapshot stays false). Call after
-	// MountRoot/InstallCA and before awaiting the first config.
-	PrewarmSnapshot(ctx context.Context, imgCfg *runc.ImageConfig) error
-
-	// HasPrewarmSnapshot reports whether PrewarmSnapshot succeeded and the resume
-	// path (below) should be taken on claim instead of a cold launch.
+	// HasPrewarmSnapshot reports whether a VM-state snapshot is staged for this
+	// sandbox (its VMStateDir holds a snapshot, decided in newMicroVM),
+	// so the resume path (below) is taken instead of a cold launch. Always false for
+	// the container backend, which has no VM state and always cold-boots.
 	HasPrewarmSnapshot() bool
 
-	// ResumeAgent returns the command that starts the resume process. For the
-	// microvm backend that is a fresh VMM (no boot config — the machine state
-	// comes from the snapshot, loaded by ResumeReady once its API socket is up),
-	// supervised like LaunchAgent's command. The container backend's workload is
-	// already running from PrewarmSnapshot, so it returns an empty command and the
-	// caller starts no child. Only valid after a successful PrewarmSnapshot.
+	// ResumeAgent returns the command that starts the resume process: for the
+	// microvm backend a fresh VMM (no boot config — the machine state comes from the
+	// snapshot, loaded by ResumeReady once its API socket is up), supervised like
+	// LaunchAgent's command. Only valid when HasPrewarmSnapshot is true (microvm).
 	ResumeAgent() (bin string, args []string, err error)
 
-	// ResumeReady makes the resumed workload serving: the microvm backend loads
-	// the snapshot into the VMM started by ResumeAgent and resumes the guest; the
-	// container backend is already serving and returns nil. Resume-path analogue
-	// of WaitReady.
+	// ResumeReady makes the resumed workload serving: the microvm backend loads the
+	// snapshot into the VMM started by ResumeAgent and resumes the guest. Resume-path
+	// analogue of WaitReady.
 	ResumeReady(ctx context.Context) error
 
-	// ApplyResumeState delivers post-resume setup the prewarm step could not
-	// carry: the config's workspaces (microvm: their 9p-over-vsock mounts don't
-	// survive a snapshot/restore; container: bind them into the running mount ns)
-	// and, for the microvm, the workload environment + clock fix + any entrypoint
-	// override. The image's default entrypoint runs in the snapshot and doesn't
-	// pick up late env (env matters for exec sessions), but a config that overrides
-	// the entrypoint (rs.Entrypoint) is launched here as the workload — unknown when
-	// the workload was prewarmed. The container backend ignores env/entrypoint (its
-	// entrypoint container already launched at prewarm).
+	// ApplyResumeState delivers post-resume setup the VM snapshot could not carry:
+	// the config's workspaces (microvm: their 9p-over-vsock mounts don't survive a
+	// snapshot/restore) and the workload environment + clock fix + any entrypoint
+	// override. The snapshot's entrypoint keeps running and doesn't pick up late env
+	// (env matters for exec sessions), but a config that overrides the entrypoint
+	// (rs.Entrypoint) is launched here as the workload. Also used on the live
+	// config-apply path to inject/unmount workspaces on a running workload.
 	ApplyResumeState(ctx context.Context, rs ResumeState) error
 
-	// StopAgent stops a workload started by PrewarmSnapshot on the resume teardown
-	// path. The container backend kills + deletes the running runc container; the
-	// microvm backend is a no-op (its VMM child is stopped by cancelling the
-	// supervising context instead).
+	// StopAgent stops a resumed workload on the teardown path. The microvm backend
+	// is a no-op (its VMM child is stopped by cancelling the supervising context);
+	// the container backend is a no-op (it always cold-boots, so it owns no resumed
+	// workload).
 	StopAgent(ctx context.Context) error
 
 	// FlushAgent flushes the running workload's filesystem so its recent
@@ -392,6 +401,16 @@ type Isolation interface {
 	// entrypoint tty at launch instead (container). The cleanup func reaps the
 	// bridge; the caller must defer it when cmd is non-nil.
 	EntrypointTTYBridge(ctx context.Context) (cmd *exec.Cmd, cleanup func(), err error)
+
+	// PrepareEntrypointTTY records a `tty: true` entrypoint override so a later
+	// EntrypointTTYBridge runs it as the sandbox's attachable terminal — the
+	// cold-boot analogue of the recording ApplyResumeState does on resume. The
+	// microvm runs the override as a guest tty exec session, so its params-drive
+	// console workload must be the image default (a keepalive), NOT this override.
+	// A no-op for the container backend, which wires the entrypoint tty at launch
+	// (startAgentTTY). argv/cwd/env are the override command, working dir, and
+	// environment.
+	PrepareEntrypointTTY(argv []string, cwd string, env []string)
 
 	// Files exposes the workload filesystem to the /v1/file* handlers.
 	Files() FileBridge

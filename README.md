@@ -284,9 +284,12 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
     },
   ],
   snapshot: {
-    restore_key: "agent-1", // tarball to restore on start
-    mount: "/snapshots", // pull it from the GCS-backed mount
-    include: ["/workspace/**"], // paths to capture on shutdown
+    files: {
+      key: "agent-1", // tarball to restore on start / write on shutdown
+      write_on_shutdown: true, // capture before the sandbox stops
+      mount: "/snapshots", // pull it from the GCS-backed mount
+      include: ["/workspace/**"], // paths to capture
+    },
   },
 });
 ```

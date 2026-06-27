@@ -112,7 +112,7 @@ static_resources:
                                 regex: "^/v1/sandboxes/"
                               substitution: "/v1/"
                             timeout: 0s
-                            # The prewarm pods carry no readiness probe, so the
+                            # The pack pods carry no readiness probe, so the
                             # Service endpoint is live before sandboxd is listening
                             # (connection-refused window). Retry instead of failing
                             # the create: connection-level retries re-load-balance

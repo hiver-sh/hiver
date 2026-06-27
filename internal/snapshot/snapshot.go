@@ -181,10 +181,17 @@ func Restore(src, upperDir string, mounts []MountSource) error {
 	return nil
 }
 
-// SnapshotPath returns the canonical file name for a snapshot key.
+// SnapshotPath returns the canonical file name for a files snapshot key.
 func SnapshotPath(dir, key string) string {
 	return filepath.Join(dir, "snapshot-"+key+".tar.gz")
 }
+
+// VMSnapshotDir returns the canonical directory a VM-state snapshot for key is
+// stored under (it holds snapshot.bin, mem.bin, and overlay.ext4).
+func VMSnapshotDir(dir, key string) string {
+	return filepath.Join(dir, "vm-"+key)
+}
+
 
 // resolveSource returns the host directory to read from and the tar entry
 // prefix for a given absolute container path. If the path falls under a

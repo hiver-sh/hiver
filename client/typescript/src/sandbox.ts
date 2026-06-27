@@ -4,6 +4,8 @@ import {
   SandboxConfig,
   SandboxEvent,
   SandboxInfo,
+  type Snapshot,
+  SnapshotResult,
   type SandboxRef,
 } from "./schemas";
 import { parseSSE } from "./sse";
@@ -178,6 +180,27 @@ export class Sandbox {
     });
     if (!res.ok) throw await toError(res, "applyConfig");
     return ApplyResult.parse(await res.json());
+  }
+
+  /**
+   * Capture a snapshot of the running sandbox now, without stopping it. The
+   * request selects which parts to capture: `vm` (full microVM state, keyed for
+   * a later resume; a no-op on container isolation) and/or `files` (the writable
+   * filesystem). Each part is reported independently in the result.
+   */
+  async snapshot(
+    request: Snapshot,
+    opts?: RequestOptions,
+  ): Promise<SnapshotResult> {
+    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/snapshot`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!res.ok) throw await toError(res, "snapshot");
+    return SnapshotResult.parse(await res.json());
   }
 
   /**

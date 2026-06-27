@@ -117,17 +117,53 @@ class EgressRule(BaseModel):
     """Values the proxy injects into matching outbound requests."""
 
 
-class Snapshot(BaseModel):
-    """Snapshot configuration. A snapshot is captured automatically before the sandbox shuts down and restored before it starts."""
+class SnapshotVM(BaseModel):
+    """microVM-state snapshot. When a VM snapshot exists under ``key``, a get-or-create resumes it instead of cold-booting; otherwise the VM cold-boots and the client captures the snapshot explicitly. Ignored by the container backend."""
 
-    restore_key: Optional[str] = Field(None, pattern=r'^[A-Za-z0-9_-]{1,64}$')
-    """Key identifying the snapshot to restore when the sandbox starts. When omitted, no snapshot is restored on start."""
-    write_key: Optional[str] = Field(None, pattern=r'^[A-Za-z0-9_-]{1,64}$')
-    """Key under which the snapshot is saved on shutdown. When omitted, ``restore_key`` is used."""
+    key: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    """Key identifying the VM-state snapshot."""
+
+
+class SnapshotFiles(BaseModel):
+    """Writable-filesystem snapshot, captured as a portable gzip-tar. Restored when the sandbox starts and written by the snapshot action (or on shutdown when ``write_on_shutdown`` is set)."""
+
+    key: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    """Key identifying the files snapshot."""
+    write_on_shutdown: Optional[bool] = None
+    """When true, the files snapshot is captured on shutdown or termination. When false (the default), files are captured only by an explicit snapshot action."""
     include: Optional[list[str]] = Field(None, min_length=1)
     """Glob patterns specifying which paths to include in the snapshot (e.g. ``/home/user/*``)."""
     mount: Optional[str] = Field(None, pattern=r'^/.+')
-    """Mount path of a file system (see ``SandboxConfig.fs``) where snapshot tarballs are written and read, instead of the host's local snapshot directory. Point it at an ``internal``, remote-backed file system to persist and restore snapshots through a FUSE drive."""
+    """Mount path of a file system (see ``SandboxConfig.fs``) where the files tarball is written and read, instead of the host's local snapshot directory. Point it at an ``internal``, remote-backed file system to persist and restore through a FUSE drive."""
+
+
+class Snapshot(BaseModel):
+    """Snapshot configuration. It has two independent parts: ``vm`` captures the full microVM state (a no-op for the container backend) and ``files`` captures the writable filesystem as a portable tarball. Either may be present alone, both, or neither."""
+
+    vm: Optional[SnapshotVM] = None
+    """microVM-state snapshot (a no-op for the container backend)."""
+    files: Optional[SnapshotFiles] = None
+    """Writable-filesystem snapshot."""
+
+
+class SnapshotPartResult(BaseModel):
+    """Outcome of capturing one snapshot part."""
+
+    captured: bool
+    """Whether this part was captured. False (with ``reason``) when unsupported on the active backend, e.g. ``vm`` on a container."""
+    key: str
+    """Key the part was written under."""
+    bytes: Optional[int] = None
+    """Size of the captured artifact in bytes, when known."""
+    reason: Optional[str] = None
+    """Why the part was not captured, when ``captured`` is false."""
+
+
+class SnapshotResult(BaseModel):
+    """Outcome of a snapshot action, reported independently for each requested part."""
+
+    vm: Optional[SnapshotPartResult] = None
+    files: Optional[SnapshotPartResult] = None
 
 
 class SandboxConfig(BaseModel):

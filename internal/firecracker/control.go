@@ -31,6 +31,16 @@ type ControlRequest struct {
 	// first config arrives.
 	MountWorkspaces []GuestFuse `json:"mount_workspaces,omitempty"`
 
+	// ReconnectWorkspaces, when non-empty, asks the guest to RE-ESTABLISH the host
+	// transport for these already-mounted 9p workspaces after a snapshot resume,
+	// WITHOUT remounting. The guest owns the kernel v9fs transport (a socketpair),
+	// so the mount — and the workload's cwd — survived the resume; only the guest's
+	// host-facing 9p connection died. The guest dials each Port (the re-bound
+	// per-VM host listener) and replays the 9p session onto it (see
+	// internal/nineproxy), so the live mount keeps working. This supersedes
+	// unmount+remount for snapshot-keyed sandboxes, which would strand the cwd.
+	ReconnectWorkspaces []GuestFuse `json:"reconnect_workspaces,omitempty"`
+
 	// UnmountWorkspaces, when non-empty, asks the guest to unmount these workspace
 	// paths — used when a config-apply removes a mount from a running sandbox. The
 	// host stops serving the 9p export, but the guest must also umount the (now

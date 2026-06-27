@@ -6,30 +6,50 @@ import monaco from "@/lib/monaco";
 import {
   MONACO_DARK_THEME,
   MONACO_LIGHT_THEME,
+  MONACO_DARK_MUTED_THEME,
+  MONACO_LIGHT_MUTED_THEME,
   useMonacoTheme,
 } from "@/lib/useMonacoTheme";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 loader.config({ monaco });
 
+const DARK_RULES = [
+  { token: "", foreground: "ffffff" },
+  { token: "comment", foreground: "71717a", fontStyle: "italic" },
+  { token: "keyword", foreground: "ffffff", fontStyle: "bold" },
+  { token: "keyword.operator", foreground: "ffffff" },
+  { token: "string", foreground: "93c5fd" },
+  { token: "number", foreground: "ffffff" },
+  { token: "type", foreground: "ffffff" },
+  { token: "type.identifier", foreground: "ffffff" },
+  { token: "delimiter", foreground: "a1a1aa" },
+  { token: "operator", foreground: "ffffff" },
+  { token: "identifier", foreground: "ffffff" },
+  { token: "variable", foreground: "ffffff" },
+  { token: "regexp", foreground: "93c5fd" },
+];
+
+const LIGHT_RULES = [
+  { token: "", foreground: "18181b" },
+  { token: "comment", foreground: "71717a", fontStyle: "italic" },
+  { token: "keyword", foreground: "7c3aed", fontStyle: "bold" },
+  { token: "keyword.operator", foreground: "71717a" },
+  { token: "string", foreground: "0369a1" },
+  { token: "number", foreground: "c2410c" },
+  { token: "type", foreground: "18181b" },
+  { token: "type.identifier", foreground: "18181b" },
+  { token: "delimiter", foreground: "71717a" },
+  { token: "operator", foreground: "71717a" },
+  { token: "identifier", foreground: "18181b" },
+  { token: "variable", foreground: "18181b" },
+  { token: "regexp", foreground: "0369a1" },
+];
+
 monaco.editor.defineTheme(MONACO_DARK_THEME, {
   base: "vs-dark",
   inherit: false,
-  rules: [
-    { token: "", foreground: "ffffff" },
-    { token: "comment", foreground: "71717a", fontStyle: "italic" },
-    { token: "keyword", foreground: "ffffff", fontStyle: "bold" },
-    { token: "keyword.operator", foreground: "ffffff" },
-    { token: "string", foreground: "93c5fd" },
-    { token: "number", foreground: "ffffff" },
-    { token: "type", foreground: "ffffff" },
-    { token: "type.identifier", foreground: "ffffff" },
-    { token: "delimiter", foreground: "a1a1aa" },
-    { token: "operator", foreground: "ffffff" },
-    { token: "identifier", foreground: "ffffff" },
-    { token: "variable", foreground: "ffffff" },
-    { token: "regexp", foreground: "93c5fd" },
-  ],
+  rules: DARK_RULES,
   colors: {
     "editor.background": "#1e1e1e",
     "editor.foreground": "#fafafa",
@@ -51,21 +71,7 @@ monaco.editor.defineTheme(MONACO_DARK_THEME, {
 monaco.editor.defineTheme(MONACO_LIGHT_THEME, {
   base: "vs",
   inherit: false,
-  rules: [
-    { token: "", foreground: "18181b" },
-    { token: "comment", foreground: "71717a", fontStyle: "italic" },
-    { token: "keyword", foreground: "7c3aed", fontStyle: "bold" },
-    { token: "keyword.operator", foreground: "71717a" },
-    { token: "string", foreground: "0369a1" },
-    { token: "number", foreground: "c2410c" },
-    { token: "type", foreground: "18181b" },
-    { token: "type.identifier", foreground: "18181b" },
-    { token: "delimiter", foreground: "71717a" },
-    { token: "operator", foreground: "71717a" },
-    { token: "identifier", foreground: "18181b" },
-    { token: "variable", foreground: "18181b" },
-    { token: "regexp", foreground: "0369a1" },
-  ],
+  rules: LIGHT_RULES,
   colors: {
     "editor.background": "#ffffff",
     "editor.foreground": "#18181b",
@@ -80,6 +86,40 @@ monaco.editor.defineTheme(MONACO_LIGHT_THEME, {
     "editorHoverWidget.border": "#e4e4e7",
     "scrollbar.shadow": "#00000000",
     "scrollbarSlider.background": "#d4d4d866",
+    "scrollbarSlider.hoverBackground": "#a1a1aaaa",
+  },
+});
+
+// Muted variants paint a transparent background so a gray wrapper (e.g. a
+// read-only example panel) shows through instead of the editor's own surface.
+monaco.editor.defineTheme(MONACO_DARK_MUTED_THEME, {
+  base: "vs-dark",
+  inherit: false,
+  rules: DARK_RULES,
+  colors: {
+    "editor.background": "#00000000",
+    "editor.foreground": "#fafafa",
+    "editor.lineHighlightBackground": "#00000000",
+    "editor.selectionBackground": "#27272a",
+    "editorCursor.foreground": "#ffffff",
+    "scrollbar.shadow": "#00000000",
+    "scrollbarSlider.background": "#3f3f4666",
+    "scrollbarSlider.hoverBackground": "#3f3f46aa",
+  },
+});
+
+monaco.editor.defineTheme(MONACO_LIGHT_MUTED_THEME, {
+  base: "vs",
+  inherit: false,
+  rules: LIGHT_RULES,
+  colors: {
+    "editor.background": "#00000000",
+    "editor.foreground": "#18181b",
+    "editor.lineHighlightBackground": "#00000000",
+    "editor.selectionBackground": "#dbeafe",
+    "editorCursor.foreground": "#18181b",
+    "scrollbar.shadow": "#00000000",
+    "scrollbarSlider.background": "#a1a1aa66",
     "scrollbarSlider.hoverBackground": "#a1a1aaaa",
   },
 });
@@ -100,6 +140,8 @@ interface Props {
   minHeight?: number;
   /** Shows an expand button that opens the editor in a full-screen dialog. */
   expandable?: boolean;
+  /** Paints a transparent background so the wrapper's color shows through. */
+  muted?: boolean;
 }
 
 const LANG_MAP: Record<string, string> = {
@@ -117,11 +159,12 @@ export function CodeViewer({
   maxHeight,
   minHeight = 0,
   expandable,
+  muted,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const monacoTheme = useMonacoTheme();
+  const monacoTheme = useMonacoTheme(muted);
 
   const height = useMemo(() => {
     if (autoSize) return "100%";

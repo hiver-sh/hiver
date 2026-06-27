@@ -83,14 +83,6 @@ type container struct {
 	// the hook's byte from here. nil until LaunchAgent runs.
 	readyFifo *os.File
 
-	// prewarmCmd is the backgrounded `runc run` process when the container was
-	// started by PrewarmSnapshot (the entrypoint runs warm before claim and the
-	// claim adopts it). nil on the cold path. StopAgent reaps it on teardown.
-	prewarmCmd *exec.Cmd
-	// hasPrewarm is set once PrewarmSnapshot brought the entrypoint container up;
-	// it routes the claim through the resume path instead of a cold launch.
-	hasPrewarm bool
-
 	// mu guards workspaces/bound. workspaces is every mount ExportWorkspace has
 	// recorded; bound marks the ones the agent can already see (runc bind-mounts
 	// them at launch). MountWorkspacesLive injects the difference — workspaces
@@ -254,6 +246,11 @@ func (c *container) UnexportWorkspace(ctx context.Context, mount string) error {
 	log.Printf("isolation: unmounted workspace %s from running container (pid %d)", mount, pid)
 	return nil
 }
+
+// BindWorkspaces is a no-op for the container backend: workspaces are bind-mounted
+// from the host FUSE dirs at launch (LaunchAgent) and injected live on add, not
+// served over a per-netns 9p listener.
+func (c *container) BindWorkspaces(ctx context.Context) error { return nil }
 
 // InstallCA splices the sandbox CA (PEM) into the agent rootfs trust store
 // so the agent validates the leaf certs sbxproxy mints during interception,
@@ -433,6 +430,19 @@ func (c *container) CaptureSnapshot(dst string, include []string) error {
 	return snapshot.Capture(dst, c.overlay.Upper, c.snapshotMounts(), include)
 }
 
+// SnapshotLive captures the writable-FS tarball from the running container; the
+// overlay upper is a host directory in the shared page cache, so it is read
+// directly with no quiesce. vmDir is ignored — a container has no VM state, so
+// the VM part is never captured.
+func (c *container) SnapshotLive(ctx context.Context, vmDir, filesDst string, include []string) (bool, error) {
+	if filesDst != "" {
+		if err := c.CaptureSnapshot(filesDst, include); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
 func (c *container) snapshotMounts() []snapshot.MountSource {
 	out := make([]snapshot.MountSource, 0, len(c.localMounts))
 	for _, m := range c.localMounts {
@@ -515,83 +525,29 @@ func (c *container) WaitReady(ctx context.Context) error {
 	}
 }
 
-// PrewarmSnapshot brings up the image entrypoint container off the claim path
-// and keeps it running, so a claim adopts a warm, already-running workload (e.g.
-// a resident browser host) instead of cold-launching. It writes the bundle via
-// LaunchAgent — using the image entrypoint and the static /etc/hosts +
-// /etc/resolv.conf binds (no workspaces; none are known yet) — starts `runc run`
-// in the background, and waits for the poststart fifo (the entrypoint is
-// running). The prewarm guest's /run/hiver/prewarm-ready is unused here. On any
-// failure it tears down and returns nil so the claim falls back to cold launch
-// (hasPrewarm stays false).
-func (c *container) PrewarmSnapshot(ctx context.Context, imgCfg *runc.ImageConfig) error {
-	if len(imgCfg.Entrypoint) == 0 && len(imgCfg.Cmd) == 0 {
-		return nil // nothing config-independent to warm; cold launch on claim
-	}
-	bin, args, err := c.LaunchAgent(AgentConfig{
-		ImageConfig: imgCfg,
-		Env:         map[string]string{"NODE_EXTRA_CA_CERTS": NodeCACertPath},
-		Mounts: []runc.BindMount{
-			{Source: "/etc/hosts", Destination: "/etc/hosts", Options: []string{"ro"}},
-			{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"ro"}},
-		},
-		Prewarm: true,
-	})
-	if err != nil {
-		log.Printf("isolation: container prewarm bundle: %v (cold launch on claim)", err)
-		return nil
-	}
-	cmd := exec.Command(bin, args...)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	if err := cmd.Start(); err != nil {
-		log.Printf("isolation: container prewarm start: %v (cold launch on claim)", err)
-		return nil
-	}
-	c.prewarmCmd = cmd
-	// WaitReady reads the poststart fifo: the entrypoint is exec'd and running.
-	if err := c.WaitReady(ctx); err != nil {
-		log.Printf("isolation: container prewarm wait: %v (cold launch on claim)", err)
-		_ = c.StopAgent(context.Background())
-		c.prewarmCmd = nil
-		return nil
-	}
-	c.hasPrewarm = true
-	return nil
-}
+// HasPrewarmSnapshot is always false for the container backend: it has no VM
+// state to resume, so it always cold-boots.
+func (c *container) HasPrewarmSnapshot() bool { return false }
 
-// HasPrewarmSnapshot reports whether PrewarmSnapshot brought the entrypoint
-// container up, so the claim adopts it via the resume path.
-func (c *container) HasPrewarmSnapshot() bool { return c.hasPrewarm }
-
-// ResumeAgent returns an empty command: the prewarm container is already
-// running, so the caller starts no child for the container backend.
+// ResumeAgent is never called for the container backend (HasPrewarmSnapshot is
+// false, so the caller always cold-launches); it returns an empty command.
 func (c *container) ResumeAgent() (string, []string, error) { return "", nil, nil }
 
-// ResumeReady is a no-op: the prewarm container is already serving.
+// ResumeReady is never called for the container backend; it is a no-op.
 func (c *container) ResumeReady(ctx context.Context) error { return nil }
 
-// StopAgent destroys the agent container on the teardown path, for both launch
-// shapes: a cold `runc run` (started via startChild) and a prewarmed container
-// (started in the background by PrewarmSnapshot).
+// StopAgent destroys the agent container on the teardown path.
 //
-// Killing the launching process alone leaks the workload: `runc run` (and the
-// prewarm `exec.Cmd`) is only the supervisor in sandboxd's PID namespace, with
-// no kernel link into the container's own PID namespace. SIGKILLing it leaves
-// the container's init (PID 1 of that namespace) alive, so its whole process
-// tree survives and is reparented to sandboxd (PID 1). In a pack pod, where
-// sandboxd outlives each sandbox, those orphans accumulate. Tearing the
-// container down by id — `runc kill --all` then a force delete — is the only
-// reliable stop, so do it unconditionally (the id is valid however we launched).
+// Killing the launching `runc run` process alone leaks the workload: it is only
+// the supervisor in sandboxd's PID namespace, with no kernel link into the
+// container's own PID namespace. SIGKILLing it leaves the container's init (PID 1
+// of that namespace) alive, so its whole process tree survives and is reparented
+// to sandboxd (PID 1). In a pack pod, where sandboxd outlives each sandbox, those
+// orphans accumulate. Tearing the container down by id — `runc kill --all` then a
+// force delete — is the only reliable stop.
 func (c *container) StopAgent(ctx context.Context) error {
 	_ = exec.Command("runc", "kill", "--all", c.containerID, "SIGKILL").Run()
 	_ = exec.Command("runc", "delete", "--force", c.containerID).Run()
-	// Reap the backgrounded `runc run` from the prewarm path, if any. The cold
-	// path's supervisor is owned by the caller (it Waits on agentCmd).
-	if c.prewarmCmd != nil {
-		_ = c.prewarmCmd.Process.Kill()
-		_ = c.prewarmCmd.Wait()
-		c.prewarmCmd = nil
-	}
 	return nil
 }
 
@@ -680,6 +636,11 @@ func (c *container) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, fun
 func (c *container) EntrypointTTYBridge(ctx context.Context) (*exec.Cmd, func(), error) {
 	return nil, func() {}, nil
 }
+
+// PrepareEntrypointTTY is a no-op for the container backend: a tty entrypoint is
+// wrapped in a host pty at launch (startAgentTTY), not run as a separate exec
+// session, so there is nothing to record.
+func (c *container) PrepareEntrypointTTY(argv []string, cwd string, env []string) {}
 
 // execArgs constructs the argument slice for `runc exec`.
 //

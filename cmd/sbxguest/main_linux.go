@@ -26,10 +26,11 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/creack/pty"
 	"github.com/hiver-sh/hiver/internal/firecracker"
+	"github.com/hiver-sh/hiver/internal/guestsess"
+	"github.com/hiver-sh/hiver/internal/nineproxy"
 	"github.com/hiver-sh/hiver/internal/vsockexec"
 	"github.com/hiver-sh/hiver/internal/vsockfile"
 	"github.com/vishvananda/netlink"
@@ -82,13 +83,9 @@ func main() {
 	go serveFiles(vsockfile.GuestPort)
 	go serveControl(firecracker.GuestControlPort)
 	// Readiness by polling: the host polls GuestReadyPort, which serveReady opens
-	// only after prewarmReady closes (below). On a normal/resume boot that's
-	// immediate; on a prewarm boot it waits for the workload to write
-	// prewarmReadyFile, so the host snapshots a warm guest.
+	// once the guest agent is serving. A successful connect tells the host the
+	// guest is ready.
 	go serveReady(firecracker.GuestReadyPort)
-
-	// Resolve the readiness gate (closes prewarmReady — see serveReady).
-	go resolvePrewarmReady(params)
 
 	code := runWorkload(params)
 	log.Printf("workload exited with code %d", code)
@@ -164,31 +161,140 @@ func mountWorkspaces(mounts []firecracker.GuestFuse) error {
 			errs = append(errs, fmt.Errorf("9p %s: mkdir: %w", f.Mount, err))
 			continue
 		}
-		// 9p is guest-initiated: dial the netns gateway (the guest's eth0 gateway /
-		// tap address), where the host runs this VM's per-mount 9p listener. The
-		// kernel 9p trans=fd transport works over this TCP socket exactly as it did
-		// over the former vsock one.
-		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("9p %s: tcp socket: %w", f.Mount, err))
-			continue
-		}
-		sa := &unix.SockaddrInet4{Port: int(f.Port)}
-		copy(sa.Addr[:], net.ParseIP(fuseHostGateway).To4())
-		if err := unix.Connect(fd, sa); err != nil {
-			errs = append(errs, fmt.Errorf("9p %s: connect gateway %s:%d: %w", f.Mount, fuseHostGateway, f.Port, err))
-			unix.Close(fd)
-			continue
-		}
-		// The kernel 9p fd transport takes over the socket; keep it open for
-		// the mount's lifetime (no Close — the mount owns it).
-		opts := firecracker.MountFuseOption(fd)
-		if err := syscall.Mount("sbxfuse", f.Mount, "9p", 0, opts); err != nil {
-			errs = append(errs, fmt.Errorf("9p %s: mount: %w", f.Mount, err))
-			unix.Close(fd)
+		if err := mountWorkspaceProxied(f); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// wsProxies holds the live 9p reconnect proxy for each mounted workspace, keyed
+// by guest mount path. sbxguest — which survives a snapshot resume in guest RAM —
+// owns these, so the kernel v9fs transport (a socketpair) stays up across a
+// resume and only the host-facing 9p connection is re-established (reconnectWorkspaces).
+var (
+	wsMu      sync.Mutex
+	wsProxies = map[string]*nineproxy.Proxy{}
+)
+
+// mountWorkspaceProxied mounts one workspace with kernel v9fs over a socketpair
+// sbxguest owns, then proxies that socketpair to the host 9p listener via a
+// nineproxy.Proxy. Because sbxguest holds the kernel-facing transport, a snapshot
+// resume only drops the host-facing connection — the mount itself (and the
+// workload's cwd on it) never breaks; reconnectWorkspaces re-establishes the host
+// side and replays the 9p session.
+func mountWorkspaceProxied(f firecracker.GuestFuse) error {
+	// socketpair: one end becomes kernel v9fs's trans=fd transport, the other is
+	// the proxy's. AF_UNIX/SOCK_STREAM is a reliable in-kernel byte stream that
+	// survives the snapshot as plain fd state (no host backing to restore).
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("9p %s: socketpair: %w", f.Mount, err)
+	}
+	kernelFd, proxyFd := pair[0], pair[1]
+	proxyConn, err := fdConn(proxyFd, "9p-proxy:"+f.Mount)
+	if err != nil {
+		unix.Close(kernelFd)
+		return fmt.Errorf("9p %s: proxy fd: %w", f.Mount, err)
+	}
+	host, err := dialHostFuse(f.Port)
+	if err != nil {
+		proxyConn.Close()
+		unix.Close(kernelFd)
+		return fmt.Errorf("9p %s: dial host: %w", f.Mount, err)
+	}
+	// Start the proxy BEFORE the mount: v9fs performs its Tversion/Tattach
+	// handshake synchronously inside the mount(2) syscall, so the proxy must
+	// already be pumping the socketpair to the host or the mount deadlocks waiting
+	// for a reply that never comes.
+	px := nineproxy.NewProxy(proxyConn, host)
+	wsMu.Lock()
+	wsProxies[f.Mount] = px
+	wsMu.Unlock()
+	go func() {
+		if err := px.Run(); err != nil {
+			log.Printf("9p %s: proxy ended: %v", f.Mount, err)
+		}
+		wsMu.Lock()
+		if wsProxies[f.Mount] == px {
+			delete(wsProxies, f.Mount)
+		}
+		wsMu.Unlock()
+	}()
+
+	// Hand the kernel end to v9fs. The kernel fget's its own reference, but —
+	// matching the prior trans=fd path's caution — we keep our copy open for the
+	// mount's lifetime rather than risk closing the only reference.
+	opts := firecracker.MountFuseOption(kernelFd)
+	if err := syscall.Mount("sbxfuse", f.Mount, "9p", 0, opts); err != nil {
+		px.Close() // tears down the proxy + host conn
+		unix.Close(kernelFd)
+		return fmt.Errorf("9p %s: mount: %w", f.Mount, err)
+	}
+	return nil
+}
+
+// reconnectWorkspaces re-establishes the host-facing 9p transport for each
+// already-mounted workspace after a resume: it dials the re-bound host listener
+// and replays the live 9p session onto it, leaving the kernel mount untouched. A
+// workspace with no live proxy (e.g. not mounted before the snapshot) falls back
+// to a fresh mount so it still appears.
+func reconnectWorkspaces(mounts []firecracker.GuestFuse) error {
+	var errs []error
+	for _, f := range mounts {
+		if f.Port == 0 {
+			continue
+		}
+		addFileWorkspaceMount(f.Mount)
+		wsMu.Lock()
+		px := wsProxies[f.Mount]
+		wsMu.Unlock()
+		if px == nil {
+			if err := mountWorkspaceProxied(f); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		host, err := dialHostFuse(f.Port)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("9p %s: redial host: %w", f.Mount, err))
+			continue
+		}
+		if err := px.Reconnect(host); err != nil {
+			host.Close()
+			errs = append(errs, fmt.Errorf("9p %s: reconnect: %w", f.Mount, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// dialHostFuse opens a TCP connection to this VM's per-mount host 9p listener on
+// the netns gateway.
+func dialHostFuse(port uint32) (net.Conn, error) {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	sa := &unix.SockaddrInet4{Port: int(port)}
+	copy(sa.Addr[:], net.ParseIP(fuseHostGateway).To4())
+	if err := unix.Connect(fd, sa); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("connect gateway %s:%d: %w", fuseHostGateway, port, err)
+	}
+	return fdConn(fd, "host9p")
+}
+
+// fdConn wraps a connected socket fd as a net.Conn (with the runtime poller).
+// net.FileConn dups the fd, so we close our os.File copy afterward.
+func fdConn(fd int, name string) (net.Conn, error) {
+	f := os.NewFile(uintptr(fd), name)
+	if f == nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("invalid fd %d", fd)
+	}
+	c, err := net.FileConn(f)
+	f.Close()
+	return c, err
 }
 
 // is9pMounted reports whether path is already a 9p mount, so a re-driven
@@ -643,6 +749,12 @@ func execWorkload(argv []string, cwd string) int {
 // retry would spawn a second copy of the override workload.
 var resumeWorkloadOnce sync.Once
 
+// sessions holds the guest's detachable terminal sessions (the entrypoint tty).
+// It lives for the agent's lifetime — and the agent survives a snapshot resume in
+// guest RAM — so a session's process + pty persist across the host's exec
+// connection dropping; a reconnect re-attaches the warm process.
+var sessions = guestsess.New()
+
 // startResumeWorkload launches the config's entrypoint override (delivered over
 // the control channel on resume) exactly once, on console stdio. The prewarm
 // snapshot booted the image's default entrypoint — a config-independent keepalive
@@ -703,13 +815,11 @@ func serveExec(port uint32) {
 	}
 }
 
-// serveReady is the readiness probe the host polls: it opens GuestReadyPort only
-// after prewarmReady closes (immediately on a normal/resume boot; after the
-// workload warms on a prewarm boot), so a successful connect tells the host the
-// guest is ready. Accepted connections are closed immediately — the connect edge
-// is the signal.
+// serveReady is the readiness probe the host polls: it opens GuestReadyPort once
+// the guest agent is serving, so a successful connect tells the host the guest is
+// ready. Accepted connections are closed immediately — the connect edge is the
+// signal.
 func serveReady(port uint32) {
-	<-prewarmReady
 	ln, err := guestListenTCP("ready", port)
 	if err != nil {
 		return
@@ -785,6 +895,16 @@ func handleControl(conn io.ReadWriter) error {
 	if len(req.Entrypoint) > 0 {
 		startResumeWorkload(req)
 	}
+	if len(req.ReconnectWorkspaces) > 0 {
+		log.Printf("control: reconnecting %d workspace(s) post-resume", len(req.ReconnectWorkspaces))
+		if err := reconnectWorkspaces(req.ReconnectWorkspaces); err != nil {
+			// Report failure so the host re-drives this RPC. Reconnect is
+			// idempotent-ish: a proxy already reconnected is replaced by a fresh
+			// host dial+replay, which the quiesced session tolerates.
+			log.Printf("control: reconnect workspaces: %v", err)
+			return json.NewEncoder(conn).Encode(firecracker.ControlResponse{OK: false, Error: err.Error()})
+		}
+	}
 	if len(req.MountWorkspaces) > 0 {
 		log.Printf("control: mounting %d workspace(s) post-resume", len(req.MountWorkspaces))
 		if err := mountWorkspaces(req.MountWorkspaces); err != nil {
@@ -827,45 +947,6 @@ func unmountWorkspaces(paths []string) error {
 	return errors.Join(errs...)
 }
 
-// prewarmReady gates the guest readiness beacon (see serveExec). It is closed
-// once the guest is ready for the host to snapshot: immediately on a normal or
-// resume boot, or — on a prewarm boot — only after the workload writes
-// prewarmReadyFile, so the snapshot captures the resident service warm (e.g. an
-// already-launched browser the workload can connect to instead of launching).
-var prewarmReady = make(chan struct{})
-
-const (
-	// prewarmReadyFile is the sentinel the workload (the image entrypoint)
-	// creates once its resident service is serving; its appearance closes
-	// prewarmReady so the host snapshots a warm guest.
-	prewarmReadyFile = "/run/hiver/prewarm-ready"
-	// prewarmReadyTimeout bounds how long the snapshot waits on the workload, so
-	// an image that never writes the file degrades to a cold (not-yet-warm)
-	// snapshot rather than wedging the warm pool.
-	prewarmReadyTimeout = 30 * time.Second
-)
-
-// resolvePrewarmReady closes prewarmReady to release serveExec's host readiness
-// beacon. On a normal/resume boot (Prewarm false) it closes immediately,
-// preserving the existing readiness timing. On a prewarm boot it waits for the
-// workload to create prewarmReadyFile (bounded by prewarmReadyTimeout) before
-// closing, so the host's snapshot captures the workload warm.
-func resolvePrewarmReady(p firecracker.GuestParams) {
-	defer close(prewarmReady)
-	if !p.Prewarm {
-		return
-	}
-	deadline := time.Now().Add(prewarmReadyTimeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(prewarmReadyFile); err == nil {
-			log.Printf("prewarm: workload ready")
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	log.Printf("prewarm: timed out after %s waiting for %s; snapshotting anyway",
-		prewarmReadyTimeout, prewarmReadyFile)
-}
 
 // handleExec runs one exec session: read the Start frame, run the command
 // (optionally under a pty), relay stdio frames, and send the exit code.
@@ -880,6 +961,20 @@ func handleExec(conn io.ReadWriter) error {
 	var start vsockexec.Start
 	if err := json.Unmarshal(payload, &start); err != nil {
 		return fmt.Errorf("decode start: %w", err)
+	}
+
+	// A named session is detachable: the registry keeps the process + pty alive
+	// across this connection dropping (a snapshot resume cuts the exec TCP), so a
+	// later Start with the same id re-attaches the warm process instead of
+	// relaunching it. The entrypoint tty uses this; ad-hoc execs (empty id) stay
+	// one-shot.
+	if start.SessionID != "" && start.TTY {
+		return sessions.EnsureAttach(start.SessionID, guestsess.Spec{
+			Command: start.Command,
+			Cwd:     orDefault(start.Cwd, "/"),
+			Env:     start.Env,
+			TTY:     true,
+		}, conn, start.Rows, start.Cols)
 	}
 
 	cmd := exec.Command("sh", "-c", start.Command)

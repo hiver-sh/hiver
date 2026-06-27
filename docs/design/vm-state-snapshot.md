@@ -49,10 +49,11 @@ Goals:
   capture-on-shutdown behavior.
 - `--snapshot-dir` stores **both** vm and files snapshots, on NVMe, bypassing the
   pod overlay.
-- The **captured config is authoritative** on VM resume. A different config at
-  resume time is ignored, except `entrypoint` / `env` / `cwd`, which may be
-  honored — but only when they actually differ, because honoring them costs the
-  warm captured entrypoint.
+- **Resume is a started sandbox**: reconcilable fields (`fs`, `egress`) are
+  materialized to the desired config; boot-time fields (`image`, `cpu`, `memory`,
+  `entrypoint`, `cwd`, `tty`) are the snapshot's and immutable — the same
+  cannot-change-after-init contract. The captured entrypoint is kept (not
+  relaunched). See §6.
 - Remove `--prewarm`, `--instance-cpu`, `--instance-memory` from `sandboxd`.
 
 Non-goals:
@@ -203,35 +204,39 @@ a pod can pre-populate `snapshotDir` with a VM snapshot under a well-known key s
 the first claim resumes instead of cold-booting — but that priming is now "call
 snapshot once," not a distinct `--prewarm` code path.
 
-## 6. Captured config is authoritative; entrypoint/env/cwd reconcile
+## 6. Resume = a started sandbox: materialize the diff, keep the immutables
 
-A VM snapshot freezes the **entire machine**: kernel cmdline, guest sizing
-(firecracker fixes vCPU/RAM in the snapshot), the running entrypoint process, and
-the environment it booted with. Therefore:
+A resumed VM is just a sandbox that is **already running** — the snapshot was
+captured from a fully-configured cold boot, so it comes back with the config's own
+entrypoint running, its env set, its cwd, and its overlay. So resume follows the
+*same* rule the system already applies to a running sandbox, not a special one:
 
-- On resume, the **config used at capture time wins.** A different `image`, `cpu`,
-  `memory`, `fs`, `egress`, etc. in the resume-time config is **ignored** — there is
-  no way to retro-apply them to a frozen machine. (We log a warning when the resume
-  config diverges from the captured one so this isn't silent.)
-- The exceptions are **`entrypoint`, `env`, and `cwd`**, which the existing resume
-  path already reconciles over the control channel
-  ([ResumeState](../../internal/isolation/isolation.go#L197) →
-  [ControlRequest](../../internal/firecracker/control.go#L50-L73)):
-  - `env` is cheap and already applied (the guest needs PATH for exec resolution).
-  - A changed `entrypoint`/`cwd` means **relaunching** the workload inside the
-    resumed guest — which **throws away the warm captured entrypoint process** the
-    snapshot's whole value rests on. This is expensive.
+- **Reconcilable fields are materialized** (the diff is applied; no diff is a
+  no-op): `fs`/workspaces (their 9p mounts don't survive a snapshot, so they're
+  re-mounted to match the desired set), `egress` (host-side rules, re-applied), and
+  the per-VM clock/re-IP. This is exactly what a live `PUT /v1/config` reconcile
+  does.
+- **Boot-time fields are immutable once the workload runs** — `image`, `cpu`,
+  `memory`, `entrypoint`, `cwd`, `tty`. On resume they are whatever the snapshot
+  captured. This is the *same* "cannot be changed after the sandbox is initialized"
+  contract `SandboxConfig` already documents; a resumed VM is initialized. Changing
+  the entrypoint of an already-running workload "makes no sense," so it's kept — we
+  do **not** relaunch it.
 
-**Recommendation:** honor an `entrypoint`/`cwd` override only when it *actually
-differs* from the captured one. Persist the captured config's entrypoint/cwd
-alongside the snapshot (a small `snapshot-<key>.meta.json` next to the `.bin`
-files); on resume, compare; if equal, **reuse the running captured entrypoint**
-(no relaunch — the common case for a keyed warm-pool); if different, relaunch as
-today and accept the cost. `env` is always merged (cheap), but should not by
-itself trigger a relaunch.
+Crucially, we do **not** relaunch a differing entrypoint on resume. Because the
+snapshot already runs the config's entrypoint, relaunching a different one would
+**duplicate the workload** (the captured process keeps running *and* a second one
+starts). So there is no "captured config authoritative vs. reconcile" tension and
+no `meta.json` comparison — resume just restores the running workload.
 
-This keeps the fast path (resume a keyed VM whose entrypoint matches) genuinely
-fast, and makes the slow path (override the entrypoint) explicit and rare.
+**The one exception — tty entrypoints.** A `tty: true` entrypoint runs as a guest
+tty *exec session* whose host-side pty bridge is not part of the guest memory
+snapshot, so it cannot be re-attached after restore. The guest console keeps the
+image-default keepalive (which the snapshot does restore), and the tty entrypoint
+is **re-established** on resume as a fresh session
+([PrepareEntrypointTTY](../../internal/isolation/isolation.go) + setupEntrypointTTY)
+— the same path cold boot uses. This is a property of tty + host-bridge, not a
+config-precedence rule.
 
 ## 7. `sandboxd` flags & storage
 
@@ -339,8 +344,10 @@ key exists; now it requires the explicit `write_on_shutdown` flag.
 5. **VM capture/resume by key** — generalize PrewarmSnapshot/Resume to (a) write
    into `snapshotDir/<vm.key>/`, (b) resume the guest in place after capture, and
    (c) drive get-or-create off "does `vm.key` exist?" instead of `--prewarm`.
-6. **Config-authoritative resume** — persist captured entrypoint/cwd metadata;
-   compare on resume; only relaunch when entrypoint/cwd differ (§6).
+6. **Resume = started sandbox** — reconcile `fs`/`egress` to the desired config;
+   keep the snapshot's boot-time fields (don't relaunch the entrypoint — it's
+   already running, relaunching duplicates it). tty entrypoints are re-established
+   as a fresh session since their host bridge doesn't survive the snapshot (§6).
 7. **Drop flags** — remove `--prewarm`/`--instance-cpu`/`--instance-memory` and
    their controller/runtime/chart wiring; size the guest from `spec.cpu`/`.memory`.
 
@@ -360,3 +367,79 @@ Steps 1–4 are independently shippable and low-risk; 5–7 are the substantive 
 - **Atomicity of multi-part snapshot**: if `vm` succeeds but `files` fails (or vice
   versa), do we roll back the written key or report partial success? Proposed:
   per-part success in the response, no cross-part rollback.
+
+## 11. Warm resume: `sbxguest` owns the survivable transports
+
+> Implemented **inside the existing `sbxguest` agent** — no new daemon binary.
+> `sbxguest` already serves exec sessions and mounts the workspaces, and it stays
+> alive in guest RAM across a snapshot, so it is the natural owner of the fds that
+> must survive a restore. Testable cores (9p replay state machine, session
+> registry) live in `internal/` packages; the linux syscall glue stays in
+> `cmd/sbxguest`.
+
+A VM resume restores guest RAM, so the guest *processes* (the entrypoint, the
+agent) are alive after `LoadSnapshot`. What does **not** survive is any
+**host↔guest connection**: every channel is TCP over the tap/netns (workspace
+9p `trans=fd`, exec/tty sessions), and on resume the netns/tap/IP are rebuilt and
+the old host listeners are gone. The kernel restores only the *guest* end of each
+TCP connection; the host end is destroyed, and TCP/9p have no resume protocol.
+
+The old behavior papered over this by **relaunching** the entrypoint (a fresh
+process gets fresh connections) and **remounting** `/workspace`. That's the cold
+start the user sees on every resume — and a remount strands the entrypoint's `cwd`
+on the old (detached) mount, which is *why* a relaunch was required.
+
+### Principle: the agent owns the survivable transports
+
+Because `sbxguest` stays alive in guest RAM across the snapshot, the fds it *owns*
+survive the restore; only its host-facing connections need re-establishing. It owns
+two things:
+
+1. **Workspace 9p transports.** Instead of kernel-v9fs mounting directly over a
+   TCP socket, it mounts (`trans=fd`) over a **socketpair** whose other end
+   `sbxguest` holds. `sbxguest` proxies bytes to the host 9p listener. When the host
+   connection dies on resume the kernel sees only a **pause** on its fd — the mount
+   never errors, so it stays mounted and the entrypoint's `cwd` stays valid.
+   `sbxguest` parses the 9p2000.L stream to track session state (fid→path, open
+   flags); on resume it dials the **re-bound** host listener, replays
+   `Tversion`/`Tattach`, re-walks + re-opens every live fid (old→new fid remap),
+   and resumes proxying. Quiescing the guest before snapshot guarantees no in-flight
+   9p request straddles the cut.
+
+2. **tty/exec sessions.** `sbxguest` runs each session's process on a guest **pty**
+   it owns and keeps alive across a host disconnect, keyed by a stable id (the
+   entrypoint session id is fixed). The host re-attaches on resume by reconnecting
+   and re-bridging the pty — **no relaunch**. The entrypoint is relaunched **only**
+   when the resume-time config changes a launch-determining field
+   (entrypoint/env/cwd/tty); otherwise the live process is reused.
+
+### Control protocol (host `sandboxd` → `sbxguest`)
+
+- `ensure-session{id, argv, cwd, env, tty}` — start if absent; if present and the
+  launch fields match, no-op (reuse); if they differ, kill + relaunch.
+- `attach-session{id}` — stream stdio frames (the existing `vsockexec` framing) to
+  the live pty; detaching leaves the process running.
+- `mount-workspace{path, hostPort}` — create the socketpair, mount kernel-v9fs,
+  start proxying.
+- `reconnect-workspace{path, hostPort}` — dial the re-bound listener and replay the
+  9p session onto the existing mount.
+- `set-env` / `set-clock` — the existing resume-sync bits (clock skew, env).
+
+### Host orchestration (resume path)
+
+`ApplyResumeState` stops doing remount + relaunch. Instead it: re-binds the host 9p
+listeners (already does), tells `sbxguest` to `reconnect-workspace` each mount, then
+`ensure-session`/`attach-session` for the entrypoint tty. `EntrypointTTYBridge`
+becomes "ensure + attach the `entrypoint` session" rather than "open a fresh exec
+session." Snapshot capture quiesces the workspaces (drains in-flight 9p) but does
+**not** unmount — the mount is meant to persist.
+
+### Non-goals / risks
+
+- `sbxguest`'s 9p replay only handles a quiesced cut (no mid-flight `Twrite`); the
+  snapshot action already flushes first. Non-idempotent in-flight ops are out of
+  scope.
+- The kernel-v9fs ↔ `sbxguest` socketpair and the session ptys must be plain
+  fds held by `sbxguest` (no host-backed virtio state) so they restore cleanly.
+- Full path only validates on firecracker hardware; the 9p replay + session manager
+  are unit-tested in isolation (framing, fid tracking, detach/reattach).

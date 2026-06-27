@@ -44,6 +44,7 @@ func main() {
 		command = flag.String("command", "", "command to run in the guest (required)")
 		cwd     = flag.String("cwd", "", "working directory")
 		tty     = flag.Bool("tty", false, "allocate a tty in the guest")
+		session = flag.String("session", "", "detachable session id: the guest keeps the process alive across a dropped connection and re-attaches it on reconnect (empty = one-shot exec)")
 		env     envFlag
 	)
 	flag.Var(&env, "env", "environment KEY=VALUE (repeatable)")
@@ -79,10 +80,11 @@ func main() {
 	}
 
 	start := vsockexec.Start{
-		Command: *command,
-		Cwd:     *cwd,
-		Env:     envMap(env),
-		TTY:     *tty,
+		Command:   *command,
+		Cwd:       *cwd,
+		Env:       envMap(env),
+		TTY:       *tty,
+		SessionID: *session,
 	}
 	// Seed the guest pty with the current window size so the program starts at
 	// the right dimensions; SIGWINCH (below) carries later changes. os.Stdin is

@@ -16,13 +16,13 @@ import (
 // Two independent key pairs ("alpha" and "beta") are exercised with the same
 // structure:
 //
-//  1. A sandbox with Snapshot.WriteKey writes a unique file to /workspace,
-//     then is shut down. sandboxd captures the workspace into a tarball
-//     before exiting; Shutdown blocks until the container exits, so the
+//  1. A sandbox with Snapshot.Files (write_on_shutdown) writes a unique file to
+//     /workspace, then is shut down. sandboxd captures the workspace into a
+//     tarball before exiting; Shutdown blocks until the container exits, so the
 //     tarball is guaranteed to be present before the restore phase.
 //
-//  2. A fresh sandbox with Snapshot.RestoreKey (pointing to the tarball from
-//     step 1) starts and reads the file back — verifying round-trip fidelity.
+//  2. A fresh sandbox with the same Snapshot.Files.Key (pointing to the tarball
+//     from step 1) starts and reads the file back — verifying round-trip fidelity.
 //
 // Additionally, each restore sandbox asserts that files from the other key's
 // snapshot are absent, proving that snapshot keys are isolated from each other.
@@ -70,7 +70,7 @@ func TestSnapshotE2E(t *testing.T) {
 		sbx, err := c.GetOrCreateSandbox(ctx, wKey, hiverclient.SandboxConfig{
 			Image:      "hiversh/python:3.13-alpine",
 			Entrypoint: []string{"tail", "-f", "/dev/null"},
-			Snapshot:   &hiverclient.Snapshot{WriteKey: tc.key},
+			Snapshot:   &hiverclient.Snapshot{Files: &hiverclient.SnapshotFiles{Key: tc.key, WriteOnShutdown: true}},
 		})
 		if err != nil {
 			t.Fatalf("[%s] write: GetOrCreateSandbox: %v", tc.name, err)
@@ -105,7 +105,7 @@ func TestSnapshotE2E(t *testing.T) {
 			sbx, err := c.GetOrCreateSandbox(ctx, rKey, hiverclient.SandboxConfig{
 				Image:      "hiversh/python:3.13-alpine",
 				Entrypoint: []string{"tail", "-f", "/dev/null"},
-				Snapshot:   &hiverclient.Snapshot{RestoreKey: tc.key},
+				Snapshot:   &hiverclient.Snapshot{Files: &hiverclient.SnapshotFiles{Key: tc.key}},
 			})
 			if err != nil {
 				t.Fatalf("GetOrCreateSandbox: %v", err)

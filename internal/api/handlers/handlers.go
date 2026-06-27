@@ -234,6 +234,12 @@ func (h *SandboxHandlers) GetInfo(c *gin.Context, key gen.Key) {
 	}
 }
 
+func (h *SandboxHandlers) Snapshot(c *gin.Context, key gen.Key) {
+	if sb, ok := h.resolve(c, key); ok {
+		sb.Snapshot(c)
+	}
+}
+
 func (h *SandboxHandlers) GetEvents(c *gin.Context, key gen.Key, params gen.GetEventsParams) {
 	if sb, ok := h.resolve(c, key); ok {
 		sb.GetEvents(c, params)

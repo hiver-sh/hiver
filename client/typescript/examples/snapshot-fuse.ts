@@ -52,10 +52,12 @@ const config: hiver.SandboxConfig = {
     },
   ],
   snapshot: {
-    restore_key: KEY,
-    write_key: KEY,
-    mount: "/snapshot-drive",
-    include: ["/root/**"],
+    files: {
+      key: KEY,
+      write_on_shutdown: true,
+      mount: "/snapshot-drive",
+      include: ["/root/**"],
+    },
   },
 };
 

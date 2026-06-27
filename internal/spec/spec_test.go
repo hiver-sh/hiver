@@ -227,26 +227,38 @@ func TestSnapshotMountValidation(t *testing.T) {
 		{
 			"mount references a declared fs",
 			`{"fs": [{"backend": "external", "mount": "/snapshots", "host": "https://h", "internal": true}],
-			  "snapshot": {"restore_key": "k", "mount": "/snapshots"}}`,
+			  "snapshot": {"files": {"key": "k", "mount": "/snapshots"}}}`,
 			"",
 		},
 		{
 			"omitted mount is fine",
 			`{"fs": [{"backend": "local", "mount": "/work"}],
-			  "snapshot": {"restore_key": "k"}}`,
+			  "snapshot": {"files": {"key": "k"}}}`,
+			"",
+		},
+		{
+			"vm-only snapshot is fine",
+			`{"fs": [{"backend": "local", "mount": "/work"}],
+			  "snapshot": {"vm": {"key": "k"}}}`,
 			"",
 		},
 		{
 			"relative mount rejected",
 			`{"fs": [{"backend": "local", "mount": "/work"}],
-			  "snapshot": {"restore_key": "k", "mount": "snapshots"}}`,
-			"snapshot.mount",
+			  "snapshot": {"files": {"key": "k", "mount": "snapshots"}}}`,
+			"snapshot.files.mount",
 		},
 		{
 			"mount with no matching fs rejected",
 			`{"fs": [{"backend": "local", "mount": "/work"}],
-			  "snapshot": {"restore_key": "k", "mount": "/snapshots"}}`,
+			  "snapshot": {"files": {"key": "k", "mount": "/snapshots"}}}`,
 			"does not match any fs",
+		},
+		{
+			"files without key rejected",
+			`{"fs": [{"backend": "local", "mount": "/work"}],
+			  "snapshot": {"files": {"mount": "/work"}}}`,
+			"snapshot.files.key",
 		},
 	}
 	for _, c := range cases {

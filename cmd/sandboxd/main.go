@@ -2,8 +2,8 @@
 // MITM proxy, FUSE daemon, and agent workload as a single sandbox "pod".
 //
 // sandboxd is configured by a single JSON spec (see internal/spec), delivered in
-// the HIVE_SPEC environment variable by the runtime — or, in prewarm mode,
-// supplied later via PUT /v1/config. The spec carries everything sandboxd needs:
+// the HIVE_SPEC environment variable by the runtime — or, in pack mode,
+// supplied per sandbox via the create/config API. The spec carries everything sandboxd needs:
 // the agent binary + args, the workspace's host-side backend and FUSE mount
 // point, the FUSE ACLs, the proxy's egress allowlist, and where to write audit
 // logs.
@@ -67,8 +67,8 @@ const (
 	// shutdown grace period.
 	fsDrainTimeout = 10 * time.Second
 
-	// snapshotResumeTimeout caps the microvm prewarm fast path's VMM-up +
-	// snapshot-load + resume; on timeout we abort rather than hang the claim.
+	// snapshotResumeTimeout caps the microvm VM-resume fast path's VMM-up +
+	// snapshot-load + resume; on timeout we abort rather than hang the launch.
 	snapshotResumeTimeout = 30 * time.Second
 
 	// soMark stamps proxy-originated upstream sockets so the iptables REDIRECT
@@ -93,34 +93,22 @@ func main() {
 	phase := &bootPhase{last: time.Now()}
 	var (
 		apiServerPort         = flag.String("api-server-port", "8099", "port of the API server")
-		snapshotDir           = flag.String("snapshot-dir", "", "directory where snapshot tarballs are stored on local disk; optional — when unset, snapshots only work for configs that route them to a FUSE drive via snapshot.mount")
-		prewarm               = flag.Bool("prewarm", false, "boot in prewarm mode: bring up the API server and park without a spec, to be configured (and the workload launched) by the first PUT /v1/config")
+		snapshotDir           = flag.String("snapshot-dir", "", "directory where files and VM-state snapshots are stored on local disk (skip the pod overlay — point it at NVMe); optional — when unset, files snapshots only work for configs that route them to a FUSE drive via snapshot.files.mount, and VM snapshots are disabled")
 		pack                  = flag.Bool("pack", false, "boot in pack mode: bring up the shared sidecars and park as a pod host; each POST /v1/<key> packs a new same-image sandbox (own netns/IP, overlay, egress) into this pod")
 		preallocPool          = flag.Int("prealloc-pool", 10, "pack mode: number of sandbox network slots (netns/veth/iptables + DNS sink) to preallocate and keep warm so a create claims one instead of wiring it on the request path; 0 disables")
 		maxConcurrentLaunches = flag.Int("max-concurrent-launches", 10, "pack mode: cap on concurrent sandbox creates in flight, so a burst doesn't oversubscribe the node's cores during the CPU-bound resume/convergence phases; set near the node's vCPU count; 0 disables (unbounded)")
-		overlayCoWDir         = flag.String("overlay-cow-dir", "", "pack/microvm mode: directory for each VM's dm-snapshot copy-on-write store (the per-VM exception store layered over the shared read-only base overlay — the base is never copied); empty keeps it in the per-VM jail dir (on the container overlayfs). Point it at a tmpfs mount so the guest's rootfs writes are RAM-backed; the store is ephemeral so it never needs persistence")
-		instanceCPU           = flag.Float64("instance-cpu", 0, "microVM guest sizing: vCPU count, rounded up to a whole core. firecracker bakes this into the base snapshot so every resumer inherits it; comes from here, not the pod resources. 0 lets the isolation backend apply its default. Overrides any cpu in HIVE_SPEC")
-		instanceMemory        = flag.Int("instance-memory", 0, "microVM guest sizing: RAM in MiB. firecracker bakes this into the base snapshot so every resumer inherits it. 0 lets the isolation backend apply its default. Overrides any memory in HIVE_SPEC")
 	)
 	flag.Parse()
 
 	// The spec is delivered as JSON in the HIVE_SPEC env var (injected by the
-	// runtime), not a mounted file. It is optional: in pack/prewarm the pod has
-	// no boot workload and the image is whatever is bundled in the pod, so
-	// HIVE_SPEC is redundant there — each sandbox's full config arrives later
-	// over the API. The guest's vCPU/RAM sizing comes from HIVE_INSTANCE_CPU /
-	// HIVE_INSTANCE_MEMORY regardless (LoadEnv overlays them onto the spec).
+	// runtime), not a mounted file. It is optional: in pack mode the pod has no
+	// boot workload and the image is whatever is bundled in the pod, so HIVE_SPEC
+	// is redundant there — each sandbox's full config arrives later over the API.
+	// Guest vCPU/RAM sizing comes from the spec's cpu/memory (the same fields the
+	// container backend uses); firecracker bakes those into a VM snapshot.
 	sp, err := spec.LoadEnv()
 	if err != nil {
 		log.Fatalf("spec: %v", err)
-	}
-	// Guest sizing comes from flags, overriding any cpu/memory carried in the
-	// (now-optional) HIVE_SPEC. firecracker bakes these into the base snapshot.
-	if *instanceCPU > 0 {
-		sp.CPU = instanceCPU
-	}
-	if *instanceMemory > 0 {
-		sp.Memory = instanceMemory
 	}
 
 	// Construct the API server and start serving immediately — before any
@@ -131,7 +119,7 @@ func main() {
 	// The supervisor owns the pod's sandbox map and is what the API server
 	// dispatches keyed requests to. It starts empty; the boot sandbox is created
 	// and registered below once its key and subsystems are known.
-	sup := newSupervisor(*prewarm)
+	sup := newSupervisor()
 	s := api.NewSandboxServer(*apiServerPort, sup)
 	go s.ListenAndServe()
 
@@ -158,12 +146,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("isolation: %v", err)
 	}
-	iso, err := isolation.New(isoKind, isolation.Config{
+	isoCfg := isolation.Config{
 		Hostname:    podHostname,
 		LocalMounts: isolationLocalMounts(sp.FS),
 		VcpuCount:   ceilVcpu(sp.CPU),
 		MemoryMiB:   intOrZero(sp.Memory),
-	})
+	}
+	// VM state dir: when the config names a vm snapshot key, this VM's overlay/
+	// metadata/snapshot live under -snapshot-dir (the source of truth), keyed by it.
+	// If that dir already holds a snapshot the VM resumes from it in place; otherwise
+	// it cold-boots into it and the client captures one via the snapshot action,
+	// which a later get-or-create then resumes. Microvm only; the container backend
+	// ignores it. Empty ⇒ ephemeral overlay in the jail, no VM snapshots.
+	isoCfg.VMStateDir = vmStateDir(*snapshotDir, sp)
+	if isoCfg.VMStateDir != "" && isolation.VMSnapshotReady(isoCfg.VMStateDir) {
+		log.Printf("sandboxd: vm snapshot %q found; resuming", sp.Snapshot.VM.Key)
+	}
+	iso, err := isolation.New(isoKind, isoCfg)
 	if err != nil {
 		log.Fatalf("isolation: %v", err)
 	}
@@ -208,10 +207,9 @@ func main() {
 	broker := events.New(events.DefaultCapacity, 0)
 	store := api.NewConfigStore(initialCfg)
 
-	// The boot sandbox is created lazily. Without -prewarm it is created and
-	// launched immediately below from the env (HIVE_SPEC) config. With -prewarm
-	// the pod snapshots and parks; the sandbox is created when a POST /v1/<key>
-	// claim arrives, under the caller's key, and the snapshot is restored into it.
+	// The boot sandbox is created and launched immediately below from the env
+	// (HIVE_SPEC) config, resuming a keyed VM snapshot when one exists on disk.
+	// (Pack pods take the earlier return and create sandboxes per POST /v1/<key>.)
 	// sb is assigned by claimSandbox (defined once lifetime exists, below); the
 	// launch/resume closures and shutdown read it after that.
 	var sb *handlers.Sandbox
@@ -241,12 +239,12 @@ func main() {
 
 	// claimSandbox builds the boot sandbox under key, wires its subsystems, and
 	// registers it so keyed routes resolve. cancel (the lifecycle ctx's cancel)
-	// backs DELETE /v1/<key>. Called immediately for a normal boot, or at claim
-	// time (POST /v1/<key>) in prewarm mode. The TTL countdown only starts once
-	// the workload launches, so a parked prewarm pod doesn't burn its TTL.
+	// backs DELETE /v1/<key>. The TTL countdown only starts once the workload
+	// launches (lifetime.Run, below), not here.
 	claimSandbox := func(key string) {
 		sb = handlers.NewSandbox(key, soMark)
 		sb.SetIsolation(iso)
+		sb.SetSnapshotDir(*snapshotDir)
 		sb.SetBroker(broker)
 		sb.SetStore(store)
 		sb.SetLifetime(lifetime)
@@ -644,10 +642,11 @@ func main() {
 		})
 	}
 
-	// resumeWorkload is the prewarm fast path: the workload was already brought up
-	// warm by PrewarmSnapshot, so a claim just makes it serving and injects the
-	// first config's workspaces — it does not launch the entrypoint. The microvm
-	// backend starts a fresh VMM and loads the snapshot (in which the entrypoint
+	// resumeWorkload is the VM-resume fast path: the workload is already warm in a
+	// VM snapshot (a keyed snapshot the client captured, or a pack base snapshot),
+	// so the launch just makes it serving and injects the config's workspaces — it
+	// does not cold-launch the entrypoint. The microvm backend starts a fresh VMM
+	// and loads the snapshot (in which the entrypoint
 	// is already running); the container backend's entrypoint container is already
 	// running, so it starts no child. Teardown flushes (microvm) and stops the
 	// workload.
@@ -716,23 +715,22 @@ func main() {
 		for k, v := range env {
 			envSlice = append(envSlice, k+"="+v)
 		}
-		rs := isolation.ResumeState{Env: envSlice}
-		// A config that overrides the entrypoint must run on resume too — the
-		// snapshot is running the image's default entrypoint, not this command.
-		// Only send it when overridden; otherwise the default is already running in
-		// the snapshot and relaunching it would duplicate it.
-		if len(sp.Entrypoint) > 0 {
-			rs.Entrypoint = sp.Entrypoint
-			rs.Cwd = sp.Cwd
-			rs.Tty = ttyReq
+		rs := isolation.ResumeState{Env: envSlice, MountWorkspacesSync: true}
+		// The snapshot restores the workload it captured running — the config's own
+		// entrypoint, captured at cold-boot. We do NOT relaunch it: a non-tty
+		// entrypoint comes back on the guest console (relaunching would duplicate the
+		// workload), and changing the entrypoint/cwd of a resumed (already-running)
+		// workload is a no-op, exactly like changing it on any started sandbox.
+		//
+		// A tty entrypoint is the one exception: it ran as a guest tty exec session
+		// whose host-side pty bridge does not survive a snapshot/restore, so re-establish
+		// it below (setupEntrypointTTY runs the recorded override as a fresh session).
+		if ttyReq {
+			iso.PrepareEntrypointTTY(sp.Entrypoint, sp.Cwd, envSlice)
 		}
 		if err := iso.ApplyResumeState(ctx, rs); err != nil {
 			log.Printf("sandboxd: apply resume state: %v", err)
 		}
-		// A tty entrypoint override runs as a tty exec session in the guest (the
-		// control channel has no terminal); wrap the host bridge in a pty and
-		// publish it so /v1/exec-stream attach reaches the entrypoint terminal. Its
-		// exit (pty EOF) cancels the lifecycle ctx, ending the sandbox.
 		setupEntrypointTTY(ctx, "boot", iso, sb, cancel)
 
 		// The workload is committed; freeze boot-time config fields, mark the
@@ -802,22 +800,21 @@ func main() {
 			proxyPID:      proxyCmd.Process.Pid,
 			rulesPath:     rulesTmp,
 			caData:        caData,
-			imgCfg:        imgCfg,
-			fuse:          fuseCtl,
-			workDir:       workDir,
-			snapshotDir:   *snapshotDir,
-			overlayCoWDir: *overlayCoWDir,
-			router:        packRouter,
-			egressGate:    egressGate,
+			imgCfg:      imgCfg,
+			fuse:        fuseCtl,
+			workDir:     workDir,
+			snapshotDir: *snapshotDir,
+			router:      packRouter,
+			egressGate:  egressGate,
 		}
 		if *maxConcurrentLaunches > 0 {
 			sup.pack.launchSem = make(chan struct{}, *maxConcurrentLaunches)
 			log.Printf("sandboxd: pack — capping concurrent launches at %d", *maxConcurrentLaunches)
 		}
-		// Preallocate a warm pool of sandbox slots (netns/veth/iptables + DNS sink,
-		// and the microvm CoW overlay) so claims skip that contended setup on the
-		// request path. Off the request path and serialized on one worker, so the
-		// xtables-lock contention a concurrent create burst otherwise pays is gone.
+		// Preallocate a warm pool of sandbox network slots (netns/veth/iptables + DNS
+		// sink) so claims skip that contended setup on the request path. Off the
+		// request path and serialized on one worker, so the xtables-lock contention a
+		// concurrent create burst otherwise pays is gone.
 		if *preallocPool > 0 {
 			sup.pack.pool = newPreallocPool(sup.pack, *preallocPool)
 			sup.pack.pool.start()
@@ -829,93 +826,48 @@ func main() {
 		sup.bootComplete()
 		phase.mark("pack pod host ready")
 		log.Println("sandboxd: pack — pod host ready; POST /v1/<key> to pack sandboxes")
-		// Build the shared microvm base snapshot eagerly from the boot HIVE_SPEC's
-		// sizing (firecracker fixes the guest's vCPU/RAM in the snapshot, so every
-		// resumer inherits this) rather than waiting for the first claim. baseOnce
-		// makes the first createPacked call a no-op, so claims resume from a warm
-		// base instead of paying the cold base build. No-op for container/runc
-		// pods, which cold-start each sandbox and have no base snapshot — gated the
-		// same way as the per-claim call site (createPacked).
-		if isoKind == isolation.KindMicroVM {
-			if dir := sup.pack.ensureBase(ctx, ceilVcpu(sp.CPU), intOrZero(sp.Memory)); dir != "" {
-				phase.mark("pack base snapshot ready")
-			}
-		}
+		// Nothing is snapshotted at pod start: each packed sandbox cold-boots, or
+		// resumes a per-sandbox VM snapshot the client captured earlier under its
+		// snapshot.vm.key (vmStateDir in createPacked).
 		<-ctx.Done()
 		children.Wait()
 		return
 	}
 
-	// Prepare the workload eagerly — config-independent, so in prewarm mode this
-	// runs at boot and a claim only pays for launchWorkload below.
+	// Prepare the workload eagerly — config-independent, so this runs before the
+	// launch/resume decision below.
 	imgCfg := prepareWorkload()
 
-	// The boot sandbox is created here. Without -prewarm it is launched
-	// immediately from the env (HIVE_SPEC) config under HIVE_KEY. With -prewarm
-	// the workload is snapshotted now and the pod parks until a POST /v1/<key>
-	// claim arrives, at which point the sandbox is created under the caller's key
-	// and the snapshot is restored into it; the config still comes from env.
-	var claimDone chan error
-	if *prewarm {
-		// Bring up the image entrypoint now (config-independent) — off the claim
-		// path — so a claim adopts a warm, already-running workload: the microvm
-		// boots, snapshots, and stops a transient guest (a claim resumes it in tens
-		// of ms instead of a full cold boot); the container starts the entrypoint
-		// container and keeps it running. Best-effort: on any failure the backend
-		// falls back to cold launch on claim (HasPrewarmSnapshot stays false).
-		if err := iso.PrewarmSnapshot(ctx, imgCfg); err != nil {
-			log.Printf("sandboxd: prewarm failed, will cold-launch on claim: %v", err)
-		} else if iso.HasPrewarmSnapshot() {
-			log.Println("sandboxd: prewarm ready; will resume on claim")
-		}
-		log.Println("sandboxd: prewarm — awaiting POST /v1/<key> to claim the workload")
-		sup.bootComplete()
-		select {
-		case cl := <-sup.claims:
-			claimSandbox(cl.key)
-			claimDone = cl.done
-			// Reset the phase clock at the claim boundary: without this the next
-			// mark ("resume") would span the idle park since the last boot phase,
-			// not the resume itself. Logs the warm-park duration as a bonus.
-			phase.mark("prewarm park")
-		case <-ctx.Done():
-			children.Wait()
-			return
-		}
-	} else {
-		key := os.Getenv("HIVE_KEY")
-		if key == "" {
-			key = "default"
-		}
-		claimSandbox(key)
-		sup.bootComplete()
+	// The boot sandbox is created and launched immediately from the env
+	// (HIVE_SPEC) config under HIVE_KEY. When the config named a VM snapshot key
+	// whose state dir holds a snapshot, the backend resumes the warm VM instead of
+	// cold-booting (see resumeWorkload).
+	key := os.Getenv("HIVE_KEY")
+	if key == "" {
+		key = "default"
 	}
-	// Reconcile the workspaces and restore any snapshot now that the root is
-	// mounted. In prewarm this is a no-op (reconcileSidecars already did it); in
-	// the normal flow it's where the boot spec's mounts settle and its snapshot
-	// restores.
+	claimSandbox(key)
+	sup.bootComplete()
+	// Reconcile the workspaces and restore any files snapshot now that the root is
+	// mounted — where the boot spec's mounts settle and (on the cold path) its files
+	// snapshot restores. maybeRestore skips the files restore when a VM snapshot is
+	// being resumed (its overlay already carries the FS state).
 	if err := mountMgr.Reconcile(sp); err != nil {
 		log.Printf("sandboxd: reconcile workspaces: %v", err)
 	}
-	// Prefer the snapshot-resume fast path when a prewarm snapshot exists and the
-	// config doesn't request a filesystem snapshot restore — a pre-boot overlay
-	// restore is incompatible with a VM snapshot taken before the config arrived.
-	// Otherwise cold-boot as usual.
-	if iso.HasPrewarmSnapshot() && (sp.Snapshot == nil || sp.Snapshot.RestoreKey == "") {
+	// Prefer the VM-resume fast path whenever a VM snapshot exists for this config
+	// (its state dir holds one): the snapshot carries the full machine + filesystem,
+	// so it supersedes a cold boot + files-snapshot restore. The files
+	// snapshot is the cold-boot fallback (no VM snapshot on disk) and stays available
+	// as a portable, shutdown-written persistence path.
+	if iso.HasPrewarmSnapshot() {
 		resumeWorkload(sp, imgCfg)
 	} else {
 		launchWorkload(sp, imgCfg)
 	}
 
-	// Signal the POST /v1/<key> claim (if any) that its sandbox is up and serving,
-	// so Create returns 201 once the workload is actually running.
-	if claimDone != nil {
-		claimDone <- nil
-	}
-
 	// The inner workload is now started, so begin the inactivity countdown. Both
-	// launch paths return once the workload is running; starting Run here (rather
-	// than at wiring) means prewarm idle time never counts against the TTL.
+	// launch paths return once the workload is running.
 	go lifetime.Run(ctx)
 
 	<-ctx.Done()
@@ -939,29 +891,28 @@ func finalizeShutdown(snapshotDir string, store *api.ConfigStore, iso isolation.
 	// so any runtime update to snapshot config is respected.
 	if cfg, err := store.Get(); err != nil {
 		log.Printf("sandboxd: snapshot: read config: %v", err)
-	} else if sn := cfg.Snapshot; sn != nil {
-		writeKey := ""
-		if sn.WriteKey != nil && *sn.WriteKey != "" {
-			writeKey = *sn.WriteKey
-		} else if sn.RestoreKey != nil {
-			writeKey = *sn.RestoreKey
-		}
-		// snapshot.mount routes the tarball to a FUSE drive (still mounted — the
-		// FUSE sidecars are torn down by teardownFS below, after this capture);
-		// otherwise use the host's local snapshot directory.
-		dir := snapshotDir
-		if sn.Mount != nil && *sn.Mount != "" {
-			dir = *sn.Mount
-		}
-		if writeKey != "" && dir != "" {
-			var include []string
-			if sn.Include != nil {
-				include = *sn.Include
+	} else if sn := cfg.Snapshot; sn != nil && sn.Files != nil {
+		f := sn.Files
+		// Files are captured on shutdown only when explicitly requested via
+		// write_on_shutdown; otherwise they are captured only by the snapshot action.
+		if f.Key != "" && f.WriteOnShutdown != nil && *f.WriteOnShutdown {
+			// snapshot.files.mount routes the tarball to a FUSE drive (still mounted —
+			// the FUSE sidecars are torn down by teardownFS below, after this capture);
+			// otherwise use the host's local snapshot directory.
+			dir := snapshotDir
+			if f.Mount != nil && *f.Mount != "" {
+				dir = *f.Mount
 			}
-			dst := snapshot.SnapshotPath(dir, writeKey)
-			log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
-			if err := iso.CaptureSnapshot(dst, include); err != nil {
-				log.Printf("sandboxd: snapshot capture: %v", err)
+			if dir != "" {
+				var include []string
+				if f.Include != nil {
+					include = *f.Include
+				}
+				dst := snapshot.SnapshotPath(dir, f.Key)
+				log.Printf("sandboxd: snapshot: capturing %v → %s", include, dst)
+				if err := iso.CaptureSnapshot(dst, include); err != nil {
+					log.Printf("sandboxd: snapshot capture: %v", err)
+				}
 			}
 		}
 	}
@@ -1211,18 +1162,6 @@ func waitForMountReady(ctx context.Context, mp string, d time.Duration) error {
 	return fmt.Errorf("timeout waiting for FUSE mount %s (statfs did not report fuse magic — sbxfuse likely failed during init)", mp)
 }
 
-// shellJoinArgv renders an argv slice as a single POSIX-sh command line,
-// single-quoting each word so spaces or shell metacharacters in the entrypoint
-// survive the guest's `sh -c` exec (the microvm exec path runs commands through
-// a shell, unlike the cold path which execs argv directly).
-func shellJoinArgv(argv []string) string {
-	quoted := make([]string, len(argv))
-	for i, a := range argv {
-		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-	}
-	return strings.Join(quoted, " ")
-}
-
 func freePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1356,6 +1295,19 @@ func ceilVcpu(p *float64) int {
 	return int(math.Ceil(*p))
 }
 
+// vmStateDir returns this sandbox's VM state directory under -snapshot-dir
+// (/snapshots/vm-<key>, keyed by snapshot.vm.key) — the source of truth where its
+// overlay/metadata/snapshot live, used for both cold boot (created there) and
+// resume (reopened there). Empty when the config names no vm key or no local
+// snapshot dir is configured. Whether the dir already holds a resumable snapshot
+// is the isolation backend's call (isolation.VMSnapshotReady), not this helper's.
+func vmStateDir(snapshotDir string, sp *spec.Spec) string {
+	if snapshotDir == "" || sp.Snapshot == nil || sp.Snapshot.VM == nil || sp.Snapshot.VM.Key == "" {
+		return ""
+	}
+	return snapshot.VMSnapshotDir(snapshotDir, sp.Snapshot.VM.Key)
+}
+
 // isolationLocalMounts converts the local-backend FS list into the
 // backend-agnostic form the isolation backend snapshots against.
 func isolationLocalMounts(fsList []spec.FS) []isolation.SnapshotMount {
@@ -1365,3 +1317,4 @@ func isolationLocalMounts(fsList []spec.FS) []isolation.SnapshotMount {
 	}
 	return out
 }
+

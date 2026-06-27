@@ -511,8 +511,12 @@ type SandboxConfig struct {
 	// Memory Memory allocated to the sandbox, in MiB. For the microvm isolation this is the guest RAM size; for the container isolation it is enforced as a cgroup memory limit. This cannot be changed after the sandbox is initialized.
 	Memory *int `json:"memory,omitempty"`
 
-	// Snapshot Snapshot configuration. A snapshot is captured automatically before
-	// the sandbox shuts down and restored before the sandbox starts.
+	// Snapshot Snapshot configuration. It has two independent parts: `vm` captures the
+	// full microVM state (a no-op for the container backend) and `files`
+	// captures the writable filesystem as a portable tarball. Either may be
+	// present alone, both, or neither. Snapshots are captured by the snapshot
+	// action (and, for `files`, optionally on shutdown) and restored when the
+	// sandbox starts.
 	Snapshot *Snapshot `json:"snapshot,omitempty"`
 
 	// Ttl Sandbox time to live in seconds. The client must ping the sandbox using the /v1/ping endpoint to reset the timer. Once a ping has not been received for as long as this value, the sandbox will receive a SIGTERM and begin shutdown.
@@ -535,15 +539,38 @@ type SandboxConfig_Entrypoint struct {
 	union json.RawMessage
 }
 
-// Snapshot Snapshot configuration. A snapshot is captured automatically before
-// the sandbox shuts down and restored before the sandbox starts.
+// Snapshot Snapshot configuration. It has two independent parts: `vm` captures the
+// full microVM state (a no-op for the container backend) and `files`
+// captures the writable filesystem as a portable tarball. Either may be
+// present alone, both, or neither. Snapshots are captured by the snapshot
+// action (and, for `files`, optionally on shutdown) and restored when the
+// sandbox starts.
 type Snapshot struct {
+	// Files Writable-filesystem snapshot, captured as a portable gzip-tar. Restored
+	// when the sandbox starts and written by the snapshot action (or on
+	// shutdown when `write_on_shutdown` is set).
+	Files *SnapshotFiles `json:"files,omitempty"`
+
+	// Vm microVM-state snapshot. When a VM snapshot exists under `key`, a
+	// get-or-create resumes it instead of cold-booting; otherwise the VM
+	// cold-boots and the client captures the snapshot explicitly. Ignored by
+	// the container backend.
+	Vm *SnapshotVM `json:"vm,omitempty"`
+}
+
+// SnapshotFiles Writable-filesystem snapshot, captured as a portable gzip-tar. Restored
+// when the sandbox starts and written by the snapshot action (or on
+// shutdown when `write_on_shutdown` is set).
+type SnapshotFiles struct {
 	// Include Glob patterns specifying which paths to include in the snapshot.
 	// The directory containing each matched path is snapshotted (e.g.
 	// `/home/user/*` snapshots `/home/user`).
 	Include *[]string `json:"include,omitempty"`
 
-	// Mount Mount path of a file system (see `fs`) where snapshot tarballs are
+	// Key Key identifying the files snapshot.
+	Key string `json:"key"`
+
+	// Mount Mount path of a file system (see `fs`) where the files tarball is
 	// written and read, instead of the sandbox host's local snapshot
 	// directory. Point this at an `internal` file system backed by remote
 	// storage (e.g. `gcs` or `external`) to persist and restore snapshots
@@ -551,13 +578,45 @@ type Snapshot struct {
 	// directory is used.
 	Mount *string `json:"mount,omitempty"`
 
-	// RestoreKey Key identifying the snapshot to restore when the sandbox starts.
-	// When omitted, no snapshot is restored on start.
-	RestoreKey *string `json:"restore_key,omitempty"`
+	// WriteOnShutdown When true, the files snapshot is captured on shutdown or termination
+	// of the sandbox. When false (the default), files are captured only by
+	// an explicit snapshot action.
+	WriteOnShutdown *bool `json:"write_on_shutdown,omitempty"`
+}
 
-	// WriteKey Key under which the snapshot is saved on shutdown. When omitted,
-	// the `restore_key` is used.
-	WriteKey *string `json:"write_key,omitempty"`
+// SnapshotPartResult Outcome of capturing one snapshot part.
+type SnapshotPartResult struct {
+	// Bytes Size of the captured artifact in bytes, when known.
+	Bytes *int64 `json:"bytes,omitempty"`
+
+	// Captured Whether this part was captured. False (with a `reason`) when the
+	// part is unsupported on the active backend, e.g. `vm` on a container.
+	Captured bool `json:"captured"`
+
+	// Key Key the part was written under.
+	Key string `json:"key"`
+
+	// Reason Why the part was not captured, when `captured` is false.
+	Reason *string `json:"reason,omitempty"`
+}
+
+// SnapshotResult Outcome of a snapshot action, reported independently for each requested
+// part. A part the request omitted is absent from the result.
+type SnapshotResult struct {
+	// Files Outcome of capturing one snapshot part.
+	Files *SnapshotPartResult `json:"files,omitempty"`
+
+	// Vm Outcome of capturing one snapshot part.
+	Vm *SnapshotPartResult `json:"vm,omitempty"`
+}
+
+// SnapshotVM microVM-state snapshot. When a VM snapshot exists under `key`, a
+// get-or-create resumes it instead of cold-booting; otherwise the VM
+// cold-boots and the client captures the snapshot explicitly. Ignored by
+// the container backend.
+type SnapshotVM struct {
+	// Key Key identifying the VM-state snapshot.
+	Key string `json:"key"`
 }
 
 // AsLocalFileSystem returns the union data inside the FileSystem as a LocalFileSystem

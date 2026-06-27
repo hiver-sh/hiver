@@ -10,6 +10,7 @@ import fileRoutes from "./routes/files.js";
 import portRoutes from "./routes/ports.js";
 import eventsRoutes from "./routes/events.js";
 import terminalRoutes from "./routes/terminal.js";
+import snapshotRoutes from "./routes/snapshot.js";
 import traceRoutes from "./routes/trace.js";
 import { DEFAULT_URL } from "./lib/gatewayUrl.js";
 
@@ -25,6 +26,7 @@ app.use("/api/sandboxes", fileRoutes);
 app.use("/api/sandboxes", portRoutes);
 app.use("/api/sandboxes", eventsRoutes);
 app.use("/api/sandboxes", terminalRoutes);
+app.use("/api/sandboxes", snapshotRoutes);
 app.use("/api/trace", traceRoutes);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

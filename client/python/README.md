@@ -473,23 +473,28 @@ fs=[
 
 ### Snapshots
 
-A snapshot captures part of the sandbox's filesystem automatically before
-shutdown and restores it before the next start — even for paths outside a
-host-backed mount.
+A snapshot has two independent parts: `files` captures part of the sandbox's
+filesystem (restored before the next start, and — with `write_on_shutdown` —
+captured automatically before shutdown, even for paths outside a host-backed
+mount), and `vm` captures the full microVM state (a no-op on container
+isolation).
 
 ```python
 config = hiver.SandboxConfig(
     image="hiversh/python:3.13-alpine",
     snapshot=hiver.Snapshot(
-        restore_key="session-42",   # restored on start
-        write_key="session-42",     # saved on shutdown; defaults to restore_key
-        include=["/root/**"],       # glob paths to capture
+        files=hiver.SnapshotFiles(
+            key="session-42",          # restored on start, written on shutdown
+            write_on_shutdown=True,    # capture on shutdown (else use sandbox.snapshot())
+            include=["/root/**"],      # glob paths to capture
+        ),
     ),
 )
 ```
 
-Boot the sandbox under the same `restore_key` later to bring the captured files
-back.
+Boot the sandbox under the same `files.key` later to bring the captured files
+back. Capture on demand without stopping the sandbox with `await
+sandbox.snapshot(hiver.Snapshot(files=hiver.SnapshotFiles(key="session-42")))`.
 
 ---
 

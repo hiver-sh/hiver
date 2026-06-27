@@ -289,7 +289,7 @@ func TestMultiTenantApplyConfigMountE2E(t *testing.T) {
 //     same-pod placement); assert they share a pod ID.
 //  2. Each writes a unique marker file directly into its overlay upper layer.
 //  3. Shut down A, then B — sandboxd captures each sandbox's overlay into an
-//     independent snapshot tarball keyed by its own WriteKey.
+//     independent snapshot tarball keyed by its own Snapshot.Files.Key.
 //  4. Create restore sandboxes rA and rB (same image → same pack pod); assert
 //     same-pod placement again.
 //  5. Assert rA contains A's file with A's content (correct restore).
@@ -325,7 +325,7 @@ func TestMultiTenantSnapshotE2E(t *testing.T) {
 		sbx, err := c.GetOrCreateSandbox(ctx, key, hiverclient.SandboxConfig{
 			Image:      image,
 			Entrypoint: []string{"tail", "-f", "/dev/null"},
-			Snapshot:   &hiverclient.Snapshot{WriteKey: snapKey},
+			Snapshot:   &hiverclient.Snapshot{Files: &hiverclient.SnapshotFiles{Key: snapKey, WriteOnShutdown: true}},
 		})
 		if err != nil {
 			t.Fatalf("GetOrCreateSandbox(%s): %v", key, err)
@@ -388,7 +388,7 @@ func TestMultiTenantSnapshotE2E(t *testing.T) {
 		sbx, err := c.GetOrCreateSandbox(ctx, key, hiverclient.SandboxConfig{
 			Image:      image,
 			Entrypoint: []string{"tail", "-f", "/dev/null"},
-			Snapshot:   &hiverclient.Snapshot{RestoreKey: snapKey},
+			Snapshot:   &hiverclient.Snapshot{Files: &hiverclient.SnapshotFiles{Key: snapKey}},
 		})
 		if err != nil {
 			t.Fatalf("GetOrCreateSandbox(%s): %v", key, err)

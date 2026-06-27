@@ -23,6 +23,11 @@ export {
   SandboxEvent,
   SandboxInfo,
   SandboxRef,
+  Snapshot,
+  SnapshotVM,
+  SnapshotFiles,
+  SnapshotResult,
+  SnapshotPartResult,
   StdioEvent,
 } from "./schemas";
 
