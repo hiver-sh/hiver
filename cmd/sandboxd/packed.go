@@ -352,20 +352,21 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	// into that state dir (its overlay lives there, the source of truth), so a later
 	// snapshot captures in place. Guest sizing comes from this sandbox's config;
 	// isolation.New applies its defaults when cpu/memory are unset.
-	stateDir := ""
+	stateDir, stateEphemeral := "", false
 	if p.isoKind == isolation.KindMicroVM {
-		stateDir = vmStateDir(p.snapshotDir, sp)
+		stateDir, stateEphemeral = vmStateDir(p.snapshotDir, sp)
 	}
 
 	iso, err := isolation.New(p.isoKind, isolation.Config{
-		Key:         key,
-		GuestIP:     ip,
-		Hostname:    p.hostname,
-		VMStateDir:  stateDir,
-		LocalMounts: isolationLocalMounts(sp.FS),
-		VcpuCount:   ceilVcpu(sp.CPU),
-		MemoryMiB:   intOrZero(sp.Memory),
-		Prealloc:    prealloc,
+		Key:              key,
+		GuestIP:          ip,
+		Hostname:         p.hostname,
+		VMStateDir:       stateDir,
+		VMStateEphemeral: stateEphemeral,
+		LocalMounts:      isolationLocalMounts(sp.FS),
+		VcpuCount:        ceilVcpu(sp.CPU),
+		MemoryMiB:        intOrZero(sp.Memory),
+		Prealloc:         prealloc,
 	})
 	if err != nil {
 		cleanup()

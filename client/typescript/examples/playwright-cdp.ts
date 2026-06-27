@@ -25,6 +25,11 @@ const sandbox = await hiver.getOrCreateSandbox(
   "hiver-browser-cdp",
   {
     image: "browser",
+    snapshot: {
+      vm: {
+        key: "browser"
+      }
+    }
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );
@@ -37,8 +42,31 @@ console.info(`sandbox created in ${(performance.now() - tStart).toFixed(0)}ms`);
 // point it at the proxy URL + /cdp (http→ws).
 const wsEndpoint = sandbox.proxyUrl(CDP_PORT).replace(/^http/, "ws") + "/cdp";
 
-const browser = await chromium.connectOverCDP(wsEndpoint);
+// Retry because the CDP endpoint may not be ready immediately after resume.
+async function connectWithRetry(url: string, retries = 5, delayMs = 1000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await chromium.connectOverCDP(url);
+    } catch (err) {
+      if (attempt === retries) throw err;
+      console.warn(`CDP connect attempt ${attempt} failed, retrying in ${delayMs}ms…`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw new Error("unreachable");
+}
+
+const browser = await connectWithRetry(wsEndpoint);
 console.info(`connected over CDP in ${(performance.now() - tStart).toFixed(0)}ms`);
+
+const snapshotStart = performance.now();
+// await sandbox.snapshot({
+//   vm: {
+//     key: "browser",
+//   },
+// });
+console.info(`snapshot captured in ${(performance.now() - snapshotStart).toFixed(0)}ms`);
+
 
 try {
   // Reuse the resident browser's warm context + page rather than creating new

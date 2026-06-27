@@ -128,6 +128,14 @@ type Config struct {
 	// (ephemeral) overlay in the jail, with no VM snapshots.
 	VMStateDir string
 
+	// VMStateEphemeral marks VMStateDir as auto-assigned (a random key) rather than
+	// a client-chosen snapshot.vm.key: the dir gives a keyless VM a private home
+	// under the snapshot dir so its overlay can still be captured (and a snapshot
+	// relocated to a named key), but, being unrequested, it is torn down with the VM
+	// on shutdown. A snapshot to a named key promotes the VM off this dir, so it then
+	// survives. No-op once the VM has adopted a named (persistent) dir.
+	VMStateEphemeral bool
+
 	// LocalMounts lists each local-backend FUSE workspace as (agent path,
 	// host backend dir). The container backend snapshots these dirs
 	// directly; the microvm backend captures the guest's writable image

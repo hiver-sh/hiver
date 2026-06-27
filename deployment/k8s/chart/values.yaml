@@ -20,7 +20,7 @@ terminationGracePeriodSeconds: 120
 controller:
   # Pinned by digest — see the mirror.gcr.io stale-tag hazard note on images
   # below. Overridable at deploy time with --set controller.image=...
-  image: hiversh/controller@sha256:39fad7196460665d688cc447b5ff2cc56a022a7e777a4be067b90c851c11cd12
+  image: hiversh/controller@sha256:2f5e40249f8e17bdb96e5746045f95207f8cdb3c1e4d1106f0ca3c7a970eb0ac
   port: 9000
   env:
     # Selects the Kubernetes backend in NewControllerHandlers(); anything else
@@ -48,7 +48,7 @@ gateway:
   # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
   # overridden by the generated gateway-envoy ConfigMap mounted into the pod so
   # sandboxes resolve across namespaces. Pinned by digest.
-  image: hiversh/gateway@sha256:51c242c49a558ae79875fc4df891637502dec18f2d2d166806ebbb6a6fa12ddb
+  image: hiversh/gateway@sha256:4d2eed3d71bb6f046621c2ea456c33e499c8e114a5d8596e75e95e5c7a0c4f52
   # Envoy listener port (container) and the external LoadBalancer service port.
   listenPort: 10000
   servicePort: 80
@@ -63,7 +63,7 @@ gateway:
 images:
   - name: claude
     image: hiversh/claude:latest-microvm@sha256:f8a2b13f8d6a177c14ed7a037fdfd1ae3e672ebb9bd98e9f9ad5b6f064c702ef
-    replicas: 1
+    replicas: 0
     maxConcurrentLaunches: 4
     resources:
       requests:
@@ -74,9 +74,8 @@ images:
         memory: 4Gi
 
   - name: browser
-    image: hiversh/browser:latest-microvm@sha256:c45d64271e0cba7323763767f5e1ca76633058b4e5117d6f711172a1ef2f6909
+    image: hiversh/browser:latest-microvm@sha256:9bf403026416d0f0874595e28c36978d32fee2741dcc5e70fa610bbbffe56bc1
     replicas: 1
-    # --max-concurrent-launches
     maxConcurrentLaunches: 4
     resources:
       # request = guest size (what the scheduler reserves). limit = node

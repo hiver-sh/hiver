@@ -85,6 +85,14 @@ type microvm struct {
 	// no copy, no per-VM CoW. Empty keeps the overlay ephemeral in the jail.
 	stateDir string
 
+	// ephemeralStateDir marks stateDir as an auto-assigned (random-key) home for a
+	// keyless VM (Config.VMStateEphemeral): it lets a keyless VM still be snapshotted,
+	// but is removed in UnmountRoot since the client never asked to persist it. A
+	// snapshot to a named key relocates the VM onto that (persistent) dir and clears
+	// this flag (removing the old ephemeral dir), so a deliberately-keyed snapshot
+	// survives shutdown. Guarded by mu (a snapshot may flip it concurrently).
+	ephemeralStateDir bool
+
 	// Compute allocation for the guest, fixed at boot (SandboxConfig.cpu /
 	// .memory). New defaults these before construction.
 	vcpuCount  int
@@ -195,26 +203,27 @@ func newMicroVM(cfg Config) *microvm {
 	}
 	jail := filepath.Join(envOr("FIRECRACKER_RUN_DIR", "/run/firecracker"), id)
 	m := &microvm{
-		hostname:    cfg.Hostname,
-		cgroupPath:  sandboxCgroupPath(cgroupName),
-		jailDir:     jail,
-		apiSock:     filepath.Join(jail, "firecracker.sock"),
-		configFile:  filepath.Join(jail, "config.json"),
-		logFile:     filepath.Join(jail, "firecracker.log"),
-		rootfsImg:   filepath.Join(jail, "rootfs.ext4"),
-		stateDir:    cfg.VMStateDir,
-		guestIP:     gIP,
-		gatewayIP:   gwIP,
-		guestMAC:    mac,
-		vcpuCount:   cfg.VcpuCount,
-		memSizeMib:  cfg.MemoryMiB,
-		fcBin:       envOr("FIRECRACKER_BIN", "firecracker"),
-		kernel:      envOr("FIRECRACKER_KERNEL", "/var/lib/firecracker/vmlinux"),
-		tapName:     tap,
-		netnsName:   netnsName,
-		sourceIP:    sourceIP,
-		prealloc:    prealloc,
-		localMounts: cfg.LocalMounts,
+		hostname:          cfg.Hostname,
+		cgroupPath:        sandboxCgroupPath(cgroupName),
+		jailDir:           jail,
+		apiSock:           filepath.Join(jail, "firecracker.sock"),
+		configFile:        filepath.Join(jail, "config.json"),
+		logFile:           filepath.Join(jail, "firecracker.log"),
+		rootfsImg:         filepath.Join(jail, "rootfs.ext4"),
+		stateDir:          cfg.VMStateDir,
+		ephemeralStateDir: cfg.VMStateEphemeral && cfg.VMStateDir != "",
+		guestIP:           gIP,
+		gatewayIP:         gwIP,
+		guestMAC:          mac,
+		vcpuCount:         cfg.VcpuCount,
+		memSizeMib:        cfg.MemoryMiB,
+		fcBin:             envOr("FIRECRACKER_BIN", "firecracker"),
+		kernel:            envOr("FIRECRACKER_KERNEL", "/var/lib/firecracker/vmlinux"),
+		tapName:           tap,
+		netnsName:         netnsName,
+		sourceIP:          sourceIP,
+		prealloc:          prealloc,
+		localMounts:       cfg.LocalMounts,
 	}
 	// The overlay/metadata/snapshot live in the per-key state dir when this VM is
 	// keyed (snapshot.vm.key) — the source of truth, captured and reopened in place.
@@ -362,9 +371,21 @@ func (m *microvm) UnmountRoot() error {
 	} else {
 		_ = exec.Command("ip", "link", "del", m.tapName).Run()
 	}
-	// The jail holds only ephemeral runtime state (sockets, logs). A keyed VM's
-	// overlay/snapshot live in the state dir under -snapshot-dir, which is the source
-	// of truth and deliberately NOT removed here.
+	// An auto-assigned (ephemeral) state dir is this VM's private home for a keyless
+	// boot — the client never asked to persist it, so it is torn down with the VM. A
+	// client-keyed dir, or one this VM adopted via a named snapshot, is the source of
+	// truth and is deliberately kept. Snapshot a keyless VM to promote its overlay
+	// before shutdown.
+	m.mu.Lock()
+	ephemeralDir := ""
+	if m.ephemeralStateDir && m.stateDir != "" {
+		ephemeralDir = m.stateDir
+	}
+	m.mu.Unlock()
+	if ephemeralDir != "" {
+		_ = os.RemoveAll(ephemeralDir)
+	}
+	// The jail holds only ephemeral runtime state (sockets, logs).
 	return os.RemoveAll(m.jailDir)
 }
 
@@ -656,17 +677,14 @@ func (m *microvm) SnapshotLive(ctx context.Context, vmDir, filesDst string, incl
 	if vmDir == "" && filesDst == "" {
 		return false, nil
 	}
-	// Validate the VM snapshot key before disrupting the guest: the snapshot is
-	// captured in place into the VM's own state dir, so the requested key must be the
-	// one this sandbox was created with (its overlay/metadata already live there).
-	if vmDir != "" {
-		if m.stateDir == "" {
-			return false, fmt.Errorf("vm snapshot unavailable: this sandbox was created without snapshot.vm.key, so its overlay is ephemeral. Create the sandbox with snapshot.vm.key=%q (its overlay must live under -snapshot-dir to be captured and resumed in place)", strings.TrimPrefix(filepath.Base(vmDir), "vm-"))
-		}
-		if vmDir != m.stateDir {
-			return false, fmt.Errorf("vm snapshot key mismatch: this sandbox was created with key %q but the snapshot requests key %q — they must match", strings.TrimPrefix(filepath.Base(m.stateDir), "vm-"), strings.TrimPrefix(filepath.Base(vmDir), "vm-"))
-		}
-	}
+	// A VM snapshot is captured into vmDir, and firecracker bakes the overlay/metadata
+	// host paths into the snapshot and reopens them verbatim on resume — so those
+	// drives must physically live in vmDir at capture time. They already do when this
+	// sandbox owns vmDir (created with snapshot.vm.key, cold or resumed); otherwise —
+	// a keyless sandbox (overlay in the ephemeral jail) or a re-key (resumed from key
+	// A, snapshotting to key B) — they are relocated into vmDir below, under pause.
+	// No key is required at sandbox creation: the key names the destination here.
+	relocate := vmDir != "" && vmDir != filepath.Dir(m.snapFile)
 	// The pause→snapshot→resume cycle must complete even if the caller's request
 	// context is canceled mid-capture (e.g. the client hit its timeout): a skipped
 	// Resume leaves the guest paused, which looks like the VM stopped. Insulate the
@@ -699,13 +717,67 @@ func (m *microvm) SnapshotLive(ctx context.Context, vmDir, filesDst string, incl
 	}
 	defer restore()
 
-	// VM snapshot: capture in place. The overlay + metadata drives already live in
-	// the state dir, and CreateSnapshot writes snapshot.bin/mem.bin alongside them,
-	// so firecracker records — and on resume reopens — every drive at its real path.
+	// VM snapshot: capture into vmDir. CreateSnapshot writes snapshot.bin/mem.bin
+	// alongside the overlay + metadata drives, so firecracker records — and on resume
+	// reopens — every drive at its real path. When relocating, materialise the drives
+	// in vmDir and repoint the live VM at them first (under pause: no guest writes, so
+	// the copy is a consistent instant) so the recorded paths are the vmDir paths.
 	vmCaptured := false
 	if vmDir != "" {
-		if err := client.CreateSnapshot(vmCtx, m.snapFile, m.memFile); err != nil {
+		snapFile, memFile := m.snapFile, m.memFile
+		if relocate {
+			if err := os.MkdirAll(vmDir, 0o755); err != nil {
+				return false, fmt.Errorf("create vm snapshot dir: %w", err)
+			}
+			newOverlay := filepath.Join(vmDir, baseOverlayName)
+			newParams := filepath.Join(vmDir, baseMetadataName)
+			if err := cowOrCopy(m.overlayImg, newOverlay); err != nil {
+				return false, fmt.Errorf("relocate overlay: %w", err)
+			}
+			if err := cowOrCopy(m.paramsImg, newParams); err != nil {
+				return false, fmt.Errorf("relocate metadata: %w", err)
+			}
+			// Repoint the live VM's drives at the relocated copies so CreateSnapshot
+			// records the vmDir paths. The live VM then runs off vmDir, becoming the
+			// single owner of this key — the same end state as a sandbox created with
+			// snapshot.vm.key set (and the same single-owner rule: don't resume this
+			// key into another sandbox while this one still runs).
+			if err := client.PatchDrive(vmCtx, firecracker.OverlayDriveID, newOverlay); err != nil {
+				return false, fmt.Errorf("repoint overlay drive: %w", err)
+			}
+			if err := client.PatchDrive(vmCtx, firecracker.MetadataDriveID, newParams); err != nil {
+				return false, fmt.Errorf("repoint metadata drive: %w", err)
+			}
+			snapFile = filepath.Join(vmDir, baseSnapshotName)
+			memFile = filepath.Join(vmDir, baseMemName)
+		}
+		if err := client.CreateSnapshot(vmCtx, snapFile, memFile); err != nil {
 			return false, fmt.Errorf("create vm snapshot: %w", err)
+		}
+		if relocate {
+			// Adopt vmDir as this VM's state dir so later in-place snapshots to the
+			// same key, and teardown (which preserves the state dir, not the jail),
+			// act on vmDir. haveSnapshot now holds — vmDir carries a complete snapshot.
+			// vmDir is a client-named key, so it is persistent: clear the ephemeral
+			// flag (this VM now survives shutdown for resume). If the dir we are
+			// leaving was the auto-assigned ephemeral one, remove it now — the live VM
+			// no longer uses it (its drives were repointed at vmDir).
+			m.mu.Lock()
+			oldEphemeralDir := ""
+			if m.ephemeralStateDir && m.stateDir != "" && m.stateDir != vmDir {
+				oldEphemeralDir = m.stateDir
+			}
+			m.stateDir = vmDir
+			m.ephemeralStateDir = false
+			m.overlayImg = filepath.Join(vmDir, baseOverlayName)
+			m.paramsImg = filepath.Join(vmDir, baseMetadataName)
+			m.snapFile = snapFile
+			m.memFile = memFile
+			m.haveSnapshot = true
+			m.mu.Unlock()
+			if oldEphemeralDir != "" {
+				_ = os.RemoveAll(oldEphemeralDir)
+			}
 		}
 		vmCaptured = true
 	}
@@ -741,6 +813,22 @@ func (m *microvm) SnapshotLive(ctx context.Context, vmDir, filesDst string, incl
 
 // copyFile copies src to dst, creating dst (truncating if present). Used to
 // freeze a paused guest's overlay into a per-key VM snapshot or a temp file.
+// cowOrCopy materialises dst as an INDEPENDENT copy of src, preferring a
+// copy-on-write reflink (instant, shares extents until written) and falling back
+// to a full byte copy on filesystems without reflink (e.g. ext4) or across
+// devices (the keyless case: overlay in the jail, snapshot dir under
+// -snapshot-dir). Independence matters: when re-keying (snapshotting a resumed
+// VM to a new key), the source's existing snapshot must stay a usable restore
+// point, so a shared-inode hardlink would be wrong — the live VM writing the new
+// copy would corrupt the old snapshot's overlay. Used under guest pause so the
+// materialised image is a consistent instant.
+func cowOrCopy(src, dst string) error {
+	if err := reflinkFile(src, dst); err == nil {
+		return nil
+	}
+	return copyFile(src, dst)
+}
+
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {

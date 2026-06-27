@@ -12,6 +12,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -158,8 +160,13 @@ func main() {
 	// it cold-boots into it and the client captures one via the snapshot action,
 	// which a later get-or-create then resumes. Microvm only; the container backend
 	// ignores it. Empty ⇒ ephemeral overlay in the jail, no VM snapshots.
-	isoCfg.VMStateDir = vmStateDir(*snapshotDir, sp)
-	if isoCfg.VMStateDir != "" && isolation.VMSnapshotReady(isoCfg.VMStateDir) {
+	// Without a client key the dir is an auto-assigned ephemeral home (random key),
+	// torn down with the VM; it still lets the VM be snapshotted (and that snapshot
+	// relocated to a named key). Microvm only; the container backend ignores both.
+	if isoKind == isolation.KindMicroVM {
+		isoCfg.VMStateDir, isoCfg.VMStateEphemeral = vmStateDir(*snapshotDir, sp)
+	}
+	if isoCfg.VMStateDir != "" && !isoCfg.VMStateEphemeral && isolation.VMSnapshotReady(isoCfg.VMStateDir) {
 		log.Printf("sandboxd: vm snapshot %q found; resuming", sp.Snapshot.VM.Key)
 	}
 	iso, err := isolation.New(isoKind, isoCfg)
@@ -790,16 +797,16 @@ func main() {
 		caData, _ := os.ReadFile(caCertPath)
 		sup.mu.Lock()
 		sup.pack = &packState{
-			ctx:           ctx,
-			children:      &children,
-			isoKind:       isoKind,
-			hostname:      podHostname,
-			soMark:        soMark,
-			proxyPort:     proxyPort,
-			dnsPort:       dnsPort,
-			proxyPID:      proxyCmd.Process.Pid,
-			rulesPath:     rulesTmp,
-			caData:        caData,
+			ctx:         ctx,
+			children:    &children,
+			isoKind:     isoKind,
+			hostname:    podHostname,
+			soMark:      soMark,
+			proxyPort:   proxyPort,
+			dnsPort:     dnsPort,
+			proxyPID:    proxyCmd.Process.Pid,
+			rulesPath:   rulesTmp,
+			caData:      caData,
 			imgCfg:      imgCfg,
 			fuse:        fuseCtl,
 			workDir:     workDir,
@@ -1301,11 +1308,34 @@ func ceilVcpu(p *float64) int {
 // resume (reopened there). Empty when the config names no vm key or no local
 // snapshot dir is configured. Whether the dir already holds a resumable snapshot
 // is the isolation backend's call (isolation.VMSnapshotReady), not this helper's.
-func vmStateDir(snapshotDir string, sp *spec.Spec) string {
-	if snapshotDir == "" || sp.Snapshot == nil || sp.Snapshot.VM == nil || sp.Snapshot.VM.Key == "" {
-		return ""
+// vmStateDir returns this microvm's state directory under snapshotDir and whether
+// it is ephemeral. A client-chosen snapshot.vm.key yields a stable, persistent dir
+// (the source of truth, resumed across get-or-create). Without a key, a random key
+// gives the VM a private dir so its overlay can still be captured — and a later
+// snapshot relocated to a named key (see microvm.SnapshotLive) — but, unrequested,
+// it is hard to reuse and torn down with the VM (Config.VMStateEphemeral). Empty
+// snapshotDir → no state dir (overlay stays ephemeral in the jail, no VM snapshots).
+func vmStateDir(snapshotDir string, sp *spec.Spec) (dir string, ephemeral bool) {
+	if snapshotDir == "" {
+		return "", false
 	}
-	return snapshot.VMSnapshotDir(snapshotDir, sp.Snapshot.VM.Key)
+	if sp.Snapshot != nil && sp.Snapshot.VM != nil && sp.Snapshot.VM.Key != "" {
+		return snapshot.VMSnapshotDir(snapshotDir, sp.Snapshot.VM.Key), false
+	}
+	return snapshot.VMSnapshotDir(snapshotDir, "ephemeral-"+randHex(16)), true
+}
+
+// randHex returns a hex string of n random bytes, used to mint a collision-
+// resistant, hard-to-guess key for an ephemeral VM state dir.
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing is fatal-grade, but a snapshot dir name need not be:
+		// fall back to a timestamp so boot still proceeds (uniqueness, not secrecy,
+		// is what matters for a per-pod ephemeral dir).
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // isolationLocalMounts converts the local-backend FS list into the
@@ -1317,4 +1347,3 @@ func isolationLocalMounts(fsList []spec.FS) []isolation.SnapshotMount {
 	}
 	return out
 }
-

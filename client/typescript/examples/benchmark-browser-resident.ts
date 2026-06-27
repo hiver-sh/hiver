@@ -52,8 +52,14 @@ const URL = process.env.BENCH_URL ?? "https://example.com";
 // TCP port Chromium's CDP/DevTools endpoint listens on inside the sandbox,
 // reached via the ingress proxy. Keep in sync with chromehost.
 const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
+const SNAPSHOT_KEY = "browser";
 const sandboxConfig: hiver.SandboxConfig = {
   image: "browser",
+  snapshot: {
+    vm: {
+      key: SNAPSHOT_KEY
+    }
+  }
 };
 
 // With BENCH_NAV_TIMING on (default) the goto stage also reads the browser's
@@ -91,6 +97,31 @@ interface PendingRun {
   i: number; // 1-based run index, for the per-run log line
   run: Run;
   sandbox: hiver.Sandbox;
+}
+
+// Create one sandbox, navigate to URL, capture a VM snapshot with key SNAPSHOT_KEY,
+// then shut down. The bench loop resumes from this snapshot so Chromium wakes up
+// with the page already loaded. The setup sandbox starts fresh (no vm.key) so it
+// always starts clean rather than resuming a potentially stale snapshot.
+async function createBrowserSnapshot(): Promise<void> {
+  console.info(`=== pre-bench: creating browser snapshot (key: ${SNAPSHOT_KEY}) ===`);
+  const sandbox = await hiver.getOrCreateSandbox(
+    `bench-snapshot-setup-${Date.now()}`,
+    { image: "browser" },
+    { gatewayUrl, timeoutMs: 120_000 },
+  );
+  try {
+    const browser = await connectWithRetry(sandbox, "snapshot-setup");
+    const context = browser.contexts()[0]!;
+    const page = context.pages()[0]! ?? await context.newPage();
+    await page.goto("https://example.com", { waitUntil: "domcontentloaded", timeout: RUN_TIMEOUT_MS });
+
+    console.info(`  capturing VM snapshot …`);
+    const result = await sandbox.snapshot({ vm: { key: SNAPSHOT_KEY } }, {timeoutMs: 30000});
+    console.info(`  snapshot done:`, JSON.stringify(result));
+  } finally {
+    await sandbox.shutdown();
+  }
 }
 
 // connect / attach stage: chromium.connectOverCDP() to the resident browser over
@@ -148,7 +179,7 @@ async function doRun(
     // Reuse the resident browser's warm context + pre-opened page (a fresh CDP
     // target would spin up a new renderer); fall back if it came up empty.
     const context = browser.contexts()[0]!;
-    const page = context.pages()[0]!;
+    const page = context.pages()[0]! ?? context.newPage();
 
     // ping: a trivial page.evaluate() with no browser work — the CDP transport
     // floor (one Runtime.evaluate round-trip through the proxy) so we can
@@ -299,6 +330,8 @@ interface Batch {
   results: Run[];
 }
 const batches: Batch[] = [];
+
+await createBrowserSnapshot();
 
 for (let qps = MIN_QPS; qps <= MAX_QPS; qps++) {
   const batch = await runBatch(qps);

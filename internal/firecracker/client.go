@@ -162,6 +162,17 @@ func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 	return c.put(ctx, "/drives/"+d.DriveID, d)
 }
 
+// PatchDrive repoints a drive at a new host backing file on an already-started
+// VM — the PATCH /drives/{id} counterpart to the pre-boot PutDrive. Firecracker
+// records a drive's current path_on_host into a snapshot and reopens it verbatim
+// on load, so repointing a drive at a relocated copy before CreateSnapshot makes
+// the snapshot record the new path. Allowed while the VM is Running or Paused
+// (v1.12); the new file must hold the same content the guest already has open.
+func (c *Client) PatchDrive(ctx context.Context, driveID, pathOnHost string) error {
+	body := map[string]string{"drive_id": driveID, "path_on_host": pathOnHost}
+	return c.do(ctx, http.MethodPatch, "/drives/"+driveID, body, nil)
+}
+
 func (c *Client) PutNetworkInterface(ctx context.Context, n NetworkInterface) error {
 	return c.put(ctx, "/network-interfaces/"+n.IfaceID, n)
 }
