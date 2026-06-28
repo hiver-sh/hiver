@@ -12,17 +12,30 @@ import (
 // proxy doesn't pay a fresh TCP + TLS handshake (the dominant per-request cost)
 // every time. It is the warm-connection half of the MITM fast path.
 //
-// SECURITY — per-source isolation is the whole point of the key design.
-// One sbxproxy is shared by every sandbox in a pod, but each sandbox egresses
-// from its own source IP (the netns SNAT). The pool key LEADS WITH srcIP, so a
-// connection opened on behalf of sandbox A (srcIP_A) lives in a different bucket
-// than anything sandbox B (srcIP_B) can ever look up — B can neither reuse A's
-// socket nor observe it. This also preserves egress-policy integrity: a pooled
+// SCOPE — vm (default) vs pod.
+//
+// vm scope (shared=false): per-source isolation, the safe default. One sbxproxy
+// is shared by every sandbox in a pod, but each sandbox egresses from its own
+// source IP (the netns SNAT). The pool key LEADS WITH srcIP, so a connection
+// opened on behalf of sandbox A (srcIP_A) lives in a different bucket than
+// anything sandbox B (srcIP_B) can ever look up — B can neither reuse A's socket
+// nor observe it. This also preserves egress-policy integrity: a pooled
 // connection is only ever handed back to the same source whose rules authorised
-// it, so B can't ride a connection A opened to a host B isn't allowed to reach.
-// host and dialAddr are in the key too, so a connection is only reused for the
-// exact same upstream and TLS identity it was established for.
+// it. host and dialAddr are in the key too, so a connection is only reused for
+// the exact same upstream and TLS identity it was established for.
+//
+// pod scope (shared=true): srcIP is DROPPED from the key, so one warm upstream
+// connection to a host is reused across ALL sandboxes in the pod. This is the
+// fast path for a workload like the browser pool: a freshly-created sandbox's
+// first request to a host reuses a connection a sibling already warmed (e.g. the
+// benchmark's warm-up runs), skipping the TCP+TLS+verify dial. The TRADE-OFF is
+// real and deliberate: co-tenant sandboxes now share the underlying upstream
+// transport, so this gives up the per-VM connection isolation above. Only enable
+// it where that's acceptable (public hosts, mutually-trusting tenants); the proxy
+// still mediates per-request, but connection-level state (e.g. NTLM/Negotiate
+// auth) and request-smuggling blast radius are no longer contained per source.
 type upstreamPool struct {
+	shared     bool          // pod scope: key by (dialAddr, host) only, reuse across sandboxes
 	idleTTL    time.Duration // an idle conn older than this is discarded, not reused
 	maxIdlePer int           // cap on idle conns retained per key (bounds FDs/memory)
 
@@ -51,12 +64,23 @@ type pooledConn struct {
 	idleSince time.Time
 }
 
-func newUpstreamPool() *upstreamPool {
+func newUpstreamPool(shared bool) *upstreamPool {
 	return &upstreamPool{
+		shared:     shared,
 		idleTTL:    10 * time.Second, // short: only reuse within a page's burst, before origins time out idle keep-alives
 		maxIdlePer: 8,
 		idle:       map[poolKey][]*pooledConn{},
 	}
+}
+
+// keyFor builds the pool key for a lookup. In vm scope srcIP partitions the pool
+// (isolation); in pod scope srcIP is dropped so the bucket is shared across all
+// sandboxes for the same (dialAddr, host).
+func (p *upstreamPool) keyFor(srcIP, dialAddr, host string) poolKey {
+	if p.shared {
+		srcIP = ""
+	}
+	return poolKey{srcIP: srcIP, dialAddr: dialAddr, host: host}
 }
 
 // get returns a live idle connection for (srcIP, dialAddr, host), or nil to tell
@@ -65,7 +89,7 @@ func newUpstreamPool() *upstreamPool {
 // idle keep-alives). The srcIP in the key is what guarantees a caller only ever
 // receives a connection opened for its own sandbox.
 func (p *upstreamPool) get(srcIP, dialAddr, host string) (net.Conn, *bufio.Reader) {
-	key := poolKey{srcIP: srcIP, dialAddr: dialAddr, host: host}
+	key := p.keyFor(srcIP, dialAddr, host)
 	for {
 		p.mu.Lock()
 		stack := p.idle[key]
@@ -95,7 +119,7 @@ func (p *upstreamPool) put(srcIP, dialAddr, host string, conn net.Conn, br *bufi
 		_ = conn.Close()
 		return
 	}
-	key := poolKey{srcIP: srcIP, dialAddr: dialAddr, host: host}
+	key := p.keyFor(srcIP, dialAddr, host)
 	p.mu.Lock()
 	if p.closed || len(p.idle[key]) >= p.maxIdlePer {
 		p.mu.Unlock()
@@ -110,6 +134,12 @@ func (p *upstreamPool) put(srcIP, dialAddr, host string, conn net.Conn, br *bufi
 // sandbox goes away so its sockets don't linger in the shared proxy — defence in
 // depth for the isolation boundary (and FD hygiene), on top of idleTTL reaping.
 func (p *upstreamPool) evictSource(srcIP string) {
+	if p.shared {
+		// pod scope: connections aren't owned by a single source, so a departing
+		// sandbox must not tear down connections siblings may still be using. They
+		// age out via idleTTL/reap instead.
+		return
+	}
 	p.mu.Lock()
 	var drop []*pooledConn
 	for key, stack := range p.idle {

@@ -13,7 +13,7 @@ import (
 )
 
 func newForwardTestProxy() *Proxy {
-	return &Proxy{auditEnc: json.NewEncoder(io.Discard), upstreamPool: newUpstreamPool()}
+	return &Proxy{auditEnc: json.NewEncoder(io.Discard), upstreamPool: newUpstreamPool(false)}
 }
 
 // fakeUpstream serves one HTTP/1.1 response over a net.Pipe: it reads the request

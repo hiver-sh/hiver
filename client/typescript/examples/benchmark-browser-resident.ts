@@ -55,8 +55,8 @@ const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 const SNAPSHOT_KEY = "browser";
 const sandboxConfig: hiver.SandboxConfig = {
   image: "browser",
-  cpu: 1,
-  memory: 1024,
+  cpu: 2,
+  memory: 2048,
   snapshot: {
     vm: {
       key: SNAPSHOT_KEY
@@ -109,14 +109,21 @@ async function createBrowserSnapshot(): Promise<void> {
   console.info(`=== pre-bench: creating browser snapshot (key: ${SNAPSHOT_KEY}) ===`);
   const sandbox = await hiver.getOrCreateSandbox(
     `bench-snapshot-setup-${Date.now()}`,
-    { image: "browser", cpu: 1, memory: 1024 },
+    { image: "browser", cpu: 2, memory: 2048 },
     { gatewayUrl, timeoutMs: 120_000 },
   );
   try {
     const browser = await connectWithRetry(sandbox, "snapshot-setup");
     const context = browser.contexts()[0]!;
     const page = context.pages()[0]! ?? await context.newPage();
-    await page.goto("about:blank", { waitUntil: "networkidle", timeout: RUN_TIMEOUT_MS });
+    // Prime the snapshot with a self-contained HTML sample via a data: URL — no
+    // egress, no DNS, no external host, so the snapshot setup never depends on
+    // network reachability. `networkidle` settles instantly since there are no
+    // subresources to fetch.
+    await page.goto("https://example.com", {
+      waitUntil: "networkidle",
+      timeout: RUN_TIMEOUT_MS,
+    });
 
     console.info(`  capturing VM snapshot …`);
     const result = await sandbox.snapshot({ vm: { key: SNAPSHOT_KEY } }, {timeoutMs: 30000});
@@ -196,7 +203,10 @@ async function doRun(
     const tp = performance.now();
     // await page.evaluate(() => 1);
     const pingMs = performance.now() - tp;
-
+    // await page.goto("https://example.org", {
+    //   waitUntil: "networkidle",
+    //   timeout: RUN_TIMEOUT_MS,
+    // });
     // goto: navigate the pre-opened page to URL and wait for `domcontentloaded` —
     // the "open page" stage and the best proxy for browser speed.
     const t2 = performance.now();

@@ -21,7 +21,7 @@ func pipeConn(t *testing.T) (net.Conn, *bufio.Reader, net.Conn) {
 // must NEVER be retrievable by another source (or another host/addr). This is the
 // guarantee that co-tenant sandboxes on a shared proxy can't see each other.
 func TestPoolIsolation(t *testing.T) {
-	p := newUpstreamPool()
+	p := newUpstreamPool(false)
 	cA, brA, peerA := pipeConn(t)
 	defer peerA.Close()
 	p.put("10.0.0.1", "example.com:443", "example.com", cA, brA)
@@ -43,9 +43,35 @@ func TestPoolIsolation(t *testing.T) {
 	}
 }
 
+// TestPoolSharedScope verifies pod scope: a connection put by one source IS
+// reused by a different source (cross-sandbox reuse), and evictSource is a no-op
+// (connections are pod-owned, not per-source). The upstream identity must still
+// match. This is the deliberate isolation trade-off for the fast path.
+func TestPoolSharedScope(t *testing.T) {
+	p := newUpstreamPool(true)
+	cA, brA, peerA := pipeConn(t)
+	defer peerA.Close()
+	p.put("10.0.0.1", "example.com:443", "example.com", cA, brA)
+
+	// Different source reuses A's connection (pod scope).
+	if c, _ := p.get("10.0.0.2", "example.com:443", "example.com"); c != cA {
+		t.Fatal("pod scope: a different source did not reuse the pooled connection")
+	}
+	// Identity still partitions: a different host must not cross.
+	p.put("10.0.0.1", "example.com:443", "example.com", cA, brA)
+	if c, _ := p.get("10.0.0.9", "evil.com:443", "evil.com"); c != nil {
+		t.Fatal("pod scope: connection reused for a different upstream identity")
+	}
+	// evictSource is a no-op in pod scope (siblings may still use the conn).
+	p.evictSource("10.0.0.1")
+	if c, _ := p.get("10.0.0.3", "example.com:443", "example.com"); c != cA {
+		t.Fatal("pod scope: evictSource wrongly dropped a pod-shared connection")
+	}
+}
+
 // TestPoolEvictSource ensures removing a sandbox drops only its connections.
 func TestPoolEvictSource(t *testing.T) {
-	p := newUpstreamPool()
+	p := newUpstreamPool(false)
 	cA, brA, peerA := pipeConn(t)
 	cB, brB, peerB := pipeConn(t)
 	defer peerA.Close()
@@ -66,7 +92,7 @@ func TestPoolEvictSource(t *testing.T) {
 // TestPoolStale ensures connections past idleTTL are discarded (and closed), not
 // handed out — protecting against reuse of conns the origin has since dropped.
 func TestPoolStale(t *testing.T) {
-	p := newUpstreamPool()
+	p := newUpstreamPool(false)
 	p.idleTTL = time.Millisecond
 	c, br, peer := pipeConn(t)
 	defer peer.Close()
@@ -88,7 +114,7 @@ func TestPoolStale(t *testing.T) {
 // TestPoolDeadConnNotReturned ensures a connection the peer has closed fails the
 // liveness probe and is not handed out.
 func TestPoolDeadConnNotReturned(t *testing.T) {
-	p := newUpstreamPool()
+	p := newUpstreamPool(false)
 	c, br, peer := pipeConn(t)
 	p.put("s", "h:443", "h", c, br)
 	peer.Close() // origin drops the connection
@@ -101,7 +127,7 @@ func TestPoolDeadConnNotReturned(t *testing.T) {
 // TestPoolCap ensures the per-key idle cap is enforced (bounds FDs/memory); the
 // overflow connection is closed rather than retained.
 func TestPoolCap(t *testing.T) {
-	p := newUpstreamPool()
+	p := newUpstreamPool(false)
 	p.maxIdlePer = 2
 	var peers []net.Conn
 	for i := 0; i < 3; i++ {
@@ -125,7 +151,7 @@ func TestPoolCap(t *testing.T) {
 // TestPoolBufferedNotPooled ensures a conn whose reader still holds buffered bytes
 // (unclean framing) is closed rather than pooled — reuse would desync responses.
 func TestPoolBufferedNotPooled(t *testing.T) {
-	p := newUpstreamPool()
+	p := newUpstreamPool(false)
 	c, br, peer := pipeConn(t)
 	go peer.Write([]byte("leftover")) // unblock the synchronous pipe
 	if _, err := br.Peek(1); err != nil {
@@ -143,7 +169,7 @@ func TestPoolBufferedNotPooled(t *testing.T) {
 
 // TestPoolClosedAfterShutdown ensures puts after closeAll don't retain conns.
 func TestPoolClosedAfterShutdown(t *testing.T) {
-	p := newUpstreamPool()
+	p := newUpstreamPool(false)
 	p.closeAll()
 	c, br, peer := pipeConn(t)
 	defer peer.Close()

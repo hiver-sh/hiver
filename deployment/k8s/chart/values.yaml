@@ -17,12 +17,19 @@ sandboxPort: 8099
 
 terminationGracePeriodSeconds: 120
 
-proxyPassthroughAll: true
+# MITM (not passthrough): sbxproxy terminates TLS with a CA-minted cert the guest
+# trusts, validates the real upstream cert itself (chain+hostname, against the
+# system roots), and re-encrypts. Browser-side cert verification is then cheap —
+# the minted cert chains to a locally-installed (private) root, so Chrome skips
+# Certificate Transparency, dropping the ~15ms per-host CT cost passthrough pays.
+# Set true to disable MITM and raw-splice everything (faster proxy CPU, but the
+# browser does full public-cert verification incl. CT on every first connection).
+proxyPassthroughAll: false
 
 controller:
   # Pinned by digest — see the mirror.gcr.io stale-tag hazard note on images
   # below. Overridable at deploy time with --set controller.image=...
-  image: hiversh/controller@sha256:c5460f4718541da5d39e08b18e04748c8512c97902fbaec107de871eba8b58fc
+  image: hiversh/controller@sha256:2fbe7622fb0f921503248f37ada002a6c7bd2043d73e1a2de717b5294160ed20
   port: 9000
   env:
     # Selects the Kubernetes backend in NewControllerHandlers(); anything else
@@ -50,7 +57,7 @@ gateway:
   # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
   # overridden by the generated gateway-envoy ConfigMap mounted into the pod so
   # sandboxes resolve across namespaces. Pinned by digest.
-  image: hiversh/gateway@sha256:b8dbecffc27a56b5dfa2d0a4d598550e9b4f62b5a896643ea62436399f5b4cfc
+  image: hiversh/gateway@sha256:7f94aa60c499c31523932ec06ca9b22a908be63b8f69b439e49c8f042b1be618
   # Envoy listener port (container) and the external LoadBalancer service port.
   listenPort: 10000
   servicePort: 80
@@ -76,9 +83,14 @@ images:
         memory: 4Gi
 
   - name: browser
-    image: hiversh/browser:latest-microvm@sha256:6ac416c51eb130e74bc6bce743f66ecf1c3738c7781bae162052ac8fc63d21ff
+    image: hiversh/browser:latest-microvm@sha256:09904d51ed1582a24bad1ac86b39f2584d70b8c9f4d25257bc7101bca3aba441
     replicas: 1
     maxConcurrentLaunches: 4
+    # Share warm upstream connections across all sandboxes in the pod: a freshly
+    # created browser sandbox's first goto reuses a sibling's already-warm
+    # connection to the host instead of dialing TCP+TLS fresh. Trades per-VM
+    # connection isolation for speed (acceptable for the browser pool).
+    upstreamPoolScope: pod
     resources:
       # request = guest size (what the scheduler reserves). limit = node
       # allocatable ceiling on an n2-standard-4 (4 vCPU / 16 GiB).

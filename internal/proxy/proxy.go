@@ -56,6 +56,14 @@ type Config struct {
 	// always raw-forwarded after SNI host match.
 	CACert *x509.Certificate
 	CAKey  *ecdsa.PrivateKey
+
+	// UpstreamPoolShared selects the upstream connection-pool scope. false (vm)
+	// keys the pool by source IP so co-tenant sandboxes are isolated (the safe
+	// default). true (pod) drops srcIP from the key so one warm upstream
+	// connection to a host is reused across ALL sandboxes in the pod — faster
+	// (a fresh sandbox reuses a sibling's warm connection) but it gives up per-VM
+	// connection isolation. See upstreamPool's doc for the trade-off.
+	UpstreamPoolShared bool
 }
 
 // EgressRule is one egress rule for outbound traffic.
@@ -255,7 +263,10 @@ func New(cfg Config) (*Proxy, error) {
 		dialer:       dialer,
 		transport:    transport,
 		auditEnc:     json.NewEncoder(cfg.Audit),
-		upstreamPool: newUpstreamPool(),
+		upstreamPool: newUpstreamPool(cfg.UpstreamPoolShared),
+	}
+	if cfg.UpstreamPoolShared {
+		log.Printf("proxy: upstream pool scope = pod — connections reused across sandboxes (per-VM isolation off)")
 	}
 	if cfg.CACert != nil && cfg.CAKey != nil {
 		p.minter = NewCertMinter(cfg.CACert, cfg.CAKey)

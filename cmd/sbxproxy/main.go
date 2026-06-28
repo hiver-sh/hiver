@@ -39,6 +39,7 @@ func main() {
 		caKeyPath   = flag.String("ca-key", "", "PEM CA private key (paired with -ca-cert)")
 		dnsAddr     = flag.String("dns-addr", "", "listen address for the DNS sinkhole (UDP+TCP); when set, all workload DNS is redirected here and answered with -dns-sink")
 		dnsSink     = flag.String("dns-sink", "192.0.2.1", "IPv4 placeholder returned for every DNS query (TEST-NET-1 by default; the agent connects to it and the proxy re-resolves the real name)")
+		poolScope   = flag.String("upstream-pool-scope", "vm", "upstream connection-pool scope: \"vm\" keys by source IP (co-tenant sandboxes isolated, default); \"pod\" shares warm connections across all sandboxes in the pod (faster first goto, gives up per-VM connection isolation)")
 	)
 	flag.Parse()
 
@@ -67,11 +68,12 @@ func main() {
 	rules, _ := loadRules(*rulesPath)
 	caCert, caKey := loadCA(*caCertPath, *caKeyPath)
 	p, err := proxy.New(proxy.Config{
-		Addr:         *addr,
-		Audit:        auditOut,
-		OutboundMark: *mark,
-		CACert:       caCert,
-		CAKey:        caKey,
+		Addr:               *addr,
+		Audit:              auditOut,
+		OutboundMark:       *mark,
+		CACert:             caCert,
+		CAKey:              caKey,
+		UpstreamPoolShared: *poolScope == "pod",
 	})
 	if err != nil {
 		log.Fatalf("proxy.New: %v", err)

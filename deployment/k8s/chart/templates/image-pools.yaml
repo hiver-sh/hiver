@@ -65,6 +65,15 @@ spec:
             - name: HIVER_PROXY_PASSTHROUGH_ALL
               value: "1"
             {{- end }}
+            {{- if .upstreamPoolScope }}
+            # sbxproxy upstream connection-pool scope. "pod" shares warm upstream
+            # connections across all sandboxes in the pod, so a fresh sandbox's first
+            # request reuses a sibling's already-warm connection (faster first goto) —
+            # trading per-VM connection isolation. "vm" (default) keeps per-source
+            # isolation. sandboxd passes this to sbxproxy as -upstream-pool-scope.
+            - name: HIVER_PROXY_UPSTREAM_POOL_SCOPE
+              value: {{ .upstreamPoolScope | quote }}
+            {{- end }}
           ports:
             - containerPort: {{ $.Values.sandboxPort }}
           securityContext:

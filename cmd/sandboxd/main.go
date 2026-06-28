@@ -346,6 +346,14 @@ func main() {
 			"-ca-cert", caCertPath,
 			"-ca-key", caKeyPath,
 		}
+		// Upstream connection-pool scope. Default "vm" (per-source isolation); a pool
+		// (e.g. browser) sets HIVER_PROXY_UPSTREAM_POOL_SCOPE=pod to share warm
+		// upstream connections across all sandboxes in the pod — a fresh sandbox's
+		// first request then reuses a sibling's warm connection (faster goto), at the
+		// cost of per-VM connection isolation (see proxy.upstreamPool).
+		if scope := os.Getenv("HIVER_PROXY_UPSTREAM_POOL_SCOPE"); scope != "" {
+			proxyArgs = append(proxyArgs, "-upstream-pool-scope", scope)
+		}
 		// In pack mode, route proxy audit events to per-sandbox brokers by
 		// source IP (each packed sandbox has a distinct source IP). In
 		// single-sandbox mode all events go to the one shared broker.
