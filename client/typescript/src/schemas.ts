@@ -341,12 +341,28 @@ export interface SandboxConfig {
    * limit). May be fractional (e.g. 0.5); the microvm guest vCPU count is this
    * value rounded up, the container enforces it as a CPU quota. Defaults to 1.
    * This cannot be changed after the sandbox is initialized.
+   *
+   * Snapshot/resume: the guest vCPU count is a boot-time property baked into a
+   * VM snapshot at capture, so a sandbox resumed from a snapshot
+   * (snapshot.vm.key) gets the vCPUs the guest had when the snapshot was
+   * CREATED — set `cpu` when creating the snapshot to size the guest. On resume
+   * `cpu` still applies the VMM's cgroup CPU quota (unthrottling the guest's
+   * existing vCPUs) but cannot add vCPUs to an already-captured guest. So a warm
+   * workload captured once and resumed per request — e.g. a resident browser —
+   * should set `cpu` both when creating the snapshot and on resume.
    */
   cpu?: number;
   /**
    * Memory allocated to the sandbox, in MiB (microvm: guest RAM size;
    * container: enforced as a cgroup memory limit). Defaults to 512.
    * This cannot be changed after the sandbox is initialized.
+   *
+   * Snapshot/resume: like `cpu`, guest RAM is a boot-time property baked into a
+   * VM snapshot at capture; a resumed sandbox gets the RAM the guest had when
+   * the snapshot was CREATED. Set `memory` when creating the snapshot to size
+   * guest RAM; on resume it applies the cgroup memory limit but does not resize
+   * an already-captured guest. As with `cpu`, set it both when creating the
+   * snapshot and on resume (e.g. for a resident browser).
    */
   memory?: number;
   /** Override the entrypoint used when the container is run. Accepts either an argv array (each element a separate argument) or a single string, which the sandbox splits on whitespace into arguments. When omitted, the image's default entrypoint is used. */

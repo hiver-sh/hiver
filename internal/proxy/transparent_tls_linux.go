@@ -53,7 +53,7 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 		return
 	}
 	log.Printf("transparent tls: host=%s port=%d allowed minter=%v passthrough=%v", host, port, p.minter != nil, rule.Passthrough)
-	if p.minter != nil && !rule.Passthrough {
+	if p.minter != nil && !rule.Passthrough && !p.passthroughAll {
 		p.interceptTLS(c, br, host, origDst, hello, srcIP, rule)
 		return
 	}
@@ -96,7 +96,17 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 	}
 	defer clientTLS.Close()
 	cs := clientTLS.ConnectionState()
-	log.Printf("intercept tls: inner handshake ok host=%s version=0x%04x cipher=0x%04x", host, cs.Version, cs.CipherSuite)
+	log.Printf("intercept tls: inner handshake ok host=%s version=0x%04x cipher=0x%04x alpn=%q", host, cs.Version, cs.CipherSuite, cs.NegotiatedProtocol)
+
+	// When the agent negotiated HTTP/2 (Chrome does), serve the whole connection as
+	// h2 so it multiplexes a page's requests over this ONE socket instead of opening
+	// up to 6 parallel HTTP/1.1 connections (6× inner TLS handshakes). Each stream is
+	// rule-checked + audited + forwarded over the per-source upstream pool, exactly
+	// like a 1.1 request. The http/1.1 path below is the fallback.
+	if cs.NegotiatedProtocol == "h2" {
+		p.serveInnerH2(clientTLS, host, origDst, srcIP, rule)
+		return
+	}
 
 	// Tee the request bytes off the wire so we can replay them verbatim
 	// upstream on a WS upgrade. Preserves the agent's original header casing
@@ -140,22 +150,41 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		return
 	}
 
-	upstreamConn, err := p.dialUpstreamTLS(dialTarget(rule, upstreamAddr(host, origDst)), host, clientHello, isWebSocketUpgrade(req))
-	if err != nil {
-		log.Printf("intercept tls: upstream tls error host=%s origDst=%s: %v", host, origDst, err)
-		ac.responseError("upstream: "+err.Error(), http.StatusBadGateway)
-		return
+	ws := isWebSocketUpgrade(req)
+	dialAddr := dialTarget(rule, upstreamAddr(host, origDst))
+
+	// Reuse a warm upstream connection when one exists for THIS source. The pool is
+	// keyed by srcIP first, so a connection is only ever returned to the sandbox
+	// that opened it — co-tenant sandboxes on this shared proxy are fully isolated
+	// (see upstreamPool). WebSocket connections become tunnels and are never pooled.
+	var upstreamConn net.Conn
+	var upstreamBR *bufio.Reader
+	if !ws {
+		upstreamConn, upstreamBR = p.upstreamPool.get(srcIP, dialAddr, host)
 	}
-	defer upstreamConn.Close()
+	if upstreamConn == nil {
+		var err error
+		upstreamConn, err = p.dialUpstreamTLS(dialAddr, host, clientHello, ws)
+		if err != nil {
+			log.Printf("intercept tls: upstream tls error host=%s origDst=%s: %v", host, origDst, err)
+			ac.responseError("upstream: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		upstreamBR = bufio.NewReader(upstreamConn)
+	}
 
 	var rawReqBytes []byte
-	if isWebSocketUpgrade(req) && (rule.Override == nil || rule.Override.PrefixPath == "") {
+	if ws && (rule.Override == nil || rule.Override.PrefixPath == "") {
 		// The verbatim capture still carries the agent's original path, so
 		// a prefix_path rewrite can't use it — fall back to req.Write at
 		// the cost of the agent's exact header casing/ordering.
 		rawReqBytes = rawReqBuf.Bytes()
 	}
-	p.forwardHTTP(clientTLS, upstreamConn, req, rawReqBytes, ac)
+	if p.forwardHTTP(clientTLS, upstreamConn, upstreamBR, req, rawReqBytes, ac, !ws) {
+		p.upstreamPool.put(srcIP, dialAddr, host, upstreamConn, upstreamBR)
+	} else {
+		_ = upstreamConn.Close()
+	}
 }
 
 // spliceTLS forwards an intercepted TLS connection whose decrypted inner
@@ -200,13 +229,11 @@ func (p *Proxy) spliceTLS(clientTLS net.Conn, host, origDst string, rule *Egress
 // inspection loop reads request lines, not HPACK frames, so negotiating h2
 // would silently break inspection.
 func (p *Proxy) acceptInnerTLS(c *net.TCPConn, br *bufio.Reader, host string) (*tls.Conn, error) {
-	cfg := &tls.Config{
-		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-			return p.minter.Mint(host)
-		},
-		NextProtos: []string{"http/1.1"},
-	}
-	clientTLS := tls.Server(&peekedConn{Conn: c, r: br}, cfg)
+	// p.innerTLS is shared across all connections so session-ticket keys are stable
+	// and clients can resume; GetCertificate mints per the handshake SNI. host is
+	// retained for the caller's logging/audit but no longer drives cert selection.
+	_ = host
+	clientTLS := tls.Server(&peekedConn{Conn: c, r: br}, p.innerTLS)
 	if err := clientTLS.HandshakeContext(context.Background()); err != nil && err != io.EOF {
 		return nil, err
 	}

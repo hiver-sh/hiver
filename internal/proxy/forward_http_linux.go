@@ -20,13 +20,24 @@ const maxAuditBodyBytes = 1 << 20 // 1 MiB
 // forwardHTTP forwards a single HTTP request from client to upstream and
 // streams the response back. On a 101 Switching Protocols response it
 // upgrades to bidirectional WebSocket frame forwarding until either side
-// closes. Caller owns both connections and is responsible for closing them.
+// closes. Caller owns both connections.
 //
-// rawReqBytes is optional: when non-nil it's written verbatim to upstream
-// instead of req.Write — used in the TLS-intercept WS path to preserve the
-// agent's exact header casing and ordering on the upgrade request.
-func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.Request, rawReqBytes []byte, ac *auditCtx) {
+// upstreamBR is the buffered reader to read the response from — carried with a
+// pooled connection so response framing survives reuse (for a freshly dialed
+// conn the caller passes bufio.NewReader(upstream)). rawReqBytes is optional:
+// when non-nil it's written verbatim to upstream instead of req.Write — used in
+// the TLS-intercept WS path to preserve the agent's exact header casing.
+//
+// Returns true only when allowReuse was set and the exchange ended keep-alive-
+// clean (upstream agreed to keep-alive and the body fully drained), so the caller
+// may return the connection to the upstream pool; otherwise the caller must close
+// it. WebSocket upgrades and any error path return false.
+func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, upstreamBR *bufio.Reader, req *http.Request, rawReqBytes []byte, ac *auditCtx, allowReuse bool) bool {
 	ws := isWebSocketUpgrade(req)
+	// keepAlive drives both the upstream request (omit "Connection: close") and the
+	// reuse decision. Never for WebSocket (the conn becomes a tunnel) or when the
+	// agent itself asked to close.
+	keepAlive := allowReuse && !ws && !req.Close
 
 	// Strip Sec-WebSocket-Extensions so the server can't negotiate any
 	// RSV-using extension (notably permessage-deflate). Frames stay
@@ -39,18 +50,17 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 		}
 	}
 
-	if err := writeUpstreamRequest(upstream, req, rawReqBytes, ws); err != nil {
+	if err := writeUpstreamRequest(upstream, req, rawReqBytes, ws, keepAlive); err != nil {
 		log.Printf("forward http: write request error host=%s: %v", req.Host, err)
 		ac.responseError("write request: "+err.Error(), http.StatusBadGateway)
-		return
+		return false
 	}
 
-	upstreamBR := bufio.NewReader(upstream)
 	resp, err := http.ReadResponse(upstreamBR, req)
 	if err != nil {
 		log.Printf("forward http: read response error host=%s: %v", req.Host, err)
 		ac.responseError("read response: "+err.Error(), http.StatusBadGateway)
-		return
+		return false
 	}
 	log.Printf("forward http: response host=%s status=%d", req.Host, resp.StatusCode)
 	defer resp.Body.Close()
@@ -58,7 +68,7 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		if err := writeWebSocketResponse(client, resp); err != nil {
 			ac.responseError("write 101: "+err.Error(), http.StatusInternalServerError)
-			return
+			return false
 		}
 		// Response event before the WS tunnel starts pumping — frame audit
 		// events flow as response_chunks from wsForward, so consumers see
@@ -72,21 +82,37 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 		go func() { p.wsForward(client, upstream, wsDirUp, ac); done <- struct{}{} }()
 		go func() { p.wsForward(io.MultiReader(upstreamBR, upstream), client, wsDirDown, ac); done <- struct{}{} }()
 		<-done
-		return
+		return false
 	}
 
 	src := unwrapBody(resp)
 	ac.responseHeaders = headerMap(resp.Header)
 	if err := writeResponseHeaders(client, resp); err != nil {
 		ac.responseError("write response: "+err.Error(), http.StatusBadGateway)
-		return
+		return false
 	}
 	// Emit the response event now — status, headers, and time-to-first-byte
 	// are known. Body bytes flow as response_chunk events from chunkForward
 	// so consumers (especially SSE) don't have to wait for the body to end.
 	ac.response(resp.StatusCode)
 	p.chunkForward(src, client, nil, ac, isTextContentType(resp.Header.Get("Content-Type")))
+
+	if !keepAlive {
+		return false
+	}
+	// Reuse only if the upstream is fully drained (so the next pooled response
+	// starts clean) and it agreed to keep-alive. chunkForward consumes the body
+	// view; drain the underlying body within a bound to confirm — leftover (a
+	// mid-stream error or oversized residue) means the conn isn't safe to reuse.
+	n, drainErr := io.CopyN(io.Discard, resp.Body, maxReuseDrainBytes)
+	fullyDrained := drainErr == io.EOF || (drainErr == nil && n < maxReuseDrainBytes)
+	return fullyDrained && !resp.Close && resp.ProtoAtLeast(1, 1) && upstreamBR.Buffered() == 0
 }
+
+// maxReuseDrainBytes bounds the post-stream drain used to decide whether an
+// upstream conn is safe to pool — a large unread residue isn't worth draining
+// just to reuse, so the conn is closed instead.
+const maxReuseDrainBytes = 1 << 16
 
 // writeUpstreamRequest writes req to upstream, choosing one of three paths:
 //
@@ -96,9 +122,10 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, req *http.R
 //     header writer in proxy.go that avoids the User-Agent injection
 //     req.Write would do).
 //   - Anything else → req.Write with the proxy fingerprint suppressed
-//     (blank User-Agent if the agent didn't send one; Connection: close
-//     since the inspection loop is one-request-per-conn).
-func writeUpstreamRequest(upstream net.Conn, req *http.Request, rawReqBytes []byte, ws bool) error {
+//     (blank User-Agent if the agent didn't send one). Connection is set to
+//     close unless keepAlive is set, in which case the header is dropped so the
+//     upstream may keep the connection alive for pooling/reuse.
+func writeUpstreamRequest(upstream net.Conn, req *http.Request, rawReqBytes []byte, ws, keepAlive bool) error {
 	switch {
 	case ws && rawReqBytes != nil:
 		log.Printf("forward http: ws upgrade host=%s path=%s rawBytes=%d", req.Host, req.URL.Path, len(rawReqBytes))
@@ -108,7 +135,11 @@ func writeUpstreamRequest(upstream net.Conn, req *http.Request, rawReqBytes []by
 		log.Printf("forward http: ws upgrade host=%s path=%s", req.Host, req.URL.Path)
 		return writeWebSocketUpgrade(upstream, req)
 	default:
-		req.Header.Set("Connection", "close")
+		if keepAlive {
+			req.Header.Del("Connection") // HTTP/1.1 default is keep-alive
+		} else {
+			req.Header.Set("Connection", "close")
+		}
 		// Prevent req.Write from injecting "User-Agent: Go-http-client/1.1"
 		// when the agent didn't send one — that header fingerprints the proxy.
 		if _, ok := req.Header["User-Agent"]; !ok {

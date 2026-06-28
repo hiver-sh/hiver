@@ -12,6 +12,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,11 +138,19 @@ type AuditEvent struct {
 
 // Proxy is the running proxy. Construct with [New], drive with [Run].
 type Proxy struct {
-	cfg       Config
-	listener  net.Listener
-	dialer    *net.Dialer
-	transport *http.Transport
-	minter    *CertMinter // nil unless TLS termination is enabled
+	cfg          Config
+	listener     net.Listener
+	dialer       *net.Dialer
+	transport    *http.Transport
+	minter       *CertMinter   // nil unless TLS termination is enabled
+	innerTLS     *tls.Config   // shared agent-facing server config (stable session-ticket keys)
+	upstreamPool *upstreamPool // per-source keep-alive pool for the TLS-intercept upstream path
+
+	// passthroughAll, when set (HIVER_PROXY_PASSTHROUGH_ALL), routes every TLS flow
+	// to raw splice (no MITM termination) regardless of rule — a measurement knob to
+	// isolate the proxy's MITM cost (intercept minus passthrough). Egress is still
+	// SNI-host-checked and relayed; only decrypt/re-encrypt is skipped.
+	passthroughAll bool
 
 	// bySource holds egress rules keyed by the workload's source IP, so one
 	// shared proxy can enforce a different allowlist per sandbox (design §8).
@@ -241,13 +251,42 @@ func New(cfg Config) (*Proxy, error) {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	p := &Proxy{
-		cfg:       cfg,
-		dialer:    dialer,
-		transport: transport,
-		auditEnc:  json.NewEncoder(cfg.Audit),
+		cfg:          cfg,
+		dialer:       dialer,
+		transport:    transport,
+		auditEnc:     json.NewEncoder(cfg.Audit),
+		upstreamPool: newUpstreamPool(),
 	}
 	if cfg.CACert != nil && cfg.CAKey != nil {
 		p.minter = NewCertMinter(cfg.CACert, cfg.CAKey)
+		// ONE shared server config across every agent-facing handshake. The old
+		// code built a fresh tls.Config per connection, so Go minted a new random
+		// session-ticket key each time → a client could never resume, and every
+		// inner handshake paid a full ECDHE. A shared config keeps Go's auto-rotated
+		// ticket keys stable, so repeat connections from the same agent resume (1-RTT,
+		// no cert, no full key exchange). GetCertificate keys off the handshake SNI so
+		// one config serves all hosts. ALPN stays http/1.1 (the inspection loop reads
+		// request lines, not HPACK). MinVersion stays 1.2 for client compatibility —
+		// 1.3 is already preferred automatically whenever the client offers it.
+		p.innerTLS = &tls.Config{
+			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return p.minter.Mint(hello.ServerName)
+			},
+			// Offer h2 first: Chrome then multiplexes a page over one connection
+			// instead of opening ~6 parallel HTTP/1.1 ones (see serveInnerH2). Falls
+			// back to http/1.1 for agents that don't speak h2. HIVER_PROXY_DISABLE_H2
+			// drops back to http/1.1-only ALPN — a no-redeploy kill switch should the
+			// h2 inner path misbehave.
+			NextProtos: []string{"h2", "http/1.1"},
+			MinVersion: tls.VersionTLS12,
+		}
+		if os.Getenv("HIVER_PROXY_DISABLE_H2") != "" {
+			p.innerTLS.NextProtos = []string{"http/1.1"}
+		}
+	}
+	if os.Getenv("HIVER_PROXY_PASSTHROUGH_ALL") != "" {
+		p.passthroughAll = true
+		log.Printf("proxy: HIVER_PROXY_PASSTHROUGH_ALL set — TLS interception disabled, raw splice for all flows")
 	}
 	p.SetRules(cfg.Rules)
 	return p, nil
@@ -282,6 +321,8 @@ func (p *Proxy) Run(ctx context.Context) error {
 		}
 	}
 	srv := &http.Server{Handler: p}
+	// Reap idle upstream connections and close the pool when the proxy stops.
+	go p.upstreamPool.reap(ctx)
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())

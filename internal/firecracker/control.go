@@ -1,16 +1,12 @@
 package firecracker
 
-// GuestControlPort is the guest TCP port (on eth0, the netns network) the
-// in-guest agent (cmd/sbxguest) listens on for host-issued control RPCs. It
-// exists for the snapshot-resume flow: a prewarm VM is snapshotted before its
-// first config is known, so the workspaces that config names cannot be mounted
-// at boot. After the host loads and resumes the snapshot it dials this port
-// (host→guest, via microvm.dialGuest) to drive post-resume setup that could not
-// be baked into the params drive.
-//
-// One request/response per connection, each a single JSON object terminated by
-// a newline (see ControlRequest/ControlResponse).
-const GuestControlPort uint32 = 1028
+// Control RPCs are one of the channels multiplexed over GuestPort (see
+// ChannelControl): the host dials the guest, writes the channel byte, then sends
+// one ControlRequest per connection (a newline-terminated JSON object) and reads a
+// ControlResponse. They exist for the snapshot-resume flow: a prewarm VM is
+// snapshotted before its first config is known, so the workspaces that config
+// names cannot be mounted at boot; after the host loads and resumes the snapshot
+// it drives post-resume setup that could not be baked into the params drive.
 
 // ControlRequest is the host→guest control message carrying the post-resume
 // setup the params drive could not: a prewarm VM is snapshotted before its first

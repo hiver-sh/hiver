@@ -353,6 +353,14 @@ type Isolation interface {
 	// WaitReady blocks until the workload is running or ctx is cancelled.
 	WaitReady(ctx context.Context) error
 
+	// StreamWorkloadLogs publishes the entrypoint workload's stdout/stderr via cb
+	// (one call per chunk, stream is "stdout" or "stderr"), reconnecting until ctx
+	// is done. The container backend already forwards its workload child's stdout
+	// directly, so it is a no-op there; the microvm backend dials the guest to pull
+	// the in-VM workload's output, which would otherwise be invisible. Blocks; the
+	// caller runs it in a goroutine.
+	StreamWorkloadLogs(ctx context.Context, cb func(stream, chunk string))
+
 	// HasPrewarmSnapshot reports whether a VM-state snapshot is staged for this
 	// sandbox (its VMStateDir holds a snapshot, decided in newMicroVM),
 	// so the resume path (below) is taken instead of a cold launch. Always false for

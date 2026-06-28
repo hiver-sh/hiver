@@ -76,15 +76,6 @@ func envInt(name string, def int) int {
 	return def
 }
 
-// chromeArgs are the launch flags, tuned to run as cheaply as possible: collapse
-// the process model to a single process (no zygote/renderer/GPU forks — lowest
-// resident memory), drop the GPU/raster path (no paint is needed for
-// DOMContentLoaded automation), disable image decode, shrink every cache, and
-// strip background CPU/network chatter (incl. Google phone-homes blackholed via
-// --host-resolver-rules). --single-process headless is not officially supported
-// and can crash on heavy pages; we accept that for the memory win on simple
-// navigation workloads — dropping --single-process/--no-zygote is the first revert
-// if a workload starts crashing.
 func chromeArgs(chromePort int, userDataDir string) []string {
 	return []string{
 		// DevTools/CDP endpoint. Chrome binds this on loopback only (see header);
@@ -107,10 +98,13 @@ func chromeArgs(chromePort int, userDataDir string) []string {
 		"--disable-gpu",
 		"--disable-software-rasterizer",
 		"--disable-accelerated-2d-canvas",
-		"--enable-low-end-device-mode",
-		"--disk-cache-size=1",
-		"--media-cache-size=1",
-		"--js-flags=--max-old-space-size=128",
+		// Enable the HTTP/media cache (it was pinned to ~off with size=1). A resident
+		// browser warmed at snapshot time then serves repeat navigations to the same
+		// origin (e.g. the benchmark's example.com, captured in the snapshot) from
+		// cache instead of a cold refetch — the dominant cost in goto. Bounded at
+		// 128 MiB so it can't grow unbounded on the guest overlay.
+		"--disk-cache-size=134217728",
+		"--js-flags=--max-old-space-size=512",
 		"--window-size=800,600",
 		"--disable-background-networking",
 		"--enable-automation",

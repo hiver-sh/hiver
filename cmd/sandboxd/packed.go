@@ -789,6 +789,11 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	// is reachable. Bounded by egressReloadTimeout (proceeds on timeout/cancel).
 	p.egressGate.waitApplied(sbCtx, egressGen)
 	go api.PollResourceUsage(sbCtx, broker, iso.CgroupPath())
+	// Stream the guest workload's stdout/stderr into the sandbox's stdio events so a
+	// failing entrypoint (e.g. a crashing Chrome) is visible in the inspector. No-op
+	// for the container backend (its child stdout already flows); the microvm backend
+	// pulls it out of the guest.
+	go iso.StreamWorkloadLogs(sbCtx, publishAgentStdio(broker))
 	// The workload is now running; a subsequent config-apply that adds a
 	// workspace must inject it into the live workload via ApplyResumeState.
 	mountMgr.SetWorkloadLive()

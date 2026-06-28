@@ -26,10 +26,6 @@ import (
 	"io"
 )
 
-// GuestPort is the vsock port the in-guest file service listens on. It sits
-// next to the exec port (1024) so a host that can reach exec can reach files.
-const GuestPort uint32 = 1025
-
 // Op selects the file operation a Request performs.
 type Op string
 

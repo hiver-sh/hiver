@@ -61,6 +61,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- if $.Values.proxyPassthroughAll }}
+            - name: HIVER_PROXY_PASSTHROUGH_ALL
+              value: "1"
+            {{- end }}
           ports:
             - containerPort: {{ $.Values.sandboxPort }}
           securityContext:

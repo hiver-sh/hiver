@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
+	"github.com/hiver-sh/hiver/internal/firecracker"
 	"github.com/hiver-sh/hiver/internal/vsockexec"
 )
 
@@ -63,6 +64,12 @@ func main() {
 		log.Fatalf("connect guest exec %s: %v", *addr, err)
 	}
 	defer conn.Close()
+
+	// The guest multiplexes every host->guest channel over one port; select the
+	// exec channel by writing its leading GuestChannel byte before the exec frames.
+	if _, err := conn.Write([]byte{byte(firecracker.ChannelExec)}); err != nil {
+		log.Fatalf("select exec channel: %v", err)
+	}
 
 	// Serialise all host→guest frame writes: the stdin pump and the SIGWINCH
 	// resize watcher both write to the same vsock stream, and one frame's

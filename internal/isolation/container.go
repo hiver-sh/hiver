@@ -525,6 +525,14 @@ func (c *container) WaitReady(ctx context.Context) error {
 	}
 }
 
+// StreamWorkloadLogs is a no-op for the container backend: the workload runs as a
+// host child whose stdout/stderr sandboxd already forwards as stdio events when it
+// starts the agent command (startChild + publishAgentStdio). Only the microvm
+// backend needs to pull the workload's output out of the guest.
+func (c *container) StreamWorkloadLogs(ctx context.Context, cb func(stream, chunk string)) {
+	<-ctx.Done()
+}
+
 // HasPrewarmSnapshot is always false for the container backend: it has no VM
 // state to resume, so it always cold-boots.
 func (c *container) HasPrewarmSnapshot() bool { return false }

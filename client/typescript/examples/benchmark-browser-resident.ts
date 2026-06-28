@@ -55,6 +55,8 @@ const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 const SNAPSHOT_KEY = "browser";
 const sandboxConfig: hiver.SandboxConfig = {
   image: "browser",
+  cpu: 1,
+  memory: 1024,
   snapshot: {
     vm: {
       key: SNAPSHOT_KEY
@@ -107,18 +109,19 @@ async function createBrowserSnapshot(): Promise<void> {
   console.info(`=== pre-bench: creating browser snapshot (key: ${SNAPSHOT_KEY}) ===`);
   const sandbox = await hiver.getOrCreateSandbox(
     `bench-snapshot-setup-${Date.now()}`,
-    { image: "browser" },
+    { image: "browser", cpu: 1, memory: 1024 },
     { gatewayUrl, timeoutMs: 120_000 },
   );
   try {
     const browser = await connectWithRetry(sandbox, "snapshot-setup");
     const context = browser.contexts()[0]!;
     const page = context.pages()[0]! ?? await context.newPage();
-    await page.goto("https://example.com", { waitUntil: "domcontentloaded", timeout: RUN_TIMEOUT_MS });
+    await page.goto("about:blank", { waitUntil: "networkidle", timeout: RUN_TIMEOUT_MS });
 
     console.info(`  capturing VM snapshot …`);
     const result = await sandbox.snapshot({ vm: { key: SNAPSHOT_KEY } }, {timeoutMs: 30000});
     console.info(`  snapshot done:`, JSON.stringify(result));
+    await browser.close();
   } finally {
     await sandbox.shutdown();
   }
@@ -135,14 +138,20 @@ async function connectWithRetry(
 ): Promise<Browser> {
   const wsEndpoint = sandbox.proxyUrl(CDP_PORT).replace(/^http/, "ws") + "/cdp";
   const start = performance.now();
-  for (;;) {
+  // The resident browser is in the snapshot, so the relay is usually listening
+  // the instant the sandbox is ready — but a just-resumed guest can refuse the
+  // first dial by a hair. Retry on a tight exponential backoff (10ms → 100ms)
+  // instead of a flat 100ms sleep, so a single near-miss costs ~10ms, not ~100ms,
+  // off the measured connect stage.
+  for (let backoff = 10; ; backoff = Math.min(backoff * 2, 100)) {
     try {
       return await chromium.connectOverCDP(wsEndpoint, { timeout: 2_000 });
     } catch (e) {
+      console.log('retrying');
       if (performance.now() - start > RUN_TIMEOUT_MS) {
         throw new Error(`${label} timed out after ${RUN_TIMEOUT_MS}ms: ${e}`);
       }
-      await sleep(100);
+      await sleep(backoff);
     }
   }
 }
@@ -178,8 +187,8 @@ async function doRun(
   try {
     // Reuse the resident browser's warm context + pre-opened page (a fresh CDP
     // target would spin up a new renderer); fall back if it came up empty.
-    const context = browser.contexts()[0]!;
-    const page = context.pages()[0]! ?? context.newPage();
+    const context = browser.contexts()[0]! ?? await browser.newContext();
+    const page = context.pages()[0]! ?? await context.newPage();
 
     // ping: a trivial page.evaluate() with no browser work — the CDP transport
     // floor (one Runtime.evaluate round-trip through the proxy) so we can

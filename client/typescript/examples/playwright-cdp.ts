@@ -22,14 +22,9 @@ const CDP_PORT = Number(process.env.HIVER_BROWSER_PORT ?? "9223");
 
 const tStart = performance.now();
 const sandbox = await hiver.getOrCreateSandbox(
-  "hiver-browser-cdp",
+  "hiver-browser-cdp-test",
   {
-    image: "browser",
-    snapshot: {
-      vm: {
-        key: "browser"
-      }
-    }
+    image: "browser"
   },
   { gatewayUrl, timeoutMs: 120_000 },
 );
@@ -59,27 +54,16 @@ async function connectWithRetry(url: string, retries = 5, delayMs = 1000) {
 const browser = await connectWithRetry(wsEndpoint);
 console.info(`connected over CDP in ${(performance.now() - tStart).toFixed(0)}ms`);
 
-const snapshotStart = performance.now();
-// await sandbox.snapshot({
-//   vm: {
-//     key: "browser",
-//   },
-// });
-console.info(`snapshot captured in ${(performance.now() - snapshotStart).toFixed(0)}ms`);
-
-
 try {
   // Reuse the resident browser's warm context + page rather than creating new
-  // ones (a fresh CDP target spins up a new renderer). Fall back to creating them
-  // if the resident browser came up empty.
-  const context = browser.contexts()[0];
-  if (!context) {
-    throw new Error('no browser context');
-  }
-  const page = context.pages()[0]!;
-  if (!page) {
-    throw new Error('no page');
-  }
+  // ones. This matters for the resident-browser model: browser.newContext() over
+  // connectOverCDP creates an incognito context owned by this connection, which is
+  // orphaned/disposed when the process exits without close() — leaving the resident
+  // browser unusable for the next run (newPage → "Target page, context or browser
+  // has been closed"). Reusing the default context (and its page) keeps the browser
+  // healthy across runs. Fall back to creating them only if it came up empty.
+  const context = browser.contexts()[0] ?? (await browser.newContext());
+  const page = context.pages()[0] ?? (await context.newPage());
 
   for (const url of [
     "https://news.ycombinator.com",

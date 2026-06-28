@@ -75,17 +75,14 @@ func main() {
 		addFileWorkspaceMount(fu.Mount)
 	}
 
-	// Serve exec sessions and file operations to the host for the lifetime of
-	// the workload. The guest sees the assembled root (overlay + 9p
-	// workspaces), so the host proxies every /v1/file* request here instead of
-	// reaching into host-side backend dirs.
-	go serveExec(firecracker.GuestExecPort)
-	go serveFiles(vsockfile.GuestPort)
-	go serveControl(firecracker.GuestControlPort)
-	// Readiness by polling: the host polls GuestReadyPort, which serveReady opens
-	// once the guest agent is serving. A successful connect tells the host the
-	// guest is ready.
-	go serveReady(firecracker.GuestReadyPort)
+	// One listener for every host->guest channel — exec, control RPC, file ops, and
+	// the workload log stream — multiplexed by a leading GuestChannel byte (see
+	// serveGuest). A bare connect (no byte) is the host's readiness probe: the
+	// listener is only up once the agent is serving, so a successful connect is the
+	// ready edge. The guest sees the assembled root (overlay + 9p workspaces), so
+	// the host proxies every /v1/file* request here instead of reaching into
+	// host-side backend dirs.
+	go serveGuest(firecracker.GuestPort)
 
 	code := runWorkload(params)
 	log.Printf("workload exited with code %d", code)
@@ -731,8 +728,10 @@ func execWorkload(argv []string, cwd string) int {
 	cmd.Env = os.Environ()
 	cmd.Dir = orDefault(cwd, "/")
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Tee stdout/stderr: keep the console copy (serial/kernel debugging) AND feed
+	// the log hub so the host can stream them as stdio events (ChannelLogs).
+	cmd.Stdout = io.MultiWriter(os.Stdout, logWriter{vsockexec.FrameStdout})
+	cmd.Stderr = io.MultiWriter(os.Stderr, logWriter{vsockexec.FrameStderr})
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if asExit(err, &ee) {
@@ -793,66 +792,53 @@ func guestListenTCP(name string, port uint32) (net.Listener, error) {
 	return ln, nil
 }
 
-// serveExec accepts exec sessions over TCP, one per connection, using the
-// vsockexec framed protocol (the framing is transport-agnostic).
-func serveExec(port uint32) {
-	ln, err := guestListenTCP("exec", port)
+// serveGuest is the single host->guest listener. Every channel — exec, control,
+// file ops, workload logs — is multiplexed over one port: the host writes a
+// leading GuestChannel byte, and each connection is dispatched to the matching
+// handler. A connection that closes before sending a byte is the host's readiness
+// probe (the connect edge is the signal), handled by dispatchGuestConn returning
+// on EOF.
+func serveGuest(port uint32) {
+	ln, err := guestListenTCP("guest", port)
 	if err != nil {
 		return
 	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("exec: accept: %v", err)
+			log.Printf("guest: accept: %v", err)
 			continue
 		}
-		go func() {
-			defer conn.Close()
-			if err := handleExec(conn); err != nil && err != io.EOF {
-				log.Printf("exec: session: %v", err)
-			}
-		}()
+		go dispatchGuestConn(conn)
 	}
 }
 
-// serveReady is the readiness probe the host polls: it opens GuestReadyPort once
-// the guest agent is serving, so a successful connect tells the host the guest is
-// ready. Accepted connections are closed immediately — the connect edge is the
-// signal.
-func serveReady(port uint32) {
-	ln, err := guestListenTCP("ready", port)
-	if err != nil {
-		return
+// dispatchGuestConn reads the leading GuestChannel byte and hands the rest of the
+// connection to the matching handler. EOF before the byte arrives is the readiness
+// probe (connect+close) — a no-op.
+func dispatchGuestConn(conn net.Conn) {
+	defer conn.Close()
+	var b [1]byte
+	if _, err := io.ReadFull(conn, b[:]); err != nil {
+		return // readiness probe or a dropped connection
 	}
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			continue
+	switch firecracker.GuestChannel(b[0]) {
+	case firecracker.ChannelExec:
+		if err := handleExec(conn); err != nil && err != io.EOF {
+			log.Printf("exec: session: %v", err)
 		}
-		conn.Close()
-	}
-}
-
-// serveControl handles host-issued control RPCs over TCP — env/clock/re-IP and
-// post-resume workspace mounts, applied live in the running guest. One
-// request/response per connection.
-func serveControl(port uint32) {
-	ln, err := guestListenTCP("control", port)
-	if err != nil {
-		return
-	}
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("control: accept: %v", err)
-			continue
+	case firecracker.ChannelControl:
+		if err := handleControl(conn); err != nil && err != io.EOF {
+			log.Printf("control: session: %v", err)
 		}
-		go func() {
-			defer conn.Close()
-			if err := handleControl(conn); err != nil && err != io.EOF {
-				log.Printf("control: session: %v", err)
-			}
-		}()
+	case firecracker.ChannelFiles:
+		if err := handleFile(conn); err != nil && err != io.EOF {
+			log.Printf("files: session: %v", err)
+		}
+	case firecracker.ChannelLogs:
+		streamWorkloadLogs(conn)
+	default:
+		log.Printf("guest: unknown channel byte %d", b[0])
 	}
 }
 
@@ -946,7 +932,6 @@ func unmountWorkspaces(paths []string) error {
 	}
 	return errors.Join(errs...)
 }
-
 
 // handleExec runs one exec session: read the Start frame, run the command
 // (optionally under a pty), relay stdio frames, and send the exit code.
@@ -1153,30 +1138,10 @@ func waitCode(cmd *exec.Cmd) int {
 	return 0
 }
 
-// serveFiles handles one file operation per connection over TCP for the
-// host-side /v1/file* API. Because the guest sees the workload root at real
-// agent paths, a single handler serves every path uniformly — workspace mounts
+// handleFile handles one file operation per connection (the ChannelFiles handler)
+// for the host-side /v1/file* API. Because the guest sees the workload root at
+// real agent paths, a single handler serves every path uniformly — workspace mounts
 // and the overlay alike.
-func serveFiles(port uint32) {
-	ln, err := guestListenTCP("files", port)
-	if err != nil {
-		return
-	}
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("files: accept: %v", err)
-			continue
-		}
-		go func() {
-			defer conn.Close()
-			if err := handleFile(conn); err != nil && err != io.EOF {
-				log.Printf("files: session: %v", err)
-			}
-		}()
-	}
-}
-
 // handleFile runs one file operation: read the Request frame, dispatch to the
 // matching filesystem op, and reply with a Result (plus a Data/End body for
 // read/write). Operation failures are reported in-band via Result.Err.

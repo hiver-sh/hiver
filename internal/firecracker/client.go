@@ -29,12 +29,25 @@ import (
 // ingress proxy denylists these ports so a sandbox user can't drive them via
 // /v1/<key>/proxy/<port>.
 //
-// GuestReadyPort flips the old beacon: instead of the guest dialing the host
-// when warm, the guest opens this port only once warm and the host polls it —
-// "readiness by polling".
+// GuestPort is the SINGLE host->guest TCP port (on eth0, the netns network) the
+// guest agent listens on. Every host->guest channel — exec, control RPC, file
+// ops, workload log stream — is multiplexed over it: the host writes one
+// GuestChannel byte after connecting, and the guest dispatches the rest of the
+// connection to the matching handler. A bare connect with no byte (then close) is
+// the readiness probe — connect success means the listener is up, i.e. the agent
+// is serving. One listener, one dial path, instead of a port per channel.
+const GuestPort uint32 = 1024
+
+// GuestChannel is the first byte the host writes on a GuestPort connection to
+// select the channel. 0 is reserved so a readiness probe (connect+close, no
+// write) is never mistaken for a channel.
+type GuestChannel byte
+
 const (
-	GuestExecPort  uint32 = 1024 // host->guest: exec sessions
-	GuestReadyPort uint32 = 1026 // host->guest: readiness probe (guest listens once warm)
+	ChannelExec    GuestChannel = 1 // bidirectional exec session (vsockexec protocol)
+	ChannelControl GuestChannel = 2 // control RPC (env/clock/re-IP/workspace mount)
+	ChannelFiles   GuestChannel = 3 // file ops (vsockfile protocol)
+	ChannelLogs    GuestChannel = 4 // workload (entrypoint) stdout/stderr stream
 )
 
 // Client talks to a running Firecracker process over its API unix socket

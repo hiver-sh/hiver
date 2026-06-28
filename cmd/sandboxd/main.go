@@ -617,6 +617,10 @@ func main() {
 			}
 			phase.mark("sandbox ready")
 			sb.NotifyReady()
+			// Stream the guest workload's stdout/stderr as stdio events (microvm: the
+			// workload runs in the guest, so its output isn't on the firecracker child's
+			// stdio; container: no-op). Makes a failing workload visible in the inspector.
+			go iso.StreamWorkloadLogs(ctx, publishAgentStdio(broker))
 		}()
 
 		children.Go(func() {
@@ -749,6 +753,10 @@ func main() {
 		sb.NotifyReady()
 
 		go api.PollResourceUsage(ctx, broker, iso.CgroupPath())
+		// Stream the guest workload's stdout/stderr as stdio events so a failing
+		// workload is visible in the inspector (microvm guest output isn't on the
+		// firecracker child's stdio; container backend is a no-op).
+		go iso.StreamWorkloadLogs(ctx, publishAgentStdio(broker))
 
 		// Teardown. microvm: on lifecycle cancel flush + stop the VMM, and finalize
 		// when the VMM exits — which also covers the guest powering itself off when

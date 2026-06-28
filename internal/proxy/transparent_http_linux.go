@@ -47,5 +47,7 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	}
 	defer upstream.Close()
 
-	p.forwardHTTP(c, upstream, req, nil, ac)
+	// Plain-HTTP transparent path: dial-per-request, no pooling (the dial is cheap
+	// without a TLS handshake), so allowReuse is false and the conn is closed above.
+	p.forwardHTTP(c, upstream, bufio.NewReader(upstream), req, nil, ac, false)
 }

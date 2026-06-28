@@ -10,6 +10,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/hiver-sh/hiver/internal/firecracker"
 	"github.com/hiver-sh/hiver/internal/vsockfile"
 )
 
@@ -33,7 +34,7 @@ func (f microvmGuestFiles) dial() (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for {
-		conn, err := f.m.dialGuest(ctx, vsockfile.GuestPort)
+		conn, err := f.m.dialChannel(ctx, firecracker.ChannelFiles)
 		if err == nil {
 			return conn, nil
 		}

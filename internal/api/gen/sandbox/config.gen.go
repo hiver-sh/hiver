@@ -481,6 +481,8 @@ type LocalFileSystemBackend string
 // SandboxConfig Hive sandbox configuration.
 type SandboxConfig struct {
 	// Cpu Number of virtual CPUs allocated to the sandbox, as a ceiling (the pod CPU limit). May be fractional (e.g. 0.5). For the microvm isolation the guest vCPU count is this value rounded up to a whole number; for the container isolation it is enforced as a CPU quota. This cannot be changed after the sandbox is initialized.
+	//
+	// Snapshot/resume: the guest vCPU count is a boot-time property and is baked into a VM snapshot when it is captured. A sandbox resumed from a snapshot (snapshot.vm.key) therefore gets the vCPU count the guest had when the snapshot was CREATED — set cpu when creating the snapshot to size the guest. On resume this value still applies the VMM's cgroup CPU quota (how much host CPU the VM may use, which also unthrottles the guest's existing vCPUs), but it cannot add vCPUs to an already-captured guest. So a warm workload captured once and resumed per request — e.g. a resident browser — should set cpu both when the snapshot is created (to size the guest's vCPUs) and on resume (to keep the cgroup ceiling), using the same value in both.
 	Cpu *float64 `json:"cpu,omitempty"`
 
 	// Cwd Working directory for the entrypoint. When set, the entrypoint is launched with this as its current working directory, overriding the image's default working directory. When omitted, the image's working directory is used. This cannot be changed after the sandbox is initialized.
@@ -509,6 +511,8 @@ type SandboxConfig struct {
 	Image *string `json:"image,omitempty"`
 
 	// Memory Memory allocated to the sandbox, in MiB. For the microvm isolation this is the guest RAM size; for the container isolation it is enforced as a cgroup memory limit. This cannot be changed after the sandbox is initialized.
+	//
+	// Snapshot/resume: like cpu, the guest RAM size is a boot-time property baked into a VM snapshot at capture. A sandbox resumed from a snapshot gets the RAM the guest had when the snapshot was CREATED — set memory when creating the snapshot to size guest RAM. On resume this value applies the VMM's cgroup memory limit but does not resize an already-captured guest. As with cpu, a warm workload captured once and resumed per request (e.g. a resident browser) should set memory both when the snapshot is created and on resume.
 	Memory *int `json:"memory,omitempty"`
 
 	// Snapshot Snapshot configuration. It has two independent parts: `vm` captures the

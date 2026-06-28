@@ -21,6 +21,7 @@ import (
 	"github.com/hiver-sh/hiver/internal/firecracker"
 	"github.com/hiver-sh/hiver/internal/runc"
 	"github.com/hiver-sh/hiver/internal/snapshot"
+	"github.com/hiver-sh/hiver/internal/vsockexec"
 )
 
 // Guest network: a /30 point-to-point link over the tap device. The host
@@ -1111,17 +1112,81 @@ func (m *microvm) nsExecArgs(bin string, args []string, binds [][2]string) (stri
 // accepts a connection) or ctx is cancelled.
 func (m *microvm) WaitReady(ctx context.Context) error { return m.acceptReady(ctx) }
 
-// acceptReady polls the guest's readiness port (GuestReadyPort), which the guest
-// opens once its agent is serving (sbxguest.serveReady). A successful TCP connect
-// is the ready edge — readiness by polling, since the guest can no longer dial out
-// over vsock.
+// StreamWorkloadLogs dials the guest's logs port and publishes the entrypoint
+// workload's stdout/stderr (captured guest-side by sbxguest.streamWorkloadLogs) via cb,
+// reconnecting with backoff until ctx is done. The microvm analogue of the
+// container backend forwarding the agent child's stdout: the workload runs inside
+// the VM, so without this its output — including a crashing Chrome's stderr — dies
+// on the guest console and never reaches the sandbox's stdio events. The guest
+// replays a backlog on connect, so output from before the host attached (early
+// startup, an immediate crash) is still delivered. Blocks; run in a goroutine.
+// dialChannel opens a connection on the single guest port and selects a channel
+// by writing its leading GuestChannel byte, so every host->guest protocol (exec,
+// control, files, logs) multiplexes over one listener. Readiness is the exception:
+// it dials the port bare (no byte) — a successful connect is the ready edge.
+func (m *microvm) dialChannel(ctx context.Context, ch firecracker.GuestChannel) (net.Conn, error) {
+	conn, err := m.dialGuest(ctx, firecracker.GuestPort)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write([]byte{byte(ch)}); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (m *microvm) StreamWorkloadLogs(ctx context.Context, cb func(stream, chunk string)) {
+	for ctx.Err() == nil {
+		conn, err := m.dialChannel(ctx, firecracker.ChannelLogs)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+				continue
+			}
+		}
+		m.pumpWorkloadLogs(ctx, conn, cb)
+	}
+}
+
+func (m *microvm) pumpWorkloadLogs(ctx context.Context, conn net.Conn, cb func(stream, chunk string)) {
+	defer conn.Close()
+	// Unblock the blocking ReadFrame when ctx ends (teardown).
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stop:
+		}
+	}()
+	for {
+		t, payload, err := vsockexec.ReadFrame(conn)
+		if err != nil {
+			return
+		}
+		stream := "stdout"
+		if t == vsockexec.FrameStderr {
+			stream = "stderr"
+		}
+		cb(stream, string(payload))
+	}
+}
+
+// acceptReady polls the guest's single port (GuestPort, served by sbxguest once
+// its agent is up). A bare connect — no channel byte — is the readiness probe: a
+// successful TCP connect means the listener is up, i.e. the agent is serving.
+// Readiness by polling, since the guest can no longer dial out over vsock.
 func (m *microvm) acceptReady(ctx context.Context) error {
 	for {
 		dialCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		conn, err := m.dialGuest(dialCtx, firecracker.GuestReadyPort)
+		conn, err := m.dialGuest(dialCtx, firecracker.GuestPort)
 		cancel()
 		if err == nil {
-			conn.Close()
+			conn.Close() // bare connect (no channel byte) is the readiness probe
 			return nil
 		}
 		select {
@@ -1341,7 +1406,7 @@ func (m *microvm) dumpResumeDiag(reason string) {
 // mountWorkspaces skips already-mounted paths; the override launches at most once).
 func (m *microvm) applyResumeOnce(ctx context.Context, req firecracker.ControlRequest) error {
 	tDial := time.Now()
-	conn, err := m.dialGuest(ctx, firecracker.GuestControlPort)
+	conn, err := m.dialChannel(ctx, firecracker.ChannelControl)
 	if err != nil {
 		return fmt.Errorf("dial guest control: %w", err)
 	}
@@ -1404,7 +1469,7 @@ func (m *microvm) ExecCmd(ctx context.Context, cfg ExecConfig) (*exec.Cmd, func(
 		host = m.sourceIP
 	}
 	args := []string{
-		"-addr", net.JoinHostPort(host, strconv.Itoa(int(firecracker.GuestExecPort))),
+		"-addr", net.JoinHostPort(host, strconv.Itoa(int(firecracker.GuestPort))),
 		"-mark", strconv.Itoa(m.mark),
 		"-command", cfg.Command,
 	}
