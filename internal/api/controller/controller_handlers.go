@@ -115,6 +115,8 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, key string) {
 	}
 	log.Printf("sandbox %q: lookup in %s (running=%t)", key, time.Since(lookupStart).Round(time.Millisecond), running)
 	if running {
+		c.Header("x-hiver-sandbox-id", sb.Id.String())
+		c.Header("x-hiver-sandbox-key", sb.Key)
 		c.JSON(http.StatusOK, sb)
 		return
 	}
@@ -131,6 +133,8 @@ func (h *ControllerHandlers) GetOrCreateSandbox(c *gin.Context, key string) {
 		return
 	}
 	log.Printf("sandbox %q: get-or-create handler total %s", key, time.Since(handlerStart).Round(time.Millisecond))
+	c.Header("x-hiver-sandbox-id", sb.Id.String())
+	c.Header("x-hiver-sandbox-key", sb.Key)
 	c.JSON(http.StatusCreated, sb)
 }
 

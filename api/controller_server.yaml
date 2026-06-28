@@ -90,11 +90,31 @@ paths:
           description: |
             A sandbox with `key` already existed; the existing record is
             returned and the request body was ignored.
+          headers:
+            x-hiver-sandbox-id:
+              description: Server-assigned unique identifier of the sandbox.
+              schema:
+                type: string
+                format: uuid
+            x-hiver-sandbox-key:
+              description: The caller-chosen key of the sandbox.
+              schema:
+                type: string
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Sandbox' }
         '201':
           description: A new sandbox was created from the supplied config.
+          headers:
+            x-hiver-sandbox-id:
+              description: Server-assigned unique identifier of the sandbox.
+              schema:
+                type: string
+                format: uuid
+            x-hiver-sandbox-key:
+              description: The caller-chosen key of the sandbox.
+              schema:
+                type: string
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Sandbox' }
