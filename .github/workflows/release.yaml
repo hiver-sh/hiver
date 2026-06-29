@@ -211,38 +211,38 @@ jobs:
       matrix:
         include:
           - source: ./docker/agent-base
-            tag: hiversh/agent-base
+            tag: hiversh/agent-base:latest
           - source: ./docker/claude
-            tag: hiversh/claude
+            tag: hiversh/claude:latest
           - source: ./docker/codex
-            tag: hiversh/codex
+            tag: hiversh/codex:latest
           - source: ./docker/copilot
-            tag: hiversh/copilot
+            tag: hiversh/copilot:latest
           - source: ./docker/opencode
-            tag: hiversh/opencode
+            tag: hiversh/opencode:latest
           - source: ./docker/browser
-            tag: hiversh/browser
+            tag: hiversh/browser:latest
           - source: python:3.13-alpine
             tag: hiversh/python:3.13-alpine
           - source: node:alpine
             tag: hiversh/node:alpine
           - source: ./docker/agent-base
-            tag: hiversh/agent-base:microvm
+            tag: hiversh/agent-base:latest-microvm
             bundler-flags: "--microvm"
           - source: ./docker/claude
-            tag: hiversh/claude:microvm
+            tag: hiversh/claude:latest-microvm
             bundler-flags: "--microvm"
           - source: ./docker/codex
-            tag: hiversh/codex:microvm
+            tag: hiversh/codex:latest-microvm
             bundler-flags: "--microvm"
           - source: ./docker/copilot
-            tag: hiversh/copilot:microvm
+            tag: hiversh/copilot:latest-microvm
             bundler-flags: "--microvm"
           - source: ./docker/opencode
-            tag: hiversh/opencode:microvm
+            tag: hiversh/opencode:latest-microvm
             bundler-flags: "--microvm"
           - source: ./docker/browser
-            tag: hiversh/browser:microvm
+            tag: hiversh/browser:latest-microvm
             bundler-flags: "--microvm"
           - source: python:3.13-alpine
             tag: hiversh/python:3.13-alpine-microvm
