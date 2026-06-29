@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 export interface TimelineBar {
   id: number;
+  sandboxKey: string;
   startTime: number;
   durationMs: number;
   status?: number;
@@ -27,7 +28,7 @@ export interface TimelineRow {
   bars: TimelineBar[];
 }
 
-export function buildRows(events: SandboxEvent[]): TimelineRow[] {
+export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[] {
   const chunkMap = new Map<
     number,
     Extract<SandboxEvent, { type: "egress.chunk" }>[]
@@ -104,6 +105,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       const row = getOrCreateRow(key, "egress", label);
       row.bars.push({
         id: event.id,
+        sandboxKey,
         startTime: startMs,
         durationMs,
         status: res?.status,
@@ -119,6 +121,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       const row = getOrCreateRow(key, "ingress", `:${event.port}`);
       row.bars.push({
         id: event.id,
+        sandboxKey,
         startTime: startMs,
         durationMs,
         status: res?.status,
@@ -131,6 +134,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       const row = getOrCreateRow(key, "fs", event.mount, event.operation);
       row.bars.push({
         id: event.id,
+        sandboxKey,
         startTime: new Date(event.timestamp).getTime(),
         durationMs: res?.duration_ms ?? 0,
         access: event.access,
@@ -150,6 +154,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       );
       row.bars.push({
         id: event.id,
+        sandboxKey,
         startTime: new Date(event.timestamp).getTime(),
         durationMs: 0,
         pending: false,
@@ -172,6 +177,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       );
       row.bars.push({
         id: event.id,
+        sandboxKey,
         startTime: startMs,
         durationMs,
         pending: !res,
@@ -181,6 +187,7 @@ export function buildRows(events: SandboxEvent[]): TimelineRow[] {
       const t = new Date(event.timestamp).getTime();
       const bar = {
         id: event.id,
+        sandboxKey,
         startTime: t,
         durationMs: 0,
         pending: false,
@@ -774,6 +781,10 @@ function ResourceLineChart({
   );
 }
 
+function barKey(b: TimelineBar): string {
+  return `${b.sandboxKey}:${b.rawEvents[0]?.type ?? ""}:${b.id}`;
+}
+
 export function TimelineView({
   events,
   filter,
@@ -820,7 +831,7 @@ export function TimelineView({
       else byKey.set(k, [e]);
     }
     const result = new Map<string, TimelineRow[]>();
-    for (const [k, evs] of byKey) result.set(k, buildRows(evs));
+    for (const [k, evs] of byKey) result.set(k, buildRows(evs, k));
     return result;
   }, [events]);
 
@@ -828,9 +839,8 @@ export function TimelineView({
   const [trackWidth, setTrackWidth] = useState(600);
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [selectedId, setSelectedId] = useState<number | null>(() => {
-    const v = searchParams.get("event");
-    return v ? parseInt(v, 10) : null;
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    return searchParams.get("event");
   });
   const [panelCollapsed, setPanelCollapsed] = useState(
     () => localStorage.getItem("timeline:panelCollapsed") === "true",
@@ -1006,7 +1016,7 @@ export function TimelineView({
 
     for (const section of vsections) {
       for (const lane of section.lanes) {
-        const bar = lane.laneBars.find((b) => b.id === selectedId);
+        const bar = lane.laneBars.find((b) => barKey(b) === selectedId);
         if (!bar) continue;
 
         const barLeft = realToDisplay(bar.startTime);
@@ -1092,7 +1102,7 @@ export function TimelineView({
 
   const selectedBar =
     selectedId !== null
-      ? (allRows.flatMap((r) => r.bars).find((b) => b.id === selectedId) ?? null)
+      ? (allRows.flatMap((r) => r.bars).find((b) => barKey(b) === selectedId) ?? null)
       : null;
 
   const llmBars = useMemo(
@@ -1110,7 +1120,7 @@ export function TimelineView({
   );
 
   const prevAnthropicBar = (() => {
-    const idx = llmBars.findIndex((b) => b.id === selectedId);
+    const idx = llmBars.findIndex((b) => barKey(b) === selectedId);
     return idx > 0 ? llmBars[idx - 1] : null;
   })();
 
@@ -1150,12 +1160,12 @@ export function TimelineView({
   const filteredBars = filteredSandboxKeyOrder.flatMap(
     (k) => filteredRowsByKey.get(k)!.flatMap((r) => r.bars),
   );
-  const selectedBarIdx = filteredBars.findIndex((b) => b.id === selectedId);
+  const selectedBarIdx = filteredBars.findIndex((b) => barKey(b) === selectedId);
   const prevBarId =
-    selectedBarIdx > 0 ? filteredBars[selectedBarIdx - 1].id : null;
+    selectedBarIdx > 0 ? barKey(filteredBars[selectedBarIdx - 1]) : null;
   const nextBarId =
     selectedBarIdx >= 0 && selectedBarIdx < filteredBars.length - 1
-      ? filteredBars[selectedBarIdx + 1].id
+      ? barKey(filteredBars[selectedBarIdx + 1])
       : null;
 
   const minTime = Math.min(...filteredBars.map((b) => b.startTime));
@@ -1403,7 +1413,7 @@ export function TimelineView({
         absoluteHeaderTop: absTop,
       };
       renderItems.push({ kind: "sandbox-header", group });
-      absTop += 24;
+      absTop += 28;
     } else if (item.kind === "category") {
       const collapsed = collapsedCategories.has(`${currentSandboxKey}:${item.category}`);
       const section: VSection = {
@@ -1639,12 +1649,12 @@ export function TimelineView({
                 return (
                   <div
                     key={`sandbox:${group.sandboxKey}`}
-                    style={{ height: 24 }}
-                    className="flex border-b border-border bg-muted/20 cursor-pointer"
+                    style={{ height: 28 }}
+                    className="flex border-y border-border bg-sidebar cursor-pointer"
                     onClick={() => toggleSandbox(group.sandboxKey)}
                   >
                     <div
-                      className="shrink-0 sticky left-0 z-[22] flex items-center gap-1.5 px-2 bg-muted/20 overflow-hidden"
+                      className="shrink-0 sticky left-0 z-[22] flex items-center gap-1.5 px-2 bg-sidebar overflow-hidden"
                       style={{ width: labelW }}
                     >
                       {group.collapsed ? (
@@ -1652,7 +1662,7 @@ export function TimelineView({
                       ) : (
                         <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
                       )}
-                      <span className="text-[11px] font-mono font-medium text-foreground truncate">
+                      <span className="text-[11px] font-mono font-semibold text-foreground truncate tracking-tight">
                         {group.sandboxKey}
                       </span>
                     </div>
@@ -1840,7 +1850,7 @@ export function TimelineView({
                         const isResource = vl.row.type === "resource";
                         const isLaneSelected =
                           !isResource &&
-                          vl.laneBars.some((b) => b.id === selectedId);
+                          vl.laneBars.some((b) => barKey(b) === selectedId);
                         return (
                           <div
                             key={`${vl.row.key}:${vl.laneIdx}`}
@@ -1853,7 +1863,7 @@ export function TimelineView({
                                   }
                                 : undefined
                             }
-                            className={`group flex border-b border-border/40 ${isResource ? "cursor-default" : `cursor-pointer ${isLaneSelected ? "bg-accent" : "hover:bg-muted"}`}`}
+                            className={`group flex border-b border-border/40 ${isResource ? "cursor-default" : `cursor-pointer ${isLaneSelected ? "bg-indigo-100 dark:bg-[#1e1c50]" : "hover:bg-indigo-50 dark:hover:bg-[#16143a]"}`}`}
                             style={{
                               position: "absolute",
                               top: vl.localTop,
@@ -1865,14 +1875,13 @@ export function TimelineView({
                               if (isResource || dragHappenedRef.current) return;
                               const first = vl.laneBars[0];
                               if (!first) return;
-                              setSelectedId(
-                                first.id === selectedId ? null : first.id,
-                              );
+                              const k = barKey(first);
+                              setSelectedId(k === selectedId ? null : k);
                             }}
                           >
                             {/* Label cell — sticky horizontally */}
                             <div
-                              className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden pl-8 pr-2 ${isLaneSelected ? "bg-accent" : isResource ? "bg-background" : "bg-background group-hover:bg-muted"}`}
+                              className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden pl-8 pr-2 ${isLaneSelected ? "bg-indigo-100 dark:bg-[#1e1c50]" : isResource ? "bg-background" : "bg-background group-hover:bg-indigo-50 dark:group-hover:bg-[#16143a]"}`}
                               style={{ width: labelW }}
                             >
                               <span
@@ -1906,11 +1915,10 @@ export function TimelineView({
                                   toDisplay={toDisplay}
                                   width={effectiveTrackWidth}
                                   height={22}
-                                  onSelect={(bar) =>
-                                    setSelectedId(
-                                      bar.id === selectedId ? null : bar.id,
-                                    )
-                                  }
+                                  onSelect={(bar) => {
+                                    const k = barKey(bar);
+                                    setSelectedId(k === selectedId ? null : k);
+                                  }}
                                 />
                               ) : (
                                 (() => {
@@ -1929,7 +1937,7 @@ export function TimelineView({
                                   if (vl.row.isPoint) {
                                     return visible.map((bar) => {
                                       const leftPx = toDisplay(bar.startTime);
-                                      const isSelected = bar.id === selectedId;
+                                      const isSelected = barKey(bar) === selectedId;
                                       return (
                                         <div
                                           key={bar.id}
@@ -1952,11 +1960,8 @@ export function TimelineView({
                                               e.stopPropagation();
                                               if (dragHappenedRef.current)
                                                 return;
-                                              setSelectedId(
-                                                bar.id === selectedId
-                                                  ? null
-                                                  : bar.id,
-                                              );
+                                              const k = barKey(bar);
+                                              setSelectedId(k === selectedId ? null : k);
                                             }}
                                           />
                                         </div>
@@ -1972,7 +1977,7 @@ export function TimelineView({
                                           bar.startTime + effectiveDur(bar),
                                         ),
                                       );
-                                      const isSelected = bar.id === selectedId;
+                                      const isSelected = barKey(bar) === selectedId;
                                       const isLive = isLiveBar(bar);
                                       return (
                                         <div
@@ -2021,11 +2026,8 @@ export function TimelineView({
                                               e.stopPropagation();
                                               if (dragHappenedRef.current)
                                                 return;
-                                              setSelectedId(
-                                                bar.id === selectedId
-                                                  ? null
-                                                  : bar.id,
-                                              );
+                                              const k = barKey(bar);
+                                              setSelectedId(k === selectedId ? null : k);
                                             }}
                                           />
                                         </div>
@@ -2066,7 +2068,7 @@ export function TimelineView({
                                   return groups.map((group) => {
                                     const first = group.bars[0];
                                     const isSelected = group.bars.some(
-                                      (b) => b.id === selectedId,
+                                      (b) => barKey(b) === selectedId,
                                     );
                                     const isLive = group.bars.some((b) =>
                                       isLiveBar(b),
@@ -2119,11 +2121,8 @@ export function TimelineView({
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (dragHappenedRef.current) return;
-                                            setSelectedId(
-                                              first.id === selectedId
-                                                ? null
-                                                : first.id,
-                                            );
+                                            const k = barKey(first);
+                                            setSelectedId(k === selectedId ? null : k);
                                           }}
                                         />
                                       </div>
@@ -2231,7 +2230,7 @@ export function TimelineView({
             else setDetailExpanded(false);
           }}
         >
-          <DialogContent className="max-w-5xl p-0 flex flex-col overflow-hidden h-[80vh]">
+          <DialogContent className="max-w-7xl p-0 flex flex-col overflow-hidden h-[80vh]">
             <DialogTitle className="sr-only">Event detail</DialogTitle>
             <RowDetailPanel
               key={selectedBar.id}

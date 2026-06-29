@@ -24,6 +24,11 @@
     "microvm": "hiversh/opencode:latest-microvm",
     "config": { "tty": true, "cwd": "/workspace", "entrypoint": "opencode" }
   },
+  "antigravity": {
+    "image": "hiversh/antigravity:latest",
+    "microvm": "hiversh/antigravity:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "agy" }
+  },
   "browser": {
     "image": "hiversh/browser:latest",
     "microvm": "hiversh/browser:latest-microvm",

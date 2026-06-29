@@ -20,6 +20,37 @@ import { tryPretty } from "@/lib/prettyBody";
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
+function getHeader(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const lower = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === lower) return v;
+  }
+}
+
+function contentTypeToLang(ct: string): string {
+  const base = ct.split(";")[0].trim().toLowerCase();
+  if (base === "application/json" || base === "text/json" || base.endsWith("+json"))
+    return "json";
+  if (base === "text/html") return "html";
+  if (base === "application/xml" || base === "text/xml" || base.endsWith("+xml"))
+    return "xml";
+  if (base === "text/css") return "css";
+  if (
+    base === "text/javascript" ||
+    base === "application/javascript" ||
+    base === "application/x-javascript" ||
+    base === "text/ecmascript" ||
+    base === "application/ecmascript"
+  )
+    return "javascript";
+  if (base === "text/markdown" || base === "text/x-markdown") return "markdown";
+  return "text";
+}
+
 type DetailTab = "summary" | "request" | "response";
 
 // ─── generic helpers ────────────────────────────────────────────────────────
@@ -234,9 +265,20 @@ function HeadersBlock({
   );
 }
 
-function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
+function BodyBlock({
+  raw,
+  contentType,
+  className,
+}: {
+  raw?: string;
+  contentType?: string;
+  className?: string;
+}) {
   const parsed = useMemo(() => tryPretty(raw), [raw]);
   if (!parsed) return null;
+  const ctLang = contentType ? contentTypeToLang(contentType) : null;
+  const lang =
+    ctLang && ctLang !== "text" ? ctLang : parsed.isJson ? "json" : "text";
   return (
     <div
       className={`flex flex-col bg-muted/20 overflow-hidden ${className ?? ""}`}
@@ -246,7 +288,7 @@ function BodyBlock({ raw, className }: { raw?: string; className?: string }) {
       </div>
       <CodeViewer
         content={parsed.content}
-        lang={parsed.isJson ? "json" : "text"}
+        lang={lang}
         className="flex-1 min-h-0"
       />
     </div>
@@ -700,6 +742,12 @@ export function RowDetailPanel({
           {reqRawBody && (
             <BodyBlock
               raw={reqRawBody}
+              contentType={getHeader(
+                req.type === "egress.request" || req.type === "ingress.request"
+                  ? req.headers
+                  : undefined,
+                "content-type",
+              )}
               className={
                 narrow ? "flex-1 min-h-[300px]" : "flex-1 min-w-0 min-h-0"
               }
@@ -786,10 +834,25 @@ export function RowDetailPanel({
                 (() => {
                   const raw = chunks.map((c) => c.body).join("\n\n");
                   const pretty = tryPretty(raw);
+                  const resContentType = getHeader(
+                    res?.type === "egress.response" || res?.type === "ingress.response"
+                      ? res.headers
+                      : undefined,
+                    "content-type",
+                  );
+                  const ctLang = resContentType
+                    ? contentTypeToLang(resContentType)
+                    : null;
+                  const lang =
+                    ctLang && ctLang !== "text"
+                      ? ctLang
+                      : pretty?.isJson
+                        ? "json"
+                        : "text";
                   return (
                     <CodeViewer
                       content={pretty?.content ?? raw}
-                      lang={pretty?.isJson ? "json" : "text"}
+                      lang={lang}
                       className="flex-1 min-h-0"
                     />
                   );
@@ -800,6 +863,10 @@ export function RowDetailPanel({
           {resRawBody && (
             <BodyBlock
               raw={resRawBody}
+              contentType={getHeader(
+                res?.type === "ingress.response" ? res.headers : undefined,
+                "content-type",
+              )}
               className={
                 narrow ? "flex-1 min-h-[300px]" : "flex-1 min-w-0 min-h-0"
               }

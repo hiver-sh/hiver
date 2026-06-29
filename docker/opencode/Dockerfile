@@ -1,3 +1,3 @@
 FROM hiversh/agent-base-standalone
 
-RUN npm install -g opencode
+RUN npm install -g opencode-ai

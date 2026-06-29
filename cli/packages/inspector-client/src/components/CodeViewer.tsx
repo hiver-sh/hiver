@@ -28,6 +28,11 @@ const DARK_RULES = [
   { token: "identifier", foreground: "ffffff" },
   { token: "variable", foreground: "ffffff" },
   { token: "regexp", foreground: "93c5fd" },
+  // HTML / XML
+  { token: "tag", foreground: "7dd3fc" },
+  { token: "metatag", foreground: "c4b5fd" },
+  { token: "attribute.name", foreground: "86efac" },
+  { token: "attribute.value", foreground: "93c5fd" },
 ];
 
 const LIGHT_RULES = [
@@ -44,6 +49,11 @@ const LIGHT_RULES = [
   { token: "identifier", foreground: "18181b" },
   { token: "variable", foreground: "18181b" },
   { token: "regexp", foreground: "0369a1" },
+  // HTML / XML
+  { token: "tag", foreground: "0369a1" },
+  { token: "metatag", foreground: "7c3aed" },
+  { token: "attribute.name", foreground: "166534" },
+  { token: "attribute.value", foreground: "c2410c" },
 ];
 
 monaco.editor.defineTheme(MONACO_DARK_THEME, {
@@ -210,6 +220,7 @@ export function CodeViewer({
       horizontalScrollbarSize: 10,
     },
     inlayHints: { enabled: "off" },
+    maxTokenizationLineLength: 400_000,
   };
 
   const monacoLang = LANG_MAP[lang ?? ""] ?? lang ?? "plaintext";

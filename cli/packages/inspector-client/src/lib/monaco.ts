@@ -10,6 +10,10 @@ import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution";
 import "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution";
 import "monaco-editor/esm/vs/basic-languages/python/python.contribution";
 import "monaco-editor/esm/vs/basic-languages/go/go.contribution";
+import "monaco-editor/esm/vs/basic-languages/html/html.contribution";
+import "monaco-editor/esm/vs/basic-languages/xml/xml.contribution";
+import "monaco-editor/esm/vs/basic-languages/css/css.contribution";
+import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution";
 
 // The json contribution registers the "json" language and owns `jsonDefaults`.
 // In the ESM build it does NOT attach `monaco.languages.json` (that namespace
@@ -26,5 +30,9 @@ export { jsonDefaults } from "monaco-editor/esm/vs/language/json/monaco.contribu
 // mounts. (The old `monaco-editor` barrel never showed this because jsonMode was
 // part of the main bundle.)
 monaco.editor.createModel("", "json").dispose();
+monaco.editor.createModel("", "html").dispose();
+monaco.editor.createModel("", "xml").dispose();
+monaco.editor.createModel("", "css").dispose();
+monaco.editor.createModel("", "javascript").dispose();
 
 export default monaco;

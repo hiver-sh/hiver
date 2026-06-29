@@ -37,7 +37,7 @@ proxyPassthroughAll: false
 controller:
   # Pinned by digest — see the mirror.gcr.io stale-tag hazard note on images
   # below. Overridable at deploy time with --set controller.image=...
-  image: hiversh/controller@sha256:2fbe7622fb0f921503248f37ada002a6c7bd2043d73e1a2de717b5294160ed20
+  image: hiversh/controller@sha256:1edd4bd5ee58e74d30a43e03b5c3338e852269d5fddf001f0057993bba6141e5
   port: 9000
   env:
     # Selects the Kubernetes backend in NewControllerHandlers(); anything else
@@ -65,7 +65,7 @@ gateway:
   # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
   # overridden by the generated gateway-envoy ConfigMap mounted into the pod so
   # sandboxes resolve across namespaces. Pinned by digest.
-  image: hiversh/gateway@sha256:7f94aa60c499c31523932ec06ca9b22a908be63b8f69b439e49c8f042b1be618
+  image: hiversh/gateway@sha256:6c34a13adab1cb88ac84272146f31b979885ad80134091c0e44b2820bbbbe0b8
   # Envoy listener port (container) and the external LoadBalancer service port.
   listenPort: 10000
   servicePort: 80
@@ -91,7 +91,7 @@ images:
         memory: 4Gi
 
   - name: browser
-    image: hiversh/browser:latest-microvm@sha256:09904d51ed1582a24bad1ac86b39f2584d70b8c9f4d25257bc7101bca3aba441
+    image: hiversh/browser:latest-microvm@sha256:4004b5f7d03d492ab2218cea12383fa629259ba3005fbeff32c14c9f824a0884
     replicas: 1
     maxConcurrentLaunches: 4
     # Share warm upstream connections across all sandboxes in the pod: a freshly

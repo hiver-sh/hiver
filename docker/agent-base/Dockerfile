@@ -19,4 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && sed -i 's/^root:x:0:/agent:x:0:/' /etc/group \
     && mkdir -p /home/agent
 
+# Hiver TypeScript client, available globally for agents.
+RUN npm install -g @hiver.sh/client@latest
+
 ENTRYPOINT ["tail", "-f", "/dev/null"]

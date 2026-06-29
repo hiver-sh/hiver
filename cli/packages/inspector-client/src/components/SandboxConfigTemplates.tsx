@@ -99,6 +99,26 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
+        label: "Google Antigravity",
+        idPrefix: "antigravity",
+        apply: () => ({
+          image: "antigravity",
+          entrypoint: "agy",
+          cwd: "/workspace",
+          tty: true,
+          snapshot: {
+            vm: {
+              key: "antigravity-vm",
+            },
+            files: {
+              key: "antigravity-files",
+              write_on_shutdown: true,
+              include: ["/workspace/*", "/home/agent/*"],
+            },
+          },
+        }),
+      },
+      {
         label: "Web browser",
         idPrefix: "browser",
         apply: () => ({
