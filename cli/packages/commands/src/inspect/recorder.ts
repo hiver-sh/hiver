@@ -119,15 +119,18 @@ export class EventRecorder {
     })();
   }
 
-  private trackDirectory(sandboxId: string, dirPath: string): void {
-    const key = `${sandboxId}:${dirPath}`;
-    if (this.knownDirs.has(key)) return;
-    this.knownDirs.add(key);
+  private sbxBase(id: string, key: string): string {
+    return `/api/sandboxes/${id}/${key}`;
+  }
 
-    const traceKey = `/api/sandboxes/${sandboxId}/directories?path=${dirPath}`;
-    const url = this.buildUrl(`/api/sandboxes/${sandboxId}/directories`, {
-      path: dirPath,
-    });
+  private trackDirectory(id: string, key: string, dirPath: string): void {
+    const dedupeKey = `${id}:${dirPath}`;
+    if (this.knownDirs.has(dedupeKey)) return;
+    this.knownDirs.add(dedupeKey);
+
+    const base = this.sbxBase(id, key);
+    const traceKey = `${base}/directories?path=${dirPath}`;
+    const url = this.buildUrl(`${base}/directories`, { path: dirPath });
     let lastPayload: string | undefined;
 
     const poll = async () => {
@@ -141,9 +144,9 @@ export class EventRecorder {
           for (const entry of entries) {
             const fullPath = entry.path;
             if (entry.is_dir) {
-              this.trackDirectory(sandboxId, fullPath);
+              this.trackDirectory(id, key, fullPath);
             } else if (TEXT_EXTS.has(extname(fullPath))) {
-              this.trackFile(sandboxId, fullPath);
+              this.trackFile(id, key, fullPath);
             }
           }
         }
@@ -156,12 +159,12 @@ export class EventRecorder {
     this.timers.push(setInterval(poll, 1000));
   }
 
-  private trackFile(sandboxId: string, filePath: string): void {
-    const key = `${sandboxId}:${filePath}`;
-    if (this.knownFiles.has(key)) return;
-    this.knownFiles.add(key);
+  private trackFile(id: string, key: string, filePath: string): void {
+    const dedupeKey = `${id}:${filePath}`;
+    if (this.knownFiles.has(dedupeKey)) return;
+    this.knownFiles.add(dedupeKey);
 
-    const url = this.buildUrl(`/api/sandboxes/${sandboxId}/file`, {
+    const url = this.buildUrl(`${this.sbxBase(id, key)}/file`, {
       path: filePath,
     });
     this.pollEndpoint(url);
@@ -176,11 +179,8 @@ export class EventRecorder {
         const res = await fetch(listUrl, { headers: this.gatewayHeaders() });
         const text = await res.text();
         this.addEvent("/api/sandboxes", text, this.headersToMap(res.headers));
-        const sandboxes = JSON.parse(text) as {
-          id: string;
-          key: string;
-        }[];
-        for (const s of sandboxes) this.trackSandbox(s.id);
+        const sandboxes = JSON.parse(text) as { id: string; key: string }[];
+        for (const s of sandboxes) this.trackSandbox(s.id, s.key);
       } catch (e) {
         console.error(e);
         this.timers.push(
@@ -194,8 +194,9 @@ export class EventRecorder {
     void fetchOnce();
   }
 
-  private trackSandbox(sandboxId: string): void {
-    const configUrl = this.buildUrl(`/api/sandboxes/${sandboxId}/config`);
+  private trackSandbox(id: string, key: string): void {
+    const base = this.sbxBase(id, key);
+    const configUrl = this.buildUrl(`${base}/config`);
 
     // Fetch config once to discover volume mount paths, then start directory tracking.
     void (async () => {
@@ -207,15 +208,15 @@ export class EventRecorder {
       } catch (e) {
         console.error(e);
       }
-      this.trackDirectory(sandboxId, "/");
-      for (const mount of mountPaths) this.trackDirectory(sandboxId, mount);
+      this.trackDirectory(id, key, "/");
+      for (const mount of mountPaths) this.trackDirectory(id, key, mount);
     })();
 
     this.pollEndpoint(configUrl);
-    this.pollEndpoint(this.buildUrl(`/api/sandboxes/${sandboxId}/ports`));
+    this.pollEndpoint(this.buildUrl(`${base}/ports`));
     // The event feed and terminal output are multiplexed onto one SSE stream
     // (`feed` / `term` frames); recording it captures both at once.
-    this.streamEndpoint(this.buildUrl(`/api/sandboxes/${sandboxId}/stream`));
+    this.streamEndpoint(this.buildUrl(`${base}/stream`));
   }
 
   stop(): void {

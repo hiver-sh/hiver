@@ -314,7 +314,7 @@ jobs:
               hiversh/$img:latest
             docker buildx imagetools create \
               --tag hiversh/$img:$VERSION-microvm \
-              hiversh/$img:microvm
+              hiversh/$img:latest-microvm
           done
           docker buildx imagetools create \
             --tag hiversh/python:$VERSION-3.13-alpine \
