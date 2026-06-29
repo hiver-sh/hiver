@@ -54,8 +54,8 @@ type DockerRuntime struct {
 	// (design §11), plus its file-wide pack default (true unless disabled). A
 	// create's image name is resolved through it (resolveImage); an unmapped name
 	// is treated as a full ref. When packing, keys of the same image are packed
-	// into one container running sandboxd --pack, each created via POST /v1/<key>
-	// (design §6, §10); otherwise each key gets its own container.
+	// into one pack-host container, each created via POST /v1/<key> (design §6,
+	// §10); otherwise each key gets its own (single-key pack-host) container.
 	images config
 	// snapshotHostDir is the host path bind-mounted as /snapshots in sandbox
 	// containers. Set from HIVE_SNAPSHOT_DIR env var. When empty, the named
@@ -237,11 +237,6 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 		return r.startPacked(ctx, key, cfg, ref)
 	}
 	id := uuid.New()
-	specBytes, err := json.Marshal(cfg)
-	if err != nil {
-		return gen.Sandbox{}, fmt.Errorf("marshal spec: %w", err)
-	}
-
 	containerName := containerNameFor(key)
 	// Clear any lingering container of the same name (e.g. one that exited
 	// but wasn't auto-removed) so `docker create --name` below doesn't fail
@@ -297,6 +292,14 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 		"--cgroupns", "host",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 	)
+	// This is a single-key pack pod: the sandbox gets its own veth and its egress
+	// is DNAT'd to the host-loopback proxy, so the pod bridge needs ip_forward and
+	// route_localnet (mirrors createPackPod). The pod's /proc/sys is read-only, so
+	// set them at create time.
+	createArgs = append(createArgs,
+		"--sysctl", "net.ipv4.ip_forward=1",
+		"--sysctl", "net.ipv4.conf.all.route_localnet=1",
+	)
 	// IPv6 egress is blocked inside the pod by sandboxd (ip6tables in the
 	// isolation backends' RedirectEgress), not here: it needs only CAP_NET_ADMIN,
 	// so it works identically under docker and k8s and keeps the control next to
@@ -322,81 +325,40 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 			"--device", "/dev/net/tun",
 			"--device-cgroup-rule", "b 7:* rmw",
 			"--device-cgroup-rule", "c 10:237 rmw",
-			// Guest egress is DNAT'd to the host-loopback proxy on the tap; the
-			// kernel otherwise drops those loopback-destined forwarded packets as
-			// martians. route_localnet lifts that, but the pod's /proc/sys is
-			// read-only, so set it at create time. The kernel ORs the per-device
-			// and "all" values, so "all" covers the runtime-created tap.
-			"--sysctl", "net.ipv4.conf.all.route_localnet=1",
 		)
 	}
-	if cfg.Env != nil {
-		for k, v := range *cfg.Env {
-			createArgs = append(createArgs, "-e", k+"="+v)
-		}
+	// Forward the gateway URL to the pod (compose sets it to http://gateway:10000
+	// on the controller). sandboxd injects it into the workload so an agent inside
+	// the sandbox can reach the gateway; an unset value is simply not passed.
+	if gw := os.Getenv(spec.EnvGatewayURL); gw != "" {
+		createArgs = append(createArgs, "-e", spec.EnvGatewayURL+"="+gw)
 	}
-	// The spec is delivered as JSON in an env var rather than a mounted file;
-	// sandboxd reads it via spec.LoadEnv.
-	createArgs = append(createArgs, "-e", spec.EnvSpec+"="+string(specBytes))
-	// HIVE_KEY tells sandboxd which key to register the (single) boot sandbox
-	// under, so the keyed API (/v1/<key>/...) addresses it. Docker is 1:1 per
-	// (image,key), so the container's sandbox is exactly this key.
-	createArgs = append(createArgs, "-e", "HIVE_KEY="+key)
-	if cfg.ExtraHosts != nil {
-		for _, h := range *cfg.ExtraHosts {
-			createArgs = append(createArgs, "--add-host", h)
-		}
-	}
-
-	// Mount volumes
-	for _, fs := range cfg.Fs {
-		local, err := fs.AsLocalFileSystem()
-		if err != nil || local.Origin == nil {
-			continue
-		}
-		createArgs = append(createArgs, "-v", *local.Origin+":"+local.Mount+spec.BackendSuffix)
-	}
-
-	// Provision the local snapshot volume only when snapshots aren't routed to a
-	// FUSE drive (snapshot.mount); otherwise it's unnecessary and would collide
-	// with a FUSE mount at the same path.
-	if !usesSnapshotMount(cfg) {
-		createArgs = append(createArgs, "-v", r.snapshotVolumeArg())
-	}
-
-	// Always pass --snapshot-dir so the container overrides the image's default
-	// `--help` CMD and sandboxd boots; the dir is empty (local snapshots
-	// disabled) when snapshots route to a FUSE drive instead.
-	snapDir := "/snapshots"
-	if usesSnapshotMount(cfg) {
-		snapDir = ""
-	}
-	createArgs = append(createArgs, image, "--snapshot-dir", snapDir)
+	// Mount the snapshot volume so this sandbox can write and restore local
+	// snapshots. sandboxd boots as a (single-key) pack host: it parks and brings
+	// the sandbox up on the POST /v1/<key> below, which carries the config.
+	createArgs = append(createArgs, "-v", r.snapshotVolumeArg())
+	createArgs = append(createArgs, image, "--snapshot-dir", "/snapshots")
 	createStart := time.Now()
 	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("docker create %s: %v: %s", image, err, out)
 	}
 	log.Printf("sandbox %s: container created (image pulled if absent) in %s", containerName, time.Since(createStart).Round(time.Millisecond))
 
-	startStart := time.Now()
 	if out, err := exec.CommandContext(ctx, "docker", "start", containerName).CombinedOutput(); err != nil {
 		startErr := withContainerLogs(ctx, fmt.Errorf("docker start %s: %v: %s", image, err, out), containerName)
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
 		return gen.Sandbox{}, startErr
 	}
-	log.Printf("sandbox %s: container started in %s", containerName, time.Since(startStart).Round(time.Millisecond))
 
-	// Block until sandboxd is actually serving, mirroring the k8s runtime's
-	// wait on the pod readiness probe: the container is started but sandboxd
-	// (and the workload) still need to boot, so a returned id isn't reachable
-	// yet. Leave the started container in place on failure — like the k8s
+	// Create the sandbox inside the (now-running) pod via POST /v1/<key>, which
+	// also blocks until sandboxd is serving — the config travels in the request
+	// body. Leave the started container in place on failure: like the k8s
 	// anchor/pod, it's the durable reservation a retry can revive.
 	sandboxHost := containerNameFor(id.String())
-	readyStart := time.Now()
-	if err := waitSandboxReady(ctx, sandboxHost, key); err != nil {
-		return gen.Sandbox{}, withContainerLogs(ctx, fmt.Errorf("wait sandbox %s ready: %w", id, err), containerName)
+	if err := packCreateSandbox(ctx, sandboxHost, key, cfg); err != nil {
+		return gen.Sandbox{}, withContainerLogs(ctx, fmt.Errorf("create sandbox %s: %w", id, err), containerName)
 	}
-	log.Printf("sandbox %s: sandboxd ready in %s (total start %s)", containerName, time.Since(readyStart).Round(time.Millisecond), time.Since(createStart).Round(time.Millisecond))
+	log.Printf("sandbox %s: sandboxd ready (total start %s)", containerName, time.Since(createStart).Round(time.Millisecond))
 
 	return gen.Sandbox{Id: id, Key: key}, nil
 }
@@ -441,7 +403,7 @@ func (r *DockerRuntime) startPacked(ctx context.Context, key string, cfg sandbox
 	return gen.Sandbox{Id: pid, Key: key}, nil
 }
 
-// createPackPod creates+starts a sandboxd --pack host for image and waits for
+// createPackPod creates+starts a sandboxd pack host for image and waits for
 // its API to listen. The pod bridge needs ip_forward + route_localnet so the
 // host REDIRECT can funnel packed-sandbox egress to sbxproxy.
 func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uuid.UUID, image string) error {
@@ -464,10 +426,6 @@ func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uu
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"--sysctl", "net.ipv4.ip_forward=1",
 		"--sysctl", "net.ipv4.conf.all.route_localnet=1",
-		// HIVE_SPEC is required in every mode. A pack pod has no boot workload, so
-		// it carries a base spec naming just the image; each packed sandbox's full
-		// config arrives via POST /v1/<key>.
-		"-e", spec.EnvSpec + `={"image":"` + image + `"}`,
 	}
 	if hostHasKVM() {
 		createArgs = append(createArgs,
@@ -481,9 +439,14 @@ func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uu
 	// sandboxes can write and restore local snapshots. The volume is shared
 	// across all pods; snapshot keys are unique per-sandbox so they don't collide.
 	createArgs = append(createArgs, "-v", r.snapshotVolumeArg())
-	// `--pack` overrides the image's default `--help` CMD so sandboxd boots as a
-	// pod host with no boot workload.
-	createArgs = append(createArgs, image, "--pack", "--snapshot-dir", "/snapshots")
+	// Forward the gateway URL so packed sandboxes can reach the gateway, same as
+	// single-sandbox containers above.
+	if gw := os.Getenv(spec.EnvGatewayURL); gw != "" {
+		createArgs = append(createArgs, "-e", spec.EnvGatewayURL+"="+gw)
+	}
+	// --snapshot-dir overrides the image's default `--help` CMD so sandboxd boots
+	// as a pod host with no boot workload.
+	createArgs = append(createArgs, image, "--snapshot-dir", "/snapshots")
 	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker create pod %s: %v: %s", image, err, out)
 	}

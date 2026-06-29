@@ -850,9 +850,9 @@ func copyFile(src, dst string) error {
 // RestoreSnapshot extracts a captured snapshot into the freshly built overlay
 // drive before boot, so the guest comes up on the prior writable state. Must
 // run after MountRoot (which created the empty overlay) and before LaunchAgent.
-func (m *microvm) RestoreSnapshot(src string) error {
+func (m *microvm) RestoreSnapshot(src string, include []string) error {
 	return m.withOverlayMount(false, func(upper string, mounts []snapshot.MountSource) error {
-		return snapshot.Restore(src, upper, mounts)
+		return snapshot.Restore(src, upper, mounts, include)
 	})
 }
 

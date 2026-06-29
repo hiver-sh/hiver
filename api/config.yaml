@@ -528,6 +528,24 @@ components:
               example:
                 Authorization: Bearer sk-redacted
                 X-Sandbox-Tenant: acme
+            body:
+              oneOf:
+                - type: string
+                - type: object
+                  additionalProperties: true
+              description: |
+                Request body the proxy sends upstream in place of the
+                agent's. A string replaces the body verbatim. An object is
+                shallow-merged into the agent's JSON body: top-level keys in
+                this object overwrite the agent's, all other keys are
+                preserved (agent `{"a":1,"b":2}` with override `{"b":3}`
+                sends `{"a":1,"b":3}`). Object merging applies to JSON
+                request bodies only; if the agent's body is absent or not a
+                JSON object the override object is sent as-is. Applies to
+                inspected HTTP requests only; CONNECT and passthrough TLS are
+                opaque and unaffected.
+              example:
+                model: gpt-4o-mini
 
     ApplyResult:
       type: object

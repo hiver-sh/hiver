@@ -76,3 +76,42 @@ func TestFreezeImmutable(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateConfig(t *testing.T) {
+	t.Run("accepts allow/deny egress access", func(t *testing.T) {
+		cfg := gen.SandboxConfig{Egress: &[]gen.EgressRule{
+			{Access: gen.EgressRuleAccessAllow, Host: "api.github.com"},
+			{Access: gen.EgressRuleAccessDeny, Host: "*"},
+		}}
+		if err := validateConfig(cfg); err != nil {
+			t.Errorf("validateConfig: unexpected error %v", err)
+		}
+	})
+
+	// An empty (or otherwise unknown) access slips past Go's string typing but is
+	// meaningless to the proxy and would make getConfig unreadable to typed
+	// clients — reject it at apply time instead of persisting garbage.
+	t.Run("rejects empty egress access", func(t *testing.T) {
+		cfg := gen.SandboxConfig{Egress: &[]gen.EgressRule{
+			{Access: "", Host: "news.ycombinator.com"},
+		}}
+		if err := validateConfig(cfg); err == nil {
+			t.Error("validateConfig: want error for empty egress access, got nil")
+		}
+	})
+
+	t.Run("rejects unknown egress access", func(t *testing.T) {
+		cfg := gen.SandboxConfig{Egress: &[]gen.EgressRule{
+			{Access: "allowed", Host: "example.com"},
+		}}
+		if err := validateConfig(cfg); err == nil {
+			t.Error("validateConfig: want error for unknown egress access, got nil")
+		}
+	})
+
+	t.Run("nil egress is valid", func(t *testing.T) {
+		if err := validateConfig(gen.SandboxConfig{}); err != nil {
+			t.Errorf("validateConfig: unexpected error %v", err)
+		}
+	})
+}

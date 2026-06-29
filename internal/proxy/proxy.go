@@ -105,11 +105,17 @@ type EgressRule struct {
 // header, SNI, minted certs) still use the original hostname. PrefixPath,
 // when set ("/mock"), is prepended to the outbound request path; matching
 // and audit events keep the agent's original path.
+//
+// Body, when set, rewrites the request body. As a JSON string it replaces
+// the body verbatim; as a JSON object it is shallow-merged into the agent's
+// JSON body (top-level keys in the override win, the agent's other keys are
+// preserved). See [applyBodyOverride].
 type EgressOverride struct {
 	Host       string            `json:"host,omitempty"`
 	PrefixPath string            `json:"prefix_path,omitempty"`
 	Query      map[string]string `json:"query,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
+	Body       json.RawMessage   `json:"body,omitempty"`
 }
 
 // AuditEvent is one record on the audit.network topic (§9.1).
@@ -385,6 +391,15 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if rule.Access == "allow" {
 		applyOverride(r, rule.Override)
 		ac.requestHeaders = headerMap(r.Header)
+		// A body override rewrites r.Body in place; re-read it so the audit
+		// stream reflects what the upstream actually receives.
+		if rule.Override != nil && len(rule.Override.Body) > 0 && r.Body != nil {
+			b, err := io.ReadAll(r.Body)
+			if err == nil {
+				r.Body = io.NopCloser(bytes.NewReader(b))
+				ac.requestBody = decodeBytes(r.Header.Get("Content-Encoding"), b)
+			}
+		}
 	}
 	dialAddr := dialTarget(rule, net.JoinHostPort(host, strconv.Itoa(port)))
 	overridden := rule.Override != nil && rule.Override.Host != ""
@@ -805,6 +820,63 @@ func applyOverride(r *http.Request, ov *EgressOverride) {
 			r.URL.RawPath = prefix + r.URL.RawPath
 		}
 	}
+	applyBodyOverride(r, ov.Body)
+}
+
+// applyBodyOverride rewrites r's body per the override directive, a no-op
+// when body is empty. A JSON string value replaces the body verbatim with
+// the decoded string. A JSON object value is shallow-merged into the agent's
+// JSON request body: the agent's body is parsed as a JSON object, the
+// override's top-level keys overwrite the agent's, and any keys the override
+// omits are preserved (agent {"a":1,"b":2} + override {"b":3} → {"a":1,"b":3}).
+// Merging is JSON-only: when the agent's body is absent or not a JSON object,
+// the override object is sent as-is. Anything other than a JSON string or
+// object is ignored. On a rewrite the body reader, ContentLength, and
+// Content-Length header are reset and Content-Encoding is dropped (the new
+// body is plaintext).
+func applyBodyOverride(r *http.Request, body json.RawMessage) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return
+	}
+	var newBody []byte
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return
+		}
+		newBody = []byte(s)
+	case '{':
+		var override map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &override); err != nil {
+			return
+		}
+		merged := map[string]json.RawMessage{}
+		if r.Body != nil {
+			orig, err := io.ReadAll(r.Body)
+			r.Body.Close()
+			if err == nil {
+				// Best-effort: a non-object or invalid original body leaves
+				// merged empty, so the override object is sent on its own.
+				_ = json.Unmarshal(orig, &merged)
+			}
+		}
+		for k, v := range override {
+			merged[k] = v
+		}
+		b, err := json.Marshal(merged)
+		if err != nil {
+			return
+		}
+		newBody = b
+	default:
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(newBody))
+	r.ContentLength = int64(len(newBody))
+	r.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
+	r.Header.Del("Content-Encoding")
 }
 
 // upstreamAddr is the address the proxy dials for a transparent connection.

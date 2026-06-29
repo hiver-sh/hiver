@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, ChevronUp } from "lucide-react";
-import type { SandboxEvent } from "@/types";
+import type { SandboxEvent, SandboxTarget } from "@/types";
 import { humanDuration } from "@/lib/utils";
 import { LLM_PROVIDERS } from "@/lib/llmProviders";
 import { RowDetailPanel } from "./TimelineDetail";
@@ -516,57 +516,64 @@ function getSubgroupKey(row: TimelineRow): string | null {
 }
 
 type DisplayItem =
+  | { kind: "sandbox"; sandboxKey: string; allBars: TimelineBar[] }
   | { kind: "category"; category: Category; allBars: TimelineBar[] }
   | { kind: "row"; row: TimelineRow };
 
 function buildDisplayItems(
-  filteredRows: TimelineRow[],
-  collapsedCategories: ReadonlySet<Category>,
+  rowsByKey: ReadonlyMap<string, TimelineRow[]>,
+  sandboxKeyOrder: readonly string[],
+  collapsedCategories: ReadonlySet<string>,
+  collapsedSandboxes: ReadonlySet<string>,
 ): DisplayItem[] {
-  const byCategory = new Map<Category, TimelineRow[]>();
-  for (const row of filteredRows) {
-    const cat = getRowCategory(row);
-    const list = byCategory.get(cat);
-    if (list) list.push(row);
-    else byCategory.set(cat, [row]);
-  }
-
   const items: DisplayItem[] = [];
 
-  for (const cat of CATEGORY_ORDER) {
-    const rows = byCategory.get(cat);
+  for (const sandboxKey of sandboxKeyOrder) {
+    const rows = rowsByKey.get(sandboxKey);
     if (!rows || rows.length === 0) continue;
 
-    items.push({
-      kind: "category",
-      category: cat,
-      allBars: rows.flatMap((r) => r.bars),
-    });
-    if (collapsedCategories.has(cat)) continue;
+    items.push({ kind: "sandbox", sandboxKey, allBars: rows.flatMap((r) => r.bars) });
+    if (collapsedSandboxes.has(sandboxKey)) continue;
 
-    if (cat === "fs" || cat === "egress" || cat === "ingress") {
-      const bySubgroup = new Map<string, TimelineRow[]>();
-      const subgroupOrder: string[] = [];
-      for (const row of rows) {
-        const key = getSubgroupKey(row) ?? "";
-        const existing = bySubgroup.get(key);
-        if (existing) existing.push(row);
-        else {
-          bySubgroup.set(key, [row]);
-          subgroupOrder.push(key);
+    const byCategory = new Map<Category, TimelineRow[]>();
+    for (const row of rows) {
+      const cat = getRowCategory(row);
+      const list = byCategory.get(cat);
+      if (list) list.push(row);
+      else byCategory.set(cat, [row]);
+    }
+
+    for (const cat of CATEGORY_ORDER) {
+      const catRows = byCategory.get(cat);
+      if (!catRows || catRows.length === 0) continue;
+
+      items.push({ kind: "category", category: cat, allBars: catRows.flatMap((r) => r.bars) });
+      if (collapsedCategories.has(`${sandboxKey}:${cat}`)) continue;
+
+      if (cat === "fs" || cat === "egress" || cat === "ingress") {
+        const bySubgroup = new Map<string, TimelineRow[]>();
+        const subgroupOrder: string[] = [];
+        for (const row of catRows) {
+          const key = getSubgroupKey(row) ?? "";
+          const existing = bySubgroup.get(key);
+          if (existing) existing.push(row);
+          else {
+            bySubgroup.set(key, [row]);
+            subgroupOrder.push(key);
+          }
         }
-      }
-      for (const key of subgroupOrder) {
-        for (const row of bySubgroup.get(key)!)
+        for (const key of subgroupOrder) {
+          for (const row of bySubgroup.get(key)!)
+            items.push({ kind: "row", row });
+        }
+      } else if (cat === "stdio") {
+        const stdioOrder = (r: TimelineRow) =>
+          r.type === "exec" ? 0 : r.method === "out" ? 1 : 2;
+        for (const row of [...catRows].sort((a, b) => stdioOrder(a) - stdioOrder(b)))
           items.push({ kind: "row", row });
+      } else {
+        for (const row of catRows) items.push({ kind: "row", row });
       }
-    } else if (cat === "stdio") {
-      const stdioOrder = (r: TimelineRow) =>
-        r.type === "exec" ? 0 : r.method === "out" ? 1 : 2;
-      for (const row of [...rows].sort((a, b) => stdioOrder(a) - stdioOrder(b)))
-        items.push({ kind: "row", row });
-    } else {
-      for (const row of rows) items.push({ kind: "row", row });
     }
   }
 
@@ -586,6 +593,7 @@ interface VLane {
 interface VSection {
   category: Category;
   allBars: TimelineBar[];
+  sandboxKey: string;
   collapsed: boolean;
   absoluteHeaderTop: number;
   absoluteRowsTop: number;
@@ -593,6 +601,17 @@ interface VSection {
   lanes: VLane[];
   totalHeight: number; // header (24) + laneCount * 22
 }
+
+interface VSandboxGroup {
+  sandboxKey: string;
+  allBars: TimelineBar[];
+  collapsed: boolean;
+  absoluteHeaderTop: number;
+}
+
+type RenderItem =
+  | { kind: "sandbox-header"; group: VSandboxGroup }
+  | { kind: "section"; section: VSection };
 
 type ConfigUpdater = (cfg: Record<string, unknown>) => Record<string, unknown>;
 
@@ -768,7 +787,10 @@ export function TimelineView({
 }: {
   events: SandboxEvent[];
   filter: FilterState;
-  applyConfig?: (updater: ConfigUpdater) => Promise<void>;
+  applyConfig?: (
+    updater: ConfigUpdater,
+    target?: SandboxTarget,
+  ) => Promise<void>;
   onOpenFile?: (path: string) => void;
   zoomWindow: { realStart: number; realEnd: number } | null;
   setZoomWindow: (w: { realStart: number; realEnd: number } | null) => void;
@@ -779,7 +801,30 @@ export function TimelineView({
    *  dialog instead of the inline bottom panel, which has no room when stacked. */
   detailInDialog?: boolean;
 }) {
-  const rows = useMemo(() => buildRows(events), [events]);
+  const sandboxKeyOrder = useMemo(() => {
+    const seen = new Set<string>();
+    const order: string[] = [];
+    for (const e of events) {
+      const k = e.sandbox_key ?? "";
+      if (!seen.has(k)) { seen.add(k); order.push(k); }
+    }
+    return order;
+  }, [events]);
+
+  const rowsByKey = useMemo(() => {
+    const byKey = new Map<string, SandboxEvent[]>();
+    for (const e of events) {
+      const k = e.sandbox_key ?? "";
+      const list = byKey.get(k);
+      if (list) list.push(e);
+      else byKey.set(k, [e]);
+    }
+    const result = new Map<string, TimelineRow[]>();
+    for (const [k, evs] of byKey) result.set(k, buildRows(evs));
+    return result;
+  }, [events]);
+
+  const allRows = useMemo(() => [...rowsByKey.values()].flat(), [rowsByKey]);
   const [trackWidth, setTrackWidth] = useState(600);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -823,11 +868,11 @@ export function TimelineView({
     localStorage.setItem("timeline:labelW", String(labelW));
   }, [labelW]);
 
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<Category>>(
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(
     () => {
       try {
         const saved = localStorage.getItem("timeline:collapsedCategories");
-        return saved ? new Set(JSON.parse(saved) as Category[]) : new Set();
+        return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
       } catch {
         return new Set();
       }
@@ -840,6 +885,24 @@ export function TimelineView({
       JSON.stringify([...collapsedCategories]),
     );
   }, [collapsedCategories]);
+
+  const [collapsedSandboxes, setCollapsedSandboxes] = useState<Set<string>>(
+    () => {
+      try {
+        const saved = localStorage.getItem("timeline:collapsedSandboxes");
+        return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
+      } catch {
+        return new Set();
+      }
+    },
+  );
+
+  useEffect(() => {
+    localStorage.setItem(
+      "timeline:collapsedSandboxes",
+      JSON.stringify([...collapsedSandboxes]),
+    );
+  }, [collapsedSandboxes]);
 
   const [dragSel, setDragSel] = useState<{
     startPx: number;
@@ -892,11 +955,21 @@ export function TimelineView({
     resourceStickyHeight: 0,
   });
 
-  function toggleCategory(cat: Category) {
+  function toggleCategory(sandboxKey: string, cat: Category) {
+    const k = `${sandboxKey}:${cat}`;
     setCollapsedCategories((prev) => {
       const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat);
-      else next.add(cat);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  }
+
+  function toggleSandbox(key: string) {
+    setCollapsedSandboxes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -990,10 +1063,10 @@ export function TimelineView({
     ro.observe(el);
     return () => ro.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.length > 0]);
+  }, [allRows.length > 0]);
 
   // Observe rows viewport for virtual scroll dimensions.
-  // Deps mirror trackRef: re-run when the scroll div first mounts (rows.length > 0).
+  // Deps mirror trackRef: re-run when the scroll div first mounts (allRows.length > 0).
   // Read dimensions immediately so the first render uses the real size.
   useEffect(() => {
     const el = rowsScrollRef.current;
@@ -1007,7 +1080,7 @@ export function TimelineView({
     ro.observe(el);
     return () => ro.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.length > 0]);
+  }, [allRows.length > 0]);
 
   useEffect(() => {
     if (!follow) return;
@@ -1019,12 +1092,12 @@ export function TimelineView({
 
   const selectedBar =
     selectedId !== null
-      ? (rows.flatMap((r) => r.bars).find((b) => b.id === selectedId) ?? null)
+      ? (allRows.flatMap((r) => r.bars).find((b) => b.id === selectedId) ?? null)
       : null;
 
   const llmBars = useMemo(
     () =>
-      rows
+      allRows
         .filter((r) => {
           const e = r.bars[0]?.rawEvents[0];
           return (
@@ -1033,7 +1106,7 @@ export function TimelineView({
           );
         })
         .flatMap((r) => r.bars),
-    [rows],
+    [allRows],
   );
 
   const prevAnthropicBar = (() => {
@@ -1041,7 +1114,7 @@ export function TimelineView({
     return idx > 0 ? llmBars[idx - 1] : null;
   })();
 
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         No events yet
@@ -1049,9 +1122,17 @@ export function TimelineView({
     );
   }
 
-  const filteredRows = applyFilter(rows, filter);
+  // Per-sandbox-key filtering; preserve sandbox order.
+  const filteredRowsByKey = new Map<string, TimelineRow[]>();
+  for (const k of sandboxKeyOrder) {
+    const rows = rowsByKey.get(k);
+    if (!rows) continue;
+    const filtered = applyFilter(rows, filter);
+    if (filtered.length > 0) filteredRowsByKey.set(k, filtered);
+  }
+  const filteredSandboxKeyOrder = sandboxKeyOrder.filter((k) => filteredRowsByKey.has(k));
 
-  if (filteredRows.length === 0) {
+  if (filteredSandboxKeyOrder.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         No events match the current filter.
@@ -1059,9 +1140,16 @@ export function TimelineView({
     );
   }
 
-  const displayItems = buildDisplayItems(filteredRows, collapsedCategories);
+  const displayItems = buildDisplayItems(
+    filteredRowsByKey,
+    filteredSandboxKeyOrder,
+    collapsedCategories,
+    collapsedSandboxes,
+  );
 
-  const filteredBars = filteredRows.flatMap((r) => r.bars);
+  const filteredBars = filteredSandboxKeyOrder.flatMap(
+    (k) => filteredRowsByKey.get(k)!.flatMap((r) => r.bars),
+  );
   const selectedBarIdx = filteredBars.findIndex((b) => b.id === selectedId);
   const prevBarId =
     selectedBarIdx > 0 ? filteredBars[selectedBarIdx - 1].id : null;
@@ -1091,10 +1179,12 @@ export function TimelineView({
   const pxPerMs = totalSpan > 0 && trackWidth > 0 ? trackWidth / totalSpan : 1;
 
   const rawIntervals: [number, number][] = [];
-  for (const row of filteredRows) {
-    if (row.type === "resource") continue;
-    for (const bar of row.bars) {
-      rawIntervals.push([bar.startTime, bar.startTime + bar.durationMs]);
+  for (const rows of filteredRowsByKey.values()) {
+    for (const row of rows) {
+      if (row.type === "resource") continue;
+      for (const bar of row.bars) {
+        rawIntervals.push([bar.startTime, bar.startTime + bar.durationMs]);
+      }
     }
   }
   rawIntervals.sort((a, b) => a[0] - b[0]);
@@ -1297,13 +1387,27 @@ export function TimelineView({
 
   // ─── Build virtual sections ───────────────────────────────────────────────
 
+  const isMultiSandbox = filteredSandboxKeyOrder.length > 1;
   const vsections: VSection[] = [];
+  const renderItems: RenderItem[] = [];
   let absTop = 0;
+  let currentSandboxKey = "";
 
   for (const item of displayItems) {
-    if (item.kind === "category") {
-      const collapsed = collapsedCategories.has(item.category);
-      vsections.push({
+    if (item.kind === "sandbox") {
+      currentSandboxKey = item.sandboxKey;
+      const group: VSandboxGroup = {
+        sandboxKey: item.sandboxKey,
+        allBars: item.allBars,
+        collapsed: collapsedSandboxes.has(item.sandboxKey),
+        absoluteHeaderTop: absTop,
+      };
+      renderItems.push({ kind: "sandbox-header", group });
+      absTop += 24;
+    } else if (item.kind === "category") {
+      const collapsed = collapsedCategories.has(`${currentSandboxKey}:${item.category}`);
+      const section: VSection = {
+        sandboxKey: currentSandboxKey,
         category: item.category,
         allBars: item.allBars,
         collapsed,
@@ -1312,7 +1416,9 @@ export function TimelineView({
         laneCount: 0,
         lanes: [],
         totalHeight: 0,
-      });
+      };
+      vsections.push(section);
+      renderItems.push({ kind: "section", section });
       absTop += 24;
     } else {
       const section = vsections[vsections.length - 1];
@@ -1352,8 +1458,11 @@ export function TimelineView({
     s.totalHeight = 24 + s.laneCount * 22;
   }
 
-  const resourceStickyHeight =
-    vsections.find((s) => s.category === "resource")?.totalHeight ?? 0;
+  // Resource section is only sticky in single-sandbox mode to avoid
+  // multiple resource sections fighting to stick at top: 0.
+  const resourceStickyHeight = !isMultiSandbox
+    ? (vsections.find((s) => s.category === "resource")?.totalHeight ?? 0)
+    : 0;
 
   // Update ref so callbacks can access current render values
   computedRef.current = {
@@ -1523,7 +1632,72 @@ export function TimelineView({
         >
           {/* Width wrapper — sections stack here in normal document flow */}
           <div style={{ width: labelW + effectiveTrackWidth }}>
-            {vsections.map((section) => {
+            {renderItems.map((ritem) => {
+              // ── Sandbox group header ──────────────────────────────────────
+              if (ritem.kind === "sandbox-header") {
+                const { group } = ritem;
+                return (
+                  <div
+                    key={`sandbox:${group.sandboxKey}`}
+                    style={{ height: 24 }}
+                    className="flex border-b border-border bg-muted/20 cursor-pointer"
+                    onClick={() => toggleSandbox(group.sandboxKey)}
+                  >
+                    <div
+                      className="shrink-0 sticky left-0 z-[22] flex items-center gap-1.5 px-2 bg-muted/20 overflow-hidden"
+                      style={{ width: labelW }}
+                    >
+                      {group.collapsed ? (
+                        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="text-[11px] font-mono font-medium text-foreground truncate">
+                        {group.sandboxKey}
+                      </span>
+                    </div>
+                    <div
+                      className="relative self-stretch overflow-hidden"
+                      style={{ width: effectiveTrackWidth }}
+                    >
+                      {visibleTicks.map((px) => (
+                        <div key={px} className="absolute inset-y-0 w-px bg-border/30" style={{ left: px }} />
+                      ))}
+                      {group.collapsed && (() => {
+                        const ranges = group.allBars
+                          .map((b) => ({
+                            left: toDisplay(b.startTime),
+                            right: Math.max(toDisplay(b.startTime) + 5, toDisplay(b.startTime + effectiveDur(b))),
+                            isLive: isLiveBar(b),
+                          }))
+                          .sort((a, b) => a.left - b.left);
+                        const merged: { left: number; right: number; isLive: boolean }[] = [];
+                        for (const r of ranges) {
+                          const last = merged[merged.length - 1];
+                          if (last && r.left <= last.right + 2) {
+                            last.right = Math.max(last.right, r.right);
+                            last.isLive = last.isLive || r.isLive;
+                          } else merged.push({ ...r });
+                        }
+                        return merged
+                          .filter((r) => r.right >= hVisLeft && r.left <= hVisRight)
+                          .map((r, i) => (
+                            <div
+                              key={i}
+                              className={`absolute top-1/2 -translate-y-1/2 h-3 rounded-sm overflow-hidden ${r.isLive ? "bg-muted-foreground/50 border border-muted-foreground/40" : "bg-muted-foreground/30"}`}
+                              style={{ left: r.left, width: r.right - r.left }}
+                            >
+                              {r.isLive && <div className="absolute inset-0 bar-in-flight" />}
+                            </div>
+                          ));
+                      })()}
+                    </div>
+                  </div>
+                );
+              }
+
+              // ── Category section ──────────────────────────────────────────
+              const { section } = ritem;
               const collapsed = section.collapsed;
 
               // Vertical: compute which lanes are in the visible window for this section.
@@ -1544,36 +1718,32 @@ export function TimelineView({
                         vl.localTop < localVisBottom,
                     );
 
+              const isResourceSection = !isMultiSandbox && section.category === "resource";
               return (
                 // Section div has explicit height so sticky headers from later sections
                 // push earlier ones out correctly via normal document flow.
                 <div
-                  key={section.category}
+                  key={`${section.sandboxKey}:${section.category}`}
                   style={{
                     height: section.totalHeight,
-                    ...(section.category === "resource"
-                      ? { position: "sticky", top: 0, zIndex: 30 }
-                      : {}),
+                    ...(isResourceSection ? { position: "sticky", top: 0, zIndex: 30 } : {}),
                   }}
-                  className={
-                    section.category === "resource" ? "bg-background" : ""
-                  }
+                  className={isResourceSection ? "bg-background" : ""}
                 >
-                  {/* Category header — sticky within its section */}
+                  {/* Category header — sticky within its section (single-sandbox only) */}
                   <div
-                    className="flex border-b border-border/60 bg-background cursor-pointer sticky z-20"
+                    className={`flex border-b border-border/60 bg-background cursor-pointer z-20${!isMultiSandbox ? " sticky" : ""}`}
                     style={{
                       height: 24,
-                      top:
-                        section.category === "resource"
-                          ? 0
-                          : resourceStickyHeight,
+                      top: !isMultiSandbox
+                        ? (section.category === "resource" ? 0 : resourceStickyHeight)
+                        : undefined,
                     }}
-                    onClick={() => toggleCategory(section.category)}
+                    onClick={() => toggleCategory(section.sandboxKey, section.category)}
                   >
                     {/* Label cell — also sticky horizontally */}
                     <div
-                      className="shrink-0 sticky left-0 z-[21] flex items-center gap-1.5 px-2 bg-background overflow-hidden"
+                      className="shrink-0 sticky left-0 z-[21] flex items-center gap-1.5 pl-5 pr-2 bg-background overflow-hidden"
                       style={{ width: labelW }}
                     >
                       {collapsed ? (
@@ -1702,7 +1872,7 @@ export function TimelineView({
                           >
                             {/* Label cell — sticky horizontally */}
                             <div
-                              className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden px-5 ${isLaneSelected ? "bg-accent" : isResource ? "bg-background" : "bg-background group-hover:bg-muted"}`}
+                              className={`shrink-0 sticky left-0 z-10 flex items-center gap-1.5 overflow-hidden pl-8 pr-2 ${isLaneSelected ? "bg-accent" : isResource ? "bg-background" : "bg-background group-hover:bg-muted"}`}
                               style={{ width: labelW }}
                             >
                               <span

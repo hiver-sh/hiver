@@ -96,6 +96,37 @@ func TestDefaultedACLs(t *testing.T) {
 	}
 }
 
+// TestLocalFSMountsHostDir pins the snapshot mounts table to the per-key host
+// backend dir for a packed sandbox (and the historical <mount>-backend layout
+// for the boot sandbox). A wrong HostDir makes snapshot capture walk an empty
+// path and silently drop the workspace — the bug this guards against.
+func TestLocalFSMountsHostDir(t *testing.T) {
+	fsList := []spec.FS{
+		{Mount: "/workspace", Backend: spec.BackendLocal},
+		{Mount: "/data/nested", Backend: spec.BackendLocal},
+		{Mount: "/remote", Backend: spec.BackendGoogleDrive}, // not local: excluded
+	}
+
+	boot := localFSMounts("", fsList)
+	if len(boot) != 2 {
+		t.Fatalf("boot: got %d local mounts, want 2: %+v", len(boot), boot)
+	}
+	if boot[0].HostDir != "/workspace-backend" {
+		t.Errorf("boot /workspace HostDir = %q, want /workspace-backend", boot[0].HostDir)
+	}
+
+	packed := localFSMounts("sbx7", fsList)
+	if len(packed) != 2 {
+		t.Fatalf("packed: got %d local mounts, want 2: %+v", len(packed), packed)
+	}
+	if want := "/run/sandboxd/sbx7/backend/workspace"; packed[0].HostDir != want {
+		t.Errorf("packed /workspace HostDir = %q, want %q", packed[0].HostDir, want)
+	}
+	if want := "/run/sandboxd/sbx7/backend/data-nested"; packed[1].HostDir != want {
+		t.Errorf("packed /data/nested HostDir = %q, want %q", packed[1].HostDir, want)
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -210,12 +210,22 @@ export interface EgressOverride {
   query?: Record<string, string>;
   /** HTTP headers to add or overwrite on the outbound request. Useful for injecting bearer tokens or tenant identifiers. */
   headers?: Record<string, string>;
+  /**
+   * Request body the proxy sends upstream in place of the agent's. A string replaces the body
+   * verbatim. An object is shallow-merged into the agent's JSON body: top-level keys here overwrite
+   * the agent's, all other keys are preserved (agent `{a:1,b:2}` with `{b:3}` sends `{a:1,b:3}`).
+   * Object merging applies to JSON request bodies only; if the agent's body is absent or not a JSON
+   * object the override object is sent as-is. Applies to inspected HTTP requests only; CONNECT and
+   * passthrough TLS are unaffected.
+   */
+  body?: string | Record<string, unknown>;
 }
 export const EgressOverride = z.object({
   host: z.string().optional(),
   prefix_path: z.string().optional(),
   query: z.record(z.string(), z.string()).optional(),
   headers: z.record(z.string(), z.string()).optional(),
+  body: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
 });
 type _AssertEgressOverride = Expect<
   Equal<z.infer<typeof EgressOverride>, EgressOverride>
@@ -403,7 +413,7 @@ export interface SandboxConfig {
   egress?: EgressRule[];
   snapshot?: Snapshot;
 }
-export const SandboxConfig = z.object({
+const SandboxConfigObject = z.object({
   image: z.string().optional(),
   cpu: z.number().positive().optional(),
   memory: z.number().int().min(128).optional(),
@@ -417,6 +427,22 @@ export const SandboxConfig = z.object({
   egress: z.array(EgressRule).optional(),
   snapshot: Snapshot.optional(),
 });
+
+// Go marshals nil slices/maps/pointers as JSON `null` rather than omitting them,
+// so a stored config round-trips back with `fs: null`, `egress: null`, etc. The
+// fields above are `.optional()` (accept `undefined`, not `null`), which would
+// make `getConfig()` — and re-applying a read-back config — throw. Strip
+// null-valued top-level keys so they're treated as unset on both read and write.
+export const SandboxConfig = z.preprocess((val) => {
+  if (val && typeof val === "object" && !Array.isArray(val)) {
+    return Object.fromEntries(
+      Object.entries(val as Record<string, unknown>).filter(
+        ([, v]) => v !== null,
+      ),
+    );
+  }
+  return val;
+}, SandboxConfigObject);
 type _AssertSandboxConfig = Expect<
   Equal<z.infer<typeof SandboxConfig>, SandboxConfig>
 >;

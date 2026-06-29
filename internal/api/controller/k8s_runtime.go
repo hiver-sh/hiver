@@ -27,18 +27,13 @@ const (
 
 	// sandboxContainerName is the name of the sandbox container in every prewarm
 	// (Deployment) pod. Prewarm discovery resolves the container by this name to
-	// read its args and image.
+	// read its image. Every sandbox pod is a pack host — a parked, multi-tenant
+	// pod that runs many same-image sandboxes, each created on demand by a POST
+	// /v1/{key} carrying its config. In the Kubernetes runtime these pods are
+	// managed by a per-image Deployment; the controller never creates pods itself
+	// (design §7) — creates are routed by the gateway straight to the image's
+	// Service.
 	sandboxContainerName = "sandbox"
-
-	// packArg is the sandboxd flag that marks a pod as a parked, multi-tenant pack
-	// host: --pack brings up the shared sidecars and parks, then runs many
-	// same-image sandboxes in the one pod, each created on demand by a POST
-	// /v1/{key}. A pod can serve sandboxes for an image only when its container
-	// carries this flag, so pack discovery requires it. In the Kubernetes runtime
-	// every sandbox pod is a pack host managed by a per-image Deployment — the
-	// controller never creates pods itself (design §7); creates are routed by the
-	// gateway straight to the image's Service.
-	packArg = "--pack"
 )
 
 // sandboxHTTPClient talks to sandboxd over the pod network. A keep-alive
@@ -266,8 +261,8 @@ func (r *K8sRuntime) eventsPacked(ctx context.Context, out chan<- gen.SandboxLif
 // the keys it hosts. The events stream doesn't call this on the hot path: it
 // reads the in-memory pack cache, which a single background poller
 // (refreshPackCache) keeps current from here. The controller learns which pods
-// are hosts purely from the pod spec, no label required: a pod qualifies when its
-// sandbox container carries both --pack and --prewarm (see prewarmPodImage).
+// are hosts purely from the pod spec, no label required: a pod qualifies when it
+// has a sandbox container with an image (see prewarmPodImage).
 func (r *K8sRuntime) listPackPods(ctx context.Context) ([]*corev1.Pod, error) {
 	pods, err := r.client.CoreV1().Pods(r.namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -287,12 +282,12 @@ func (r *K8sRuntime) listPackPods(ctx context.Context) ([]*corev1.Pod, error) {
 }
 
 // prewarmPodImage reports the image a pod can serve as a pack host, or ok=false
-// when the pod is not one. A pod qualifies when its sandbox container carries the
-// --pack arg; the served image is then that container's image. A pod missing the
-// arg, or with no image, does not qualify.
+// when the pod is not one. Every sandbox pod is a pack host, so a pod qualifies
+// when it has a sandbox container with an image; the served image is that
+// container's image.
 func prewarmPodImage(pod *corev1.Pod) (string, bool) {
 	c := sandboxContainer(pod)
-	if c == nil || !hasArg(c.Args, packArg) {
+	if c == nil {
 		return "", false
 	}
 	return c.Image, c.Image != ""
@@ -306,14 +301,4 @@ func sandboxContainer(pod *corev1.Pod) *corev1.Container {
 		}
 	}
 	return nil
-}
-
-// hasArg reports whether args contains the exact token arg.
-func hasArg(args []string, arg string) bool {
-	for _, a := range args {
-		if a == arg {
-			return true
-		}
-	}
-	return false
 }

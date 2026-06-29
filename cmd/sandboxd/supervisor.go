@@ -17,20 +17,20 @@ import (
 // handlers.Supervisor so the API server can resolve a sandbox by key, list the
 // pod's sandboxes, and create/delete them.
 //
-// A non-pack pod hosts a single sandbox, created from the env (HIVE_SPEC) config
-// at boot (resuming a keyed VM snapshot when one exists on disk). A -pack pod
-// hosts 0..N same-image sandboxes, each created on demand by a POST /v1/<key>.
+// The pod is a pack host: it hosts 0..N same-image sandboxes, each created on
+// demand by a POST /v1/<key> carrying that sandbox's config (resuming a keyed VM
+// snapshot when one exists on disk).
 type supervisor struct {
 	mu        sync.Mutex
 	image     string                       // the pod's fixed image; set when the sandbox registers
 	sandboxes map[string]*handlers.Sandbox // key → sandbox
 	cancels   map[string]context.CancelFunc
-	pack      *packState // non-nil in -pack mode: POST /v1/<key> packs a new sandbox into this pod
+	pack      *packState // POST /v1/<key> packs a new sandbox into this pod
 
-	// bootDone closes once main has finished deciding the pod's mode (pack set or
-	// the boot sandbox registered). The API serves before that —
-	// GET /v1 answers immediately — so Create waits on this first to avoid racing
-	// the boot and wrongly reporting ErrPodOccupied while pack is still being set.
+	// bootDone closes once main has set up the pack state. The API serves before
+	// that — GET /v1 answers immediately — so Create waits on this first to avoid
+	// racing the boot and wrongly reporting ErrPodOccupied while pack is still
+	// being set.
 	bootDone chan struct{}
 	bootOnce sync.Once
 
@@ -69,8 +69,8 @@ func (s *supervisor) RoutingID() uuid.UUID { return s.routingID }
 func (s *supervisor) bootComplete() { s.bootOnce.Do(func() { close(s.bootDone) }) }
 
 // register records the sandbox under its key, fixes the pod's image, and stores
-// the lifecycle cancel that DELETE /v1/<key> invokes. After this a non-pack pod
-// holds its single sandbox, so a POST for a different key reports ErrPodOccupied.
+// the lifecycle cancel that DELETE /v1/<key> invokes. (createPacked registers its
+// sandboxes inline; this is retained for the supervisor's unit tests.)
 func (s *supervisor) register(sb *handlers.Sandbox, image string, cancel context.CancelFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,12 +105,12 @@ func (s *supervisor) SubscribeLifecycle() (<-chan gen.PodEvent, func()) {
 }
 
 // Create resolves or creates the sandbox for key. An existing key returns its
-// sandbox. In pack mode a new key brings up a fresh sandbox in this pod. A
-// non-pack pod has a single sandbox (from env at boot), so a request for a
-// different key returns ErrPodOccupied.
+// sandbox; a new key brings up a fresh sandbox in this pod (its own netns/IP,
+// overlay, cgroup, and per-source egress), so N keys of the same image share one
+// container (design §6). The config travels in the request body.
 func (s *supervisor) Create(ctx context.Context, key string, cfg gen.SandboxConfig) (*handlers.Sandbox, error) {
-	// Wait until main has set the pod's mode, so a POST that races the boot sees
-	// pack mode rather than falling through to ErrPodOccupied.
+	// Wait until main has set up the pack state, so a POST that races the boot
+	// finds it ready rather than falling through to ErrPodOccupied.
 	select {
 	case <-s.bootDone:
 	case <-ctx.Done():
@@ -125,9 +125,6 @@ func (s *supervisor) Create(ctx context.Context, key string, cfg gen.SandboxConf
 	pack := s.pack
 	s.mu.Unlock()
 
-	// Pack mode: bring a brand-new sandbox up inside this pod (its own netns/IP,
-	// overlay, cgroup, and per-source egress), so N keys of the same image share
-	// one container (design §6).
 	if pack != nil {
 		return s.createPacked(ctx, key, cfg)
 	}

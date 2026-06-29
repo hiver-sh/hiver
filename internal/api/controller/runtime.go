@@ -2,65 +2,20 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"time"
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/controller"
 	sandboxgen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
 
-// usesSnapshotMount reports whether the config routes the files snapshot to a
-// FUSE drive (snapshot.files.mount) rather than the runtime's local snapshot
-// directory. When it does, the runtime skips provisioning the local /snapshots
-// volume entirely: the volume would be unnecessary and, if the FUSE drive is
-// mounted at the same path, would be shadowed by it.
-func usesSnapshotMount(cfg sandboxgen.SandboxConfig) bool {
-	return cfg.Snapshot != nil && cfg.Snapshot.Files != nil &&
-		cfg.Snapshot.Files.Mount != nil && *cfg.Snapshot.Files.Mount != ""
-}
-
 const (
-	readyProbeInterval  = 250 * time.Millisecond
+	// readyProbeInterval is the backoff between create-POST retries while a
+	// just-started pod's sandboxd is not yet accepting requests.
+	readyProbeInterval = 250 * time.Millisecond
+	// sandboxReadyTimeout bounds how long a create waits for a just-started pod's
+	// sandboxd to accept the POST /v1/<key> that brings the sandbox up.
 	sandboxReadyTimeout = 120 * time.Second
 )
-
-// waitSandboxReady blocks until the sandboxd at host:sandboxdPort reports ready
-// or ctx/timeout expires. It long-polls /v1/ping?block=true: sandboxd serves
-// that endpoint before the workload is up (returning 503 until NotifyReady
-// fires), and ?block=true makes it wait for readiness and return 200 the moment
-// it flips — so once the port is listening a single request usually suffices.
-// The connect is retried because the sandbox has just started and sandboxd may
-// not have bound :sandboxdPort yet. host is the container's id-derived network
-// alias under docker (shared hiver_default network) or the pod IP under k8s,
-// both reachable from the controller. Shared by both SandboxRuntime backends.
-func waitSandboxReady(ctx context.Context, host, key string) error {
-	ctx, cancel := context.WithTimeout(ctx, sandboxReadyTimeout)
-	defer cancel()
-
-	url := fmt.Sprintf("http://%s:%d/v1/%s/ping?block=true", host, sandboxdPort, key)
-	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := sandboxHTTPClient.Do(req)
-		if err == nil {
-			status := resp.StatusCode
-			drainAndClose(resp)
-			if status == http.StatusOK {
-				return nil
-			}
-		}
-		// Connection refused (sandboxd not listening yet) or a non-200 (its
-		// long-poll was cut short): back off and retry while time remains.
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("sandbox did not become ready within %s", sandboxReadyTimeout)
-		case <-time.After(readyProbeInterval):
-		}
-	}
-}
 
 // SandboxRuntime abstracts how sandboxes are provisioned and torn down,
 // keeping the HTTP layer independent of the container platform.

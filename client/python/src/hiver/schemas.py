@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 
@@ -98,6 +98,8 @@ class EgressOverride(BaseModel):
     """URL query parameters to add or overwrite on the outbound request. Useful for injecting API keys the agent should never see."""
     headers: Optional[dict[str, str]] = None
     """HTTP headers to add or overwrite on the outbound request. Useful for injecting bearer tokens or tenant identifiers."""
+    body: Optional[Union[str, dict[str, Any]]] = None
+    """Request body the proxy sends upstream in place of the agent's. A string replaces the body verbatim. An object is shallow-merged into the agent's JSON body: top-level keys here overwrite the agent's, all other keys are preserved (agent ``{"a":1,"b":2}`` with ``{"b":3}`` sends ``{"a":1,"b":3}``). Object merging applies to JSON request bodies only; if the agent's body is absent or not a JSON object the override object is sent as-is."""
 
 
 class EgressRule(BaseModel):

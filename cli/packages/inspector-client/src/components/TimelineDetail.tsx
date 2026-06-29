@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WsChunkRow } from "./WsChunkRow";
-import type { SandboxEvent } from "@/types";
+import type { SandboxEvent, SandboxTarget } from "@/types";
 import type { TimelineBar } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
 import { SegmentedControl } from "./SegmentedControl";
@@ -74,11 +74,18 @@ function AccessCell({
   applyConfig,
   allowUpdater,
   denyUpdater,
+  target,
 }: {
   access: "allowed" | "denied";
-  applyConfig?: (updater: ConfigUpdater) => Promise<void>;
+  applyConfig?: (
+    updater: ConfigUpdater,
+    target?: SandboxTarget,
+  ) => Promise<void>;
   allowUpdater: ConfigUpdater;
   denyUpdater: ConfigUpdater;
+  // Sandbox the event belongs to, so the policy edit is routed to it rather
+  // than the primary sandbox (events may come from linked sandboxes).
+  target?: SandboxTarget;
 }) {
   const [applying, setApplying] = useState<"allow" | "deny" | null>(null);
 
@@ -86,7 +93,7 @@ function AccessCell({
     if (!applyConfig || applying) return;
     setApplying(action);
     try {
-      await applyConfig(action === "allow" ? allowUpdater : denyUpdater);
+      await applyConfig(action === "allow" ? allowUpdater : denyUpdater, target);
     } finally {
       setApplying(null);
     }
@@ -295,11 +302,20 @@ export function RowDetailPanel({
   onPrev?: () => void;
   onNext?: () => void;
   onExpand?: () => void;
-  applyConfig?: (updater: ConfigUpdater) => Promise<void>;
+  applyConfig?: (
+    updater: ConfigUpdater,
+    target?: SandboxTarget,
+  ) => Promise<void>;
   onOpenFile?: (path: string) => void;
   expandedView?: boolean;
 }) {
   const req = bar.rawEvents[0];
+  // Route policy edits to the sandbox that emitted this event. Falls back to
+  // the primary sandbox when the event predates id/key tagging.
+  const target: SandboxTarget | undefined =
+    req?.sandbox_id && req.sandbox_key
+      ? { id: req.sandbox_id, key: req.sandbox_key }
+      : undefined;
   const res = bar.rawEvents.find(
     (
       e,
@@ -614,6 +630,7 @@ export function RowDetailPanel({
                     <AccessCell
                       access={req.access}
                       applyConfig={applyConfig}
+                      target={target}
                       allowUpdater={egressRuleUpdater(
                         req.host,
                         req.path,
@@ -658,6 +675,7 @@ export function RowDetailPanel({
                     <AccessCell
                       access={req.access}
                       applyConfig={applyConfig}
+                      target={target}
                       allowUpdater={fsAllowUpdater(req.mount, req.path)}
                       denyUpdater={fsDenyUpdater(req.mount, req.path)}
                     />

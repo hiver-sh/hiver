@@ -14,8 +14,10 @@ export const SandboxRef = z.object({
 });
 export type SandboxRef = z.infer<typeof SandboxRef>;
 
-// Mirror of the server-side SandboxEvent discriminated union
-export type SandboxEvent =
+// Mirror of the server-side SandboxEvent discriminated union.
+// sandbox_key is injected by the inspector server to identify which sandbox
+// emitted the event; linked sandboxes use the x-hiver-sandbox-key header value.
+type SandboxEventVariant =
   | {
       id: number;
       timestamp: string;
@@ -115,6 +117,22 @@ export type SandboxEvent =
       headers?: Record<string, string>;
       body?: string;
     };
+
+export type SandboxEvent = SandboxEventVariant & {
+  // Injected by the inspector server to identify which sandbox emitted the
+  // event. For the primary sandbox these are its path id/key; for linked
+  // sandboxes they come from the x-hiver-sandbox-id / x-hiver-sandbox-key
+  // header values. Used to route allow/deny policy edits back to the right
+  // sandbox.
+  sandbox_id?: string;
+  sandbox_key?: string;
+};
+
+// Identifies a specific sandbox for routing API calls (e.g. policy edits) to it.
+export interface SandboxTarget {
+  id: string;
+  key: string;
+}
 
 export const DEFAULT_INSPECTOR_SERVER = import.meta.env.PROD
   ? window.location.origin

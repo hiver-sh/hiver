@@ -875,3 +875,102 @@ func TestOverridePrefixPathRewritesOutboundPath(t *testing.T) {
 		t.Errorf("request event upstream should be empty without override.host, got %q", events[0].Upstream)
 	}
 }
+
+// startBodyOverrideUpstream stands up an upstream that records the request
+// body it receives and a proxy whose single allow rule applies override.body.
+// The returned client routes through the proxy; call it with upstreamURL.
+func startBodyOverrideUpstream(t *testing.T, body json.RawMessage) (client *http.Client, audit *bytes.Buffer, upstreamURL string, bodyCh chan string, stop func()) {
+	t.Helper()
+	bodyCh = make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case bodyCh <- string(b):
+		default:
+		}
+		w.WriteHeader(200)
+	}))
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, audit, stopProxy := startProxy(t, []proxy.EgressRule{{
+		Access:   "allow",
+		Host:     upstreamHost,
+		Override: &proxy.EgressOverride{Body: body},
+	}})
+	return client, audit, upstream.URL, bodyCh, func() {
+		stopProxy()
+		upstream.Close()
+	}
+}
+
+func TestOverrideBodyStringReplacesBody(t *testing.T) {
+	client, audit, upstreamURL, bodyCh, stop := startBodyOverrideUpstream(t, json.RawMessage(`"replaced=1"`))
+	defer stop()
+
+	resp, err := client.Post(upstreamURL, "text/plain", strings.NewReader("original-body"))
+	if err != nil {
+		t.Fatalf("client.Post: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case got := <-bodyCh:
+		if got != "replaced=1" {
+			t.Errorf("upstream body: got %q, want %q", got, "replaced=1")
+		}
+	default:
+		t.Fatal("upstream was never reached")
+	}
+
+	events := decodeAudit(t, audit)
+	if len(events) == 0 || events[0].Phase != "request" {
+		t.Fatalf("expected request event first, got %+v", events)
+	}
+	if events[0].Body != "replaced=1" {
+		t.Errorf("audit request body: got %q, want %q", events[0].Body, "replaced=1")
+	}
+}
+
+func TestOverrideBodyObjectMergesJSON(t *testing.T) {
+	client, _, upstreamURL, bodyCh, stop := startBodyOverrideUpstream(t, json.RawMessage(`{"b":3}`))
+	defer stop()
+
+	resp, err := client.Post(upstreamURL, "application/json", strings.NewReader(`{"a":1,"b":2}`))
+	if err != nil {
+		t.Fatalf("client.Post: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case got := <-bodyCh:
+		var m map[string]int
+		if err := json.Unmarshal([]byte(got), &m); err != nil {
+			t.Fatalf("upstream body %q is not JSON: %v", got, err)
+		}
+		if m["a"] != 1 || m["b"] != 3 {
+			t.Errorf("merged body: got %v, want {a:1 b:3}", m)
+		}
+	default:
+		t.Fatal("upstream was never reached")
+	}
+}
+
+func TestOverrideBodyObjectWithoutOriginalSendsOverride(t *testing.T) {
+	client, _, upstreamURL, bodyCh, stop := startBodyOverrideUpstream(t, json.RawMessage(`{"injected":true}`))
+	defer stop()
+
+	resp, err := client.Get(upstreamURL)
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case got := <-bodyCh:
+		if got != `{"injected":true}` {
+			t.Errorf("upstream body: got %q, want %q", got, `{"injected":true}`)
+		}
+	default:
+		t.Fatal("upstream was never reached")
+	}
+}

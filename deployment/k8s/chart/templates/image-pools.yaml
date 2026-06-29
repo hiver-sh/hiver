@@ -42,13 +42,12 @@ spec:
         - name: sandbox
           image: {{ .image }}
           imagePullPolicy: IfNotPresent
-          # --pack marks this as a multi-tenant pack host: it parks and serves
+          # sandboxd boots as a multi-tenant pack host: it parks and serves
           # same-image sandboxes created on demand via POST /v1/{key}. Guest size
           # comes from each sandbox's config (cpu/memory) and is baked into any VM
-          # snapshot the client captures. No HIVE_SPEC: the image is bundled in the
-          # pod and each sandbox's config arrives over the API.
+          # snapshot the client captures. The image is bundled in the pod and each
+          # sandbox's config arrives over the API.
           args: [
-            "--pack",
             "--snapshot-dir", "/snapshots",
             "--max-concurrent-launches", "{{ .maxConcurrentLaunches }}"
           ]
@@ -64,6 +63,14 @@ spec:
             {{- if $.Values.proxyPassthroughAll }}
             - name: HIVER_PROXY_PASSTHROUGH_ALL
               value: "1"
+            {{- end }}
+            {{- with $.Values.gatewayUrl }}
+            # sandboxd injects this into the workload so an agent inside the
+            # sandbox can reach the gateway (e.g. to create nested sandboxes).
+            # Defaults to the in-cluster gateway Service in the control-plane
+            # namespace; override via the chart's gatewayUrl value.
+            - name: HIVER_GATEWAY_URL
+              value: {{ . | quote }}
             {{- end }}
             {{- if .upstreamPoolScope }}
             # sbxproxy upstream connection-pool scope. "pod" shares warm upstream

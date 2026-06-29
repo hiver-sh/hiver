@@ -54,6 +54,27 @@ it("getOrCreateSandbox sends config.image as the x-hiver-image header", async ()
 });
 
 
+it("getOrCreateSandbox treats explicitly-null fields as unset and applies defaults", async () => {
+  const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
+  // A serialized config where unset optionals became null must not clobber the
+  // built-in defaults (which would fail validation: .optional() rejects null).
+  await getOrCreateSandbox(
+    "test-sandbox",
+    { fs: null, egress: null } as unknown as SandboxConfig,
+    { fetch: mockFetch as unknown as typeof fetch, timeoutMs: 0 },
+  );
+  const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+  const body = JSON.parse(init.body as string);
+  expect(body.fs).toEqual([
+    {
+      backend: "local",
+      mount: "/workspace",
+      acls: [{ path: "/workspace/**", access: "rw" }],
+    },
+  ]);
+  expect(body.egress).toEqual([{ host: "*", access: "allow" }]);
+});
+
 it("getOrCreateSandbox returns Sandbox with correct id, key and apiServerUrl on 200", async () => {
   const mockFetch = vi.fn().mockResolvedValue(jsonResp(SANDBOX_REF));
   const sandbox = await getOrCreateSandbox("test-sandbox", BASE_CONFIG, {

@@ -14,6 +14,10 @@ services:
     environment:
       HIVE_IMAGES_CONFIG: ${HIVE_IMAGES_CONFIG:-}
       HIVE_SNAPSHOT_DIR: ${HOME}/.hive/snapshots
+      # Forwarded by the controller into every sandbox pod, which in turn injects
+      # it into the workload so an agent inside the sandbox can reach the gateway
+      # (e.g. to create nested sandboxes). `gateway` is the compose service below.
+      HIVER_GATEWAY_URL: ${HIVER_GATEWAY_URL:-http://gateway:10000}
     # The controller spawns sandbox containers via `docker` CLI calls
     # against the host daemon. Mount the socket read-write so it can
     # create/start/cp into containers in the `hive` project.

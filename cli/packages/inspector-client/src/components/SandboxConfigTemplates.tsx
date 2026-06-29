@@ -33,7 +33,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
             files: {
               key: "claude-code-files",
               write_on_shutdown: true,
-              include: ["/home/agent/.claude/*", "/home/agent/.claude.json"],
+              include: ["/workspace/*", "/home/agent/.claude/*", "/home/agent/.claude.json"],
             },
           },
         }),
@@ -53,7 +53,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
             files: {
               key: "codex-files",
               write_on_shutdown: true,
-              include: ["/home/agent/.codex/*"],
+              include: ["/workspace/*", "/home/agent/.codex/*"],
             },
           },
         }),
@@ -73,7 +73,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
             files: {
               key: "opencode-files",
               write_on_shutdown: true,
-              include: ["/home/agent/*"],
+              include: ["/workspace/*", "/home/agent/*"],
             },
           },
         }),
@@ -93,7 +93,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
             files: {
               key: "copilot-files",
               write_on_shutdown: true,
-              include: ["/home/agent/*"],
+              include: ["/workspace/*", "/home/agent/*"],
             },
           },
         }),

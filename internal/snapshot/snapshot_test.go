@@ -181,7 +181,7 @@ func TestCaptureRestore_RoundTrip(t *testing.T) {
 
 	// Restore into a fresh upper dir.
 	upper2 := t.TempDir()
-	if err := Restore(tarPath, upper2, nil); err != nil {
+	if err := Restore(tarPath, upper2, nil, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestCaptureRestore_WithMount(t *testing.T) {
 
 	backend2 := t.TempDir()
 	mounts2 := []MountSource{{ContainerPath: "/workspace", HostDir: backend2}}
-	if err := Restore(tarPath, upper, mounts2); err != nil {
+	if err := Restore(tarPath, upper, mounts2, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -252,7 +252,51 @@ func TestRestore_BadTar(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("not gzip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Restore(bad, t.TempDir(), nil); err == nil {
+	if err := Restore(bad, t.TempDir(), nil, nil); err == nil {
 		t.Fatal("expected error for bad gzip")
+	}
+}
+
+// TestRestore_IncludeFilter verifies that a non-empty include set restores only
+// the entries under those paths, even though the tar holds more — the
+// restore-time filter the capture-time include does not provide.
+func TestRestore_IncludeFilter(t *testing.T) {
+	upper := t.TempDir()
+	for _, p := range []string{"workspace", "home/agent/.claude"} {
+		if err := os.MkdirAll(filepath.Join(upper, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(upper, "workspace", "w.txt"), []byte("ws"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(upper, "home", "agent", ".claude", "c.txt"), []byte("cl"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tarPath := filepath.Join(t.TempDir(), "snap.tar.gz")
+	if err := Capture(tarPath, upper, nil, []string{"/workspace", "/home/agent/.claude"}); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	// Restore with a narrower include than was captured: only /workspace.
+	upper2 := t.TempDir()
+	if err := Restore(tarPath, upper2, nil, []string{"/workspace/*"}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(upper2, "workspace", "w.txt")); err != nil {
+		t.Errorf("workspace/w.txt should have been restored: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(upper2, "home", "agent", ".claude", "c.txt")); !os.IsNotExist(err) {
+		t.Errorf("home/agent/.claude/c.txt should NOT have been restored (err=%v)", err)
+	}
+
+	// Empty include restores everything.
+	upper3 := t.TempDir()
+	if err := Restore(tarPath, upper3, nil, nil); err != nil {
+		t.Fatalf("Restore (no filter): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(upper3, "home", "agent", ".claude", "c.txt")); err != nil {
+		t.Errorf("c.txt should have been restored with empty include: %v", err)
 	}
 }

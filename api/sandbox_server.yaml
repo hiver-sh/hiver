@@ -66,14 +66,12 @@ paths:
       summary: Create (or claim) the sandbox for the given key.
       operationId: createSandbox
       description: |
-        Brings up the sandbox addressed by `key`. On a prewarmed pod
-        (started with `-prewarm`) this restores the pod's snapshot into a new
-        sandbox under `key`; on a non-prewarmed pod the sandbox is already
-        running from the boot (env) config, so an existing key returns it.
+        Brings up the sandbox addressed by `key` inside the pack-host pod: it
+        gets its own netns/IP, overlay, cgroup, and per-source egress. An
+        existing key returns the running sandbox.
 
-        The sandbox configuration comes from the pod's environment
-        (`HIVE_SPEC`); a request body, if present, is currently advisory and
-        only the image is checked against the pod's fixed image.
+        The sandbox configuration is the JSON request body; an empty or absent
+        body yields a default config.
       requestBody:
         required: false
         content:

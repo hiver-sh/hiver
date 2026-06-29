@@ -29,6 +29,14 @@ type EgressOverride struct {
 	// Headers holds HTTP headers to add or overwrite on the outbound request.
 	// Useful for injecting bearer tokens or tenant identifiers.
 	Headers map[string]string `json:"headers,omitempty"`
+	// Body, when set, rewrites the request body the proxy sends upstream. A
+	// string replaces the body verbatim; a map/struct (marshalling to a JSON
+	// object) is shallow-merged into the agent's JSON body — top-level keys
+	// here overwrite the agent's, all other keys are preserved (agent
+	// {"a":1,"b":2} with {"b":3} sends {"a":1,"b":3}). Object merging applies
+	// to JSON request bodies only; if the agent's body is absent or not a JSON
+	// object the override object is sent as-is.
+	Body any `json:"body,omitempty"`
 }
 
 // EgressRule is one egress rule.

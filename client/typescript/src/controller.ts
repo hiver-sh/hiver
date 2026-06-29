@@ -63,6 +63,13 @@ export async function getOrCreateSandbox(
       `getOrCreateSandbox: key ${JSON.stringify(key)} must match ${SANDBOX_KEY_PATTERN}`,
     );
   }
+  // Drop keys whose value is null/undefined so an explicitly-null field (e.g.
+  // `fs: null` from a serialized config where an unset optional became null)
+  // falls back to the default below instead of clobbering it and failing
+  // validation (`.optional()` accepts undefined, not null).
+  const provided = Object.fromEntries(
+    Object.entries(config).filter(([, v]) => v != null),
+  );
   const validated = SandboxConfig.parse({
     fs: [
       {
@@ -72,7 +79,7 @@ export async function getOrCreateSandbox(
       },
     ],
     egress: [{ host: "*", access: "allow" }],
-    ...config,
+    ...provided,
   });
   const gatewayBase = resolveGatewayUrl(opts.gatewayUrl).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;

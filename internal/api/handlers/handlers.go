@@ -22,9 +22,8 @@ var ErrApplyInProgress = errors.New("a previous apply is still in progress")
 var (
 	// ErrSandboxNotFound is returned by Delete when no sandbox exists for the key.
 	ErrSandboxNotFound = errors.New("sandbox not found")
-	// ErrPodOccupied is returned by Create when the pod has no free slot for the
-	// key: it already hosts its (single) sandbox, created from the env config at
-	// boot, and is not a prewarmed pod awaiting a claim.
+	// ErrPodOccupied is returned by Create when the pod can't host the key (a
+	// defensive guard; a pack host accepts new keys).
 	ErrPodOccupied = errors.New("pod already hosts its sandbox")
 )
 
@@ -156,17 +155,16 @@ func (h *SandboxHandlers) StreamPodEvents(c *gin.Context) {
 }
 
 // CreateSandbox brings up the sandbox for key, returning the existing one (200)
-// if it is already running or a newly-claimed one (201). The configuration comes
-// from the pod's env (HIVE_SPEC); a request body, if present, is advisory and
-// only its image is checked against the pod's image.
+// if it is already running or a newly-created one (201). The configuration is the
+// JSON request body; an empty/absent body yields a default config.
 func (h *SandboxHandlers) CreateSandbox(c *gin.Context, key gen.Key) {
 	if sb, ok := h.sup.Sandbox(key); ok {
 		c.JSON(http.StatusOK, h.sandboxRef(sb))
 		return
 	}
 
-	// The body is optional (config comes from env). Bind it when present so the
-	// image can be checked, but tolerate an empty/absent body.
+	// The body is the config. Bind it when present, but tolerate an empty/absent
+	// body (defaults apply).
 	var cfg gen.SandboxConfig
 	_ = c.ShouldBindJSON(&cfg)
 

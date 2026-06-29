@@ -17,6 +17,14 @@ sandboxPort: 8099
 
 terminationGracePeriodSeconds: 120
 
+# Gateway base URL injected into every sandbox pod (as HIVER_GATEWAY_URL) and
+# forwarded by sandboxd into the workload, so an agent running inside a sandbox
+# can call back to the gateway — e.g. to create nested sandboxes. Defaults to the
+# in-cluster gateway Service in the control-plane namespace on its service port
+# (see `gateway` below); override if the gateway is reached via a different
+# host/port. Leave empty to inject nothing.
+gatewayUrl: http://gateway.hiver
+
 # MITM (not passthrough): sbxproxy terminates TLS with a CA-minted cert the guest
 # trusts, validates the real upstream cert itself (chain+hostname, against the
 # system roots), and re-encrypts. Browser-side cert verification is then cheap —

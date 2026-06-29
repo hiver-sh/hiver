@@ -363,7 +363,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		Hostname:         p.hostname,
 		VMStateDir:       stateDir,
 		VMStateEphemeral: stateEphemeral,
-		LocalMounts:      isolationLocalMounts(sp.FS),
+		LocalMounts:      isolationLocalMounts(key, sp.FS),
 		VcpuCount:        ceilVcpu(sp.CPU),
 		MemoryMiB:        intOrZero(sp.Memory),
 		Prealloc:         prealloc,
@@ -519,6 +519,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	agentEnv := make(map[string]string, len(sp.Env)+1)
 	maps.Copy(agentEnv, sp.Env)
 	agentEnv["NODE_EXTRA_CA_CERTS"] = isolation.NodeCACertPath
+	injectGatewayURL(agentEnv)
 	if ttyEnabled {
 		if _, ok := agentEnv["TERM"]; !ok {
 			agentEnv["TERM"] = "xterm-256color"
@@ -802,10 +803,8 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	s.lifecycle.publish(key, gen.PodEventStatusRunning)
 	log.Printf("sandboxd: pack %q: ready (ip=%s)", key, ip)
 
-	// Watch for runtime config-apply events and reconcile FS mounts + egress.
-	// The non-pack path does this via reconcileSidecars; here we inline the
-	// equivalent so egress uses p.setEgress (per-source rules) instead of the
-	// single-sandbox rules file + SIGHUP path.
+	// Watch for runtime config-apply events and reconcile this sandbox's FS mounts
+	// + egress, using p.setEgress (per-source rules).
 	go func() {
 		_, ch, cancel := broker.Subscribe(0)
 		defer cancel()

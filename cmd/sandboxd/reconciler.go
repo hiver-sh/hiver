@@ -19,11 +19,10 @@ import (
 // config (at boot or via a later PUT /v1/config) is turned into running state.
 
 // specFromConfig converts a SandboxConfig to a spec.Spec by round-tripping
-// through the wire format (their JSON shapes align; configFromSpec is the
-// inverse). Used by the prewarm path to assemble the workload spec from the
-// first applied config, and by the reconcile path to drive the mount manager
-// (which works in spec.FS — it carries the backend helpers: BackendPath, Slug,
-// ACL defaults).
+// through the wire format (their JSON shapes align). Used by createPacked to
+// assemble each sandbox's workload spec from its applied config, and by the
+// reconcile path to drive the mount manager (which works in spec.FS — it carries
+// the backend helpers: BackendPath, Slug, ACL defaults).
 func specFromConfig(cfg gen.SandboxConfig) (*spec.Spec, error) {
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -34,21 +33,6 @@ func specFromConfig(cfg gen.SandboxConfig) (*spec.Spec, error) {
 		return nil, fmt.Errorf("parse config as spec: %w", err)
 	}
 	return &sp, nil
-}
-
-// configFromSpec is the inverse: it converts the boot spec into the
-// gen.SandboxConfig the store holds, round-tripping through the wire format so
-// drift between the two structs surfaces at startup. Used to seed the store.
-func configFromSpec(sp *spec.Spec) (gen.SandboxConfig, error) {
-	data, err := json.Marshal(sp)
-	if err != nil {
-		return gen.SandboxConfig{}, fmt.Errorf("marshal spec: %w", err)
-	}
-	var cfg gen.SandboxConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return gen.SandboxConfig{}, fmt.Errorf("parse spec as config: %w", err)
-	}
-	return cfg, nil
 }
 
 // SetRootMounted records that iso.MountRoot has run, so the next Reconcile may
@@ -179,7 +163,7 @@ func (m *mountManager) maybeRestore(sp *spec.Spec) {
 		return
 	}
 	log.Printf("sandboxd: snapshot: restoring %s", src)
-	if err := m.iso.RestoreSnapshot(src); err != nil {
+	if err := m.iso.RestoreSnapshot(src, f.Include); err != nil {
 		log.Fatalf("snapshot restore: %v", err)
 	}
 }

@@ -105,7 +105,13 @@ func Capture(dst, upperDir string, mounts []MountSource, include []string) error
 // directories. Each tar entry's name encodes the absolute container path
 // (without the leading /); the mounts table routes it to the appropriate
 // backend directory or upperDir.
-func Restore(src, upperDir string, mounts []MountSource) error {
+//
+// When include is non-empty, only entries whose container path falls under one
+// of the include patterns are extracted; the rest are skipped. This mirrors the
+// capture-time filter (baseDir prefix match), so restoring with a narrower
+// include set than the tar was captured with applies only the requested subset.
+// When include is empty the entire tarball is restored.
+func Restore(src, upperDir string, mounts []MountSource, include []string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
@@ -118,6 +124,8 @@ func Restore(src, upperDir string, mounts []MountSource) error {
 	}
 	defer gz.Close()
 
+	bases := includeBases(include)
+
 	tr := tar.NewReader(gz)
 	count := 0
 	for {
@@ -127,6 +135,9 @@ func Restore(src, upperDir string, mounts []MountSource) error {
 		}
 		if err != nil {
 			return fmt.Errorf("read tar: %w", err)
+		}
+		if !matchesInclude(hdr.Name, bases) {
+			continue
 		}
 		target := resolveTarget(upperDir, mounts, hdr.Name)
 		if target == "" {
@@ -244,6 +255,38 @@ func bestMount(mounts []MountSource, containerPath string) *MountSource {
 		return nil
 	}
 	return &mounts[best]
+}
+
+// includeBases resolves each include pattern to its base directory (the same
+// baseDir capture walks), giving the set of container-absolute subtrees a
+// restore is allowed to extract. Returns nil for an empty include list, which
+// matchesInclude treats as "restore everything".
+func includeBases(include []string) []string {
+	if len(include) == 0 {
+		return nil
+	}
+	bases := make([]string, len(include))
+	for i, p := range include {
+		bases[i] = baseDir(p)
+	}
+	return bases
+}
+
+// matchesInclude reports whether a tar entry name (a container-absolute path
+// without the leading slash) falls under one of the include base directories.
+// nil bases means no filter, so everything matches — mirroring capture, which
+// walks the entire upper layer when include is empty.
+func matchesInclude(tarName string, bases []string) bool {
+	if bases == nil {
+		return true
+	}
+	containerPath := "/" + filepath.Clean(tarName)
+	for _, b := range bases {
+		if containerPath == b || strings.HasPrefix(containerPath, strings.TrimRight(b, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // baseDir strips trailing glob suffixes (e.g. /* or /**) to get the

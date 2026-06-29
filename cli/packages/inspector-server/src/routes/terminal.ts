@@ -3,6 +3,7 @@ import { Sandbox } from "@hiver.sh/client";
 import { gatewayUrl } from "../lib/gatewayUrl.js";
 import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 import { waitForSandbox } from "../lib/waitForSandbox.js";
+import { makeLinkedSandboxRelay } from "../lib/relayLinkedSandboxEvents.js";
 
 const router = Router();
 
@@ -243,11 +244,22 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
       // Wait for the sandbox to be reachable before opening its event stream;
       // the abort signal bails out if the client disconnects while we wait.
       await waitForSandbox(sandbox, { signal: ac.signal });
+
+      const relayLinked = makeLinkedSandboxRelay(
+        gatewayUrl(req),
+        ac.signal,
+        (e) => write("feed", JSON.stringify(e)),
+      );
+
       for await (const event of sandbox.getEventsStream({
         signal: ac.signal,
         lastEventId,
       })) {
-        write("feed", JSON.stringify(event));
+        write(
+          "feed",
+          JSON.stringify({ ...event, sandbox_id: id, sandbox_key: key }),
+        );
+        relayLinked(event);
       }
     } catch {
       // stream aborted or sandbox gone

@@ -12,12 +12,11 @@ metadata:
   # there — not in the control-plane namespace.
   namespace: {{ .Values.namespaces.sandbox }}
 rules:
-  # The k8s runtime provisions each sandbox as a single privileged Pod, named by
-  # key so Pod creation is the atomic per-key lock — see
-  # internal/api/controller/k8s_runtime.go. The spec is delivered inline via the
-  # HIVE_SPEC env var, so no per-sandbox ConfigMap is created; the configmaps
-  # verbs remain only so Shutdown can clean up legacy anchor ConfigMaps left by
-  # older controllers across a rollout.
+  # The k8s runtime routes creates to per-image pack-host pods, which bring each
+  # sandbox up from the config in the POST /v1/<key> body — see
+  # internal/api/controller/k8s_runtime.go. No per-sandbox ConfigMap is created;
+  # the configmaps verbs remain only so Shutdown can clean up legacy anchor
+  # ConfigMaps left by older controllers across a rollout.
   - apiGroups: [""]
     resources: ["pods", "configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]

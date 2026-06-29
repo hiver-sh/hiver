@@ -393,6 +393,15 @@ export const SANDBOX_CONFIG_SCHEMA = {
                 },
               ],
             },
+            body: {
+              oneOf: [
+                { type: "string" },
+                { type: "object", additionalProperties: true },
+              ],
+              description:
+                "Request body sent upstream in place of the agent's. A string replaces the body verbatim; an object is shallow-merged into the agent's JSON body (top-level keys here win, others are preserved). Merging applies to JSON request bodies only. Inspected HTTP only.",
+              examples: [{ model: "gpt-4o-mini" }],
+            },
           },
         },
       },

@@ -325,10 +325,12 @@ type Isolation interface {
 
 	// RestoreSnapshot restores a previously captured writable state before
 	// the workload starts; CaptureSnapshot persists it on shutdown. include
-	// is the set of agent paths to capture. Both backends produce the same
-	// gzip-tar format (the microvm backend loop-mounts its overlay image and
-	// runs the same snapshot package).
-	RestoreSnapshot(src string) error
+	// is the set of agent paths to capture (and, on restore, to extract: only
+	// entries under these paths are restored, so a narrower include than the
+	// tar was captured with applies just that subset; empty restores all).
+	// Both backends produce the same gzip-tar format (the microvm backend
+	// loop-mounts its overlay image and runs the same snapshot package).
+	RestoreSnapshot(src string, include []string) error
 	CaptureSnapshot(dst string, include []string) error
 
 	// SnapshotLive captures snapshot parts from the RUNNING workload without

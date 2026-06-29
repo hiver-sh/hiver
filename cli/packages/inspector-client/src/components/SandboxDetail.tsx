@@ -54,7 +54,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { CodeViewer } from "@/components/CodeViewer";
 import { cn } from "@/lib/utils";
 import { langForPath } from "@/lib/fileUtils";
-import type { SandboxEvent, SandboxRef } from "@/types";
+import type { SandboxEvent, SandboxRef, SandboxTarget } from "@/types";
 import { loadEvents, appendEvent, clearEvents } from "@/lib/eventStore";
 import { useTransport } from "@/lib/transport";
 import { useUserPreferences } from "@/lib/userPreferences";
@@ -175,6 +175,9 @@ export function SandboxDetail({
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
+  // Per-sandbox-key dedup: tracks "${sandbox_key}:${id}" seen in this stream
+  // session so reconnect replays don't add duplicate events.
+  const seenEventKeysRef = useRef<Set<string>>(new Set());
   // Terminal channel of the shared per-sandbox stream: the currently-mounted
   // Terminal's sink (if any) and whether the upstream terminal is attached.
   const termSinkRef = useRef<TerminalSink | null>(null);
@@ -264,9 +267,13 @@ export function SandboxDetail({
   const proposePolicy = useCallback(
     async (
       updater: (cfg: Record<string, unknown>) => Record<string, unknown>,
+      target?: SandboxTarget,
     ) => {
+      // The event may belong to a linked sandbox; route the policy edit to it.
+      const id = target?.id ?? sandbox.id;
+      const key = target?.key ?? sandbox.key;
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(id)}/${encodeURIComponent(key)}/config`,
       );
 
       const current = await transport
@@ -275,6 +282,7 @@ export function SandboxDetail({
       setConfigProposal({
         current: JSON.stringify(current, null, 2),
         proposed: JSON.stringify(updater(current), null, 2),
+        target: { id, key },
       });
       setShowConfig(true);
     },
@@ -376,18 +384,22 @@ export function SandboxDetail({
               if (eventName === "feed") {
                 try {
                   const event = JSON.parse(dataLine) as SandboxEvent;
-                  // Always advance resumeId so reconnects resume at the right
-                  // offset even when we skip a duplicate below.
-                  resumeId = event.id;
-                  // Deduplicate: the reader may flush buffered bytes after an
-                  // abort, and the subsequent reconnect re-delivers those same
-                  // events from the broker ring. Only add events with a strictly
-                  // higher id than the last one already in state.
-                  setEvents((prev) => {
-                    const last = prev[prev.length - 1];
-                    if (last && last.id >= event.id) return prev;
-                    return [...prev, event];
-                  });
+                  // Only advance resumeId for primary-sandbox events — it is
+                  // the lastEventId sent on reconnect for the /stream endpoint,
+                  // which only applies to the primary sandbox's event feed.
+                  if (
+                    !event.sandbox_key ||
+                    event.sandbox_key === sandbox.key
+                  ) {
+                    resumeId = event.id;
+                  }
+                  // Deduplicate per sandbox_key: linked-sandbox events restart
+                  // from id=1 on each relay so we can't use a single global
+                  // monotonic id check.
+                  const eventKey = `${event.sandbox_key ?? ""}:${event.id}`;
+                  if (seenEventKeysRef.current.has(eventKey)) continue;
+                  seenEventKeysRef.current.add(eventKey);
+                  setEvents((prev) => [...prev, event]);
                   if (!player)
                     void appendEvent(`${sandbox.id}:${sandbox.key}`, event);
                 } catch {
@@ -424,6 +436,7 @@ export function SandboxDetail({
   useEffect(() => {
     let cancelled = false;
     setEvents([]);
+    seenEventKeysRef.current = new Set();
     if (player) {
       // In trace mode: skip stored events, replay from the start
       startStream();

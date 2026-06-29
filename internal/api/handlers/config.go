@@ -84,6 +84,14 @@ func validateConfig(cfg gen.SandboxConfig) error {
 			return fmt.Errorf("fs[%d].backend: unknown value %q", i, base.Backend)
 		}
 	}
+	if cfg.Egress != nil {
+		for i, rule := range *cfg.Egress {
+			if !rule.Access.Valid() {
+				return fmt.Errorf("egress[%d].access: must be %q or %q, got %q",
+					i, gen.EgressRuleAccessAllow, gen.EgressRuleAccessDeny, rule.Access)
+			}
+		}
+	}
 	return nil
 }
 

@@ -8,9 +8,9 @@ import (
 )
 
 // ConfigStore holds the active SandboxConfig in memory. It is seeded with the
-// boot config and updated through Apply (PUT /v1/config); there is no on-disk
-// copy — sandboxd is configured by the HIVE_SPEC env var, and runtime changes
-// live only for the life of the process.
+// config the sandbox was created with (the POST /v1/<key> body) and updated
+// through Apply (PUT /v1/config); there is no on-disk copy — runtime changes live
+// only for the life of the process.
 type ConfigStore struct {
 	// applyMu gates Apply so only one is in flight at a time (TryLock →
 	// ErrApplyInProgress); mu guards the cfg field for concurrent Get/Apply.

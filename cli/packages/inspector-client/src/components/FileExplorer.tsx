@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { CodeViewer, CODE_DIALOG_CLASS } from "@/components/CodeViewer";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import type { SandboxEvent } from "@/types";
-import { langForPath } from "@/lib/fileUtils";
+import { langForPath, isImagePath } from "@/lib/fileUtils";
 import { useTransport } from "@/lib/transport";
 import { useUserPreferences } from "@/lib/userPreferences";
 
@@ -109,6 +109,7 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events }: Props
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [imagePreview, setImagePreview] = useState<{ path: string; url: string } | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const rootsRef = useRef<TreeNode[]>([]);
   const expandedPathsPrefRef = useRef<string[]>(
@@ -330,6 +331,19 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events }: Props
   }
 
   async function openFile(path: string) {
+    if (isImagePath(path)) {
+      setLoadingPath(path);
+      try {
+        const blob = await transport.fetch(fileUrl(path)).then((r) => r.blob());
+        const url = URL.createObjectURL(blob);
+        setImagePreview({ path, url });
+      } catch {
+        downloadFile(path);
+      } finally {
+        setLoadingPath(null);
+      }
+      return;
+    }
     const lang = langForPath(path);
     if (!lang) {
       downloadFile(path);
@@ -458,6 +472,33 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events }: Props
           <div className="h-[55vh] overflow-hidden rounded-md border border-border">
             {preview && (
               <CodeViewer content={preview.content} lang={preview.lang} />
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={imagePreview !== null}
+        onOpenChange={(open) => {
+          if (!open && imagePreview) {
+            URL.revokeObjectURL(imagePreview.url);
+            setImagePreview(null);
+          }
+        }}
+      >
+        <DialogContent className={CODE_DIALOG_CLASS}>
+          <div className="pr-6">
+            <DialogTitle className="truncate font-mono text-sm font-normal text-muted-foreground">
+              {imagePreview?.path}
+            </DialogTitle>
+          </div>
+          <div className="flex max-h-[55vh] items-center justify-center overflow-hidden rounded-md border border-border bg-muted/20 p-2">
+            {imagePreview && (
+              <img
+                src={imagePreview.url}
+                alt={imagePreview.path.split("/").pop()}
+                className="max-h-full max-w-full object-contain"
+              />
             )}
           </div>
         </DialogContent>

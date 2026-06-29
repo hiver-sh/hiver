@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,9 @@ import (
 const (
 	moduleRoot  = "../.."
 	fixtureName = "mcp-server"
+	// mcpPodKey is the key the single packed sandbox is created under; the keyed
+	// API (and its MCP endpoint) is addressed as /v1/<key>/...
+	mcpPodKey = "default"
 )
 
 // TestMcpServerE2E brings up the mcp-server fixture and drives the
@@ -175,7 +179,7 @@ func startMcpFixture(t *testing.T) (*mcpPod, *mcp.ClientSession, context.Context
 
 	pod := startMCPPod(t, bundleImage, string(rendered))
 
-	mcpURL := "http://127.0.0.1:8080/v1/mcp"
+	mcpURL := "http://127.0.0.1:8080/v1/" + mcpPodKey + "/mcp"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	session := connectMCP(t, ctx, mcpURL, &pod.out)
 	return pod, session, ctx, cancel
@@ -206,10 +210,13 @@ func startMCPPod(t *testing.T, bundleImage, specJSON string) *mcpPod {
 		"--cap-add", "DAC_READ_SEARCH", "--cap-add", "FOWNER", "--cap-add", "CHOWN",
 		"--security-opt", "apparmor=unconfined",
 		"--security-opt", "seccomp=unconfined",
+		"--sysctl", "net.ipv4.ip_forward=1",
+		"--sysctl", "net.ipv4.conf.all.route_localnet=1",
 		"-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
 		"-p", "8080:8080",
-		"-e", spec.EnvSpec + "=" + specJSON,
-		bundleImage,
+		// Boot as a pack host on :8080; the sandbox is created below via
+		// POST /v1/<key>, which carries the config.
+		bundleImage, "--api-server-port", "8080",
 	}
 
 	pod := &mcpPod{}
@@ -220,6 +227,31 @@ func startMCPPod(t *testing.T, bundleImage, specJSON string) *mcpPod {
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+
+	// Create the sandbox inside the pack pod, retrying until sandboxd accepts the
+	// POST (it serves the API before the workload is up). The config travels in
+	// the request body.
+	createURL := "http://127.0.0.1:8080/v1/" + mcpPodKey
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		req, err := http.NewRequest(http.MethodPost, createURL, strings.NewReader(specJSON))
+		if err != nil {
+			t.Fatalf("build create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			status := resp.StatusCode
+			resp.Body.Close()
+			if status == http.StatusOK || status == http.StatusCreated {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pod did not accept POST %s within 2m (last err: %v)\npod output:\n%s", createURL, err, pod.out.String())
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 
 	pod.stop = func() {
 		_ = exec.Command("docker", "kill", "-s", "TERM", containerName).Run()

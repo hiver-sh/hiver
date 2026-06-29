@@ -1,3 +1,13 @@
+const IMAGE_EXTS = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "avif", "tiff", "tif",
+]);
+
+export function isImagePath(path: string): boolean {
+  const name = path.split("/").pop() ?? "";
+  const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+  return IMAGE_EXTS.has(ext);
+}
+
 const TEXT_LANGS: Record<string, string> = {
   md: "markdown",
   markdown: "markdown",

@@ -243,6 +243,18 @@ type EgressRule struct {
 	// or header, the proxy overwrites it; otherwise the value is
 	// added. The agent cannot read these values back.
 	Override *struct {
+		// Body Request body the proxy sends upstream in place of the
+		// agent's. A string replaces the body verbatim. An object is
+		// shallow-merged into the agent's JSON body: top-level keys in
+		// this object overwrite the agent's, all other keys are
+		// preserved (agent `{"a":1,"b":2}` with override `{"b":3}`
+		// sends `{"a":1,"b":3}`). Object merging applies to JSON
+		// request bodies only; if the agent's body is absent or not a
+		// JSON object the override object is sent as-is. Applies to
+		// inspected HTTP requests only; CONNECT and passthrough TLS are
+		// opaque and unaffected.
+		Body *EgressRule_Override_Body `json:"body,omitempty"`
+
 		// Headers HTTP headers to add or overwrite on the outbound
 		// request. Useful for injecting bearer tokens or tenant
 		// identifiers.
@@ -285,6 +297,26 @@ type EgressRule struct {
 
 // EgressRuleAccess Whether matching requests are allowed or denied.
 type EgressRuleAccess string
+
+// EgressRuleOverrideBody0 defines model for .
+type EgressRuleOverrideBody0 = string
+
+// EgressRuleOverrideBody1 defines model for .
+type EgressRuleOverrideBody1 map[string]interface{}
+
+// EgressRule_Override_Body Request body the proxy sends upstream in place of the
+// agent's. A string replaces the body verbatim. An object is
+// shallow-merged into the agent's JSON body: top-level keys in
+// this object overwrite the agent's, all other keys are
+// preserved (agent `{"a":1,"b":2}` with override `{"b":3}`
+// sends `{"a":1,"b":3}`). Object merging applies to JSON
+// request bodies only; if the agent's body is absent or not a
+// JSON object the override object is sent as-is. Applies to
+// inspected HTTP requests only; CONNECT and passthrough TLS are
+// opaque and unaffected.
+type EgressRule_Override_Body struct {
+	union json.RawMessage
+}
 
 // Error defines model for Error.
 type Error struct {
@@ -621,6 +653,68 @@ type SnapshotResult struct {
 type SnapshotVM struct {
 	// Key Key identifying the VM-state snapshot.
 	Key string `json:"key"`
+}
+
+// AsEgressRuleOverrideBody0 returns the union data inside the EgressRule_Override_Body as a EgressRuleOverrideBody0
+func (t EgressRule_Override_Body) AsEgressRuleOverrideBody0() (EgressRuleOverrideBody0, error) {
+	var body EgressRuleOverrideBody0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromEgressRuleOverrideBody0 overwrites any union data inside the EgressRule_Override_Body as the provided EgressRuleOverrideBody0
+func (t *EgressRule_Override_Body) FromEgressRuleOverrideBody0(v EgressRuleOverrideBody0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeEgressRuleOverrideBody0 performs a merge with any union data inside the EgressRule_Override_Body, using the provided EgressRuleOverrideBody0
+func (t *EgressRule_Override_Body) MergeEgressRuleOverrideBody0(v EgressRuleOverrideBody0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsEgressRuleOverrideBody1 returns the union data inside the EgressRule_Override_Body as a EgressRuleOverrideBody1
+func (t EgressRule_Override_Body) AsEgressRuleOverrideBody1() (EgressRuleOverrideBody1, error) {
+	var body EgressRuleOverrideBody1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromEgressRuleOverrideBody1 overwrites any union data inside the EgressRule_Override_Body as the provided EgressRuleOverrideBody1
+func (t *EgressRule_Override_Body) FromEgressRuleOverrideBody1(v EgressRuleOverrideBody1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeEgressRuleOverrideBody1 performs a merge with any union data inside the EgressRule_Override_Body, using the provided EgressRuleOverrideBody1
+func (t *EgressRule_Override_Body) MergeEgressRuleOverrideBody1(v EgressRuleOverrideBody1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t EgressRule_Override_Body) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *EgressRule_Override_Body) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
 }
 
 // AsLocalFileSystem returns the union data inside the FileSystem as a LocalFileSystem

@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { SegmentedControl } from "@/components/SegmentedControl";
 import { SandboxConfigTemplates } from "@/components/SandboxConfigTemplates";
 import type { AnyConfig } from "@/components/SandboxConfigTemplates";
+import type { SandboxTarget } from "@/types";
 
 type DL = {
   type: "+" | "-" | " ";
@@ -230,6 +231,9 @@ function DiffView({ oldStr, newStr }: { oldStr: string; newStr: string }) {
 export interface ConfigProposal {
   current: string;
   proposed: string;
+  // Sandbox the proposal targets, when it differs from the dialog's default
+  // (primary) sandbox — e.g. a policy edit on a linked sandbox's event.
+  target?: SandboxTarget;
 }
 
 type Mode = "diff" | "editor";
@@ -260,10 +264,15 @@ export function SandboxConfigDialog({
   const baseConfig = proposal?.current ?? savedConfig;
   const hasChanges = editedConfig !== baseConfig;
 
+  // A proposal may target a linked sandbox; otherwise act on this dialog's
+  // (primary) sandbox.
+  const targetId = proposal?.target?.id ?? sandboxId;
+  const targetKey = proposal?.target?.key ?? sandboxKey;
+
   useEffect(() => {
     if (!open) return;
     const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/config`,
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(targetId)}/${encodeURIComponent(targetKey)}/config`,
     );
     transport
       .fetch(url)
@@ -273,7 +282,7 @@ export function SandboxConfigDialog({
         setSavedConfig(str);
         setEditedConfig(proposal?.proposed ?? str);
       });
-  }, [open, sandboxId, sandboxKey, serverUrl, proposal, transport]);
+  }, [open, targetId, targetKey, serverUrl, proposal, transport]);
 
   useEffect(() => {
     if (open) setMode(proposal ? "diff" : "editor");
@@ -283,7 +292,7 @@ export function SandboxConfigDialog({
     setSaving(true);
     try {
       const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/config`,
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(targetId)}/${encodeURIComponent(targetKey)}/config`,
       );
       await transport.fetch(url, {
         method: "PUT",

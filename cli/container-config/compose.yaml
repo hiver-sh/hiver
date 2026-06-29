@@ -18,6 +18,11 @@ services:
     # pack switch.
     environment:
       HIVE_IMAGES_CONFIG: ${HIVE_IMAGES_CONFIG:-}
+      # Forwarded by the controller into every sandbox pod, which injects it into
+      # the workload so an agent inside the sandbox can reach the gateway (e.g. to
+      # create nested sandboxes). `gateway` is the compose service below; pods on
+      # the same network reach it on its container port 10000.
+      HIVER_GATEWAY_URL: ${HIVER_GATEWAY_URL:-http://gateway:10000}
     restart: unless-stopped
 
   gateway:

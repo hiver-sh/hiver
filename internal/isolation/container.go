@@ -422,8 +422,8 @@ func (c *container) CgroupPath() string { return c.cgroupPath }
 // already reads a consistent view without an explicit sync.
 func (c *container) FlushAgent(ctx context.Context) error { return nil }
 
-func (c *container) RestoreSnapshot(src string) error {
-	return snapshot.Restore(src, c.overlay.Upper, c.snapshotMounts())
+func (c *container) RestoreSnapshot(src string, include []string) error {
+	return snapshot.Restore(src, c.overlay.Upper, c.snapshotMounts(), include)
 }
 
 func (c *container) CaptureSnapshot(dst string, include []string) error {

@@ -338,28 +338,13 @@ func Load(path string) (*Spec, error) {
 	return s, nil
 }
 
-// EnvSpec is the environment variable sandboxd reads the spec JSON from.
-// The runtimes (docker, k8s) inject the marshalled SandboxConfig here
-// instead of mounting it as a file. It is optional: a pack/prewarm pod host
-// boots without one (the image is whatever is bundled in the pod, and each
-// sandbox's real config arrives later over the API); its guest sizing comes
-// from the -instance-cpu / -instance-memory flags instead.
-const EnvSpec = "HIVE_SPEC"
-
-// LoadEnv reads and validates the spec from the EnvSpec environment variable.
-// EnvSpec is optional — an empty value yields an empty, still-valid spec.
-func LoadEnv() (*Spec, error) {
-	var s Spec
-	if data := os.Getenv(EnvSpec); data != "" {
-		if err := json.Unmarshal([]byte(data), &s); err != nil {
-			return nil, fmt.Errorf("spec: parse %s: %w", EnvSpec, err)
-		}
-	}
-	if err := s.Validate(); err != nil {
-		return nil, fmt.Errorf("spec: invalid %s: %w", EnvSpec, err)
-	}
-	return &s, nil
-}
+// EnvGatewayURL is the gateway base URL the runtime sets on the sandbox pod
+// (docker compose / the helm chart). sandboxd forwards it into the workload as
+// the same variable so an agent running inside the sandbox can call back to the
+// gateway — e.g. to create nested sandboxes. On docker it is "http://gateway:10000";
+// on k8s it comes from the chart's gatewayUrl value. Empty means "unset" and
+// nothing is injected.
+const EnvGatewayURL = "HIVER_GATEWAY_URL"
 
 // Parse reads a spec file without validating it. Useful for tests that
 // load a fixture, fill in fields supplied at runtime (auth tokens
