@@ -41,7 +41,7 @@
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\""
   },
   "dependencies": {
-    "@hiver.sh/client": "^0.1.21",
+    "@hiver.sh/client": "^0.1.22",
     "commander": "^12.1.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
