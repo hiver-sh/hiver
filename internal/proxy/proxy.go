@@ -106,17 +106,27 @@ type EgressRule struct {
 // when set ("/mock"), is prepended to the outbound request path; matching
 // and audit events keep the agent's original path.
 //
-// Body, when set, rewrites the request body. As a JSON string it replaces
-// the body verbatim; as a JSON object it is shallow-merged into the agent's
-// JSON body (top-level keys in the override win, the agent's other keys are
-// preserved). See [applyBodyOverride].
+// Body, when set, rewrites the request body. As a JSON string it always
+// replaces the body verbatim. As a JSON object, BodyStrategy decides how it
+// is applied: "merge" (the default) shallow-merges it into the agent's JSON
+// body (top-level keys in the override win, the agent's other keys are
+// preserved); "replace" discards the agent's body and sends the override
+// object as-is. See [applyBodyOverride].
 type EgressOverride struct {
-	Host       string            `json:"host,omitempty"`
-	PrefixPath string            `json:"prefix_path,omitempty"`
-	Query      map[string]string `json:"query,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	Body       json.RawMessage   `json:"body,omitempty"`
+	Host         string            `json:"host,omitempty"`
+	PrefixPath   string            `json:"prefix_path,omitempty"`
+	Query        map[string]string `json:"query,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	Body         json.RawMessage   `json:"body,omitempty"`
+	BodyStrategy string            `json:"body_strategy,omitempty"` // "merge" (default) | "replace"
 }
+
+// Body merge strategies for EgressOverride.BodyStrategy. An empty value is
+// treated as BodyStrategyMerge to preserve the original object-merge behavior.
+const (
+	BodyStrategyMerge   = "merge"
+	BodyStrategyReplace = "replace"
+)
 
 // AuditEvent is one record on the audit.network topic (§9.1).
 //
@@ -820,21 +830,26 @@ func applyOverride(r *http.Request, ov *EgressOverride) {
 			r.URL.RawPath = prefix + r.URL.RawPath
 		}
 	}
-	applyBodyOverride(r, ov.Body)
+	applyBodyOverride(r, ov.Body, ov.BodyStrategy)
 }
 
 // applyBodyOverride rewrites r's body per the override directive, a no-op
 // when body is empty. A JSON string value replaces the body verbatim with
-// the decoded string. A JSON object value is shallow-merged into the agent's
-// JSON request body: the agent's body is parsed as a JSON object, the
-// override's top-level keys overwrite the agent's, and any keys the override
-// omits are preserved (agent {"a":1,"b":2} + override {"b":3} → {"a":1,"b":3}).
-// Merging is JSON-only: when the agent's body is absent or not a JSON object,
-// the override object is sent as-is. Anything other than a JSON string or
-// object is ignored. On a rewrite the body reader, ContentLength, and
-// Content-Length header are reset and Content-Encoding is dropped (the new
-// body is plaintext).
-func applyBodyOverride(r *http.Request, body json.RawMessage) {
+// the decoded string. A JSON object value is applied per strategy:
+//   - "merge" (the default, also used for an empty strategy) shallow-merges
+//     the override into the agent's JSON request body: the agent's body is
+//     parsed as a JSON object, the override's top-level keys overwrite the
+//     agent's, and any keys the override omits are preserved (agent
+//     {"a":1,"b":2} + override {"b":3} → {"a":1,"b":3}). Merging is JSON-only:
+//     when the agent's body is absent or not a JSON object, the override
+//     object is sent as-is.
+//   - "replace" discards the agent's body entirely and sends the override
+//     object as-is.
+//
+// Anything other than a JSON string or object is ignored. On a rewrite the
+// body reader, ContentLength, and Content-Length header are reset and
+// Content-Encoding is dropped (the new body is plaintext).
+func applyBodyOverride(r *http.Request, body json.RawMessage, strategy string) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return
@@ -856,7 +871,9 @@ func applyBodyOverride(r *http.Request, body json.RawMessage) {
 		if r.Body != nil {
 			orig, err := io.ReadAll(r.Body)
 			r.Body.Close()
-			if err == nil {
+			// On "replace" the agent's body is dropped, but it must still be
+			// drained and closed so the reader isn't reused.
+			if err == nil && strategy != BodyStrategyReplace {
 				// Best-effort: a non-object or invalid original body leaves
 				// merged empty, so the override object is sent on its own.
 				_ = json.Unmarshal(orig, &merged)
@@ -981,17 +998,75 @@ func matchPath(allowed []string, path string) bool {
 		return true
 	}
 	for _, a := range allowed {
-		if a == path {
+		if matchPathPattern(a, path) {
 			return true
-		}
-		if strings.HasSuffix(a, "/*") {
-			prefix := strings.TrimSuffix(a, "/*")
-			if path == prefix || strings.HasPrefix(path, prefix+"/") {
-				return true
-			}
 		}
 	}
 	return false
+}
+
+// matchPathPattern reports whether a single allowlist pattern matches path.
+// Beyond exact equality it supports two wildcard forms:
+//   - a trailing "/*" matches the prefix itself and anything beneath it
+//     ("/repos/*" matches "/repos" and "/repos/foo/bar").
+//   - a path segment wrapped in brackets ("/users/[id]", "/users/[<guid>]")
+//     is a single-segment placeholder that matches any one non-empty segment
+//     ("/users/[id]" matches "/users/42" but not "/users" or "/users/42/x").
+//
+// Placeholders may precede a trailing "/*" ("/users/[id]/*" matches
+// "/users/42" and "/users/42/posts"). Non-placeholder patterns keep their
+// original exact / "/*"-suffix semantics unchanged.
+func matchPathPattern(pattern, path string) bool {
+	if pattern == path {
+		return true
+	}
+	if strings.HasSuffix(pattern, "/*") {
+		prefix := strings.TrimSuffix(pattern, "/*")
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+		// A prefix containing a placeholder still needs segment matching;
+		// fall through rather than returning here.
+	}
+	if !strings.Contains(pattern, "[") {
+		return false
+	}
+	return matchPathSegments(pattern, path)
+}
+
+// matchPathSegments matches pattern against path one "/"-separated segment at
+// a time, honoring "[...]" placeholders and a trailing "*" segment (the "/*"
+// suffix form) that matches the prefix and everything beneath it.
+func matchPathSegments(pattern, path string) bool {
+	ps := strings.Split(pattern, "/")
+	hs := strings.Split(path, "/")
+	for i, seg := range ps {
+		// A trailing "*" matches the prefix matched so far plus zero or more
+		// remaining segments, mirroring the plain "/*" suffix behavior.
+		if seg == "*" && i == len(ps)-1 {
+			return true
+		}
+		if i >= len(hs) {
+			return false
+		}
+		if isPathPlaceholder(seg) {
+			if hs[i] == "" {
+				return false
+			}
+			continue
+		}
+		if seg != hs[i] {
+			return false
+		}
+	}
+	return len(ps) == len(hs)
+}
+
+// isPathPlaceholder reports whether a path segment is a bracketed placeholder
+// such as "[id]" or "[<guid>]" — any segment that opens with "[" and closes
+// with "]".
+func isPathPlaceholder(seg string) bool {
+	return len(seg) >= 2 && seg[0] == '[' && seg[len(seg)-1] == ']'
 }
 
 func (p *Proxy) audit(e AuditEvent) {

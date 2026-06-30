@@ -60,6 +60,13 @@ export const SANDBOX_CONFIG_SCHEMA = {
             "Additional environment variables as a key/value map. Cannot be changed after the sandbox is initialized.",
           examples: [{ LOG_LEVEL: "info", REGION: "us-east-1" }],
         },
+        extra_hosts: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Additional /etc/hosts entries injected before the sandbox starts, in `hostname:ip` form. The special value `host-gateway` resolves to the host machine's IP on the container network (equivalent to Docker's `--add-host` flag). Cannot be changed after the sandbox is initialized.",
+          examples: [["upstream-ws:host-gateway", "db.internal:10.0.0.5"]],
+        },
         ttl: {
           type: "integer",
           minimum: 0,
@@ -353,8 +360,8 @@ export const SANDBOX_CONFIG_SCHEMA = {
           type: "array",
           items: { type: "string" },
           description:
-            "Glob path patterns allowed by this rule. Empty means any path.",
-          examples: [["/repos/*"]],
+            "Glob path patterns allowed by this rule. Empty means any path. A trailing `/*` matches the prefix and anything beneath it (`/repos/*` matches `/repos` and `/repos/foo/bar`). A path segment wrapped in brackets is a single-segment placeholder that matches any one non-empty segment: `/users/[id]` matches `/users/42` but not `/users` or `/users/42/posts`. The name inside the brackets is free-form (`[id]`, `[<guid>]`).",
+          examples: [["/repos/*", "/users/[id]"]],
         },
         override: {
           type: "object",
@@ -399,8 +406,15 @@ export const SANDBOX_CONFIG_SCHEMA = {
                 { type: "object", additionalProperties: true },
               ],
               description:
-                "Request body sent upstream in place of the agent's. A string replaces the body verbatim; an object is shallow-merged into the agent's JSON body (top-level keys here win, others are preserved). Merging applies to JSON request bodies only. Inspected HTTP only.",
+                "Request body sent upstream in place of the agent's. A string always replaces the body verbatim; an object is applied per `body_strategy` (default `merge`): `merge` shallow-merges it into the agent's JSON body (top-level keys here win, others are preserved), `replace` discards the agent's body and sends the override object as-is. Inspected HTTP only.",
               examples: [{ model: "gpt-4o-mini" }],
+            },
+            body_strategy: {
+              type: "string",
+              enum: ["merge", "replace"],
+              description:
+                "How an object `body` override is applied. `merge` (the default) shallow-merges the override into the agent's JSON body; `replace` discards the agent's body and sends the override object as-is. Ignored when `body` is a string.",
+              examples: ["replace"],
             },
           },
         },

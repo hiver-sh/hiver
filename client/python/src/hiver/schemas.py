@@ -99,7 +99,9 @@ class EgressOverride(BaseModel):
     headers: Optional[dict[str, str]] = None
     """HTTP headers to add or overwrite on the outbound request. Useful for injecting bearer tokens or tenant identifiers."""
     body: Optional[Union[str, dict[str, Any]]] = None
-    """Request body the proxy sends upstream in place of the agent's. A string replaces the body verbatim. An object is shallow-merged into the agent's JSON body: top-level keys here overwrite the agent's, all other keys are preserved (agent ``{"a":1,"b":2}`` with ``{"b":3}`` sends ``{"a":1,"b":3}``). Object merging applies to JSON request bodies only; if the agent's body is absent or not a JSON object the override object is sent as-is."""
+    """Request body the proxy sends upstream in place of the agent's. A string always replaces the body verbatim. An object is applied per ``body_strategy`` (default ``merge``): ``merge`` shallow-merges it into the agent's JSON body (top-level keys here overwrite the agent's, all other keys are preserved — agent ``{"a":1,"b":2}`` with ``{"b":3}`` sends ``{"a":1,"b":3}``; if the agent's body is absent or not a JSON object the override object is sent as-is), while ``replace`` discards the agent's body and sends the override object as-is."""
+    body_strategy: Optional[Literal["merge", "replace"]] = None
+    """How an object ``body`` override is applied. ``merge`` (the default) shallow-merges the override into the agent's JSON body; ``replace`` discards the agent's body and sends the override object as-is. Ignored when ``body`` is a string."""
 
 
 class EgressRule(BaseModel):
@@ -114,7 +116,7 @@ class EgressRule(BaseModel):
     methods: Optional[list[HttpMethod]] = None
     """HTTP methods matched by this rule. Empty means any method."""
     paths: Optional[list[str]] = None
-    """Glob path patterns matched by this rule. Empty means any path."""
+    """Glob path patterns matched by this rule. Empty means any path. A trailing ``/*`` matches the prefix and anything beneath it (``/repos/*`` matches ``/repos`` and ``/repos/foo/bar``). A path segment wrapped in brackets is a single-segment placeholder that matches any one non-empty segment: ``/users/[id]`` matches ``/users/42`` but not ``/users`` or ``/users/42/posts``. The name inside the brackets is free-form (``[id]``, ``[<guid>]``)."""
     override: Optional[EgressOverride] = None
     """Values the proxy injects into matching outbound requests."""
 

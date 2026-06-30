@@ -72,6 +72,24 @@ func (e EgressRuleAccess) Valid() bool {
 	}
 }
 
+// Defines values for EgressRuleOverrideBodyStrategy.
+const (
+	Merge   EgressRuleOverrideBodyStrategy = "merge"
+	Replace EgressRuleOverrideBodyStrategy = "replace"
+)
+
+// Valid indicates whether the value is a known member of the EgressRuleOverrideBodyStrategy enum.
+func (e EgressRuleOverrideBodyStrategy) Valid() bool {
+	switch e {
+	case Merge:
+		return true
+	case Replace:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ExternalFileSystemBackend.
 const (
 	ExternalFileSystemBackendExternal ExternalFileSystemBackend = "external"
@@ -244,16 +262,24 @@ type EgressRule struct {
 	// added. The agent cannot read these values back.
 	Override *struct {
 		// Body Request body the proxy sends upstream in place of the
-		// agent's. A string replaces the body verbatim. An object is
-		// shallow-merged into the agent's JSON body: top-level keys in
-		// this object overwrite the agent's, all other keys are
-		// preserved (agent `{"a":1,"b":2}` with override `{"b":3}`
-		// sends `{"a":1,"b":3}`). Object merging applies to JSON
-		// request bodies only; if the agent's body is absent or not a
-		// JSON object the override object is sent as-is. Applies to
-		// inspected HTTP requests only; CONNECT and passthrough TLS are
-		// opaque and unaffected.
+		// agent's. A string always replaces the body verbatim. An
+		// object is applied per `body_strategy` (default `merge`):
+		// `merge` shallow-merges it into the agent's JSON body
+		// (top-level keys in this object overwrite the agent's, all
+		// other keys are preserved — agent `{"a":1,"b":2}` with
+		// override `{"b":3}` sends `{"a":1,"b":3}`; if the agent's body
+		// is absent or not a JSON object the override object is sent
+		// as-is), while `replace` discards the agent's body and sends
+		// the override object as-is. Applies to inspected HTTP requests
+		// only; CONNECT and passthrough TLS are opaque and unaffected.
 		Body *EgressRule_Override_Body `json:"body,omitempty"`
+
+		// BodyStrategy How an object `body` override is applied. `merge` (the
+		// default) shallow-merges the override into the agent's JSON
+		// body; `replace` discards the agent's body and sends the
+		// override object as-is. Ignored when `body` is a string (a
+		// string always replaces the body verbatim).
+		BodyStrategy *EgressRuleOverrideBodyStrategy `json:"body_strategy,omitempty"`
 
 		// Headers HTTP headers to add or overwrite on the outbound
 		// request. Useful for injecting bearer tokens or tenant
@@ -288,7 +314,12 @@ type EgressRule struct {
 	} `json:"override,omitempty"`
 
 	// Paths Glob path patterns allowed by this rule. Empty means any
-	// path.
+	// path. A trailing `/*` matches the prefix and anything beneath
+	// it (`/repos/*` matches `/repos` and `/repos/foo/bar`). A path
+	// segment wrapped in brackets is a single-segment placeholder
+	// that matches any one non-empty segment: `/users/[id]` matches
+	// `/users/42` but not `/users` or `/users/42/posts`. The name
+	// inside the brackets is free-form (`[id]`, `[<guid>]`).
 	Paths *[]string `json:"paths,omitempty"`
 
 	// Ports Optional ports otherwise no port enforcement is performed.
@@ -305,18 +336,26 @@ type EgressRuleOverrideBody0 = string
 type EgressRuleOverrideBody1 map[string]interface{}
 
 // EgressRule_Override_Body Request body the proxy sends upstream in place of the
-// agent's. A string replaces the body verbatim. An object is
-// shallow-merged into the agent's JSON body: top-level keys in
-// this object overwrite the agent's, all other keys are
-// preserved (agent `{"a":1,"b":2}` with override `{"b":3}`
-// sends `{"a":1,"b":3}`). Object merging applies to JSON
-// request bodies only; if the agent's body is absent or not a
-// JSON object the override object is sent as-is. Applies to
-// inspected HTTP requests only; CONNECT and passthrough TLS are
-// opaque and unaffected.
+// agent's. A string always replaces the body verbatim. An
+// object is applied per `body_strategy` (default `merge`):
+// `merge` shallow-merges it into the agent's JSON body
+// (top-level keys in this object overwrite the agent's, all
+// other keys are preserved — agent `{"a":1,"b":2}` with
+// override `{"b":3}` sends `{"a":1,"b":3}`; if the agent's body
+// is absent or not a JSON object the override object is sent
+// as-is), while `replace` discards the agent's body and sends
+// the override object as-is. Applies to inspected HTTP requests
+// only; CONNECT and passthrough TLS are opaque and unaffected.
 type EgressRule_Override_Body struct {
 	union json.RawMessage
 }
+
+// EgressRuleOverrideBodyStrategy How an object `body` override is applied. `merge` (the
+// default) shallow-merges the override into the agent's JSON
+// body; `replace` discards the agent's body and sends the
+// override object as-is. Ignored when `body` is a string (a
+// string always replaces the body verbatim).
+type EgressRuleOverrideBodyStrategy string
 
 // Error defines model for Error.
 type Error struct {

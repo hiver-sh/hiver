@@ -93,6 +93,7 @@ func main() {
 	phase := &bootPhase{last: time.Now()}
 	var (
 		apiServerPort         = flag.String("api-server-port", "8099", "port of the API server")
+		pack                  = flag.Bool("pack", false, "run as a multi-tenant pack host: park and serve N same-image sandboxes created on demand via POST /v1/<key>, outliving any single sandbox. When omitted, sandboxd hosts a single sandbox and its own lifecycle follows that sandbox's — the process exits once the sandbox is shut down or killed.")
 		snapshotDir           = flag.String("snapshot-dir", "", "directory where files and VM-state snapshots are stored on local disk (skip the pod overlay — point it at NVMe); optional — when unset, files snapshots only work for configs that route them to a FUSE drive via snapshot.files.mount, and VM snapshots are disabled")
 		preallocPool          = flag.Int("prealloc-pool", 10, "number of sandbox network slots (netns/veth/iptables + DNS sink) to preallocate and keep warm so a create claims one instead of wiring it on the request path; 0 disables")
 		maxConcurrentLaunches = flag.Int("max-concurrent-launches", 10, "cap on concurrent sandbox creates in flight, so a burst doesn't oversubscribe the node's cores during the CPU-bound resume/convergence phases; set near the node's vCPU count; 0 disables (unbounded)")
@@ -279,11 +280,15 @@ func main() {
 	setupWG.Wait()
 	phase.mark("proxy + fuse startup")
 
-	// This pod is a host for N same-image sandboxes created on demand via
-	// POST /v1/<key>. There is no boot sandbox — extract the shared image config +
-	// CA, hand the shared sidecars to the supervisor, and park. Each POST then packs
-	// a sandbox (own netns/IP, overlay, cgroup, per-source egress) via createPacked.
-	// The pod persists until SIGTERM (no pod-level TTL; each packed sandbox has its own).
+	// This pod hosts same-image sandboxes created on demand via POST /v1/<key>.
+	// There is no boot sandbox — extract the shared image config + CA, hand the
+	// shared sidecars to the supervisor, and park. Each POST then packs a sandbox
+	// (own netns/IP, overlay, cgroup, per-source egress) via createPacked.
+	//
+	// In pack mode (--pack) the pod persists until SIGTERM and serves N sandboxes
+	// (no pod-level TTL; each packed sandbox has its own). Without --pack it hosts a
+	// single sandbox: createPacked's teardown calls shutdown when that sandbox is
+	// gone, so the process exits with it (see packState.single).
 	imgCfg, err := runc.ExtractImageConfig()
 	if err != nil {
 		log.Fatalf("unpack sandbox config: %v", err)
@@ -291,7 +296,15 @@ func main() {
 	caData, _ := os.ReadFile(caCertPath)
 	sup.mu.Lock()
 	sup.pack = &packState{
-		ctx:         ctx,
+		ctx:    ctx,
+		single: !*pack,
+		// In single-sandbox mode the teardown calls this once the sole sandbox is
+		// gone. It must cancel BOTH contexts: ctx stops sbxproxy, fsCtx stops the
+		// shared sbxfuse — children.Wait() below blocks on both, so cancelling only
+		// ctx would leave sbxfuse running and the process would hang instead of
+		// exiting. Safe here because the teardown has already captured the snapshot
+		// and stopped this sandbox's mounts before invoking shutdown.
+		shutdown:    func() { cancel(); cancelFS() },
 		children:    &children,
 		isoKind:     isoKind,
 		hostname:    podHostname,
@@ -326,7 +339,11 @@ func main() {
 	go sup.pack.runEgressReloader(ctx)
 	sup.bootComplete()
 	phase.mark("pack pod host ready")
-	log.Println("sandboxd: pod host ready; POST /v1/<key> to pack sandboxes")
+	if *pack {
+		log.Println("sandboxd: pack host ready; POST /v1/<key> to pack sandboxes")
+	} else {
+		log.Println("sandboxd: single-sandbox host ready; POST /v1/<key> to start the sandbox (process exits when it's gone)")
+	}
 	// Nothing is snapshotted at pod start: each packed sandbox cold-boots, or
 	// resumes a per-sandbox VM snapshot the client captured earlier under its
 	// snapshot.vm.key (vmStateDir in createPacked).

@@ -7,10 +7,13 @@ import { useUserPreferences } from "@/lib/userPreferences";
 
 /**
  * Subscribe to the controller's sandbox lifecycle SSE stream and keep the
- * sandbox list in sync. On `destroy` the sandbox's persisted file-explorer
- * state and stored events are dropped immediately (the periodic purge in
- * usePurgeOrphanEvents is the backstop for sandboxes destroyed while the
- * inspector wasn't watching).
+ * sandbox list in sync. `die` and `destroy` are both terminal — the sandbox's
+ * container has exited for good (in single-sandbox mode sandboxd exits with it,
+ * so the `die` never gets a following `destroy`) — so both drop the sandbox's
+ * persisted file-explorer state and stored events and remove it from the list.
+ * `stop` is non-terminal: the sandbox lingers in the list marked stopped. The
+ * periodic purge in usePurgeOrphanEvents is the backstop for sandboxes that go
+ * away while the inspector wasn't watching.
  *
  * This is one long-lived SSE per tab; affordable now that the per-sandbox
  * event feed and terminal share a single connection (see SandboxDetail's
@@ -39,7 +42,8 @@ export function useSandboxLifecycleEvents(
             key: string;
             status: string;
           };
-          if (event.status === "destroy") {
+          // `die` is terminal like `destroy`: drop persisted state + stored events.
+          if (event.status === "destroy" || event.status === "die") {
             forgetSandbox(event.key);
             void clearEvents(`${event.id}:${event.key}`);
           }
@@ -52,12 +56,11 @@ export function useSandboxLifecycleEvents(
                     )
                   : [...prev, { id: event.id, key: event.key, status: "start" as const }];
               case "stop":
-              case "die":
                 return prev.map((s) =>
-                  s.key === event.key
-                    ? { ...s, status: event.status as SandboxRef["status"] }
-                    : s,
+                  s.key === event.key ? { ...s, status: "stop" as const } : s,
                 );
+              // Both terminal: the container is gone, so remove it from the list.
+              case "die":
               case "destroy":
                 return prev.filter((s) => s.key !== event.key);
               default:

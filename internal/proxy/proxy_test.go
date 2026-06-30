@@ -165,7 +165,10 @@ func TestMatchEgress(t *testing.T) {
 		{Access: "allow", Host: "files.example.com", Override: &proxy.EgressOverride{Headers: map[string]string{"X-Auth": "tok"}}},
 		{Access: "allow", Host: "127.0.0.1", Ports: []int{8080}},                    // port-pinned, host-only
 		{Access: "allow", Host: "metrics.internal", Ports: []int{9090, 9091, 9092}}, // port set
-		{Access: "deny", Host: "blocked.com"},                                       // explicit deny rule
+		{Access: "allow", Host: "api.example.com", Paths: []string{"/users/[id]"}},  // single-segment placeholder
+		{Access: "allow", Host: "ang.example.com", Paths: []string{"/users/[<guid>]/profile"}},
+		{Access: "allow", Host: "tail.example.com", Paths: []string{"/users/[id]/*"}}, // placeholder then /*
+		{Access: "deny", Host: "blocked.com"},                                         // explicit deny rule
 	}
 	cases := []struct {
 		name             string
@@ -188,6 +191,17 @@ func TestMatchEgress(t *testing.T) {
 		{"port: list match", "GET", "metrics.internal", 9091, "/m", "allow", ""},
 		{"port: list miss", "GET", "metrics.internal", 9100, "/m", "", ""},
 		{"port: unenforced rule ignores port", "GET", "files.pypi.org", 8443, "/", "allow", ""},
+		{"placeholder: matches one segment", "GET", "api.example.com", 443, "/users/42", "allow", ""},
+		{"placeholder: matches any segment value", "GET", "api.example.com", 443, "/users/abc-DEF", "allow", ""},
+		{"placeholder: empty segment denied", "GET", "api.example.com", 443, "/users/", "", ""},
+		{"placeholder: missing segment denied", "GET", "api.example.com", 443, "/users", "", ""},
+		{"placeholder: extra segment denied", "GET", "api.example.com", 443, "/users/42/posts", "", ""},
+		{"placeholder: literal mismatch denied", "GET", "api.example.com", 443, "/accounts/42", "", ""},
+		{"placeholder: angle-bracket form mid-path", "GET", "ang.example.com", 443, "/users/9f/profile", "allow", ""},
+		{"placeholder: angle-bracket wrong suffix denied", "GET", "ang.example.com", 443, "/users/9f/settings", "", ""},
+		{"placeholder+/*: prefix itself", "GET", "tail.example.com", 443, "/users/42", "allow", ""},
+		{"placeholder+/*: beneath prefix", "GET", "tail.example.com", 443, "/users/42/posts/7", "allow", ""},
+		{"placeholder+/*: empty placeholder denied", "GET", "tail.example.com", 443, "/users//posts", "", ""},
 		{"deny rule matches", "GET", "blocked.com", 443, "/", "deny", ""},
 		{"empty host always denied", "GET", "", 80, "/", "", ""},
 		{"empty rules deny everything", "GET", "anywhere.com", 80, "/", "", ""},
@@ -880,6 +894,10 @@ func TestOverridePrefixPathRewritesOutboundPath(t *testing.T) {
 // body it receives and a proxy whose single allow rule applies override.body.
 // The returned client routes through the proxy; call it with upstreamURL.
 func startBodyOverrideUpstream(t *testing.T, body json.RawMessage) (client *http.Client, audit *bytes.Buffer, upstreamURL string, bodyCh chan string, stop func()) {
+	return startBodyOverrideUpstreamStrategy(t, body, "")
+}
+
+func startBodyOverrideUpstreamStrategy(t *testing.T, body json.RawMessage, strategy string) (client *http.Client, audit *bytes.Buffer, upstreamURL string, bodyCh chan string, stop func()) {
 	t.Helper()
 	bodyCh = make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -895,7 +913,7 @@ func startBodyOverrideUpstream(t *testing.T, body json.RawMessage) (client *http
 	client, audit, stopProxy := startProxy(t, []proxy.EgressRule{{
 		Access:   "allow",
 		Host:     upstreamHost,
-		Override: &proxy.EgressOverride{Body: body},
+		Override: &proxy.EgressOverride{Body: body, BodyStrategy: strategy},
 	}})
 	return client, audit, upstream.URL, bodyCh, func() {
 		stopProxy()
@@ -949,6 +967,35 @@ func TestOverrideBodyObjectMergesJSON(t *testing.T) {
 		}
 		if m["a"] != 1 || m["b"] != 3 {
 			t.Errorf("merged body: got %v, want {a:1 b:3}", m)
+		}
+	default:
+		t.Fatal("upstream was never reached")
+	}
+}
+
+func TestOverrideBodyObjectReplaceDiscardsAgentBody(t *testing.T) {
+	client, _, upstreamURL, bodyCh, stop := startBodyOverrideUpstreamStrategy(
+		t, json.RawMessage(`{"b":3}`), proxy.BodyStrategyReplace)
+	defer stop()
+
+	resp, err := client.Post(upstreamURL, "application/json", strings.NewReader(`{"a":1,"b":2}`))
+	if err != nil {
+		t.Fatalf("client.Post: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case got := <-bodyCh:
+		var m map[string]int
+		if err := json.Unmarshal([]byte(got), &m); err != nil {
+			t.Fatalf("upstream body %q is not JSON: %v", got, err)
+		}
+		// replace drops the agent's keys entirely: only the override remains.
+		if _, ok := m["a"]; ok {
+			t.Errorf("replace kept agent key a: got %v", m)
+		}
+		if m["b"] != 3 || len(m) != 1 {
+			t.Errorf("replace body: got %v, want {b:3}", m)
 		}
 	default:
 		t.Fatal("upstream was never reached")

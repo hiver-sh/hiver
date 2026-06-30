@@ -47,7 +47,12 @@ spec:
           # comes from each sandbox's config (cpu/memory) and is baked into any VM
           # snapshot the client captures. The image is bundled in the pod and each
           # sandbox's config arrives over the API.
+          # --pack runs sandboxd as a multi-tenant pack host: it parks and serves
+          # N same-image sandboxes via POST /v1/{key}, so the pod outlives any
+          # single sandbox. Omitting it would tie sandboxd's lifecycle to one
+          # sandbox (the single-container local-dev path) — never what a pool wants.
           args: [
+            "--pack",
             "--snapshot-dir", "/snapshots",
             "--max-concurrent-launches", "{{ .maxConcurrentLaunches }}"
           ]

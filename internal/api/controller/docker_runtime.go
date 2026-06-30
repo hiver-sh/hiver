@@ -15,6 +15,7 @@ import (
 	neturl "net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,31 @@ func imageName(cfg sandboxgen.SandboxConfig) string {
 		return *cfg.Image
 	}
 	return ""
+}
+
+// hasLocalOrigin reports whether any local-backend fs carries an `origin` host
+// path — a local-dev directory mount that the single-container path bind-mounts
+// onto the sandbox's FUSE backend (see Start). Such configs can't run in a
+// shared packed pod, so their presence forces the unpacked path.
+func hasLocalOrigin(cfg sandboxgen.SandboxConfig) bool {
+	for _, fs := range cfg.Fs {
+		if local, err := fs.AsLocalFileSystem(); err == nil && local.Origin != nil && *local.Origin != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// packedBackendDir is the in-container host directory the shared sbxfuse writes
+// through to for the mount at guest path `mount` under sandbox `key`. It mirrors
+// the keyPrefix layout sandboxd uses (cmd/sandboxd: mounts.go hostBackend +
+// container.go), so a bind mount placed here backs the agent's view at `mount`.
+func packedBackendDir(key, mount string) string {
+	slug := strings.ReplaceAll(strings.Trim(mount, "/"), "/", "-")
+	if slug == "" {
+		slug = "root"
+	}
+	return filepath.Join("/run/sandboxd", key, "backend", slug)
 }
 
 // snapshotVolumeArg returns the docker -v argument to mount the snapshot
@@ -233,6 +259,16 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// so the logical name the caller sent ("python") is preserved in the spec
 	// sandboxd receives and in any stored/returned config.
 	ref, pack := resolveImage(r.images, imageName(cfg))
+	// A local-backend fs with an `origin` host path is a local-dev mount: the
+	// host directory is bind-mounted into the container so it backs the agent's
+	// view at `mount` (see the bind loop below). That only works in the
+	// single-container path — a packed pod is shared across keys and created once,
+	// up front, so it can't take a per-key, per-request bind. Force the unpacked
+	// path whenever an origin is present so the mount is honored rather than
+	// silently dropped.
+	if pack && hasLocalOrigin(cfg) {
+		pack = false
+	}
 	if pack {
 		return r.startPacked(ctx, key, cfg, ref)
 	}
@@ -333,9 +369,27 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	if gw := os.Getenv(spec.EnvGatewayURL); gw != "" {
 		createArgs = append(createArgs, "-e", spec.EnvGatewayURL+"="+gw)
 	}
+	// Bind each local-backend `origin` host directory onto this key's FUSE backend
+	// dir, so the host files back the agent's view at `mount`. sandboxd lays each
+	// packed workspace's backend at /run/sandboxd/<key>/backend/<slug> (mirrors the
+	// keyPrefix layout in cmd/sandboxd: mounts.go hostBackend + container.go); the
+	// shared sbxfuse writes through there, so the agent sees the host files and rw
+	// mounts persist straight back to the host. Teardown lazy-unmounts (MNT_DETACH)
+	// every mount under keyRoot before RemoveAll (clearStaleMount), so the host
+	// directory itself is never deleted with the sandbox.
+	for _, fs := range cfg.Fs {
+		local, err := fs.AsLocalFileSystem()
+		if err != nil || local.Origin == nil || *local.Origin == "" {
+			continue
+		}
+		backend := packedBackendDir(key, local.Mount)
+		createArgs = append(createArgs, "-v", *local.Origin+":"+backend)
+	}
 	// Mount the snapshot volume so this sandbox can write and restore local
-	// snapshots. sandboxd boots as a (single-key) pack host: it parks and brings
-	// the sandbox up on the POST /v1/<key> below, which carries the config.
+	// snapshots. sandboxd brings the sandbox up on the POST /v1/<key> below, which
+	// carries the config. --pack is intentionally omitted: this container hosts a
+	// single sandbox, so sandboxd inherits that sandbox's lifecycle and exits once
+	// it's shut down or killed (rather than parking as a multi-tenant pack host).
 	createArgs = append(createArgs, "-v", r.snapshotVolumeArg())
 	createArgs = append(createArgs, image, "--snapshot-dir", "/snapshots")
 	createStart := time.Now()
@@ -444,9 +498,12 @@ func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uu
 	if gw := os.Getenv(spec.EnvGatewayURL); gw != "" {
 		createArgs = append(createArgs, "-e", spec.EnvGatewayURL+"="+gw)
 	}
-	// --snapshot-dir overrides the image's default `--help` CMD so sandboxd boots
-	// as a pod host with no boot workload.
-	createArgs = append(createArgs, image, "--snapshot-dir", "/snapshots")
+	// --pack runs sandboxd as a multi-tenant pack host that parks and serves N
+	// same-image sandboxes via POST /v1/<key>, so this pod outlives any single
+	// sandbox (the single-container Start path omits it, tying sandboxd's lifecycle
+	// to its one sandbox). --snapshot-dir overrides the image's default `--help`
+	// CMD so sandboxd boots as a pod host with no boot workload.
+	createArgs = append(createArgs, image, "--pack", "--snapshot-dir", "/snapshots")
 	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker create pod %s: %v: %s", image, err, out)
 	}

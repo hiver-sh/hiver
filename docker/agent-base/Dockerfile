@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         jq \
+        socat \
     && rm -rf /var/lib/apt/lists/* \
     # Everything runs as root (uid/gid 0) — just relabeled to "agent" with a tidy
     # home at /home/agent instead of /root. usermod/groupmod refuse to touch the

@@ -335,3 +335,52 @@ func TestOverridePrefixPathValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestOverrideBodyStrategyValidation(t *testing.T) {
+	mk := func(rule string) string {
+		return `{
+			"fs": [{"backend": "local", "mount": "/work"}],
+			"egress": [` + rule + `]
+		}`
+	}
+	cases := []struct {
+		name    string
+		rule    string
+		wantErr string // empty means must load
+	}{
+		{
+			"merge accepted",
+			`{"access": "allow", "host": "api.example.com", "override": {"body": {"a": 1}, "body_strategy": "merge"}}`,
+			"",
+		},
+		{
+			"replace accepted",
+			`{"access": "allow", "host": "api.example.com", "override": {"body": {"a": 1}, "body_strategy": "replace"}}`,
+			"",
+		},
+		{
+			"empty defaults to merge",
+			`{"access": "allow", "host": "api.example.com", "override": {"body": {"a": 1}}}`,
+			"",
+		},
+		{
+			"unknown rejected",
+			`{"access": "allow", "host": "api.example.com", "override": {"body": {"a": 1}, "body_strategy": "patch"}}`,
+			"override.body_strategy",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := spec.Load(writeSpec(t, mk(c.rule)))
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("Load: got %v, want error containing %q", err, c.wantErr)
+			}
+		})
+	}
+}

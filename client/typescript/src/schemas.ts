@@ -211,14 +211,21 @@ export interface EgressOverride {
   /** HTTP headers to add or overwrite on the outbound request. Useful for injecting bearer tokens or tenant identifiers. */
   headers?: Record<string, string>;
   /**
-   * Request body the proxy sends upstream in place of the agent's. A string replaces the body
-   * verbatim. An object is shallow-merged into the agent's JSON body: top-level keys here overwrite
-   * the agent's, all other keys are preserved (agent `{a:1,b:2}` with `{b:3}` sends `{a:1,b:3}`).
-   * Object merging applies to JSON request bodies only; if the agent's body is absent or not a JSON
-   * object the override object is sent as-is. Applies to inspected HTTP requests only; CONNECT and
+   * Request body the proxy sends upstream in place of the agent's. A string always replaces the
+   * body verbatim. An object is applied per `body_strategy` (default `merge`): `merge` shallow-merges
+   * it into the agent's JSON body (top-level keys here overwrite the agent's, all other keys are
+   * preserved — agent `{a:1,b:2}` with `{b:3}` sends `{a:1,b:3}`; if the agent's body is absent or
+   * not a JSON object the override object is sent as-is), while `replace` discards the agent's body
+   * and sends the override object as-is. Applies to inspected HTTP requests only; CONNECT and
    * passthrough TLS are unaffected.
    */
   body?: string | Record<string, unknown>;
+  /**
+   * How an object `body` override is applied. `merge` (the default) shallow-merges the override into
+   * the agent's JSON body; `replace` discards the agent's body and sends the override object as-is.
+   * Ignored when `body` is a string (a string always replaces the body verbatim).
+   */
+  body_strategy?: "merge" | "replace";
 }
 export const EgressOverride = z.object({
   host: z.string().optional(),
@@ -226,6 +233,7 @@ export const EgressOverride = z.object({
   query: z.record(z.string(), z.string()).optional(),
   headers: z.record(z.string(), z.string()).optional(),
   body: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
+  body_strategy: z.enum(["merge", "replace"]).optional(),
 });
 type _AssertEgressOverride = Expect<
   Equal<z.infer<typeof EgressOverride>, EgressOverride>
@@ -241,7 +249,13 @@ export interface EgressRule {
   ports?: number[];
   /** HTTP methods matched by this rule. Empty means any method. */
   methods?: HttpMethod[];
-  /** Glob path patterns matched by this rule. Empty means any path. */
+  /**
+   * Glob path patterns matched by this rule. Empty means any path. A trailing `/*` matches the prefix
+   * and anything beneath it (`/repos/*` matches `/repos` and `/repos/foo/bar`). A path segment wrapped
+   * in brackets is a single-segment placeholder that matches any one non-empty segment: `/users/[id]`
+   * matches `/users/42` but not `/users` or `/users/42/posts`. The name inside the brackets is
+   * free-form (`[id]`, `[<guid>]`).
+   */
   paths?: string[];
   override?: EgressOverride;
 }

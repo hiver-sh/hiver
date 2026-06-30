@@ -444,6 +444,14 @@ func (s *Spec) Validate() error {
 				return fmt.Errorf("%s.override.prefix_path: %w", ctx, err)
 			}
 		}
+		if ov := e.Override; ov != nil && ov.BodyStrategy != "" {
+			switch ov.BodyStrategy {
+			case proxy.BodyStrategyMerge, proxy.BodyStrategyReplace:
+			default:
+				return fmt.Errorf("%s.override.body_strategy: must be %q or %q, got %q",
+					ctx, proxy.BodyStrategyMerge, proxy.BodyStrategyReplace, ov.BodyStrategy)
+			}
+		}
 	}
 	if sn := s.Snapshot; sn != nil {
 		if vm := sn.VM; vm != nil {

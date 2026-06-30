@@ -29,7 +29,17 @@ import (
 // with its own netns/IP, overlay, cgroup, and per-source egress; the sbxproxy
 // and the image rootfs are shared. Set by main in pack mode.
 type packState struct {
-	ctx         context.Context // pod lifecycle (cancelling tears everything down)
+	ctx context.Context // pod lifecycle (cancelling tears everything down)
+
+	// single is set when sandboxd was started without --pack: it hosts exactly one
+	// sandbox and its own lifecycle follows that sandbox's. When that sandbox tears
+	// down (DELETE, TTL, agent exit, kill), the teardown calls shutdown so the
+	// process exits with the sandbox instead of parking for more POSTs.
+	single bool
+	// shutdown cancels the pod lifecycle ctx (the signal-notify cancel from main),
+	// unblocking main's <-ctx.Done(). Only invoked in single mode (see above).
+	shutdown context.CancelFunc
+
 	children    *sync.WaitGroup
 	isoKind     isolation.Kind // backend for packed sandboxes, detected from the image
 	hostname    string
@@ -732,6 +742,13 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		s.mu.Unlock()
 		s.lifecycle.publish(key, gen.PodEventStatusStopped)
 		log.Printf("sandboxd: pack %q: torn down (ip=%s)", key, ip)
+		// Single-sandbox mode: this process exists to host exactly one sandbox, so
+		// now that it's gone, exit rather than park for more POSTs. Cancelling the
+		// pod ctx unblocks main's <-ctx.Done(); the sidecars drain and sandboxd exits.
+		if p.single && p.shutdown != nil {
+			log.Printf("sandboxd: single-sandbox mode: %q gone; shutting down", key)
+			p.shutdown()
+		}
 	}()
 
 	go lifetime.Run(sbCtx)

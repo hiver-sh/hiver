@@ -30,14 +30,25 @@ type EgressOverride struct {
 	// Useful for injecting bearer tokens or tenant identifiers.
 	Headers map[string]string `json:"headers,omitempty"`
 	// Body, when set, rewrites the request body the proxy sends upstream. A
-	// string replaces the body verbatim; a map/struct (marshalling to a JSON
-	// object) is shallow-merged into the agent's JSON body — top-level keys
-	// here overwrite the agent's, all other keys are preserved (agent
-	// {"a":1,"b":2} with {"b":3} sends {"a":1,"b":3}). Object merging applies
-	// to JSON request bodies only; if the agent's body is absent or not a JSON
-	// object the override object is sent as-is.
+	// string always replaces the body verbatim. A map/struct (marshalling to a
+	// JSON object) is applied per BodyStrategy: "merge" (the default)
+	// shallow-merges it into the agent's JSON body — top-level keys here
+	// overwrite the agent's, all other keys are preserved (agent
+	// {"a":1,"b":2} with {"b":3} sends {"a":1,"b":3}); "replace" discards the
+	// agent's body and sends the override object as-is. Merging applies to JSON
+	// request bodies only; if the agent's body is absent or not a JSON object
+	// the override object is sent as-is.
 	Body any `json:"body,omitempty"`
+	// BodyStrategy controls how an object Body is applied: "merge" (the
+	// default) or "replace". Ignored when Body is a string.
+	BodyStrategy string `json:"body_strategy,omitempty"`
 }
+
+// Body merge strategies for EgressOverride.BodyStrategy.
+const (
+	BodyStrategyMerge   = "merge"
+	BodyStrategyReplace = "replace"
+)
 
 // EgressRule is one egress rule.
 type EgressRule struct {
@@ -50,6 +61,11 @@ type EgressRule struct {
 	// Methods are the HTTP methods matched by this rule. Empty means any method.
 	Methods []string `json:"methods,omitempty"`
 	// Paths are glob path patterns matched by this rule. Empty means any path.
+	// A trailing "/*" matches the prefix and anything beneath it ("/repos/*"
+	// matches "/repos" and "/repos/foo/bar"). A segment wrapped in brackets is
+	// a single-segment placeholder matching any one non-empty segment:
+	// "/users/[id]" matches "/users/42" but not "/users" or "/users/42/posts".
+	// The name inside the brackets is free-form ("[id]", "[<guid>]").
 	Paths []string `json:"paths,omitempty"`
 	// Override holds values the proxy injects into matching outbound requests.
 	Override *EgressOverride `json:"override,omitempty"`
