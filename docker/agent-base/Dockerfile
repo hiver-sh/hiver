@@ -23,4 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Hiver TypeScript client, available globally for agents.
 RUN npm install -g @hiver.sh/client@latest
 
+# Generic agent skills. Kept out of any agent-specific location so the base
+# stays generic; individual agent images copy these into their own skill dir.
+COPY skills /home/agent/skills
+RUN cd /home/agent/skills/browser/scripts && npm install
+
 ENTRYPOINT ["tail", "-f", "/dev/null"]

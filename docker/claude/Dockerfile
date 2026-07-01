@@ -6,9 +6,12 @@ ENV IS_SANDBOX=1
 
 RUN npm install -g @anthropic-ai/claude-code
 
-RUN mkdir -p /home/agent/.claude/hooks
+RUN mkdir -p /home/agent/.claude/hooks /home/agent/.claude/skills
 COPY .claude/settings.json /home/agent/.claude/settings.json
 COPY .claude/hooks/notify-hook.js /home/agent/.claude/hooks/notify-hook.js
+# Skills (with deps) come from agent-base at /home/agent/skills; copy them into
+# the Claude CLI's skill dir so it can discover them.
+RUN cp -a /home/agent/skills/. /home/agent/.claude/skills/
 COPY .claude.json /home/agent/.claude.json
 RUN chmod +x /home/agent/.claude/hooks/notify-hook.js \
     && chown -R agent:agent /home/agent/.claude \

@@ -1,0 +1,9 @@
+{
+  "name": "cdp-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@hiver.sh/client": "latest",
+    "ws": "latest"
+  }
+}
