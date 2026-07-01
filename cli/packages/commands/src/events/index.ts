@@ -2,6 +2,11 @@ import { listSandboxes } from "@hiver.sh/client";
 import { white, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
 import { ensureGateway } from "../gateway.js";
+import {
+  loadEvents,
+  lastOwnEventId,
+  appendEvent,
+} from "../../../inspector-server/dist/lib/eventStore.js";
 
 const cmd = withGateway(
   subcommand("events", "Stream a sandbox's events live as they happen."),
@@ -37,12 +42,56 @@ process.on("SIGINT", () => {
 
 const tty = process.stdout.isTTY;
 if (tty) console.log();
+
+// Events are persisted by the inspector in SQLite (~/.hiver/events.db). Replay
+// what's already stored, then resume the live stream from just after it — so
+// this shows full history without re-fetching, and picks up new events without
+// gaps or duplicates. `--start-event-id` still wins as an explicit lower bound.
+// All SQLite access here is best-effort: a missing or locked DB must never stop
+// the stream, so reads fall back to no replay and writes are swallowed.
+const flagStart = startEventId !== undefined ? Number(startEventId) : undefined;
+let stored: ReturnType<typeof loadEvents> = [];
+let resumeId = flagStart;
+try {
+  stored = loadEvents(sandbox.id, key).filter(
+    // loadEvents returns the owner timeline (this sandbox + any nested sandboxes
+    // the inspector relayed into it); `hiver events` streams just this sandbox,
+    // so replay only its own feed.
+    (e) =>
+      (e.sandbox_key === undefined || e.sandbox_key === key) &&
+      (flagStart === undefined || e.id > flagStart),
+  );
+  if (stored.length) resumeId = stored[stored.length - 1].id;
+  else if (resumeId === undefined) resumeId = lastOwnEventId(sandbox.id, key);
+} catch {
+  // DB unavailable — skip replay and stream live from --start-event-id (if any).
+}
+
+for (const event of stored) {
+  // Print the raw event shape (drop the routing fields the inspector adds on
+  // storage) so replayed lines match live ones.
+  const raw: Record<string, unknown> = { ...event };
+  delete raw.sandbox_id;
+  delete raw.sandbox_key;
+  console.log(JSON.stringify(raw));
+}
+
 try {
   for await (const event of sandbox.getEventsStream({
     signal: ac.signal,
-    lastEventId: startEventId !== undefined ? Number(startEventId) : undefined,
+    lastEventId: resumeId,
     follow: follow ?? false,
   })) {
+    // Persist as we go so a later `hiver events` (or the inspector) sees them.
+    try {
+      appendEvent(sandbox.id, key, {
+        ...event,
+        sandbox_id: sandbox.id,
+        sandbox_key: key,
+      });
+    } catch {
+      // best-effort — a write failure must not interrupt the stream
+    }
     console.log(JSON.stringify(event));
   }
   if (tty) console.log();

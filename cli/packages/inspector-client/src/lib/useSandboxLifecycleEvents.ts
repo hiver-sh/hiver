@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SandboxRef } from "@/types";
-import { clearEvents } from "@/lib/eventStore";
 import { useTransport } from "@/lib/transport";
 import { useUserPreferences } from "@/lib/userPreferences";
 
@@ -11,9 +10,7 @@ import { useUserPreferences } from "@/lib/userPreferences";
  * container has exited for good (in single-sandbox mode sandboxd exits with it,
  * so the `die` never gets a following `destroy`) — so both drop the sandbox's
  * persisted file-explorer state and stored events and remove it from the list.
- * `stop` is non-terminal: the sandbox lingers in the list marked stopped. The
- * periodic purge in usePurgeOrphanEvents is the backstop for sandboxes that go
- * away while the inspector wasn't watching.
+ * `stop` is non-terminal: the sandbox lingers in the list marked stopped.
  *
  * This is one long-lived SSE per tab; affordable now that the per-sandbox
  * event feed and terminal share a single connection (see SandboxDetail's
@@ -42,10 +39,14 @@ export function useSandboxLifecycleEvents(
             key: string;
             status: string;
           };
-          // `die` is terminal like `destroy`: drop persisted state + stored events.
+          // `die` is terminal like `destroy`: drop persisted state + stored
+          // events. Events live server-side now, so clear them through the API.
           if (event.status === "destroy" || event.status === "die") {
             forgetSandbox(event.key);
-            void clearEvents(`${event.id}:${event.key}`);
+            const url = new URL(
+              `${serverUrl}/api/sandboxes/${encodeURIComponent(event.id)}/${encodeURIComponent(event.key)}/events`,
+            );
+            void transport.fetch(url, { method: "DELETE" }).catch(() => {});
           }
           setSandboxes((prev) => {
             switch (event.status) {

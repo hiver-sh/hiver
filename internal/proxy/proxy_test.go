@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/hiver-sh/hiver/internal/proxy"
 	"github.com/klauspost/compress/zstd"
 )
@@ -436,6 +437,34 @@ func TestZstdResponseDecompressed(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "hello zstd" {
 		t.Errorf("body: got %q, want %q", body, "hello zstd")
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding should be stripped, got %q", resp.Header.Get("Content-Encoding"))
+	}
+}
+
+func TestBrotliResponseDecompressed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "br")
+		w.Header().Set("Content-Type", "text/plain")
+		bw := brotli.NewWriter(w)
+		_, _ = bw.Write([]byte("hello brotli"))
+		_ = bw.Close()
+	}))
+	defer upstream.Close()
+
+	upstreamHost, _, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	client, _, stop := startProxy(t, []proxy.EgressRule{{Access: "allow", Host: upstreamHost}})
+	defer stop()
+
+	resp, err := client.Get(upstream.URL + "/")
+	if err != nil {
+		t.Fatalf("client.Get: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "hello brotli" {
+		t.Errorf("body: got %q, want %q", body, "hello brotli")
 	}
 	if resp.Header.Get("Content-Encoding") != "" {
 		t.Errorf("Content-Encoding should be stripped, got %q", resp.Header.Get("Content-Encoding"))

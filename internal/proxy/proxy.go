@@ -30,6 +30,7 @@ import (
 
 	"log"
 
+	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -495,6 +496,13 @@ func decodeBytes(enc string, b []byte) string {
 			return string(b)
 		}
 		return string(out)
+	case "br":
+		out, err := io.ReadAll(brotli.NewReader(bytes.NewReader(b)))
+		if err != nil {
+			log.Printf("decodeBytes: brotli read: %v", err)
+			return string(b)
+		}
+		return string(out)
 	default:
 		return string(b)
 	}
@@ -525,6 +533,11 @@ func unwrapBody(resp *http.Response) io.Reader {
 		resp.Header.Del("Content-Length")
 		resp.ContentLength = -1
 		return zr
+	case "br":
+		resp.Header.Del("Content-Encoding")
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = -1
+		return brotli.NewReader(resp.Body)
 	default:
 		return resp.Body
 	}

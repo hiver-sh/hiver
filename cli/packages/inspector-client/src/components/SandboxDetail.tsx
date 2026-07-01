@@ -55,7 +55,6 @@ import { CodeViewer } from "@/components/CodeViewer";
 import { cn } from "@/lib/utils";
 import { langForPath } from "@/lib/fileUtils";
 import type { SandboxEvent, SandboxRef, SandboxTarget } from "@/types";
-import { loadEvents, appendEvent, clearEvents } from "@/lib/eventStore";
 import { useTransport } from "@/lib/transport";
 import { useUserPreferences } from "@/lib/userPreferences";
 import type { PanelId } from "@/lib/userPreferences";
@@ -182,7 +181,6 @@ export function SandboxDetail({
   // Terminal's sink (if any) and whether the upstream terminal is attached.
   const termSinkRef = useRef<TerminalSink | null>(null);
   const termConnectedRef = useRef(false);
-  const resumeFromIdRef = useRef<number | undefined>(undefined);
   const [filePreview, setFilePreview] = useState<{
     path: string;
     content: string;
@@ -243,6 +241,17 @@ export function SandboxDetail({
     return () => {
       cancelled = true;
     };
+  }, [sandbox.id, sandbox.key, serverUrl, transport]);
+
+  // Events are persisted server-side (SQLite) now, so "clear" and shutdown
+  // wipe them through the server rather than a local store.
+  const clearStoredEvents = useCallback(() => {
+    const url = new URL(
+      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/events`,
+    );
+    void transport.fetch(url, { method: "DELETE" }).catch(() => {
+      /* best-effort */
+    });
   }, [sandbox.id, sandbox.key, serverUrl, transport]);
 
   const openFile = useCallback(
@@ -333,20 +342,19 @@ export function SandboxDetail({
   // connection we reconnect and resume the feed from the last id; the server
   // re-attaches the terminal and replays its scrollback.
   const startStream = useCallback(
-    (lastEventId?: number) => {
+    () => {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
       setConnected(false);
-      let resumeId = lastEventId;
 
       const run = async () => {
         if (ac.signal.aborted) return;
+        // No lastEventId: the server persists events and replays the full
+        // history on every connect. We dedupe replays via seenEventKeysRef.
         const url = new URL(
           `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/stream`,
         );
-        if (resumeId !== undefined)
-          url.searchParams.set("lastEventId", String(resumeId));
 
         let res: Response;
         try {
@@ -384,24 +392,14 @@ export function SandboxDetail({
               if (eventName === "feed") {
                 try {
                   const event = JSON.parse(dataLine) as SandboxEvent;
-                  // Only advance resumeId for primary-sandbox events — it is
-                  // the lastEventId sent on reconnect for the /stream endpoint,
-                  // which only applies to the primary sandbox's event feed.
-                  if (
-                    !event.sandbox_key ||
-                    event.sandbox_key === sandbox.key
-                  ) {
-                    resumeId = event.id;
-                  }
-                  // Deduplicate per sandbox_key: linked-sandbox events restart
-                  // from id=1 on each relay so we can't use a single global
-                  // monotonic id check.
+                  // Deduplicate per sandbox_key: the server replays the full
+                  // stored history on every (re)connect, and linked-sandbox
+                  // events restart from id=1 on each relay, so we can't use a
+                  // single global monotonic id check.
                   const eventKey = `${event.sandbox_key ?? ""}:${event.id}`;
                   if (seenEventKeysRef.current.has(eventKey)) continue;
                   seenEventKeysRef.current.add(eventKey);
                   setEvents((prev) => [...prev, event]);
-                  if (!player)
-                    void appendEvent(`${sandbox.id}:${sandbox.key}`, event);
                 } catch {
                   // ignore malformed frame
                 }
@@ -434,31 +432,15 @@ export function SandboxDetail({
   );
 
   useEffect(() => {
-    let cancelled = false;
     setEvents([]);
     seenEventKeysRef.current = new Set();
-    if (player) {
-      // In trace mode: skip stored events, replay from the start
-      startStream();
-      return () => {
-        cancelled = true;
-        abortRef.current?.abort();
-      };
-    }
-    loadEvents(`${sandbox.id}:${sandbox.key}`)
-      .then((stored) => {
-        if (cancelled) return;
-        setEvents(stored);
-        startStream(stored[stored.length - 1]?.id);
-      })
-      .catch(() => {
-        if (!cancelled) startStream();
-      });
+    // The server replays persisted history at the head of the stream (or, in
+    // trace mode, the recorded feed plays from the start), so we just connect.
+    startStream();
     return () => {
-      cancelled = true;
       abortRef.current?.abort();
     };
-  }, [startStream, player]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [startStream, player]);
 
   async function handleShutdown() {
     if (!confirm(`Shut down sandbox "${sandbox.key}"?`)) return;
@@ -472,7 +454,7 @@ export function SandboxDetail({
         `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/shutdown`,
       );
       await transport.fetch(url, { method: "POST" });
-      void clearEvents(`${sandbox.id}:${sandbox.key}`);
+      clearStoredEvents();
     } catch {
       // Shutdown failed — drop the overlay so the panel is usable again.
       setShutdownLoading(false);
@@ -751,10 +733,10 @@ export function SandboxDetail({
                   onClick={() => {
                     if (streamingPaused) {
                       setStreamingPaused(false);
-                      startStream(resumeFromIdRef.current);
-                      resumeFromIdRef.current = undefined;
+                      // The server replays stored history on reconnect;
+                      // seenEventKeysRef dedupes it against what we already have.
+                      startStream();
                     } else {
-                      resumeFromIdRef.current = events[events.length - 1]?.id;
                       setStreamingPaused(true);
                       abortRef.current?.abort();
                       setConnected(false);
@@ -787,7 +769,8 @@ export function SandboxDetail({
                   <button
                     onClick={() => {
                       setEvents([]);
-                      void clearEvents(`${sandbox.id}:${sandbox.key}`);
+                      seenEventKeysRef.current = new Set();
+                      clearStoredEvents();
                     }}
                     title="Clear events"
                     className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"

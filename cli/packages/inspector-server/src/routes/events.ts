@@ -4,8 +4,17 @@ import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 import { waitForSandbox } from "../lib/waitForSandbox.js";
 import { gatewayUrl } from "../lib/gatewayUrl.js";
 import { makeLinkedSandboxRelay } from "../lib/relayLinkedSandboxEvents.js";
+import { clearEvents } from "../lib/eventStore.js";
 
 const router = Router();
+
+// Drop a sandbox's persisted events (the inspector's "clear", and when a
+// sandbox is shut down or dies). Events now live server-side in SQLite, so the
+// browser clears them through here rather than wiping its own local store.
+router.delete("/:id/:key/events", (req: Request, res: Response) => {
+  clearEvents(req.params.id, req.params.key);
+  res.status(204).end();
+});
 
 router.get("/:id/:key/events", async (req: Request, res: Response) => {
   const sandbox = sandboxFromReq(req);
@@ -47,7 +56,7 @@ router.get("/:id/:key/events", async (req: Request, res: Response) => {
         sandbox_id: req.params.id,
         sandbox_key: req.params.key,
       });
-      relayLinked(event);
+      relayLinked.relay(event);
     }
   } catch {
     // stream aborted or sandbox gone — just close

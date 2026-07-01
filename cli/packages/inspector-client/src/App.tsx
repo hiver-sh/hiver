@@ -37,7 +37,6 @@ import {
   DEFAULT_INSPECTOR_SERVER,
   type SandboxRef,
 } from "@/types";
-import { usePurgeOrphanEvents } from "@/lib/usePurgeOrphanEvents";
 import { useSandboxLifecycleEvents } from "@/lib/useSandboxLifecycleEvents";
 import { useScrollbarVisibility } from "@/lib/useScrollbarVisibility";
 import { TransportProvider, useTransport } from "@/lib/transport";
@@ -238,9 +237,6 @@ function AppContent() {
   useEffect(() => {
     fetchSandboxes();
   }, [fetchSandboxes]);
-
-  // Periodically evict stored events for sandboxes that no longer exist.
-  usePurgeOrphanEvents(sandboxes);
 
   // Subscribe to sandbox lifecycle events and keep the list in sync.
   useSandboxLifecycleEvents(serverUrl, setSandboxes);

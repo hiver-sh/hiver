@@ -10,6 +10,7 @@ require (
 replace github.com/hiver-sh/hiver/client => ./client/go
 
 require (
+	github.com/andybalholm/brotli v1.0.6
 	github.com/creack/pty v1.1.24
 	github.com/getkin/kin-openapi v0.135.0
 	github.com/gin-gonic/gin v1.12.0
@@ -35,7 +36,6 @@ require (
 	cloud.google.com/go/auth v0.20.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
-	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect

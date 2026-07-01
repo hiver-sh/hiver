@@ -4,6 +4,12 @@ import { gatewayUrl } from "../lib/gatewayUrl.js";
 import { sandboxFromReq } from "../lib/sandboxFromReq.js";
 import { waitForSandbox } from "../lib/waitForSandbox.js";
 import { makeLinkedSandboxRelay } from "../lib/relayLinkedSandboxEvents.js";
+import {
+  appendEvent,
+  loadEvents,
+  lastOwnEventId,
+  linkedSandboxes,
+} from "../lib/eventStore.js";
 
 const router = Router();
 
@@ -234,13 +240,23 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
   });
 
   // Event-feed channel: proxy the sandbox's /v1/events broker, framed under
-  // `feed`. lastEventId lets the client resume without gaps across reconnects.
+  // `feed`. Events are persisted server-side (SQLite, ~/.hiver/events.db), so
+  // the browser no longer keeps its own copy or sends a lastEventId: we replay
+  // everything stored on connect, then resume the upstream stream from just
+  // after the last stored event so reconnects never miss or duplicate events.
   const sandbox = sandboxFromReq(req);
   const ac = new AbortController();
-  const lastEventIdParam = req.query.lastEventId as string | undefined;
-  const lastEventId = lastEventIdParam ? parseInt(lastEventIdParam) : undefined;
   (async () => {
     try {
+      // Replay persisted history first so a fresh connection shows the full
+      // timeline immediately, even while the sandbox is still booting.
+      for (const event of loadEvents(id, key)) {
+        write("feed", JSON.stringify(event));
+      }
+      // With nothing persisted yet, start from event 0 so we consume the
+      // sandbox's full history from the beginning rather than only tailing live.
+      const resumeId = lastOwnEventId(id, key) ?? 0;
+
       // Wait for the sandbox to be reachable before opening its event stream;
       // the abort signal bails out if the client disconnects while we wait.
       await waitForSandbox(sandbox, { signal: ac.signal });
@@ -248,18 +264,30 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
       const relayLinked = makeLinkedSandboxRelay(
         gatewayUrl(req),
         ac.signal,
-        (e) => write("feed", JSON.stringify(e)),
+        (e) => {
+          // Nested-sandbox events belong to this primary's timeline, so store
+          // them under the primary owner (id, key) while keeping their own
+          // sandbox identity (carried on the event) as the row's key.
+          appendEvent(id, key, e);
+          write("feed", JSON.stringify(e));
+        },
       );
+
+      // Resume nested sandboxes we've already recorded for this owner, even if
+      // no fresh linking egress.response arrives this session — each picks up
+      // from its own last persisted event.
+      for (const nested of linkedSandboxes(id, key)) {
+        relayLinked.openLinked(nested.id, nested.key);
+      }
 
       for await (const event of sandbox.getEventsStream({
         signal: ac.signal,
-        lastEventId,
+        lastEventId: resumeId,
       })) {
-        write(
-          "feed",
-          JSON.stringify({ ...event, sandbox_id: id, sandbox_key: key }),
-        );
-        relayLinked(event);
+        const augmented = { ...event, sandbox_id: id, sandbox_key: key };
+        appendEvent(id, key, augmented);
+        write("feed", JSON.stringify(augmented));
+        relayLinked.relay(event);
       }
     } catch {
       // stream aborted or sandbox gone
