@@ -31,6 +31,22 @@ RUN npm install -g playwright \
     && npx playwright install chromium-headless-shell \
     && rm -rf /var/lib/apt/lists/*
 
+# Rebrand the binary so it stops advertising itself as a bot. chrome-headless-shell
+# has the product name "HeadlessChrome" compiled into its .rodata, and that one
+# string is the source of BOTH the default User-Agent product token
+# ("HeadlessChrome/<ver>") AND the Sec-CH-UA brand ("HeadlessChrome";v=...). The
+# brand list is baked into the build — no launch flag or CDP override reaches it
+# reliably — so the only real fix is to patch the string in the binary. We rewrite
+# "HeadlessChrome" (14 bytes) to "Chrome" + NUL padding (also 14 bytes) so every
+# binary offset is preserved; consumers read it as a NUL-terminated C string and
+# see "Chrome". Done in this Node stage so only the patched binary (not Node) is
+# copied into the final image. Fails the build if the string is gone (e.g. a future
+# Chromium bump renamed it) so we can't silently regress to headless branding.
+RUN set -eux; \
+    bin="$(find "$PLAYWRIGHT_BROWSERS_PATH" \( -name chrome-headless-shell -o -name headless_shell \) -type f | head -1)"; \
+    test -n "$bin"; \
+    node -e 'const fs=require("fs"),p=process.argv[1],b=fs.readFileSync(p),f=Buffer.from("HeadlessChrome","latin1"),t=Buffer.concat([Buffer.from("Chrome","latin1"),Buffer.alloc(f.length-6)]);let n=0,i=0;while((i=b.indexOf(f,i))!==-1){t.copy(b,i);i+=f.length;n++;}if(!n){console.error("HeadlessChrome not found in "+p);process.exit(1);}fs.writeFileSync(p,b);console.error("rebranded "+n+" occurrence(s) in "+p);' "$bin"
+
 # 3) Final image: the browser, its runtime libs + fonts, and the Go host. No Node,
 #    no npm, no Playwright — the only resident process is the static Go binary.
 FROM debian:bookworm-slim

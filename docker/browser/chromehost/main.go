@@ -34,6 +34,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,6 +61,28 @@ const (
 	// chromeBin is the stable symlink to the Chromium binary, created at image
 	// build time so nothing at runtime depends on Playwright.
 	chromeBin = "/opt/hiver/chrome"
+
+	// chromeMajorVersion / chromeFullVersion track the actual bundled Chromium
+	// build. The UA string (defaultUserAgent) and the Sec-CH-UA client-hint
+	// metadata (userAgentMetadata) are both derived from these, so the UA header
+	// and the client hints never drift apart — keep them in sync with the image's
+	// Chromium when it's upgraded.
+	chromeMajorVersion = "149"
+	chromeFullVersion  = "149.0.7827.0"
+
+	// defaultUserAgent overrides Chrome's built-in default, which under
+	// --headless=new advertises "HeadlessChrome/..." — an obvious bot tell. This
+	// is the same underlying build presented as an ordinary desktop Chrome: real
+	// platform (X11; Linux x86_64) and real major version, just without the
+	// "Headless" token and with the reduced ".0.0.0" version format real Chrome
+	// emits. Keeping the real platform means the UA stays consistent with the
+	// Sec-CH-UA-Platform / Sec-CH-UA-Mobile client hints (derived from the OS, not
+	// this string). Override with HIVER_BROWSER_USER_AGENT.
+	//
+	// The Sec-CH-UA *brand* list is separate: it's Chrome's built-in brand list
+	// (which contains "HeadlessChrome" under --headless=new) and cannot be changed
+	// by any launch flag. It's fixed at runtime via CDP — see applyUserAgentOverride.
+	defaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeMajorVersion + ".0.0.0 Safari/537.36"
 )
 
 func env(name, def string) string {
@@ -76,7 +101,7 @@ func envInt(name string, def int) int {
 	return def
 }
 
-func chromeArgs(chromePort int, userDataDir string) []string {
+func chromeArgs(chromePort int, userDataDir, userAgent string) []string {
 	return []string{
 		// DevTools/CDP endpoint. Chrome binds this on loopback only (see header);
 		// the 0.0.0.0 relay is what the ingress proxy reaches. --remote-allow-origins
@@ -85,6 +110,9 @@ func chromeArgs(chromePort int, userDataDir string) []string {
 		"--remote-allow-origins=*",
 		"--headless=new",
 		"--user-data-dir=" + userDataDir,
+		// Present as an ordinary desktop Chrome instead of the default
+		// "HeadlessChrome/..." UA. See defaultUserAgent.
+		"--user-agent=" + userAgent,
 
 		// cost-minimizing flags.
 		"--no-sandbox",
@@ -144,7 +172,8 @@ func main() {
 		log.Fatalf("create user-data-dir: %v", err)
 	}
 
-	cmd := exec.Command(env("HIVER_CHROME_BIN", chromeBin), chromeArgs(chromePort, userDataDir)...)
+	userAgent := env("HIVER_BROWSER_USER_AGENT", defaultUserAgent)
+	cmd := exec.Command(env("HIVER_CHROME_BIN", chromeBin), chromeArgs(chromePort, userDataDir, userAgent)...)
 	cmd.Stdout = os.Stdout
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -173,7 +202,7 @@ func main() {
 		line := scanner.Text()
 		fmt.Fprintln(os.Stderr, line)
 		if strings.Contains(line, "DevTools listening on ws://") {
-			once.Do(func() { go onReady(port, chromePort) })
+			once.Do(func() { go onReady(port, chromePort, userAgent) })
 		}
 	}
 
@@ -188,7 +217,7 @@ func main() {
 }
 
 // onReady wires up the relay once Chrome's CDP endpoint is up.
-func onReady(port, chromePort int) {
+func onReady(port, chromePort int, userAgent string) {
 	browserWsPath, err := resolveBrowserWsPath(chromePort)
 	if err != nil {
 		log.Printf("resolve browser ws failed: %v", err)
@@ -199,6 +228,9 @@ func onReady(port, chromePort int) {
 		log.Fatalf("relay listen: %v", err)
 	}
 	go serveRelay(ln, chromePort, browserWsPath)
+
+	// Fix the Sec-CH-UA client hints, which the --user-agent flag can't touch.
+	go applyUserAgentOverride(chromePort, browserWsPath, userAgent)
 
 	disp := browserWsPath
 	if disp == "" {
@@ -284,4 +316,343 @@ func handleRelay(client net.Conn, chromePort int, browserWsPath string) {
 		}
 	}()
 	_, _ = io.Copy(client, upstream)
+}
+
+// applyUserAgentOverride fixes the one thing the --user-agent launch flag can't:
+// the Sec-CH-UA client hints (and navigator.userAgentData), whose brand list is
+// baked into the Chrome build and reports "HeadlessChrome" under --headless=new.
+// The only lever is CDP Emulation.setUserAgentOverride with a userAgentMetadata
+// object, applied to a page target.
+//
+// This is a one-shot: it connects to Chrome's browser endpoint, attaches to the
+// existing page target(s), sets the override, and then keeps the CDP connection
+// open for the life of the process — the override is scoped to the attached
+// session, so it would be reverted the moment we detached. The resident-browser
+// flow (clients that connectOverCDP and reuse contexts()[0]) drives that same
+// pre-existing target, so it inherits the override. Freshly created
+// newContext() targets are not covered (that would need Target.setAutoAttach,
+// with a per-target round-trip we deliberately avoid here).
+//
+// Failures are logged, never fatal: a broken override must not take Chrome down.
+func applyUserAgentOverride(chromePort int, browserWsPath, userAgent string) {
+	if browserWsPath == "" {
+		log.Printf("ua-override: no browser ws path; skipping client-hint override")
+		return
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", chromePort)
+
+	ws, err := wsConnect(addr, browserWsPath)
+	if err != nil {
+		log.Printf("ua-override: connect: %v", err)
+		return
+	}
+
+	params := map[string]any{
+		"userAgent":         userAgent,
+		"userAgentMetadata": userAgentMetadata(),
+	}
+
+	// Chrome opens an initial page target, but it may not be present the instant
+	// the CDP endpoint accepts connections — retry briefly.
+	var applied int
+	for range 20 {
+		targets, err := ws.pageTargets()
+		if err != nil {
+			log.Printf("ua-override: getTargets: %v", err)
+			ws.close()
+			return
+		}
+		for _, tid := range targets {
+			sid, err := ws.attach(tid)
+			if err != nil {
+				log.Printf("ua-override: attach %s: %v", tid, err)
+				continue
+			}
+			if _, err := ws.call("Emulation.setUserAgentOverride", params, sid); err != nil {
+				log.Printf("ua-override: setUserAgentOverride on %s: %v", tid, err)
+				continue
+			}
+			applied++
+		}
+		if applied > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if applied == 0 {
+		log.Printf("ua-override: no page target to override; Sec-CH-UA still reports HeadlessChrome")
+		ws.close()
+		return
+	}
+	log.Printf("ua-override: Sec-CH-UA client hints overridden on %d page target(s)", applied)
+
+	// Hold the connection (and thus the session-scoped override) open. Draining
+	// incoming frames replies to pings and detects Chrome going away.
+	for {
+		if _, err := ws.readMessage(); err != nil {
+			return
+		}
+	}
+}
+
+// userAgentMetadata is the Sec-CH-UA / navigator.userAgentData payload: the real
+// Chrome build's brands with the "HeadlessChrome" entry replaced by "Google
+// Chrome", the standard GREASE brand, and Linux platform hints consistent with
+// defaultUserAgent (so header UA and client hints agree). Versions come from the
+// chrome*Version constants so this can't drift from the UA string.
+func userAgentMetadata() map[string]any {
+	type brand struct {
+		Brand   string `json:"brand"`
+		Version string `json:"version"`
+	}
+	return map[string]any{
+		"brands": []brand{
+			{"Google Chrome", chromeMajorVersion},
+			{"Chromium", chromeMajorVersion},
+			{"Not)A;Brand", "24"},
+		},
+		"fullVersionList": []brand{
+			{"Google Chrome", chromeFullVersion},
+			{"Chromium", chromeFullVersion},
+			{"Not)A;Brand", "24.0.0.0"},
+		},
+		"fullVersion":     chromeFullVersion,
+		"platform":        "Linux",
+		"platformVersion": "6.6.0",
+		"architecture":    "x86",
+		"bitness":         "64",
+		"model":           "",
+		"mobile":          false,
+		"wow64":           false,
+	}
+}
+
+// --- minimal CDP-over-WebSocket client (stdlib only) ---
+//
+// chromehost is intentionally dependency-free (see file header), so rather than
+// pull in a WebSocket library for a handful of CDP commands, this implements just
+// enough of RFC 6455: a client handshake, masked client frames, and frame reads
+// (handling fragmentation + ping). Commands are issued synchronously (one setup
+// goroutine), so there is only ever a single writer.
+
+type wsConn struct {
+	conn   net.Conn
+	br     *bufio.Reader
+	mu     sync.Mutex // serializes frame writes
+	nextID int
+}
+
+// wsConnect performs the RFC 6455 opening handshake against Chrome's CDP endpoint.
+func wsConnect(addr, path string) (*wsConn, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	key := make([]byte, 16)
+	if _, err := rand.Read(key); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	req := "GET " + path + " HTTP/1.1\r\n" +
+		"Host: " + addr + "\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Key: " + base64.StdEncoding.EncodeToString(key) + "\r\n" +
+		"Sec-WebSocket-Version: 13\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if !strings.Contains(status, " 101 ") {
+		conn.Close()
+		return nil, fmt.Errorf("ws upgrade failed: %s", strings.TrimSpace(status))
+	}
+	// Drain the rest of the response headers; frames follow the blank line. The
+	// same br is reused for frame reads so nothing buffered past the headers is lost.
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+	return &wsConn{conn: conn, br: br}, nil
+}
+
+func (w *wsConn) close() { _ = w.conn.Close() }
+
+// writeFrame writes a single final client frame (always masked, per RFC 6455).
+func (w *wsConn) writeFrame(opcode byte, payload []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	hdr := []byte{0x80 | opcode}
+	n := len(payload)
+	switch {
+	case n < 126:
+		hdr = append(hdr, 0x80|byte(n))
+	case n < 65536:
+		hdr = append(hdr, 0x80|126, byte(n>>8), byte(n))
+	default:
+		hdr = append(hdr, 0x80|127)
+		var ext [8]byte
+		binary.BigEndian.PutUint64(ext[:], uint64(n))
+		hdr = append(hdr, ext[:]...)
+	}
+	var mask [4]byte
+	if _, err := rand.Read(mask[:]); err != nil {
+		return err
+	}
+	hdr = append(hdr, mask[:]...)
+	masked := make([]byte, n)
+	for i := range n {
+		masked[i] = payload[i] ^ mask[i%4]
+	}
+	if _, err := w.conn.Write(hdr); err != nil {
+		return err
+	}
+	_, err := w.conn.Write(masked)
+	return err
+}
+
+// readMessage reads one complete application message, reassembling fragments and
+// transparently answering pings. Returns the message payload (text/binary).
+func (w *wsConn) readMessage() ([]byte, error) {
+	var msg []byte
+	for {
+		var h [2]byte
+		if _, err := io.ReadFull(w.br, h[:]); err != nil {
+			return nil, err
+		}
+		fin := h[0]&0x80 != 0
+		opcode := h[0] & 0x0f
+		masked := h[1]&0x80 != 0
+		n := int(h[1] & 0x7f)
+		switch n {
+		case 126:
+			var ext [2]byte
+			if _, err := io.ReadFull(w.br, ext[:]); err != nil {
+				return nil, err
+			}
+			n = int(binary.BigEndian.Uint16(ext[:]))
+		case 127:
+			var ext [8]byte
+			if _, err := io.ReadFull(w.br, ext[:]); err != nil {
+				return nil, err
+			}
+			n = int(binary.BigEndian.Uint64(ext[:]))
+		}
+		var mask [4]byte
+		if masked {
+			if _, err := io.ReadFull(w.br, mask[:]); err != nil {
+				return nil, err
+			}
+		}
+		payload := make([]byte, n)
+		if _, err := io.ReadFull(w.br, payload); err != nil {
+			return nil, err
+		}
+		if masked {
+			for i := range payload {
+				payload[i] ^= mask[i%4]
+			}
+		}
+		switch opcode {
+		case 0x0, 0x1, 0x2: // continuation / text / binary
+			msg = append(msg, payload...)
+			if fin {
+				return msg, nil
+			}
+		case 0x8: // close
+			return nil, io.EOF
+		case 0x9: // ping -> pong
+			if err := w.writeFrame(0xA, payload); err != nil {
+				return nil, err
+			}
+		case 0xA: // pong; ignore
+		}
+	}
+}
+
+// call issues a CDP command and blocks until the matching response arrives,
+// discarding unrelated events/responses (fine for sequential setup).
+func (w *wsConn) call(method string, params any, sessionID string) (map[string]any, error) {
+	w.nextID++
+	id := w.nextID
+	msg := map[string]any{"id": id, "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	if sessionID != "" {
+		msg["sessionId"] = sessionID
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.writeFrame(0x1, b); err != nil {
+		return nil, err
+	}
+	for {
+		data, err := w.readMessage()
+		if err != nil {
+			return nil, err
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(data, &resp); err != nil {
+			continue
+		}
+		fid, ok := resp["id"].(float64)
+		if !ok || int(fid) != id {
+			continue
+		}
+		if e, ok := resp["error"]; ok {
+			return nil, fmt.Errorf("cdp %s: %v", method, e)
+		}
+		return resp, nil
+	}
+}
+
+// pageTargets returns the targetIds of all current page targets.
+func (w *wsConn) pageTargets() ([]string, error) {
+	resp, err := w.call("Target.getTargets", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	result, _ := resp["result"].(map[string]any)
+	infos, _ := result["targetInfos"].([]any)
+	var ids []string
+	for _, ti := range infos {
+		t, _ := ti.(map[string]any)
+		if t["type"] == "page" {
+			if id, ok := t["targetId"].(string); ok {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, nil
+}
+
+// attach opens a flat session to a target and returns its sessionId.
+func (w *wsConn) attach(targetID string) (string, error) {
+	resp, err := w.call("Target.attachToTarget", map[string]any{"targetId": targetID, "flatten": true}, "")
+	if err != nil {
+		return "", err
+	}
+	result, _ := resp["result"].(map[string]any)
+	sid, ok := result["sessionId"].(string)
+	if !ok {
+		return "", fmt.Errorf("attachToTarget: no sessionId in response")
+	}
+	return sid, nil
 }
