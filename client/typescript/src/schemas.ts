@@ -250,11 +250,12 @@ export interface EgressRule {
   /** HTTP methods matched by this rule. Empty means any method. */
   methods?: HttpMethod[];
   /**
-   * Glob path patterns matched by this rule. Empty means any path. A trailing `/*` matches the prefix
-   * and anything beneath it (`/repos/*` matches `/repos` and `/repos/foo/bar`). A path segment wrapped
-   * in brackets is a single-segment placeholder that matches any one non-empty segment: `/users/[id]`
-   * matches `/users/42` but not `/users` or `/users/42/posts`. The name inside the brackets is
-   * free-form (`[id]`, `[<guid>]`).
+   * Git-style glob path patterns matched by this rule. Empty means any path. Matching is
+   * segment-by-segment on `/` boundaries. `*` matches zero or more characters within a single segment
+   * and never crosses a slash (`/users/*` matches `/users/42` and `/users/` but not `/users/42/posts`;
+   * `/files/log-*` matches `/files/log-2024`). `**` matches zero or more whole segments (`/repos/**`
+   * matches `/repos`, `/repos/foo`, and `/repos/foo/bar`), and may appear mid-path to span any depth
+   * between two literal segments.
    */
   paths?: string[];
   override?: EgressOverride;

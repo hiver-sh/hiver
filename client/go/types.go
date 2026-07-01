@@ -60,12 +60,13 @@ type EgressRule struct {
 	Ports []int `json:"ports,omitempty"`
 	// Methods are the HTTP methods matched by this rule. Empty means any method.
 	Methods []string `json:"methods,omitempty"`
-	// Paths are glob path patterns matched by this rule. Empty means any path.
-	// A trailing "/*" matches the prefix and anything beneath it ("/repos/*"
-	// matches "/repos" and "/repos/foo/bar"). A segment wrapped in brackets is
-	// a single-segment placeholder matching any one non-empty segment:
-	// "/users/[id]" matches "/users/42" but not "/users" or "/users/42/posts".
-	// The name inside the brackets is free-form ("[id]", "[<guid>]").
+	// Paths are git-style glob path patterns matched by this rule. Empty means
+	// any path. Matching is segment-by-segment on "/" boundaries. "*" matches
+	// zero or more characters within a single segment and never crosses "/"
+	// ("/users/*" matches "/users/42" and "/users/" but not "/users/42/posts").
+	// "**" matches zero or more whole segments ("/repos/**" matches "/repos",
+	// "/repos/foo", and "/repos/foo/bar"; "/a/**/z" matches "/a/z" and
+	// "/a/b/c/z").
 	Paths []string `json:"paths,omitempty"`
 	// Override holds values the proxy injects into matching outbound requests.
 	Override *EgressOverride `json:"override,omitempty"`

@@ -991,82 +991,91 @@ func matchMethod(allowed []string, method string) bool {
 	return false
 }
 
-// matchPath supports exact match and a trailing "/*" wildcard. "/api/*"
-// matches "/api" and anything under it; "/api" matches only itself.
+// matchPath reports whether path matches any of the allowed glob patterns.
+// An empty list means "any path matches".
 func matchPath(allowed []string, path string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
 	for _, a := range allowed {
-		if matchPathPattern(a, path) {
+		if matchGlob(a, path) {
 			return true
 		}
 	}
 	return false
 }
 
-// matchPathPattern reports whether a single allowlist pattern matches path.
-// Beyond exact equality it supports two wildcard forms:
-//   - a trailing "/*" matches the prefix itself and anything beneath it
-//     ("/repos/*" matches "/repos" and "/repos/foo/bar").
-//   - a path segment wrapped in brackets ("/users/[id]", "/users/[<guid>]")
-//     is a single-segment placeholder that matches any one non-empty segment
-//     ("/users/[id]" matches "/users/42" but not "/users" or "/users/42/x").
+// matchGlob matches a git-style path glob against path. The pattern and path
+// are compared segment by segment on "/" boundaries:
+//   - "*" matches zero or more characters within a single segment; it never
+//     crosses "/". "/a*" matches "/a" and "/abc" but not "/a/b".
+//   - "**" as a whole segment matches zero or more segments. "/a/**" matches
+//     "/a", "/a/b", and "/a/b/c"; "/**/c" matches "/c" and "/a/b/c".
 //
-// Placeholders may precede a trailing "/*" ("/users/[id]/*" matches
-// "/users/42" and "/users/42/posts"). Non-placeholder patterns keep their
-// original exact / "/*"-suffix semantics unchanged.
-func matchPathPattern(pattern, path string) bool {
-	if pattern == path {
-		return true
-	}
-	if strings.HasSuffix(pattern, "/*") {
-		prefix := strings.TrimSuffix(pattern, "/*")
-		if path == prefix || strings.HasPrefix(path, prefix+"/") {
-			return true
-		}
-		// A prefix containing a placeholder still needs segment matching;
-		// fall through rather than returning here.
-	}
-	if !strings.Contains(pattern, "[") {
-		return false
-	}
-	return matchPathSegments(pattern, path)
+// A literal segment must match exactly. Patterns and paths are expected to
+// share the same leading "/" (both split to a leading "" segment).
+func matchGlob(pattern, path string) bool {
+	return matchSegments(strings.Split(pattern, "/"), strings.Split(path, "/"))
 }
 
-// matchPathSegments matches pattern against path one "/"-separated segment at
-// a time, honoring "[...]" placeholders and a trailing "*" segment (the "/*"
-// suffix form) that matches the prefix and everything beneath it.
-func matchPathSegments(pattern, path string) bool {
-	ps := strings.Split(pattern, "/")
-	hs := strings.Split(path, "/")
-	for i, seg := range ps {
-		// A trailing "*" matches the prefix matched so far plus zero or more
-		// remaining segments, mirroring the plain "/*" suffix behavior.
-		if seg == "*" && i == len(ps)-1 {
-			return true
-		}
-		if i >= len(hs) {
-			return false
-		}
-		if isPathPlaceholder(seg) {
-			if hs[i] == "" {
-				return false
+// matchSegments matches pattern segments pat against path segments seg, with
+// "**" matching zero or more whole segments. It recurses on "**" to try every
+// split point; other segments are matched one-to-one via matchSegment.
+func matchSegments(pat, seg []string) bool {
+	for len(pat) > 0 {
+		if pat[0] == "**" {
+			rest := pat[1:]
+			// "**" matches zero or more segments: try consuming 0..len(seg)
+			// of them and matching the remaining pattern against the rest.
+			for i := 0; i <= len(seg); i++ {
+				if matchSegments(rest, seg[i:]) {
+					return true
+				}
 			}
-			continue
+			return false
 		}
-		if seg != hs[i] {
+		if len(seg) == 0 {
+			return false
+		}
+		if !matchSegment(pat[0], seg[0]) {
+			return false
+		}
+		pat, seg = pat[1:], seg[1:]
+	}
+	return len(seg) == 0
+}
+
+// matchSegment matches a single pattern segment against a single path segment,
+// where "*" matches zero or more characters (any "**" within a segment, not
+// bordered by "/", collapses to the same wildcard). All other characters are
+// matched literally. Implemented as the classic greedy two-pointer wildcard
+// match with backtracking on the most recent "*".
+func matchSegment(pat, seg string) bool {
+	if !strings.Contains(pat, "*") {
+		return pat == seg
+	}
+	var s, p, star, matched int
+	star = -1
+	for s < len(seg) {
+		switch {
+		case p < len(pat) && pat[p] == '*':
+			star, matched = p, s
+			p++
+		case p < len(pat) && pat[p] == seg[s]:
+			p++
+			s++
+		case star != -1:
+			p = star + 1
+			matched++
+			s = matched
+		default:
 			return false
 		}
 	}
-	return len(ps) == len(hs)
-}
-
-// isPathPlaceholder reports whether a path segment is a bracketed placeholder
-// such as "[id]" or "[<guid>]" — any segment that opens with "[" and closes
-// with "]".
-func isPathPlaceholder(seg string) bool {
-	return len(seg) >= 2 && seg[0] == '[' && seg[len(seg)-1] == ']'
+	for p < len(pat) && pat[p] == '*' {
+		p++
+	}
+	return p == len(pat)
 }
 
 func (p *Proxy) audit(e AuditEvent) {

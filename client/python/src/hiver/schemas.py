@@ -116,7 +116,7 @@ class EgressRule(BaseModel):
     methods: Optional[list[HttpMethod]] = None
     """HTTP methods matched by this rule. Empty means any method."""
     paths: Optional[list[str]] = None
-    """Glob path patterns matched by this rule. Empty means any path. A trailing ``/*`` matches the prefix and anything beneath it (``/repos/*`` matches ``/repos`` and ``/repos/foo/bar``). A path segment wrapped in brackets is a single-segment placeholder that matches any one non-empty segment: ``/users/[id]`` matches ``/users/42`` but not ``/users`` or ``/users/42/posts``. The name inside the brackets is free-form (``[id]``, ``[<guid>]``)."""
+    """Git-style glob path patterns matched by this rule. Empty means any path. Matching is segment-by-segment on ``/`` boundaries. ``*`` matches zero or more characters within a single segment and never crosses ``/`` (``/users/*`` matches ``/users/42`` and ``/users/`` but not ``/users/42/posts``; ``/v*/users`` matches ``/v2/users``). ``**`` matches zero or more whole segments (``/repos/**`` matches ``/repos``, ``/repos/foo``, and ``/repos/foo/bar``; ``/a/**/z`` matches ``/a/z`` and ``/a/b/c/z``)."""
     override: Optional[EgressOverride] = None
     """Values the proxy injects into matching outbound requests."""
 

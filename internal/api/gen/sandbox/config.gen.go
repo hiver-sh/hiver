@@ -313,13 +313,14 @@ type EgressRule struct {
 		Query *map[string]string `json:"query,omitempty"`
 	} `json:"override,omitempty"`
 
-	// Paths Glob path patterns allowed by this rule. Empty means any
-	// path. A trailing `/*` matches the prefix and anything beneath
-	// it (`/repos/*` matches `/repos` and `/repos/foo/bar`). A path
-	// segment wrapped in brackets is a single-segment placeholder
-	// that matches any one non-empty segment: `/users/[id]` matches
-	// `/users/42` but not `/users` or `/users/42/posts`. The name
-	// inside the brackets is free-form (`[id]`, `[<guid>]`).
+	// Paths Git-style glob path patterns allowed by this rule. Empty means
+	// any path. Matching is segment-by-segment on `/` boundaries.
+	// `*` matches zero or more characters within a single segment and
+	// never crosses `/` (`/users/*` matches `/users/42` and `/users/`
+	// but not `/users/42/posts`; `/v*/users` matches `/v2/users`).
+	// `**` matches zero or more whole segments (`/repos/**` matches
+	// `/repos`, `/repos/foo`, and `/repos/foo/bar`; `/a/**/z` matches
+	// `/a/z` and `/a/b/c/z`).
 	Paths *[]string `json:"paths,omitempty"`
 
 	// Ports Optional ports otherwise no port enforcement is performed.

@@ -37,7 +37,7 @@ from .schemas import (
     SnapshotVM,
     StdioEvent,
 )
-from .utils import allowed_npm_packages, allowed_python_packages
+from .utils import allow_sandbox, allowed_npm_packages, allowed_python_packages
 
 __all__ = [
     # controller
@@ -81,6 +81,7 @@ __all__ = [
     "SnapshotVM",
     "StdioEvent",
     # utils
+    "allow_sandbox",
     "allowed_npm_packages",
     "allowed_python_packages",
 ]

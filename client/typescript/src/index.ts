@@ -55,4 +55,8 @@ export {
   type SandboxLifecycleStatus,
 } from "./controller";
 
-export { allowedPythonPackages, allowedNpmPackages } from "./utils";
+export {
+  allowedPythonPackages,
+  allowedNpmPackages,
+  allowSandbox,
+} from "./utils";

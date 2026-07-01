@@ -80,9 +80,14 @@ function ToolUseBlock({ name, input }: { name: string; input?: unknown }) {
   );
 }
 
+interface ToolUseInfo {
+  name: string;
+  input?: unknown;
+}
+
 function renderBlocks(
   blocks: LLMContentBlock[],
-  toolIdToName?: Map<string, string>,
+  toolIdToUse?: Map<string, ToolUseInfo>,
 ): ReactNode {
   return blocks.map((blk, i) => {
     if (blk.type === "text" && blk.text)
@@ -104,12 +109,11 @@ function renderBlocks(
         content: raw ?? "",
         isJson: false,
       };
-      const resolvedName =
-        (blk.toolId && toolIdToName?.get(blk.toolId)) ??
-        blk.toolId ??
-        "unknown";
+      const use = blk.toolId ? toolIdToUse?.get(blk.toolId) : undefined;
+      const resolvedName = use?.name ?? blk.toolId ?? "unknown";
       return (
         <div key={i} className="flex flex-col gap-1.5">
+          {use && <ToolUseBlock name={use.name} input={use.input} />}
           <span className="text-[11px] font-medium text-muted-foreground tracking-wide">
             Tool result:{" "}
             <span className="text-foreground/80">{resolvedName}</span>
@@ -170,15 +174,15 @@ export function LLMSummary({
     return shared;
   }, [summary.messages, prevSummary?.messages]);
 
-  const toolIdToName = useMemo(() => {
-    const map = new Map<string, string>();
+  const toolIdToUse = useMemo(() => {
+    const map = new Map<string, ToolUseInfo>();
     const allBlocks = [
       ...(summary.response?.blocks ?? []),
       ...summary.messages.flatMap((m) => m.content),
     ];
     for (const blk of allBlocks) {
       if (blk.type === "tool_use" && blk.toolId && blk.toolName) {
-        map.set(blk.toolId, blk.toolName);
+        map.set(blk.toolId, { name: blk.toolName, input: blk.toolInput });
       }
     }
     return map;
@@ -224,7 +228,7 @@ export function LLMSummary({
           {prevContextExpanded &&
             prevMsgs.map(({ msg, i }) => (
               <Bubble key={i} role={msg.role}>
-                {renderBlocks(msg.content, toolIdToName)}
+                {renderBlocks(msg.content, toolIdToUse)}
               </Bubble>
             ))}
         </div>
@@ -232,13 +236,13 @@ export function LLMSummary({
 
       {currentMsgs.map(({ msg, i }) => (
         <Bubble key={i} role={msg.role}>
-          {renderBlocks(msg.content, toolIdToName)}
+          {renderBlocks(msg.content, toolIdToUse)}
         </Bubble>
       ))}
 
       {summary.response && summary.response.blocks.length > 0 && (
         <Bubble role="assistant">
-          {renderBlocks(summary.response.blocks, toolIdToName)}
+          {renderBlocks(summary.response.blocks, toolIdToUse)}
         </Bubble>
       )}
     </div>

@@ -165,10 +165,11 @@ func TestMatchEgress(t *testing.T) {
 		{Access: "allow", Host: "files.example.com", Override: &proxy.EgressOverride{Headers: map[string]string{"X-Auth": "tok"}}},
 		{Access: "allow", Host: "127.0.0.1", Ports: []int{8080}},                    // port-pinned, host-only
 		{Access: "allow", Host: "metrics.internal", Ports: []int{9090, 9091, 9092}}, // port set
-		{Access: "allow", Host: "api.example.com", Paths: []string{"/users/[id]"}},  // single-segment placeholder
-		{Access: "allow", Host: "ang.example.com", Paths: []string{"/users/[<guid>]/profile"}},
-		{Access: "allow", Host: "tail.example.com", Paths: []string{"/users/[id]/*"}}, // placeholder then /*
-		{Access: "deny", Host: "blocked.com"},                                         // explicit deny rule
+		{Access: "allow", Host: "api.example.com", Paths: []string{"/users/*"}},     // single-segment wildcard
+		{Access: "allow", Host: "pre.example.com", Paths: []string{"/v*/users"}},    // partial-segment wildcard
+		{Access: "allow", Host: "deep.example.com", Paths: []string{"/users/**"}},   // globstar: any depth
+		{Access: "allow", Host: "mid.example.com", Paths: []string{"/a/**/z"}},      // globstar in the middle
+		{Access: "deny", Host: "blocked.com"},                                       // explicit deny rule
 	}
 	cases := []struct {
 		name             string
@@ -191,17 +192,21 @@ func TestMatchEgress(t *testing.T) {
 		{"port: list match", "GET", "metrics.internal", 9091, "/m", "allow", ""},
 		{"port: list miss", "GET", "metrics.internal", 9100, "/m", "", ""},
 		{"port: unenforced rule ignores port", "GET", "files.pypi.org", 8443, "/", "allow", ""},
-		{"placeholder: matches one segment", "GET", "api.example.com", 443, "/users/42", "allow", ""},
-		{"placeholder: matches any segment value", "GET", "api.example.com", 443, "/users/abc-DEF", "allow", ""},
-		{"placeholder: empty segment denied", "GET", "api.example.com", 443, "/users/", "", ""},
-		{"placeholder: missing segment denied", "GET", "api.example.com", 443, "/users", "", ""},
-		{"placeholder: extra segment denied", "GET", "api.example.com", 443, "/users/42/posts", "", ""},
-		{"placeholder: literal mismatch denied", "GET", "api.example.com", 443, "/accounts/42", "", ""},
-		{"placeholder: angle-bracket form mid-path", "GET", "ang.example.com", 443, "/users/9f/profile", "allow", ""},
-		{"placeholder: angle-bracket wrong suffix denied", "GET", "ang.example.com", 443, "/users/9f/settings", "", ""},
-		{"placeholder+/*: prefix itself", "GET", "tail.example.com", 443, "/users/42", "allow", ""},
-		{"placeholder+/*: beneath prefix", "GET", "tail.example.com", 443, "/users/42/posts/7", "allow", ""},
-		{"placeholder+/*: empty placeholder denied", "GET", "tail.example.com", 443, "/users//posts", "", ""},
+		{"star: matches one segment", "GET", "api.example.com", 443, "/users/42", "allow", ""},
+		{"star: matches empty segment", "GET", "api.example.com", 443, "/users/", "allow", ""},
+		{"star: does not cross slash", "GET", "api.example.com", 443, "/users/42/posts", "", ""},
+		{"star: missing segment denied", "GET", "api.example.com", 443, "/users", "", ""},
+		{"star: literal mismatch denied", "GET", "api.example.com", 443, "/accounts/42", "", ""},
+		{"star: partial-segment matches", "GET", "pre.example.com", 443, "/v2/users", "allow", ""},
+		{"star: partial-segment zero chars", "GET", "pre.example.com", 443, "/v/users", "allow", ""},
+		{"star: partial-segment wrong suffix denied", "GET", "pre.example.com", 443, "/v2/posts", "", ""},
+		{"globstar: zero segments (prefix itself)", "GET", "deep.example.com", 443, "/users", "allow", ""},
+		{"globstar: one segment", "GET", "deep.example.com", 443, "/users/42", "allow", ""},
+		{"globstar: many segments", "GET", "deep.example.com", 443, "/users/42/posts/7", "allow", ""},
+		{"globstar: literal prefix mismatch denied", "GET", "deep.example.com", 443, "/accounts/42", "", ""},
+		{"globstar mid: zero between", "GET", "mid.example.com", 443, "/a/z", "allow", ""},
+		{"globstar mid: many between", "GET", "mid.example.com", 443, "/a/b/c/z", "allow", ""},
+		{"globstar mid: wrong tail denied", "GET", "mid.example.com", 443, "/a/b/c/y", "", ""},
 		{"deny rule matches", "GET", "blocked.com", 443, "/", "deny", ""},
 		{"empty host always denied", "GET", "", 80, "/", "", ""},
 		{"empty rules deny everything", "GET", "anywhere.com", 80, "/", "", ""},
@@ -241,10 +246,10 @@ func TestMatchEgress(t *testing.T) {
 func TestPathDenyDoesNotBlockTLSTunnel(t *testing.T) {
 	rules := []proxy.EgressRule{
 		{Access: "deny", Host: "registry.npmjs.org", Paths: []string{"/hasown"}},
-		{Access: "allow", Host: "registry.npmjs.org", Paths: []string{"/*"}},
+		{Access: "allow", Host: "registry.npmjs.org", Paths: []string{"/**"}},
 	}
 
-	// TLS tunnel (path=""): deny rule must be skipped; allow /* matches.
+	// TLS tunnel (path=""): deny rule must be skipped; allow /** matches.
 	tls := proxy.MatchEgress(rules, "TLS", "registry.npmjs.org", 443, "")
 	if tls == nil || tls.Access != "allow" {
 		t.Fatalf("TLS tunnel: got %v, want allow (deny /hasown must not block tunnel)", tls)
