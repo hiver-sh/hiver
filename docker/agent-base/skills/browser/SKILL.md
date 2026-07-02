@@ -40,6 +40,10 @@ You can also read the DOM/text directly (e.g. `DOM.getDocument`, `Runtime.evalua
 
 **Screenshots are a last resort** — only capture one (`Page.captureScreenshot`) when the accessibility tree and DOM don't give you what you need, such as verifying visual layout, rendering, or content that isn't exposed as text.
 
+## Credentials and sensitive information (PII)
+
+Never type passwords, API keys, tokens, or any PII on behalf of the user. Instead, open the relevant page and **ask the user to type the sensitive information directly in the browser** — the sandbox browser is visible to them via the Browser tab. Pause and wait for them to confirm before proceeding.
+
 ## Stopping the bridge
 
 ```bash

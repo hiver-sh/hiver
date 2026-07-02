@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 export type Theme = "light" | "dark" | "system";
 
 /** Identifies a resizable side panel in the sandbox detail layout. */
-export type PanelId = "terminal" | "files";
+export type PanelId = "terminal" | "browser" | "files";
 
 /** Sizing for one resizable side panel. `defaultWidth`/`minWidth` are static
  *  config (owned by the code, reconciled on load); `width` is the user's
@@ -31,10 +31,16 @@ export interface UserPreferences {
   theme: Theme;
   sidebarCollapsed: boolean;
   showTerminal: boolean;
+  /** Whether the browser (CDP screencast) panel is shown. Only takes effect for
+   *  sandboxes that actually expose a CDP endpoint. */
+  showBrowser: boolean;
   showFiles: boolean;
   showTimeline: boolean;
-  /** Sizing for each resizable side panel (terminal, files). */
+  /** Sizing for each resizable side panel (terminal, browser, files). */
   panelSizes: PanelSize[];
+  /** Height (px) of the browser sub-panel stacked below the terminal in their
+   *  shared column, set by the horizontal splitter between them. */
+  browserPanelHeight: number;
   followEvents: boolean;
   /** Expanded file-explorer directories, keyed by sandbox key. Each sandbox
    *  restores only its own expanded folders; an entry is dropped when the
@@ -49,12 +55,15 @@ export const DEFAULT_PREFS: UserPreferences = {
   theme: "system",
   sidebarCollapsed: false,
   showTerminal: true,
+  showBrowser: true,
   showFiles: true,
   showTimeline: true,
   panelSizes: [
     { id: "terminal", defaultWidth: 360, minWidth: 240, width: null },
+    { id: "browser", defaultWidth: 420, minWidth: 300, width: null },
     { id: "files", defaultWidth: 240, minWidth: 200, width: null },
   ],
+  browserPanelHeight: 280,
   followEvents: false,
   expandedPaths: {},
   terminalClipboardCopy: true,

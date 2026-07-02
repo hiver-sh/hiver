@@ -10,6 +10,7 @@ import {
   lastOwnEventId,
   linkedSandboxes,
 } from "../lib/eventStore.js";
+import { attachBrowser, detectCdpPort } from "../lib/cdp.js";
 
 const router = Router();
 
@@ -246,6 +247,36 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
   // after the last stored event so reconnects never miss or duplicate events.
   const sandbox = sandboxFromReq(req);
   const ac = new AbortController();
+
+  // Browser channel: if a sandbox exposes a CDP endpoint (chrome-headless-shell
+  // in the browser image), attach to its shared screencast session and stream
+  // JPEG frames framed under `browser` / `browser:<ctrl>`. The browser may live
+  // in a *nested* sandbox (an agent that spawned a browser), not the primary, so
+  // we try the primary first and then each linked sandbox as it's discovered,
+  // attaching the first one that speaks CDP. Every `browser:*` frame is tagged
+  // with the owning sandbox's id/key so the client sends input back to the right
+  // one. Detection is async (probes exposed ports) and best-effort.
+  let browserAttached = false;
+  let detachBrowser = () => {};
+  const tryAttachBrowser = async (sb: Sandbox) => {
+    if (browserAttached) return;
+    const cdpPort = await detectCdpPort(sb, { signal: ac.signal });
+    if (cdpPort == null || ac.signal.aborted || browserAttached) return;
+    browserAttached = true;
+    detachBrowser = attachBrowser(sb, cdpPort, {
+      sendFrame: (f) => write("browser", JSON.stringify(f)),
+      sendCtrl: (ev, d) =>
+        write(
+          `browser:${ev}`,
+          JSON.stringify({ ...d, sandboxId: sb.id, sandboxKey: sb.key }),
+        ),
+      // The browser is only one channel of this shared stream — if it closes or
+      // errors, tell the client (via the `browser:*` ctrl above) but keep the
+      // SSE open so terminal + event-feed keep flowing. Never res.end() here.
+      end: () => {},
+    });
+  };
+  void tryAttachBrowser(sandbox).catch(() => {});
   (async () => {
     try {
       // Replay persisted history first so a fresh connection shows the full
@@ -270,6 +301,11 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
           // sandbox identity (carried on the event) as the row's key.
           appendEvent(id, key, e);
           write("feed", JSON.stringify(e));
+        },
+        // Also give each nested sandbox a chance to be the browser view, in case
+        // the primary has no CDP but a sandbox it spawned does.
+        (linkedSandbox) => {
+          void tryAttachBrowser(linkedSandbox).catch(() => {});
         },
       );
 
@@ -296,6 +332,7 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
 
   req.on("close", () => {
     detach();
+    detachBrowser();
     ac.abort();
   });
 });

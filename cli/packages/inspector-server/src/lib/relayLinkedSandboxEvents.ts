@@ -31,6 +31,9 @@ export function makeLinkedSandboxRelay(
   onEvent: (
     event: SandboxEvent & { sandbox_id: string; sandbox_key: string },
   ) => void,
+  // Called once per newly-opened linked sandbox, so the caller can do more with
+  // it than relay events — e.g. detect and attach its browser view.
+  onLinked?: (sandbox: Sandbox) => void,
 ): LinkedSandboxRelay {
   const seen = new Set<string>();
 
@@ -42,6 +45,7 @@ export function makeLinkedSandboxRelay(
       { id: sandboxId, key: sandboxKey },
       { gatewayUrl },
     );
+    onLinked?.(linked);
 
     (async () => {
       try {

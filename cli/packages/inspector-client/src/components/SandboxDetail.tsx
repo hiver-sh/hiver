@@ -1,10 +1,13 @@
 import {
   Activity,
   Camera,
+  Check,
   Filter,
   FolderTree,
+  Globe,
   Loader2,
   LocateFixed,
+  Menu,
   Pause,
   Play,
   Power,
@@ -27,6 +30,11 @@ import { Button } from "@/components/ui/button";
 import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
 import type { ConfigProposal } from "@/components/SandboxConfigDialog";
 import { Terminal, type TerminalSink } from "@/components/Terminal";
+import {
+  BrowserView,
+  type BrowserSink,
+  type BrowserTab,
+} from "@/components/BrowserView";
 import { PortUsageDialog } from "@/components/PortUsageDialog";
 import { SnapshotDialog } from "@/components/SnapshotDialog";
 import { FileExplorer } from "@/components/FileExplorer";
@@ -141,8 +149,14 @@ export function SandboxDetail({
   const setShowFiles = (v: boolean) => setPref("showFiles", v);
   const showTimeline = prefs.showTimeline;
   const setShowTimeline = (v: boolean) => setPref("showTimeline", v);
+  // Whether this sandbox exposes a CDP endpoint (detected server-side). The
+  // browser panel and its toggle only exist when one is available.
+  const [browserAvailable, setBrowserAvailable] = useState(false);
+  const showBrowser = prefs.showBrowser && browserAvailable;
+  const setShowBrowser = (v: boolean) => setPref("showBrowser", v);
   const panelSizes = prefs.panelSizes;
   const terminalPanel = panelSizes.find((p) => p.id === "terminal")!;
+  const browserPanel = panelSizes.find((p) => p.id === "browser")!;
   const filesPanel = panelSizes.find((p) => p.id === "files")!;
   const setPanelWidth = (id: PanelId, v: number) =>
     setPref(
@@ -154,12 +168,25 @@ export function SandboxDetail({
   // Width of each side panel: the user's resized value, or the panel default.
   const terminalWidth = terminalPanel.width ?? terminalPanel.defaultWidth;
   const filesWidth = filesPanel.width ?? filesPanel.defaultWidth;
+  // The terminal and browser share one column (browser stacked below the
+  // terminal), so the column's min width is the larger of the two panels'.
+  const showTerminalCol = showTerminal || showBrowser;
+  const terminalColMinWidth = Math.max(
+    showTerminal ? terminalPanel.minWidth : 0,
+    showBrowser ? browserPanel.minWidth : 0,
+  );
+  // Height (px) of the browser sub-panel within that column, resized by the
+  // horizontal splitter between the terminal and the browser. Persisted like
+  // the panel widths.
+  const browserHeight = prefs.browserPanelHeight;
+  const setBrowserHeight = (v: number) => setPref("browserPanelHeight", v);
+  const terminalColRef = useRef<HTMLDivElement>(null);
   // Measured width of the panel row. Used to decide when the panels can no
   // longer all satisfy their min widths and the layout should stack vertically.
   const [contentWidth, setContentWidth] = useState(0);
   const requiredWidth =
     (showTimeline ? MIN_TIMELINE_WIDTH : 0) +
-    (showTerminal ? terminalPanel.minWidth + DRAG_HANDLE_WIDTH : 0) +
+    (showTerminalCol ? terminalColMinWidth + DRAG_HANDLE_WIDTH : 0) +
     (showFiles ? filesPanel.minWidth + DRAG_HANDLE_WIDTH : 0);
   // Below the combined min widths, stack panels vertically instead of side by
   // side. `contentWidth === 0` means we haven't measured yet — stay horizontal.
@@ -181,6 +208,21 @@ export function SandboxDetail({
   // Terminal's sink (if any) and whether the upstream terminal is attached.
   const termSinkRef = useRef<TerminalSink | null>(null);
   const termConnectedRef = useRef(false);
+  // Browser channel of the shared per-sandbox stream: the currently-mounted
+  // BrowserView's sink (if any) and whether the upstream screencast is attached.
+  const browserSinkRef = useRef<BrowserSink | null>(null);
+  const browserConnectedRef = useRef(false);
+  // Which sandbox actually owns the attached browser — the primary, or a nested
+  // one it spawned. Carried on `browser:connected` and used to route input.
+  const browserTargetRef = useRef<{ id: string; key: string } | null>(null);
+  // Last browser frame, replayed to a BrowserView that mounts after the stream
+  // already connected, so the panel paints immediately instead of staying blank
+  // until the next screencast frame.
+  const lastBrowserFrameRef = useRef<{
+    data: string;
+    width: number;
+    height: number;
+  } | null>(null);
   const [filePreview, setFilePreview] = useState<{
     path: string;
     content: string;
@@ -219,6 +261,17 @@ export function SandboxDetail({
       cancelled = true;
     };
   }, [sandbox.id, sandbox.key, serverUrl, transport]);
+
+  // Browser availability is discovered from the shared stream, not a separate
+  // probe: the server attaches the browser (from the primary sandbox OR a nested
+  // one it spawned) and emits `browser:connected`, which flips this on. Reset it
+  // when the sandbox changes so a stale panel doesn't linger.
+  useEffect(() => {
+    setBrowserAvailable(false);
+    browserConnectedRef.current = false;
+    browserTargetRef.current = null;
+    lastBrowserFrameRef.current = null;
+  }, [sandbox.id, sandbox.key]);
 
   // Load the sandbox's isolation mechanism (container/microvm) for the header.
   // Isolation is determined at boot from the image, not configured, so it comes
@@ -334,6 +387,27 @@ export function SandboxDetail({
     };
   }, []);
 
+  // A mounted BrowserView registers here to receive screencast frames from the
+  // shared stream. If the upstream is already attached (the panel opened after
+  // the stream connected), replay the connected signal — with the owning sandbox
+  // so input routes correctly — and the last frame so it paints immediately.
+  const subscribeBrowser = useCallback(
+    (sink: BrowserSink) => {
+      browserSinkRef.current = sink;
+      if (browserConnectedRef.current) {
+        sink.onConnected(
+          browserTargetRef.current ?? { id: sandbox.id, key: sandbox.key },
+        );
+        if (lastBrowserFrameRef.current)
+          sink.onFrame(lastBrowserFrameRef.current);
+      }
+      return () => {
+        if (browserSinkRef.current === sink) browserSinkRef.current = null;
+      };
+    },
+    [sandbox.id, sandbox.key],
+  );
+
   // The per-sandbox event feed AND terminal output share ONE SSE connection
   // (`/stream`), so a tab holds a single long-lived connection instead of two —
   // staying under the browser's ~6-per-origin HTTP/1.1 cap with several tabs
@@ -411,6 +485,69 @@ export function SandboxDetail({
               } else if (eventName === "term:close") {
                 termConnectedRef.current = false;
                 termSinkRef.current?.onClose();
+              } else if (eventName === "browser") {
+                try {
+                  const frame = JSON.parse(dataLine) as {
+                    data: string;
+                    width: number;
+                    height: number;
+                  };
+                  lastBrowserFrameRef.current = frame;
+                  browserSinkRef.current?.onFrame(frame);
+                } catch {
+                  // ignore malformed frame
+                }
+              } else if (eventName === "browser:connected") {
+                browserConnectedRef.current = true;
+                // The server tags browser events with the sandbox that owns the
+                // browser (primary or a nested one), so input is routed there.
+                let target = { id: sandbox.id, key: sandbox.key };
+                try {
+                  const d = JSON.parse(dataLine) as {
+                    sandboxId?: string;
+                    sandboxKey?: string;
+                  };
+                  if (d.sandboxId && d.sandboxKey)
+                    target = { id: d.sandboxId, key: d.sandboxKey };
+                } catch {
+                  // fall back to the primary sandbox
+                }
+                browserTargetRef.current = target;
+                setBrowserAvailable(true);
+                browserSinkRef.current?.onConnected(target);
+              } else if (eventName === "browser:url") {
+                try {
+                  const { url } = JSON.parse(dataLine) as { url: string };
+                  browserSinkRef.current?.onUrl(url);
+                } catch {
+                  // ignore malformed frame
+                }
+              } else if (eventName === "browser:navstate") {
+                try {
+                  browserSinkRef.current?.onNavState(
+                    JSON.parse(dataLine) as {
+                      canGoBack: boolean;
+                      canGoForward: boolean;
+                    },
+                  );
+                } catch {
+                  // ignore malformed frame
+                }
+              } else if (eventName === "browser:tabs") {
+                try {
+                  const { tabs } = JSON.parse(dataLine) as {
+                    tabs: BrowserTab[];
+                  };
+                  browserSinkRef.current?.onTabs(tabs);
+                } catch {
+                  // ignore malformed frame
+                }
+              } else if (
+                eventName === "browser:close" ||
+                eventName === "browser:error"
+              ) {
+                browserConnectedRef.current = false;
+                browserSinkRef.current?.onClose();
               }
             }
           }
@@ -493,6 +630,40 @@ export function SandboxDetail({
     };
   }
 
+  // Vertical sibling of makeDragHandler for the terminal/browser split. The
+  // browser sits at the bottom, so dragging the handle up makes it taller.
+  function makeVDragHandler(
+    setHeight: (h: number) => void,
+    currentHeight: number,
+    minHeight: number,
+    getMaxHeight: () => number,
+  ) {
+    return function startDrag(e: React.MouseEvent) {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startHeight = currentHeight;
+      const maxHeight = getMaxHeight();
+
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+
+      function onMove(e: MouseEvent) {
+        const delta = startY - e.clientY;
+        setHeight(Math.max(minHeight, Math.min(startHeight + delta, maxHeight)));
+      }
+
+      function onUp() {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      }
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    };
+  }
+
   return (
     <div
       className={cn(
@@ -543,46 +714,77 @@ export function SandboxDetail({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Button
-            size="sm"
-            variant={showTimeline ? "secondary" : "ghost"}
-            onClick={() => setShowTimeline(!showTimeline)}
-            title="Toggle timeline"
-          >
-            <Activity className="h-4 w-4" />
-          </Button>
-          <Button
-            size="sm"
-            variant={showTerminal ? "secondary" : "ghost"}
-            onClick={() => setShowTerminal(!showTerminal)}
-            title="Toggle terminal panel"
-          >
-            <SquareTerminal className="h-4 w-4" />
-          </Button>
-          <Button
-            size="sm"
-            variant={showFiles ? "secondary" : "ghost"}
-            onClick={() => setShowFiles(!showFiles)}
-            title="Toggle file explorer"
-          >
-            <FolderTree className="h-4 w-4" />
-          </Button>
-          <Button
-            size="sm"
-            variant={showSnapshot ? "secondary" : "ghost"}
-            onClick={() => setShowSnapshot(true)}
-            title="Capture snapshot"
-          >
-            <Camera className="h-4 w-4" />
-          </Button>
-          <Button
-            size="sm"
-            variant={showConfig ? "secondary" : "ghost"}
-            onClick={() => setShowConfig(true)}
-            title="Sandbox config"
-          >
-            <SlidersHorizontal className="h-4 w-4" />
-          </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="ghost" title="View">
+                <Menu className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-48 p-1">
+              {[
+                {
+                  label: "Timeline",
+                  icon: Activity,
+                  active: showTimeline,
+                  onToggle: () => setShowTimeline(!showTimeline),
+                },
+                {
+                  label: "Terminal",
+                  icon: SquareTerminal,
+                  active: showTerminal,
+                  onToggle: () => setShowTerminal(!showTerminal),
+                },
+                ...(browserAvailable
+                  ? [
+                      {
+                        label: "Browser",
+                        icon: Globe,
+                        active: showBrowser,
+                        onToggle: () => setShowBrowser(!prefs.showBrowser),
+                      },
+                    ]
+                  : []),
+                {
+                  label: "Files",
+                  icon: FolderTree,
+                  active: showFiles,
+                  onToggle: () => setShowFiles(!showFiles),
+                },
+              ].map(({ label, icon: Icon, active, onToggle }) => (
+                <button
+                  key={label}
+                  onClick={onToggle}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60 transition-colors"
+                >
+                  <Check
+                    className={cn(
+                      "h-3.5 w-3.5 shrink-0",
+                      active ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                  <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  {label}
+                </button>
+              ))}
+              <div className="my-1 h-px bg-border" />
+              <button
+                onClick={() => setShowSnapshot(true)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60 transition-colors"
+              >
+                <span className="w-3.5 shrink-0" />
+                <Camera className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                Capture snapshot
+              </button>
+              <button
+                onClick={() => setShowConfig(true)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60 transition-colors"
+              >
+                <span className="w-3.5 shrink-0" />
+                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                Sandbox config
+              </button>
+            </PopoverContent>
+          </Popover>
           <Button
             size="sm"
             variant="ghost"
@@ -797,7 +999,7 @@ export function SandboxDetail({
           </div>
         )}
 
-        {showTerminal && (
+        {showTerminalCol && (
           <>
             {showTimeline &&
               (vertical ? (
@@ -812,7 +1014,7 @@ export function SandboxDetail({
                   onMouseDown={makeDragHandler(
                     setTerminalWidth,
                     terminalWidth,
-                    terminalPanel.minWidth,
+                    terminalColMinWidth,
                     () => {
                       const w =
                         contentRef.current?.getBoundingClientRect().width ??
@@ -827,8 +1029,10 @@ export function SandboxDetail({
                   )}
                 />
               ))}
+            {/* Terminal (top) + browser (bottom) stacked in one column. */}
             <div
-              className="overflow-hidden"
+              ref={terminalColRef}
+              className="flex flex-col overflow-hidden"
               style={
                 vertical
                   ? { flex: 1, minHeight: MIN_PANEL_HEIGHT }
@@ -836,24 +1040,66 @@ export function SandboxDetail({
                     ? {
                         width: terminalWidth,
                         flexShrink: 0,
-                        minWidth: terminalPanel.minWidth,
+                        minWidth: terminalColMinWidth,
                       }
-                    : { flex: 1, minWidth: terminalPanel.minWidth }
+                    : { flex: 1, minWidth: terminalColMinWidth }
               }
             >
-              <Terminal
-                sandboxId={sandbox.id}
-                sandboxKey={sandbox.key}
-                serverUrl={serverUrl}
-                subscribe={subscribeTerminal}
-              />
+              {showTerminal && (
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <Terminal
+                    sandboxId={sandbox.id}
+                    sandboxKey={sandbox.key}
+                    serverUrl={serverUrl}
+                    subscribe={subscribeTerminal}
+                  />
+                </div>
+              )}
+              {showTerminal && showBrowser && (
+                <div
+                  className="shrink-0 cursor-row-resize bg-border hover:bg-foreground/20 transition-colors"
+                  style={{ height: DRAG_HANDLE_WIDTH }}
+                  onMouseDown={makeVDragHandler(
+                    setBrowserHeight,
+                    browserHeight,
+                    MIN_PANEL_HEIGHT,
+                    () => {
+                      const h =
+                        terminalColRef.current?.getBoundingClientRect()
+                          .height ?? 600;
+                      return h - MIN_PANEL_HEIGHT - DRAG_HANDLE_WIDTH;
+                    },
+                  )}
+                />
+              )}
+              {showBrowser && (
+                <div
+                  className="min-h-0 overflow-hidden"
+                  style={
+                    showTerminal
+                      ? {
+                          height: browserHeight,
+                          flexShrink: 0,
+                          minHeight: MIN_PANEL_HEIGHT,
+                        }
+                      : { flex: 1 }
+                  }
+                >
+                  <BrowserView
+                    sandboxId={sandbox.id}
+                    sandboxKey={sandbox.key}
+                    serverUrl={serverUrl}
+                    subscribe={subscribeBrowser}
+                  />
+                </div>
+              )}
             </div>
           </>
         )}
 
         {showFiles && (
           <>
-            {(showTimeline || showTerminal) &&
+            {(showTimeline || showTerminalCol) &&
               (vertical ? (
                 <div
                   className="shrink-0 bg-border"
@@ -874,7 +1120,9 @@ export function SandboxDetail({
                       return (
                         w -
                         MIN_TIMELINE_WIDTH -
-                        (showTerminal ? terminalWidth + DRAG_HANDLE_WIDTH : 0) -
+                        (showTerminalCol
+                          ? terminalWidth + DRAG_HANDLE_WIDTH
+                          : 0) -
                         DRAG_HANDLE_WIDTH
                       );
                     },
@@ -886,7 +1134,7 @@ export function SandboxDetail({
               style={
                 vertical
                   ? { flex: 1, minHeight: MIN_PANEL_HEIGHT }
-                  : showTimeline || showTerminal
+                  : showTimeline || showTerminalCol
                     ? {
                         width: filesWidth,
                         flexShrink: 0,
