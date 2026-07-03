@@ -8,12 +8,6 @@ import { retryWithBackoff } from "./backoff.js";
 // every exposed port, but this lets us try the likely one first.
 const LIKELY_CDP_PORT = 9223;
 
-// How long detectCdpPort keeps retrying before giving up for this connection.
-// After the sandbox is reachable the browser image still needs a few seconds to
-// expose 9223 and bind chrome-headless-shell's CDP relay, so a single probe
-// races startup — we back off and retry across this window instead.
-const CDP_DETECT_TIMEOUT_MS = 30_000;
-
 // How long openSession keeps retrying to bring up the upstream socket + attached
 // screencast before giving up. Detection only proves the relay answered a probe;
 // the actual session (socket open + Target.attach + startScreencast) can still
@@ -30,13 +24,12 @@ function cdpWsUrl(sandbox: Sandbox, port: number): string {
 
 // Cache of the detected CDP port per sandbox key so reconnects don't re-probe.
 // Only *positive* results are cached — the port won't move once found. A miss
-// is deliberately not cached, so a browser that comes up after our retry budget
-// still gets picked up on the next connection.
+// is deliberately not cached, so a browser that comes up later still gets picked
+// up. We intentionally do NOT dedup in-flight detections across callers: each
+// stream watches with its own abort signal, and sharing one promise would let a
+// disconnecting stream's aborted probe resolve `null` for a live stream too —
+// leaving the browser panel dark until a manual refresh.
 const detectedPort = new Map<string, number>();
-
-// In-flight detections, deduped by key so concurrent stream connections to the
-// same sandbox share one probe/backoff loop instead of each hammering the relay.
-const detecting = new Map<string, Promise<number | null>>();
 
 // Open the `/cdp` relay and ask Chrome for its version. A real CDP endpoint
 // answers Browser.getVersion with a product string ("HeadlessShell/..",
@@ -107,9 +100,17 @@ async function orderedCdpPorts(sandbox: Sandbox): Promise<number[]> {
   ];
 }
 
-// Return the sandbox's CDP port, or null if none of its exposed ports speak CDP
-// within the retry window. Positive results are cached per key; pass `force` to
-// re-probe. Concurrent callers for the same key share a single detection.
+// Watch for a CDP endpoint on the sandbox and resolve with its port once one
+// answers, or null if the signal aborts first (the stream closed) or the sandbox
+// never becomes reachable. Positive results are cached per key; pass `force` to
+// re-probe.
+//
+// This polls for the *whole life of the caller's stream* rather than giving up
+// after a fixed window: a browser can appear well after the stream opens — a
+// slow image boot, or a nested agent launching one minutes in — and the client
+// must still be told there's a browser in the session without a manual refresh.
+// The caller aborts `signal` once a browser is attached (or the stream closes),
+// which is what stops the probing.
 export async function detectCdpPort(
   sandbox: Sandbox,
   { signal, force = false }: { signal?: AbortSignal; force?: boolean } = {},
@@ -118,42 +119,31 @@ export async function detectCdpPort(
   if (!force) {
     const cached = detectedPort.get(key);
     if (cached !== undefined) return cached;
-    const inflight = detecting.get(key);
-    if (inflight) return inflight;
   }
 
-  const run = (async (): Promise<number | null> => {
-    try {
-      await waitForSandbox(sandbox, { signal });
-    } catch {
-      return null; // client went away or sandbox never became reachable
-    }
-
-    // Check the exposed ports and probe CDP with exponential backoff: both the
-    // ports list and the CDP relay appear asynchronously during browser boot,
-    // so a one-shot probe loses the race. Each attempt re-reads the ports and
-    // tries 9223 first, then the rest, returning the first that speaks CDP.
-    const port = await retryWithBackoff(
-      async () => {
-        for (const p of await orderedCdpPorts(sandbox)) {
-          if (signal?.aborted) return null;
-          if (await probeCdp(sandbox, p)) return p;
-        }
-        return null;
-      },
-      { signal, timeoutMs: CDP_DETECT_TIMEOUT_MS },
-    );
-
-    if (port != null) detectedPort.set(key, port);
-    return port;
-  })();
-
-  detecting.set(key, run);
   try {
-    return await run;
-  } finally {
-    detecting.delete(key);
+    await waitForSandbox(sandbox, { signal });
+  } catch {
+    return null; // client went away or sandbox never became reachable
   }
+
+  // Re-read the ports and probe CDP with exponential backoff on each attempt:
+  // both the ports list and the CDP relay appear asynchronously, so a one-shot
+  // probe loses the race. Try 9223 first, then the rest. No deadline — we keep
+  // watching until the browser shows up or the caller aborts.
+  const port = await retryWithBackoff(
+    async () => {
+      for (const p of await orderedCdpPorts(sandbox)) {
+        if (signal?.aborted) return null;
+        if (await probeCdp(sandbox, p)) return p;
+      }
+      return null;
+    },
+    { signal, timeoutMs: Infinity, maxDelayMs: 10_000 },
+  );
+
+  if (port != null) detectedPort.set(key, port);
+  return port;
 }
 
 export interface BrowserClientHandle {
@@ -503,7 +493,6 @@ function openSession(
   sandbox: Sandbox,
   port: number,
   key: string,
-  signal?: AbortSignal,
 ): BrowserSession {
   const s: BrowserSession = {
     ws: null,
@@ -535,13 +524,18 @@ function openSession(
   // until an attempt succeeds or the budget runs out; only on success do we
   // install the teardown-on-close, so a failed attempt mid-retry doesn't tear
   // down clients that are still waiting for the panel.
+  //
+  // No caller signal here on purpose: the session is shared across every client
+  // for this sandbox, so its connect must not be hostage to whichever stream
+  // happened to open it first — if that stream disconnects mid-connect, the
+  // others still get their panel.
   s.ready = (async () => {
     const ok = await retryWithBackoff(
       async () => {
         await connectOnce(s, sandbox, port, key);
         return true;
       },
-      { signal, timeoutMs: CDP_CONNECT_TIMEOUT_MS },
+      { timeoutMs: CDP_CONNECT_TIMEOUT_MS },
     );
     if (!ok) throw new Error(s.lastError || "cdp session did not connect");
     // Live now: from here an upstream drop means the session is gone — tear it
@@ -665,12 +659,11 @@ export function attachBrowser(
   sandbox: Sandbox,
   port: number,
   handle: BrowserClientHandle,
-  { signal }: { signal?: AbortSignal } = {},
 ): { detach: () => void; ready: Promise<void> } {
   const key = sandbox.key;
   let s = sessions.get(key);
   if (!s) {
-    s = openSession(sandbox, port, key, signal);
+    s = openSession(sandbox, port, key);
     sessions.set(key, s);
     s.ready.catch(() => {
       /* handled via teardown/close paths */

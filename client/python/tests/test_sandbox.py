@@ -198,9 +198,9 @@ async def test_apply_config_raises_sandbox_error_on_non_200() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_read_file_sends_get_with_path_param_and_returns_bytes() -> None:
+async def test_read_file_sends_get_with_path_in_url_and_returns_bytes() -> None:
     content = b"hello"
-    route = respx.get(f"{SANDBOX_V1}/file").mock(
+    route = respx.get(f"{SANDBOX_V1}/file/workspace/hello.txt").mock(
         return_value=httpx.Response(200, content=content)
     )
     async with httpx.AsyncClient() as client:
@@ -208,13 +208,13 @@ async def test_read_file_sends_get_with_path_param_and_returns_bytes() -> None:
 
     assert result == content
     assert isinstance(result, bytes)
-    assert route.calls[0].request.url.params["path"] == "/workspace/hello.txt"
+    assert route.calls[0].request.url.path.endswith("/file/workspace/hello.txt")
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_read_file_raises_sandbox_error_on_non_200() -> None:
-    respx.get(f"{SANDBOX_V1}/file").mock(
+    respx.get(f"{SANDBOX_V1}/file/workspace/missing.txt").mock(
         return_value=httpx.Response(404, json={"error": "not found"})
     )
     async with httpx.AsyncClient() as client:
@@ -229,42 +229,41 @@ async def test_read_file_raises_sandbox_error_on_non_200() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_write_file_sends_post_with_multipart_form() -> None:
-    route = respx.post(f"{SANDBOX_V1}/file").mock(
+async def test_write_file_sends_post_with_path_in_url_and_raw_body() -> None:
+    route = respx.post(f"{SANDBOX_V1}/file/workspace/hello.txt").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/hello.txt", "bytes": 5})
     )
     async with httpx.AsyncClient() as client:
-        result = await make_sandbox(client).write_file("/workspace", "hello.txt", b"hello")
+        result = await make_sandbox(client).write_file("/workspace/hello.txt", b"hello")
 
     req = route.calls[0].request
     assert req.method == "POST"
-    assert "multipart/form-data" in req.headers["content-type"]
-    body = req.content.decode()
-    assert "/workspace" in body
-    assert "hello.txt" in body
+    assert req.url.path.endswith("/file/workspace/hello.txt")
+    assert req.headers["content-type"] == "application/octet-stream"
+    assert req.content == b"hello"
     assert result == {"path": "/workspace/hello.txt", "bytes": 5}
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_write_file_accepts_str_content() -> None:
-    respx.post(f"{SANDBOX_V1}/file").mock(
+    respx.post(f"{SANDBOX_V1}/file/workspace/f.txt").mock(
         return_value=httpx.Response(200, json={"path": "/workspace/f.txt", "bytes": 4})
     )
     async with httpx.AsyncClient() as client:
-        result = await make_sandbox(client).write_file("/workspace", "f.txt", "data")
+        result = await make_sandbox(client).write_file("/workspace/f.txt", "data")
     assert result["bytes"] == 4
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_write_file_raises_sandbox_error_on_non_200() -> None:
-    respx.post(f"{SANDBOX_V1}/file").mock(
-        return_value=httpx.Response(400, json={"error": "destination not mounted"})
+    respx.post(f"{SANDBOX_V1}/file/workspace/f.txt").mock(
+        return_value=httpx.Response(400, json={"error": "path not mounted"})
     )
     async with httpx.AsyncClient() as client:
         with pytest.raises(SandboxError) as exc:
-            await make_sandbox(client).write_file("/workspace", "f.txt", b"data")
+            await make_sandbox(client).write_file("/workspace/f.txt", b"data")
     assert exc.value.status == 400
     assert exc.value.operation == "write_file"
 

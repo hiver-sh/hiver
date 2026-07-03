@@ -15,10 +15,9 @@ const sandbox = await hiver.getOrCreateSandbox("hiver-list-directory-example", {
 const { shutdown } = createShutdown(sandbox);
 
 // Seed a couple of files and a subdirectory so the listing has something to show.
-await sandbox.writeFile("/workspace", "readme.txt", "hello from the host\n");
+await sandbox.writeFile("/workspace/readme.txt", "hello from the host\n");
 await sandbox.writeFile(
-  "/workspace",
-  "data.json",
+  "/workspace/data.json",
   JSON.stringify({ ok: true }),
 );
 await sandbox.exec("mkdir -p /workspace/logs");

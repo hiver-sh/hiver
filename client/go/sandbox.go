@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +68,22 @@ func newSandbox(ref SandboxRef, gatewayURL string, hc *http.Client) *Sandbox {
 // resource itself (create/delete). Pod-level routes (/v1/ping) don't use this.
 func (s *Sandbox) keyed(suffix string) string {
 	return fmt.Sprintf("%s/v1/%s%s", s.apiURL, s.Key, suffix)
+}
+
+// fileURL addresses a file operation for the agent-visible absolute path,
+// carried as trailing URL segments after /file (e.g. /file/workspace/data.csv).
+// Each segment is escaped while the "/" separators are preserved, so a path with
+// arbitrarily many segments round-trips intact.
+func (s *Sandbox) fileURL(path string) string {
+	var b strings.Builder
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" {
+			continue
+		}
+		b.WriteByte('/')
+		b.WriteString(url.PathEscape(seg))
+	}
+	return s.keyed("/file" + b.String())
 }
 
 // Shutdown tears the sandbox down via DELETE /v1/<key>, cancelling its lifecycle.
@@ -382,13 +397,10 @@ func (s *Sandbox) ListDirectory(ctx context.Context, path string) ([]DirEntry, e
 // ReadFile returns the raw bytes of the file at path.
 // path is the agent-visible absolute path (e.g. /workspace/data.csv).
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.keyed("/file"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.fileURL(path), nil)
 	if err != nil {
 		return nil, err
 	}
-	q := req.URL.Query()
-	q.Set("path", path)
-	req.URL.RawQuery = q.Encode()
 
 	resp, err := s.http.Do(req)
 	if err != nil {
@@ -401,33 +413,15 @@ func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// WriteFile writes content as filename under destination inside the sandbox.
-// destination must match one of the configured fs[].mount paths exactly.
-func (s *Sandbox) WriteFile(ctx context.Context, destination, filename string, content []byte) (*UploadResult, error) {
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-
-	if err := mw.WriteField("destination", destination); err != nil {
-		return nil, fmt.Errorf("WriteFile: build form: %w", err)
-	}
-
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, filename))
-	h.Set("Content-Type", "application/octet-stream")
-	part, err := mw.CreatePart(h)
-	if err != nil {
-		return nil, fmt.Errorf("WriteFile: build form: %w", err)
-	}
-	if _, err := part.Write(content); err != nil {
-		return nil, fmt.Errorf("WriteFile: build form: %w", err)
-	}
-	mw.Close()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.keyed("/file"), &buf)
+// WriteFile writes content to path inside the sandbox.
+// path is the agent-visible absolute path (e.g. /workspace/data.csv) and must
+// resolve beneath one of the configured fs[].mount paths.
+func (s *Sandbox) WriteFile(ctx context.Context, path string, content []byte) (*UploadResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.fileURL(path), bytes.NewReader(content))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Content-Type", "application/octet-stream")
 
 	resp, err := s.http.Do(req)
 	if err != nil {
@@ -447,13 +441,10 @@ func (s *Sandbox) WriteFile(ctx context.Context, destination, filename string, c
 // DeleteFile removes the file or empty directory at path inside the sandbox.
 // path is the agent-visible absolute path (e.g. /workspace/data.csv).
 func (s *Sandbox) DeleteFile(ctx context.Context, path string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.keyed("/file"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.fileURL(path), nil)
 	if err != nil {
 		return err
 	}
-	q := req.URL.Query()
-	q.Set("path", path)
-	req.URL.RawQuery = q.Encode()
 
 	resp, err := s.http.Do(req)
 	if err != nil {

@@ -42,7 +42,7 @@ func TestFileE2E(t *testing.T) {
 
 	t.Run("upload_then_download", func(t *testing.T) {
 		content := []byte("hello from upload")
-		res, err := sbx.WriteFile(ctx, "/workspace", "greeting.txt", content)
+		res, err := sbx.WriteFile(ctx, "/workspace/greeting.txt", content)
 		if err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
@@ -64,7 +64,7 @@ func TestFileE2E(t *testing.T) {
 
 	t.Run("exec_verifies_upload", func(t *testing.T) {
 		content := []byte("exec-check-content")
-		if _, err := sbx.WriteFile(ctx, "/workspace", "exec-check.txt", content); err != nil {
+		if _, err := sbx.WriteFile(ctx, "/workspace/exec-check.txt", content); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 		res, err := sbx.Exec(ctx, hiverclient.ExecRequest{Command: "cat /workspace/exec-check.txt"})
@@ -81,7 +81,7 @@ func TestFileE2E(t *testing.T) {
 
 	t.Run("list_directory", func(t *testing.T) {
 		for _, name := range []string{"alpha.txt", "beta.txt"} {
-			if _, err := sbx.WriteFile(ctx, "/workspace", name, []byte(name)); err != nil {
+			if _, err := sbx.WriteFile(ctx, "/workspace/"+name, []byte(name)); err != nil {
 				t.Fatalf("WriteFile(%s): %v", name, err)
 			}
 		}
@@ -128,7 +128,7 @@ func TestFileE2E(t *testing.T) {
 		for i := range content {
 			content[i] = byte(i)
 		}
-		if _, err := sbx.WriteFile(ctx, "/workspace", "binary.bin", content[:]); err != nil {
+		if _, err := sbx.WriteFile(ctx, "/workspace/binary.bin", content[:]); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 		got, err := sbx.ReadFile(ctx, "/workspace/binary.bin")
@@ -149,7 +149,7 @@ func TestFileE2E(t *testing.T) {
 
 	t.Run("delete_file", func(t *testing.T) {
 		content := []byte("to be deleted")
-		if _, err := sbx.WriteFile(ctx, "/workspace", "delete-me.txt", content); err != nil {
+		if _, err := sbx.WriteFile(ctx, "/workspace/delete-me.txt", content); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 		if err := sbx.DeleteFile(ctx, "/workspace/delete-me.txt"); err != nil {

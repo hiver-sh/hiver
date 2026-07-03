@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,10 +193,7 @@ func TestSandbox_ListDirectory(t *testing.T) {
 
 func TestSandbox_ReadFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertPath(t, r, "/sandbox/k/v1/test-key/file")
-		if r.URL.Query().Get("path") != "/workspace/data.csv" {
-			t.Errorf("unexpected path param: %q", r.URL.Query().Get("path"))
-		}
+		assertPath(t, r, "/sandbox/k/v1/test-key/file/workspace/data.csv")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("col1,col2\n1,2\n"))
 	}))
@@ -213,17 +211,17 @@ func TestSandbox_ReadFile(t *testing.T) {
 func TestSandbox_WriteFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodPost)
-		assertPath(t, r, "/sandbox/k/v1/test-key/file")
+		assertPath(t, r, "/sandbox/k/v1/test-key/file/workspace/hello.txt")
 
-		r.ParseMultipartForm(1 << 20)
-		if dst := r.FormValue("destination"); dst != "/workspace" {
-			t.Errorf("destination: got %q", dst)
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "hello" {
+			t.Errorf("body: got %q", body)
 		}
 		writeJSON(w, http.StatusOK, UploadResult{Path: "/workspace/hello.txt", Bytes: 5})
 	}))
 	defer srv.Close()
 
-	result, err := newTestSandbox(srv, "k").WriteFile(context.Background(), "/workspace", "hello.txt", []byte("hello"))
+	result, err := newTestSandbox(srv, "k").WriteFile(context.Background(), "/workspace/hello.txt", []byte("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}

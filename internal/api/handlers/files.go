@@ -32,23 +32,29 @@ func (h *Sandbox) mountRoutes(cfg gen.SandboxConfig) []isolation.MountRoute {
 	return out
 }
 
-// UploadFile writes a multipart-uploaded file under one of the configured
-// FUSE mounts. The `destination` form field must match a configured
-// `fs[].mount` exactly; the file lands at `<destination>/<basename>`.
+// UploadFile writes the request body to the agent-visible `path` under one of
+// the configured FUSE mounts. `path` is the full destination path (e.g.
+// `/workspace/data.csv`); the file lands at `<dir>/<basename>` where those are
+// the directory and basename of `path`.
 //
 // The write goes through the backend's FileBridge, which bypasses the FUSE
 // layer's per-mount ACLs — the API is a higher-privilege control surface than
 // the workload, so operators seeding inputs shouldn't have to grant the agent
 // rw on the same path.
-func (h *Sandbox) UploadFile(c *gin.Context) {
-	destination := c.PostForm("destination")
-	if destination == "" {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing form field: destination"})
+func (h *Sandbox) UploadFile(c *gin.Context, path string) {
+	if path == "" || path == "/" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing path"})
 		return
 	}
-	cleaned := filepath.Clean(destination)
+	cleaned := filepath.Clean(path)
 	if !strings.HasPrefix(cleaned, "/") {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "destination must be absolute"})
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must be absolute"})
+		return
+	}
+	dir := filepath.Dir(cleaned)
+	name := filepath.Base(cleaned)
+	if name == "." || name == "/" || name == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must reference a file"})
 		return
 	}
 
@@ -58,30 +64,12 @@ func (h *Sandbox) UploadFile(c *gin.Context) {
 		return
 	}
 
-	header, err := c.FormFile("file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: err.Error()})
-		return
-	}
-	name := filepath.Base(header.Filename)
-	if name == "." || name == "/" || name == "" {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "invalid file filename"})
-		return
-	}
-
-	src, err := header.Open()
+	n, err := h.iso.Files().Save(dir, name, h.mountRoutes(cfg), c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
 	}
-	defer src.Close()
-
-	n, err := h.iso.Files().Save(cleaned, name, h.mountRoutes(cfg), src)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"path": filepath.Join(cleaned, name), "bytes": n})
+	c.JSON(http.StatusOK, gin.H{"path": cleaned, "bytes": n})
 }
 
 // ListDirectory returns the immediate children of a directory, served by the
@@ -150,12 +138,12 @@ func (h *Sandbox) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) 
 
 // GetFile streams a file from the sandbox filesystem via the backend's
 // FileBridge, bypassing sbxfuse ACLs.
-func (h *Sandbox) GetFile(c *gin.Context, params gen.GetFileParams) {
-	if params.Path == "" {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
+func (h *Sandbox) GetFile(c *gin.Context, path string) {
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing path"})
 		return
 	}
-	cleaned := filepath.Clean(params.Path)
+	cleaned := filepath.Clean(path)
 	if !strings.HasPrefix(cleaned, "/") {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must be absolute"})
 		return
@@ -180,12 +168,12 @@ func (h *Sandbox) GetFile(c *gin.Context, params gen.GetFileParams) {
 }
 
 // DeleteFile removes a file or empty directory at the given agent-visible path.
-func (h *Sandbox) DeleteFile(c *gin.Context, params gen.DeleteFileParams) {
-	if params.Path == "" {
-		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing query parameter: path"})
+func (h *Sandbox) DeleteFile(c *gin.Context, path string) {
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing path"})
 		return
 	}
-	cleaned := filepath.Clean(params.Path)
+	cleaned := filepath.Clean(path)
 	if !strings.HasPrefix(cleaned, "/") {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "path must be absolute"})
 		return

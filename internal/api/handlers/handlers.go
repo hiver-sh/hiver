@@ -262,9 +262,9 @@ func (h *SandboxHandlers) ExecStreamStdin(c *gin.Context, key gen.Key, id string
 	}
 }
 
-func (h *SandboxHandlers) UploadFile(c *gin.Context, key gen.Key) {
+func (h *SandboxHandlers) UploadFile(c *gin.Context, key gen.Key, path string) {
 	if sb, ok := h.resolve(c, key); ok {
-		sb.UploadFile(c)
+		sb.UploadFile(c, path)
 	}
 }
 
@@ -274,15 +274,15 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, key gen.Key, params gen.
 	}
 }
 
-func (h *SandboxHandlers) GetFile(c *gin.Context, key gen.Key, params gen.GetFileParams) {
+func (h *SandboxHandlers) GetFile(c *gin.Context, key gen.Key, path string) {
 	if sb, ok := h.resolve(c, key); ok {
-		sb.GetFile(c, params)
+		sb.GetFile(c, path)
 	}
 }
 
-func (h *SandboxHandlers) DeleteFile(c *gin.Context, key gen.Key, params gen.DeleteFileParams) {
+func (h *SandboxHandlers) DeleteFile(c *gin.Context, key gen.Key, path string) {
 	if sb, ok := h.resolve(c, key); ok {
-		sb.DeleteFile(c, params)
+		sb.DeleteFile(c, path)
 	}
 }
 

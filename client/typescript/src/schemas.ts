@@ -259,6 +259,14 @@ export interface EgressRule {
    */
   paths?: string[];
   override?: EgressOverride;
+  /**
+   * Optional Lua script run against matching inspected HTTP requests, after `override` is applied.
+   * It can rewrite the request body and headers programmatically. Runs in a restricted VM
+   * (base/string/table/math only) with globals `body` (string), `headers` (name→value table), and
+   * read-only `method`/`host`/`path`/`query`; helpers `urldecode`/`urlencode`/`b64decode`/`b64encode`.
+   * Inspected HTTP only.
+   */
+  override_script?: string;
 }
 export const EgressRule = z.object({
   access: z.enum(["allow", "deny"]),
@@ -267,6 +275,7 @@ export const EgressRule = z.object({
   methods: z.array(HttpMethod).optional(),
   paths: z.array(z.string()).optional(),
   override: EgressOverride.optional(),
+  override_script: z.string().optional(),
 });
 type _AssertEgressRule = Expect<Equal<z.infer<typeof EgressRule>, EgressRule>>;
 

@@ -458,37 +458,47 @@ export class Sandbox {
   }
 
   /**
+   * Build the `/file` URL for an agent-visible absolute path, carrying it as
+   * trailing URL segments (e.g. `/file/workspace/data.csv`). Each segment is
+   * encoded while the `/` separators are preserved, so a nested path with
+   * arbitrarily many segments round-trips intact.
+   */
+  private fileUrl(path: string): URL {
+    const segments = path
+      .split("/")
+      .filter((s) => s.length > 0)
+      .map(encodeURIComponent)
+      .join("/");
+    return new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/file/${segments}`);
+  }
+
+  /**
    * Download a file from a sandbox mount. `path` is the agent-visible
    * absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
    */
   async readFile(path: string, opts?: RequestOptions): Promise<Uint8Array> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const url = new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/file`);
-    url.searchParams.set("path", path);
-    const res = await this.fetchImpl(url, { signal });
+    const res = await this.fetchImpl(this.fileUrl(path), { signal });
     if (!res.ok) throw await toError(res, "readFile");
     return new Uint8Array(await res.arrayBuffer());
   }
 
   /**
-   * Upload `content` as a file to `destination` (which must equal one
-   * of the configured `fs[].mount` paths). `filename` becomes the
-   * basename written under `destination`. Returns the agent-visible
-   * path and byte count the server reports.
+   * Upload `content` as a file to `path`, the agent-visible absolute path
+   * (e.g. `/workspace/data.csv`), which must resolve beneath one of the
+   * configured `fs[].mount` paths. Returns the agent-visible path and byte
+   * count the server reports.
    */
   async writeFile(
-    destination: string,
-    filename: string,
+    path: string,
     content: Blob | Uint8Array | ArrayBuffer | string,
     opts?: RequestOptions,
   ): Promise<{ path: string; bytes: number }> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const form = new FormData();
-    form.append("destination", destination);
-    form.append("file", toBlob(content), filename);
-    const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/file`, {
+    const res = await this.fetchImpl(this.fileUrl(path), {
       method: "POST",
-      body: form,
+      headers: { "Content-Type": "application/octet-stream" },
+      body: toBlob(content),
       signal,
     });
     if (!res.ok) throw await toError(res, "writeFile");
@@ -502,9 +512,7 @@ export class Sandbox {
    */
   async deleteFile(path: string, opts?: RequestOptions): Promise<void> {
     const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const url = new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/file`);
-    url.searchParams.set("path", path);
-    const res = await this.fetchImpl(url, { method: "DELETE", signal });
+    const res = await this.fetchImpl(this.fileUrl(path), { method: "DELETE", signal });
     if (!res.ok) throw await toError(res, "deleteFile");
   }
 }

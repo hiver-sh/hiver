@@ -452,6 +452,9 @@ func (s *Spec) Validate() error {
 					ctx, proxy.BodyStrategyMerge, proxy.BodyStrategyReplace, ov.BodyStrategy)
 			}
 		}
+		if e.OverrideScript != "" && e.Access != "allow" {
+			return fmt.Errorf("%s.override_script: only valid on an allow rule", ctx)
+		}
 	}
 	if sn := s.Snapshot; sn != nil {
 		if vm := sn.VM; vm != nil {

@@ -313,6 +313,20 @@ type EgressRule struct {
 		Query *map[string]string `json:"query,omitempty"`
 	} `json:"override,omitempty"`
 
+	// OverrideScript Optional Lua script run against matching inspected HTTP requests,
+	// after the declarative `override` is applied. It is the escape hatch
+	// for rewrites the declarative override can't express (e.g. decode a
+	// form/JSON body, substitute a substring, re-encode). Runs in a
+	// restricted VM (base/string/table/math libraries only; no os, io, or
+	// file loading) bounded by a short execution timeout, and only when a
+	// request matches this rule. The script sees globals `body` (string),
+	// `headers` (name→value table), and read-only `method`, `host`,
+	// `path`, `query`; reassign `body` or mutate `headers` to change the
+	// outbound request. Helpers: `urldecode`, `urlencode`, `b64decode`,
+	// `b64encode`. Applies to inspected HTTP requests only; CONNECT and
+	// passthrough TLS are opaque and unaffected.
+	OverrideScript *string `json:"override_script,omitempty"`
+
 	// Paths Git-style glob path patterns allowed by this rule. Empty means
 	// any path. Matching is segment-by-segment on `/` boundaries.
 	// `*` matches zero or more characters within a single segment and

@@ -33,15 +33,28 @@ def allowed_npm_packages(*packages: str) -> list[EgressRule]:
     ]
 
 
-def allow_sandbox(sandbox_key: str, config: SandboxConfig) -> list[EgressRule]:
+def allow_sandbox(
+    sandbox_key: str,
+    config: SandboxConfig,
+    allowed_dirs: list[str] | None = None,
+) -> list[EgressRule]:
     """Build egress rules that let an agent create and reach a single nested sandbox.
 
     The agent may POST to create the sandbox named ``sandbox_key`` through the
     gateway, but its request body is replaced with ``config`` so the agent
     cannot influence what gets created. A second passthrough rule allows the
     sandbox's gateway proxy routes. Both the Docker (``gateway``) and k8s
-    (``gateway.hiver``) gateway hosts are covered. Add the returned rules to the
-    outer ``SandboxConfig.egress``.
+    (``gateway.hiver``) gateway hosts are covered.
+
+    Pass ``allowed_dirs`` to also open the nested sandbox's file API under
+    specific directories. Each entry allows ``POST``/``GET``/``DELETE`` on the
+    file endpoint's ``.../file/<dir>/**`` glob, so the agent can seed and read
+    back files there without reaching the rest of the sandbox's filesystem. When
+    omitted, no file rules are added. Entries are matched relative to the file
+    endpoint; a leading slash is stripped, so both ``"workspace/inputs"`` and
+    ``"/workspace/inputs"`` work.
+
+    Add the returned rules to the outer ``SandboxConfig.egress``.
     """
     body = config.model_dump(exclude_none=True)
     rules: list[EgressRule] = []
@@ -65,4 +78,15 @@ def allow_sandbox(sandbox_key: str, config: SandboxConfig) -> list[EgressRule]:
                 ),
             ]
         )
+        if allowed_dirs:
+            rules.append(
+                EgressRule(
+                    access="allow",
+                    host=host,
+                    paths=[
+                        f"/sandbox/*/v1/{sandbox_key}/file/{dir.removeprefix('/')}/**"
+                        for dir in allowed_dirs
+                    ],
+                )
+            )
     return rules

@@ -160,9 +160,7 @@ it("readFile sends GET /v1/file?path=<encoded> and returns Uint8Array", async ()
     );
   const result = await makeSandbox(mockFetch).readFile("/workspace/hello.txt");
   const [url] = mockFetch.mock.calls[0] as [URL];
-  expect(url.toString()).toBe(
-    `${SANDBOX_V1}/file?path=%2Fworkspace%2Fhello.txt`,
-  );
+  expect(url.toString()).toBe(`${SANDBOX_V1}/file/workspace/hello.txt`);
   expect(result).toBeInstanceOf(Uint8Array);
   expect(result).toEqual(content);
 });
@@ -182,33 +180,27 @@ it("readFile throws SandboxError on non-200", async () => {
 
 // writeFile
 
-it("writeFile sends POST /v1/file with multipart form containing destination and file", async () => {
+it("writeFile sends POST /v1/file/<path> with the raw body", async () => {
   const mockFetch = vi
     .fn()
     .mockResolvedValue(jsonResp({ path: "/workspace/hello.txt", bytes: 5 }));
   const result = await makeSandbox(mockFetch).writeFile(
-    "/workspace",
-    "hello.txt",
+    "/workspace/hello.txt",
     "hello",
   );
-  const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-  expect(url).toBe(`${SANDBOX_V1}/file`);
+  const [url, init] = mockFetch.mock.calls[0] as [URL, RequestInit];
+  expect(url.toString()).toBe(`${SANDBOX_V1}/file/workspace/hello.txt`);
   expect(init.method).toBe("POST");
-  expect(init.body).toBeInstanceOf(FormData);
-  const form = init.body as FormData;
-  expect(form.get("destination")).toBe("/workspace");
-  const file = form.get("file") as File;
-  expect(file).toBeInstanceOf(Blob);
-  expect(file.name).toBe("hello.txt");
+  expect(init.body).toBeInstanceOf(Blob);
   expect(result).toEqual({ path: "/workspace/hello.txt", bytes: 5 });
 });
 
 it("writeFile throws SandboxError on non-200", async () => {
   const mockFetch = vi
     .fn()
-    .mockResolvedValue(jsonResp({ error: "destination not mounted" }, 400));
+    .mockResolvedValue(jsonResp({ error: "path not mounted" }, 400));
   await expect(
-    makeSandbox(mockFetch).writeFile("/workspace", "f.txt", "data"),
+    makeSandbox(mockFetch).writeFile("/workspace/f.txt", "data"),
   ).rejects.toMatchObject({
     name: "SandboxError",
     status: 400,

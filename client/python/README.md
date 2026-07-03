@@ -21,7 +21,7 @@ Python client for the Hiver runtime. Requires Python ≥ 3.11.
     - [`sandbox.exec_stream()`](#sandboxexec_streamcommand-kwargs)
     - [`sandbox.get_events_stream()`](#sandboxget_events_streamkwargs)
     - [`sandbox.list_directory()`](#sandboxlist_directorypath)
-    - [`sandbox.upload_file()`](#sandboxupload_filedestination-filename-content)
+    - [`sandbox.upload_file()`](#sandboxupload_filepath-content)
     - [`sandbox.download_file()`](#sandboxdownload_filepath)
   - [Sandbox config](#sandbox-config)
   - [Egress rules & overrides](#egress-rules--overrides)
@@ -308,13 +308,14 @@ for e in entries:
     print("dir" if e["is_dir"] else "file", e["size"], e["path"])
 ```
 
-#### `sandbox.upload_file(destination, filename, content)`
+#### `sandbox.upload_file(path, content)`
 
-Uploads a file to a sandbox mount. `destination` must match a configured
-`fs[].mount`. Returns `{ "path", "bytes" }`.
+Uploads a file to a sandbox mount. `path` is the agent-visible absolute path
+(e.g. `/workspace/data.csv`) and must resolve beneath a configured `fs[].mount`.
+Returns `{ "path", "bytes" }`.
 
 ```python
-result = await sandbox.upload_file("/workspace", "data.csv", csv_bytes)
+result = await sandbox.upload_file("/workspace/data.csv", csv_bytes)
 print(f"uploaded {result['bytes']} bytes → {result['path']}")
 ```
 

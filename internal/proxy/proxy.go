@@ -89,13 +89,18 @@ type Config struct {
 // fingerprint (e.g. WebSocket endpoints protected by Cloudflare Bot
 // Management). Method/Path/Override are not enforced for passthrough rules.
 type EgressRule struct {
-	Access      string          `json:"access"` // "allow" | "deny"
-	Host        string          `json:"host"`
-	Ports       []int           `json:"ports,omitempty"`
-	Methods     []string        `json:"methods,omitempty"`
-	Paths       []string        `json:"paths,omitempty"`
-	Override    *EgressOverride `json:"override,omitempty"`
-	Passthrough bool            `json:"passthrough,omitempty"`
+	Access   string          `json:"access"` // "allow" | "deny"
+	Host     string          `json:"host"`
+	Ports    []int           `json:"ports,omitempty"`
+	Methods  []string        `json:"methods,omitempty"`
+	Paths    []string        `json:"paths,omitempty"`
+	Override *EgressOverride `json:"override,omitempty"`
+	// OverrideScript is an optional Lua script run against matching inspected
+	// HTTP requests, after the declarative Override is applied. It can read and
+	// rewrite the request body and headers programmatically (e.g. decode a
+	// form/JSON body, substitute a value, re-encode). See [runOverrideScript].
+	OverrideScript string `json:"override_script,omitempty"`
+	Passthrough    bool   `json:"passthrough,omitempty"`
 }
 
 // EgressOverride bundles per-rule URL query and header injections plus an
@@ -401,10 +406,15 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if rule.Access == "allow" {
 		applyOverride(r, rule.Override)
+		if rule.OverrideScript != "" {
+			if err := runOverrideScript(r, rule.OverrideScript); err != nil {
+				log.Printf("handleHTTP: override_script host=%s path=%s: %v", host, r.URL.Path, err)
+			}
+		}
 		ac.requestHeaders = headerMap(r.Header)
-		// A body override rewrites r.Body in place; re-read it so the audit
-		// stream reflects what the upstream actually receives.
-		if rule.Override != nil && len(rule.Override.Body) > 0 && r.Body != nil {
+		// A body override or script rewrites r.Body in place; re-read it so the
+		// audit stream reflects what the upstream actually receives.
+		if (rule.OverrideScript != "" || (rule.Override != nil && len(rule.Override.Body) > 0)) && r.Body != nil {
 			b, err := io.ReadAll(r.Body)
 			if err == nil {
 				r.Body = io.NopCloser(bytes.NewReader(b))

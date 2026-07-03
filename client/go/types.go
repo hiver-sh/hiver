@@ -70,6 +70,11 @@ type EgressRule struct {
 	Paths []string `json:"paths,omitempty"`
 	// Override holds values the proxy injects into matching outbound requests.
 	Override *EgressOverride `json:"override,omitempty"`
+	// OverrideScript is an optional Lua script run against matching inspected
+	// HTTP requests, after Override is applied. It can rewrite the request body
+	// and headers programmatically (globals: body, headers, and read-only
+	// method/host/path/query; helpers: urldecode/urlencode/b64decode/b64encode).
+	OverrideScript string `json:"override_script,omitempty"`
 }
 
 // FileSystem describes a file system exposed to the agent at Mount. Backend

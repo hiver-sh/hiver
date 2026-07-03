@@ -182,33 +182,34 @@ paths:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
 
-  /v1/{key}/file:
+  /v1/{key}/file/{path}:
     parameters:
       - $ref: '#/components/parameters/Key'
+      - in: path
+        name: path
+        required: true
+        schema:
+          type: string
+        description: |
+          Agent-visible absolute path, carried as trailing URL path
+          segments. The leading slash is implied by the route, so
+          `/v1/{key}/file/workspace/data.csv` addresses the agent path
+          `/workspace/data.csv`. Must resolve inside one of the configured
+          `fs[].mount` directories.
+        example: workspace/data.csv
     get:
       tags: [Files]
       summary: Download a file from a sandbox mount.
       operationId: getFile
       description: |
         Stream the contents of a single file living under one of the
-        configured `SandboxConfig.fs` mounts. The `path` query
-        parameter is the agent-visible absolute path (e.g.
-        `/workspace/data.csv`) and must resolve to a regular file
-        beneath one of the configured mount roots.
+        configured `SandboxConfig.fs` mounts. The `path` is the
+        agent-visible absolute path (e.g. `/workspace/data.csv`) and must
+        resolve to a regular file beneath one of the configured mount roots.
 
-        Like `POST /v1/file`, the read bypasses the destination
+        Like `POST /v1/{key}/file/{path}`, the read bypasses the destination
         mount's ACLs — the control-plane is higher privilege than
         the workload.
-      parameters:
-        - in: query
-          name: path
-          required: true
-          schema:
-            type: string
-          description: |
-            Agent-visible absolute path to read. Must be inside one
-            of the configured `fs[].mount` directories.
-          example: /workspace/data.csv
       responses:
         '200':
           description: The file contents.
@@ -246,16 +247,6 @@ paths:
         path. The path must resolve inside one of the configured
         `SandboxConfig.fs` mounts. Non-empty directories are rejected with
         400. Like the other file operations, this bypasses the mount's ACLs.
-      parameters:
-        - in: query
-          name: path
-          required: true
-          schema:
-            type: string
-          description: |
-            Agent-visible absolute path to delete. Must be inside one of
-            the configured `fs[].mount` directories.
-          example: /workspace/data.csv
       responses:
         '204':
           description: File or empty directory deleted.
@@ -277,12 +268,10 @@ paths:
       summary: Upload a file into a sandbox mount.
       operationId: uploadFile
       description: |
-        Upload a single file to a configured file system mount. The
-        `destination` field must exactly match one of the `mount`
-        paths in the active `SandboxConfig.fs`. The file is written
-        at `<destination>/<filename>`, where `<filename>` is the
-        basename of the uploaded file's `Content-Disposition`
-        `filename` parameter.
+        Upload a single file to a configured file system mount. The `path`
+        is the agent-visible absolute path to write (e.g. `/workspace/data.csv`)
+        and must resolve beneath one of the configured `SandboxConfig.fs` mount
+        roots. The request body carries the raw file contents.
 
         The write bypasses the destination mount's ACLs, so the per-path
         rules that govern the agent's own filesystem access do not apply
@@ -290,24 +279,10 @@ paths:
       requestBody:
         required: true
         content:
-          multipart/form-data:
+          application/octet-stream:
             schema:
-              type: object
-              required: [destination, file]
-              properties:
-                destination:
-                  type: string
-                  description: |
-                    Mount path to write into. Must match a configured
-                    `fs[].mount` exactly.
-                  example: /workspace
-                file:
-                  type: string
-                  format: binary
-                  description: File contents.
-            encoding:
-              file:
-                contentType: application/octet-stream
+              type: string
+              format: binary
       responses:
         '200':
           description: File written.
@@ -327,12 +302,13 @@ paths:
                     format: int64
                     description: Number of bytes written.
         '400':
-          description: The request is malformed (missing fields, wrong content type, …).
+          description: The request is malformed (missing `path`, traversal, …).
           content:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }
         '404':
-          description: The `destination` does not match any configured mount.
+          description: |
+            `path` is not under any configured mount.
           content:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }

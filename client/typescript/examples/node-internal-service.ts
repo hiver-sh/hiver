@@ -22,7 +22,7 @@ const sandboxes = await res.json();
 console.log(JSON.stringify(sandboxes, null, 2));
 `;
 
-await sandbox.writeFile("/workspace", "list-sandboxes.mjs", script);
+await sandbox.writeFile("/workspace/list-sandboxes.mjs", script);
 
 async function fetchSandboxes(label: string) {
   console.info(`\n--- ${label} ---`);

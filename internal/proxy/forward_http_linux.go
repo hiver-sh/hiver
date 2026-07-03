@@ -182,6 +182,11 @@ func (p *Proxy) applyRequestRule(req *http.Request, host string, port int, srcIP
 		}
 	}
 	ac.allow()
+	if rule.OverrideScript != "" {
+		if err := runOverrideScript(req, rule.OverrideScript); err != nil {
+			log.Printf("applyRequestRule: override_script host=%s path=%s: %v", host, req.URL.Path, err)
+		}
+	}
 	req.RequestURI = ""
 	return rule
 }

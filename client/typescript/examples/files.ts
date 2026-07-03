@@ -14,8 +14,7 @@ const sandbox = await hiver.getOrCreateSandbox("hive-files-example", {
 const { shutdown } = createShutdown(sandbox);
 
 const written = await sandbox.writeFile(
-  "/workspace",
-  "greeting.txt",
+  "/workspace/greeting.txt",
   "hello from the host\n",
 );
 console.info(`uploaded ${written.bytes} bytes → ${written.path}`);

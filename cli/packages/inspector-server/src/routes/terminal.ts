@@ -260,41 +260,52 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
   // we try the primary first and then each linked sandbox as it's discovered,
   // attaching the first one that speaks CDP. Every `browser:*` frame is tagged
   // with the owning sandbox's id/key so the client sends input back to the right
-  // one. Detection is async (probes exposed ports) and best-effort.
+  // one.
+  //
+  // detectCdpPort watches each candidate for the whole life of the stream, so a
+  // browser that comes up late still gets attached and the client still receives
+  // `browser:connected` — no manual refresh. `browserSearch` aborts that watch
+  // once we've actually connected a browser (or the stream closes), so the
+  // per-candidate probe loops don't run forever.
   let browserAttached = false;
   let detachBrowser = () => {};
+  const browserSearch = new AbortController();
+  ac.signal.addEventListener("abort", () => browserSearch.abort(), {
+    once: true,
+  });
   const tryAttachBrowser = async (sb: Sandbox) => {
-    if (browserAttached) return;
-    const cdpPort = await detectCdpPort(sb, { signal: ac.signal });
-    if (cdpPort == null || ac.signal.aborted || browserAttached) return;
+    if (browserAttached || browserSearch.signal.aborted) return;
+    const cdpPort = await detectCdpPort(sb, { signal: browserSearch.signal });
+    if (cdpPort == null || browserSearch.signal.aborted || browserAttached)
+      return;
     browserAttached = true;
-    const { detach, ready } = attachBrowser(
-      sb,
-      cdpPort,
-      {
-        sendFrame: (f) => write("browser", JSON.stringify(f)),
-        sendCtrl: (ev, d) =>
-          write(
-            `browser:${ev}`,
-            JSON.stringify({ ...d, sandboxId: sb.id, sandboxKey: sb.key }),
-          ),
-        // The browser is only one channel of this shared stream — if it closes or
-        // errors, tell the client (via the `browser:*` ctrl above) but keep the
-        // SSE open so terminal + event-feed keep flowing. Never res.end() here.
-        end: () => {},
-      },
-      { signal: ac.signal },
-    );
-    detachBrowser = detach;
-    // If the session never connects (after its own connect retries), free the
-    // slot so another candidate — e.g. a nested sandbox that does have a browser
-    // — can still claim the panel.
-    ready.catch(() => {
-      if (detachBrowser !== detach) return;
-      detach();
-      detachBrowser = () => {};
-      browserAttached = false;
+    const { detach, ready } = attachBrowser(sb, cdpPort, {
+      sendFrame: (f) => write("browser", JSON.stringify(f)),
+      sendCtrl: (ev, d) =>
+        write(
+          `browser:${ev}`,
+          JSON.stringify({ ...d, sandboxId: sb.id, sandboxKey: sb.key }),
+        ),
+      // The browser is only one channel of this shared stream — if it closes or
+      // errors, tell the client (via the `browser:*` ctrl above) but keep the
+      // SSE open so terminal + event-feed keep flowing. Never res.end() here.
+      end: () => {},
     });
+    detachBrowser = detach;
+    ready
+      .then(() => {
+        // Connected: stop probing the other candidates.
+        browserSearch.abort();
+      })
+      .catch(() => {
+        // The session never connected (after its own connect retries) — free the
+        // slot so another candidate (e.g. a nested sandbox that does have a
+        // browser) can still claim the panel.
+        if (detachBrowser !== detach) return;
+        detach();
+        detachBrowser = () => {};
+        browserAttached = false;
+      });
   };
   void tryAttachBrowser(sandbox).catch(() => {});
   (async () => {

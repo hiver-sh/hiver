@@ -119,6 +119,8 @@ class EgressRule(BaseModel):
     """Git-style glob path patterns matched by this rule. Empty means any path. Matching is segment-by-segment on ``/`` boundaries. ``*`` matches zero or more characters within a single segment and never crosses ``/`` (``/users/*`` matches ``/users/42`` and ``/users/`` but not ``/users/42/posts``; ``/v*/users`` matches ``/v2/users``). ``**`` matches zero or more whole segments (``/repos/**`` matches ``/repos``, ``/repos/foo``, and ``/repos/foo/bar``; ``/a/**/z`` matches ``/a/z`` and ``/a/b/c/z``)."""
     override: Optional[EgressOverride] = None
     """Values the proxy injects into matching outbound requests."""
+    override_script: Optional[str] = None
+    """Optional Lua script run against matching inspected HTTP requests, after ``override`` is applied. It can rewrite the request body and headers programmatically. Runs in a restricted VM (base/string/table/math only) with globals ``body`` (string), ``headers`` (name→value table), and read-only ``method``/``host``/``path``/``query``; helpers ``urldecode``/``urlencode``/``b64decode``/``b64encode``. Inspected HTTP only."""
 
 
 class SnapshotVM(BaseModel):

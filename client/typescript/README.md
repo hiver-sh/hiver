@@ -21,7 +21,7 @@ TypeScript client for Hiver runtime. Works in Node.js (≥18) and Bun.
     - [`sandbox.execStream()`](#sandboxexecstreamcommand-opts)
     - [`sandbox.getEventsStream()`](#sandboxgeteventsstreamopts)
     - [`sandbox.listDirectory()`](#sandboxlistdirectorypath)
-    - [`sandbox.uploadFile()`](#sandboxuploadfiledestination-filename-content)
+    - [`sandbox.uploadFile()`](#sandboxuploadfilepath-content)
     - [`sandbox.downloadFile()`](#sandboxdownloadfilepath)
   - [Sandbox config](#sandbox-config)
   - [Egress rules & overrides](#egress-rules--overrides)
@@ -317,15 +317,15 @@ for (const e of entries) {
 }
 ```
 
-#### `sandbox.uploadFile(destination, filename, content)`
+#### `sandbox.uploadFile(path, content)`
 
-Uploads a file to a sandbox mount. `destination` must match a configured
+Uploads a file to a sandbox mount. `path` is the agent-visible absolute path
+(e.g. `/workspace/data.csv`) and must resolve beneath a configured
 `fs[].mount`. Returns `{ path, bytes }`.
 
 ```ts
 const { path, bytes } = await sandbox.uploadFile(
-  "/workspace",
-  "data.csv",
+  "/workspace/data.csv",
   csvContent, // string | Uint8Array | ArrayBuffer | Blob
 );
 console.log(`uploaded ${bytes} bytes → ${path}`);
@@ -550,6 +550,46 @@ const sandbox = await hiver.getOrCreateSandbox("my-sandbox", {
 
 Only the packages you name are allowed through — any `npm install` for an
 unlisted package is blocked by the egress policy.
+
+#### `allowSandbox`
+
+Generates the egress rules that let an agent create and reach a single nested
+sandbox named `sandboxKey` through the gateway, using a fixed `config` the agent
+cannot tamper with. The `POST` that creates the sandbox has its request body
+replaced with `config` (so the agent cannot influence what gets created), and
+the nested sandbox's proxy routes are allowed through.
+
+```ts
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("orchestrator", {
+  egress: [
+    ...hiver.allowSandbox("worker-1", {
+      agent: { image: "my-agent:latest" },
+    }),
+  ],
+});
+```
+
+Pass an optional `allowedDirs` array to also grant the agent file access to
+specific directories in the nested sandbox. Each entry opens the file API under
+that directory — `POST`/`GET`/`DELETE` on
+`/v1/{key}/file/<dir>/**` — so the agent can seed and read back files there
+without being able to touch the rest of the sandbox's filesystem.
+
+```ts
+const sandbox = await hiver.getOrCreateSandbox("orchestrator", {
+  egress: [
+    ...hiver.allowSandbox(
+      "worker-1",
+      { agent: { image: "my-agent:latest" } },
+      ["workspace/inputs", "workspace/outputs"],
+    ),
+  ],
+});
+```
+
+Add the returned rules to the outer `SandboxConfig.egress`.
 
 ---
 

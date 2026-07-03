@@ -418,6 +418,12 @@ export const SANDBOX_CONFIG_SCHEMA = {
             },
           },
         },
+        override_script: {
+          type: "string",
+          description:
+            "Optional Lua script run against matching inspected HTTP requests, after `override` is applied. Rewrites the request body/headers programmatically. Runs in a restricted VM (base/string/table/math only) with globals `body` (string), `headers` (name→value table), and read-only `method`/`host`/`path`/`query`; helpers `urldecode`/`urlencode`/`b64decode`/`b64encode`. Inspected HTTP only.",
+          examples: ['body = body:gsub("====", "s3cret")'],
+        },
       },
     },
 

@@ -19,48 +19,53 @@ type SandboxServer struct {
 	*http.Server
 }
 
-// proxyCatchAllRouter wraps the gin router passed to the generated route
-// registration so the ingress proxy routes match multi-segment paths.
-// oapi-codegen only ever emits a single-segment param for `{path}`
-// (/v1/:key/proxy/:port/:path), but a proxied upstream can expose nested paths
-// — e.g. Chrome's DevTools/CDP endpoint serves /json/version and
-// /devtools/browser/<id>. We rewrite just those registrations to gin's
-// catch-all (/v1/:key/proxy/:port/*path) at registration time, leaving every
-// other route untouched, instead of hand-editing generated code (which a
-// `go generate` would clobber). The catch-all param carries a leading slash;
-// the proxy handler normalizes it (see handlers.newReverseProxy).
-type proxyCatchAllRouter struct {
+// catchAllRouter wraps the gin router passed to the generated route
+// registration so routes whose trailing `{path}` addresses multi-segment paths
+// match nested URLs. oapi-codegen only ever emits a single-segment param for
+// `{path}` (e.g. /v1/:key/proxy/:port/:path and /v1/:key/file/:path), but:
+//   - a proxied upstream can expose nested paths — e.g. Chrome's DevTools/CDP
+//     endpoint serves /json/version and /devtools/browser/<id>.
+//   - a file path is itself an agent-visible absolute path with arbitrarily
+//     many segments — e.g. /workspace/sub/dir/data.csv.
+//
+// We rewrite just those registrations to gin's catch-all (…/*path) at
+// registration time, leaving every other route untouched, instead of
+// hand-editing generated code (which a `go generate` would clobber). The
+// catch-all param carries a leading slash: for file routes that is exactly the
+// agent path; the proxy handler normalizes it (see handlers.newReverseProxy).
+type catchAllRouter struct {
 	gin.IRouter
 }
 
-// rewriteProxyPath turns the generated single-segment proxy pattern into a
-// catch-all. Only the proxy routes end in "/proxy/:port/:path"; all others pass
-// through unchanged.
-func rewriteProxyPath(relativePath string) string {
-	const single = "/proxy/:port/:path"
-	if strings.HasSuffix(relativePath, single) {
-		return strings.TrimSuffix(relativePath, "/:path") + "/*path"
+// rewriteCatchAllPath turns a generated single-segment pattern into a catch-all
+// for the routes that need it. Only the proxy and file routes end in a trailing
+// "/:path" we want to expand; all others pass through unchanged.
+func rewriteCatchAllPath(relativePath string) string {
+	for _, single := range []string{"/proxy/:port/:path", "/file/:path"} {
+		if strings.HasSuffix(relativePath, single) {
+			return strings.TrimSuffix(relativePath, "/:path") + "/*path"
+		}
 	}
 	return relativePath
 }
 
-func (r proxyCatchAllRouter) GET(p string, h ...gin.HandlerFunc) gin.IRoutes {
-	return r.IRouter.GET(rewriteProxyPath(p), h...)
+func (r catchAllRouter) GET(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.GET(rewriteCatchAllPath(p), h...)
 }
-func (r proxyCatchAllRouter) POST(p string, h ...gin.HandlerFunc) gin.IRoutes {
-	return r.IRouter.POST(rewriteProxyPath(p), h...)
+func (r catchAllRouter) POST(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.POST(rewriteCatchAllPath(p), h...)
 }
-func (r proxyCatchAllRouter) PUT(p string, h ...gin.HandlerFunc) gin.IRoutes {
-	return r.IRouter.PUT(rewriteProxyPath(p), h...)
+func (r catchAllRouter) PUT(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.PUT(rewriteCatchAllPath(p), h...)
 }
-func (r proxyCatchAllRouter) PATCH(p string, h ...gin.HandlerFunc) gin.IRoutes {
-	return r.IRouter.PATCH(rewriteProxyPath(p), h...)
+func (r catchAllRouter) PATCH(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.PATCH(rewriteCatchAllPath(p), h...)
 }
-func (r proxyCatchAllRouter) DELETE(p string, h ...gin.HandlerFunc) gin.IRoutes {
-	return r.IRouter.DELETE(rewriteProxyPath(p), h...)
+func (r catchAllRouter) DELETE(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.DELETE(rewriteCatchAllPath(p), h...)
 }
-func (r proxyCatchAllRouter) HEAD(p string, h ...gin.HandlerFunc) gin.IRoutes {
-	return r.IRouter.HEAD(rewriteProxyPath(p), h...)
+func (r catchAllRouter) HEAD(p string, h ...gin.HandlerFunc) gin.IRoutes {
+	return r.IRouter.HEAD(rewriteCatchAllPath(p), h...)
 }
 
 // NewSandboxServer builds the pod API over sup: a dispatcher that resolves the
@@ -69,7 +74,7 @@ func NewSandboxServer(port string, sup handlers.Supervisor) *SandboxServer {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 	r.Use(readyGate(sup))
-	gen.RegisterHandlers(proxyCatchAllRouter{r}, handlers.NewSandboxHandlers(sup))
+	gen.RegisterHandlers(catchAllRouter{r}, handlers.NewSandboxHandlers(sup))
 
 	return &SandboxServer{
 		Server: &http.Server{

@@ -4,6 +4,7 @@ import asyncio
 import json
 import uuid
 from typing import AsyncGenerator, Callable, Coroutine, Any, AsyncIterable, Optional, Union
+from urllib.parse import quote
 
 import httpx
 
@@ -351,37 +352,43 @@ class Sandbox:
             raise _to_error(res, "list_directory")
         return res.json()["entries"]
 
+    def _file_url(self, path: str) -> str:
+        """
+        Build the `/file` URL for an agent-visible absolute path, carrying it as
+        trailing URL segments (e.g. `/file/workspace/data.csv`). Each segment is
+        escaped while the `/` separators are preserved, so a nested path with
+        arbitrarily many segments round-trips intact.
+        """
+        segments = "/".join(quote(seg, safe="") for seg in path.split("/") if seg)
+        return f"{self.api_server_url}/v1/{self.key}/file/{segments}"
+
     async def read_file(self, path: str) -> bytes:
         """
         Download a file from a sandbox mount. `path` is the agent-visible
         absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
         """
-        res = await self._client.get(
-            f"{self.api_server_url}/v1/{self.key}/file",
-            params={"path": path},
-        )
+        res = await self._client.get(self._file_url(path))
         if not res.is_success:
             raise _to_error(res, "read_file")
         return res.content
 
     async def write_file(
         self,
-        destination: str,
-        filename: str,
+        path: str,
         content: Union[bytes, str],
     ) -> dict[str, object]:
         """
-        Upload `content` as a file to `destination` (which must equal one
-        of the configured `fs[].mount` paths). `filename` becomes the
-        basename written under `destination`. Returns the agent-visible
-        path and byte count the server reports.
+        Upload `content` as a file to `path`, the agent-visible absolute path
+        (e.g. `/workspace/data.csv`), which must resolve beneath one of the
+        configured `fs[].mount` paths. Returns the agent-visible path and byte
+        count the server reports.
         """
         if isinstance(content, str):
             content = content.encode("utf-8")
         res = await self._client.post(
-            f"{self.api_server_url}/v1/{self.key}/file",
-            data={"destination": destination},
-            files={"file": (filename, content)},
+            self._file_url(path),
+            content=content,
+            headers={"Content-Type": "application/octet-stream"},
         )
         if not res.is_success:
             raise _to_error(res, "write_file")
@@ -392,10 +399,7 @@ class Sandbox:
         Delete a file or empty directory at `path` inside a sandbox mount.
         `path` is the agent-visible absolute path (e.g. `/workspace/data.csv`).
         """
-        res = await self._client.delete(
-            f"{self.api_server_url}/v1/{self.key}/file",
-            params={"path": path},
-        )
+        res = await self._client.delete(self._file_url(path))
         if not res.is_success:
             raise _to_error(res, "delete_file")
 
