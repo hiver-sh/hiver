@@ -62,6 +62,12 @@ const (
 	// build time so nothing at runtime depends on Playwright.
 	chromeBin = "/opt/hiver/chrome"
 
+	// profileDir is the single, consistent Chrome profile location. A stable dir
+	// (rather than a fresh throwaway tmp dir per launch) means sign-in state and
+	// stored credentials persist across launches, and the profile path captured in
+	// a VM snapshot is deterministic instead of a random /tmp/hiver-chrome-* path.
+	profileDir = "/opt/hiver/chrome-profile"
+
 	// chromeMajorVersion / chromeFullVersion track the actual bundled Chromium
 	// build. The UA string (defaultUserAgent) and the Sec-CH-UA client-hint
 	// metadata (userAgentMetadata) are both derived from these, so the UA header
@@ -84,6 +90,39 @@ const (
 	// by any launch flag. It's fixed at runtime via CDP — see applyUserAgentOverride.
 	defaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeMajorVersion + ".0.0.0 Safari/537.36"
 )
+
+// passkeyStorePath is where created passkeys are persisted so they survive a
+// restart (not just a VM snapshot). It lives inside the persistent profile dir.
+func passkeyStorePath() string { return profileDir + "/passkeys.json" }
+
+// loadPasskeys reads the persisted passkeys, if any. A missing file (first run)
+// is not an error — it just means no credentials to restore yet.
+func loadPasskeys() []map[string]any {
+	b, err := os.ReadFile(passkeyStorePath())
+	if err != nil {
+		return nil
+	}
+	var creds []map[string]any
+	if err := json.Unmarshal(b, &creds); err != nil {
+		log.Printf("passkeys: load %s: %v", passkeyStorePath(), err)
+		return nil
+	}
+	return creds
+}
+
+// savePasskeys writes the passkeys atomically (temp file + rename) so a crash
+// mid-write can't corrupt the store.
+func savePasskeys(creds []map[string]any) error {
+	b, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := passkeyStorePath() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, passkeyStorePath())
+}
 
 func env(name, def string) string {
 	if v := os.Getenv(name); v != "" {
@@ -165,15 +204,14 @@ func main() {
 	port := envInt("HIVER_BROWSER_PORT", 9223)
 	chromePort := envInt("HIVER_CHROME_CDP_PORT", 9222)
 
-	// Fresh, empty throwaway profile per launch — a clean dir has no GCM/sign-in
-	// state for headless Chrome to reload, so it stays quiet.
-	userDataDir, err := os.MkdirTemp("", "hiver-chrome-")
-	if err != nil {
+	// Single consistent profile location (see profileDir) — persists sign-in state
+	// and stored credentials across launches instead of a throwaway tmp dir.
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		log.Fatalf("create user-data-dir: %v", err)
 	}
 
 	userAgent := env("HIVER_BROWSER_USER_AGENT", defaultUserAgent)
-	cmd := exec.Command(env("HIVER_CHROME_BIN", chromeBin), chromeArgs(chromePort, userDataDir, userAgent)...)
+	cmd := exec.Command(env("HIVER_CHROME_BIN", chromeBin), chromeArgs(chromePort, profileDir, userAgent)...)
 	cmd.Stdout = os.Stdout
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -229,8 +267,9 @@ func onReady(port, chromePort int, userAgent string) {
 	}
 	go serveRelay(ln, chromePort, browserWsPath)
 
-	// Fix the Sec-CH-UA client hints, which the --user-agent flag can't touch.
-	go applyUserAgentOverride(chromePort, browserWsPath, userAgent)
+	// Apply per-session CDP setup the launch flags can't express: the Sec-CH-UA
+	// client-hint override and a WebAuthn virtual authenticator for passkeys.
+	go configureTargets(chromePort, browserWsPath, userAgent)
 
 	disp := browserWsPath
 	if disp == "" {
@@ -318,82 +357,263 @@ func handleRelay(client net.Conn, chromePort int, browserWsPath string) {
 	_, _ = io.Copy(client, upstream)
 }
 
-// applyUserAgentOverride fixes the one thing the --user-agent launch flag can't:
-// the Sec-CH-UA client hints (and navigator.userAgentData), whose brand list is
-// baked into the Chrome build and reports "HeadlessChrome" under --headless=new.
-// The only lever is CDP Emulation.setUserAgentOverride with a userAgentMetadata
-// object, applied to a page target.
+// configureTargets applies the per-session CDP setup that Chrome's launch flags
+// can't express, on *every* page target — existing and future — via
+// Target.setAutoAttach, so it covers freshly created newContext()/newPage()
+// targets, not just the ones open at startup:
 //
-// This is a one-shot: it connects to Chrome's browser endpoint, attaches to the
-// existing page target(s), sets the override, and then keeps the CDP connection
-// open for the life of the process — the override is scoped to the attached
-// session, so it would be reverted the moment we detached. The resident-browser
-// flow (clients that connectOverCDP and reuse contexts()[0]) drives that same
-// pre-existing target, so it inherits the override. Freshly created
-// newContext() targets are not covered (that would need Target.setAutoAttach,
-// with a per-target round-trip we deliberately avoid here).
+//   - Emulation.setUserAgentOverride — fixes the Sec-CH-UA client hints (and
+//     navigator.userAgentData), whose brand list is baked into the Chrome build
+//     and reports "HeadlessChrome" under --headless=new; the --user-agent launch
+//     flag can't touch them.
 //
-// Failures are logged, never fatal: a broken override must not take Chrome down.
-func applyUserAgentOverride(chromePort int, browserWsPath, userAgent string) {
+//   - WebAuthn virtual authenticator — headless Chrome has no platform
+//     authenticator (no screen lock / biometric / TPM), so passkey ceremonies
+//     fail with "a passkey can't be created on this device". A CDP virtual
+//     authenticator (transport "internal", resident-key + auto-verified) makes
+//     both create() and get() succeed unattended. The authenticator is bound to
+//     the page's frame host, so a client that drives the page over its own CDP
+//     session (Playwright connectOverCDP) inherits it. Passkeys are persisted to
+//     disk (see passkeyStorePath) and reloaded onto every target, and any new
+//     passkey is cross-injected into the other live targets — so a credential
+//     registered in one page is usable for login in any other page and survives a
+//     restart. Otherwise the authenticator comes up empty and the site's get()
+//     hangs forever waiting for an assertion (the "your device will ask for your
+//     fingerprint…" loop).
+//
+// The CDP connection is held open for the life of the process: both overrides are
+// scoped to the attached session and would be reverted the moment we detached.
+//
+// Failures are logged, never fatal: broken setup must not take Chrome down.
+func configureTargets(chromePort int, browserWsPath, userAgent string) {
 	if browserWsPath == "" {
-		log.Printf("ua-override: no browser ws path; skipping client-hint override")
+		log.Printf("configure: no browser ws path; skipping client-hint override and virtual authenticator")
 		return
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", chromePort)
 
 	ws, err := wsConnect(addr, browserWsPath)
 	if err != nil {
-		log.Printf("ua-override: connect: %v", err)
+		log.Printf("configure: connect: %v", err)
 		return
 	}
 
-	params := map[string]any{
-		"userAgent":         userAgent,
-		"userAgentMetadata": userAgentMetadata(),
+	m := newSessionManager(ws, userAgent)
+	for _, c := range loadPasskeys() {
+		if id, ok := c["credentialId"].(string); ok {
+			m.creds[id] = c
+		}
 	}
+	log.Printf("configure: loaded %d persisted passkey(s)", len(m.creds))
 
-	// Chrome opens an initial page target, but it may not be present the instant
-	// the CDP endpoint accepts connections — retry briefly.
-	var applied int
-	for range 20 {
-		targets, err := ws.pageTargets()
-		if err != nil {
-			log.Printf("ua-override: getTargets: %v", err)
-			ws.close()
-			return
-		}
-		for _, tid := range targets {
-			sid, err := ws.attach(tid)
-			if err != nil {
-				log.Printf("ua-override: attach %s: %v", tid, err)
-				continue
-			}
-			if _, err := ws.call("Emulation.setUserAgentOverride", params, sid); err != nil {
-				log.Printf("ua-override: setUserAgentOverride on %s: %v", tid, err)
-				continue
-			}
-			applied++
-		}
-		if applied > 0 {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if applied == 0 {
-		log.Printf("ua-override: no page target to override; Sec-CH-UA still reports HeadlessChrome")
+	// Auto-attach to every page target, existing and future, so both overrides
+	// cover all pages/contexts. flatten routes each session by the sessionId field
+	// on this one browser connection.
+	if _, err := ws.call("Target.setAutoAttach", map[string]any{
+		"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true,
+	}, ""); err != nil {
+		log.Printf("configure: setAutoAttach: %v", err)
 		ws.close()
 		return
 	}
-	log.Printf("ua-override: Sec-CH-UA client hints overridden on %d page target(s)", applied)
 
-	// Hold the connection (and thus the session-scoped override) open. Draining
-	// incoming frames replies to pings and detects Chrome going away.
+	go m.persistLoop()
+
+	// Dispatch target lifecycle events for the life of the process.
 	for {
-		if _, err := ws.readMessage(); err != nil {
+		select {
+		case msg := <-ws.events:
+			m.handleEvent(msg)
+		case <-ws.closed:
 			return
 		}
 	}
+}
+
+// authRef identifies one page target's virtual authenticator.
+type authRef struct {
+	sessionID string
+	authID    string
+}
+
+// sessionManager provisions per-page CDP overrides and keeps every page target's
+// virtual authenticator in sync with the persisted passkey store.
+type sessionManager struct {
+	ws       *wsConn
+	uaParams map[string]any
+
+	mu        sync.Mutex
+	auths     map[string]authRef        // sessionID -> authenticator
+	creds     map[string]map[string]any // credentialId -> canonical credential
+	lastSaved string                    // marshaled creds last written to disk (persistLoop only)
+}
+
+func newSessionManager(ws *wsConn, userAgent string) *sessionManager {
+	return &sessionManager{
+		ws: ws,
+		uaParams: map[string]any{
+			"userAgent":         userAgent,
+			"userAgentMetadata": userAgentMetadata(),
+		},
+		auths: make(map[string]authRef),
+		creds: make(map[string]map[string]any),
+	}
+}
+
+func (m *sessionManager) handleEvent(msg map[string]any) {
+	method, _ := msg["method"].(string)
+	params, _ := msg["params"].(map[string]any)
+	switch method {
+	case "Target.attachedToTarget":
+		sid, _ := params["sessionId"].(string)
+		info, _ := params["targetInfo"].(map[string]any)
+		if sid == "" || info == nil || info["type"] != "page" {
+			return
+		}
+		go m.provision(sid)
+	case "Target.detachedFromTarget":
+		if sid, _ := params["sessionId"].(string); sid != "" {
+			m.mu.Lock()
+			delete(m.auths, sid)
+			m.mu.Unlock()
+		}
+	}
+}
+
+// provision applies the UA override and a virtual authenticator to a newly
+// attached page target, then restores every known passkey into it.
+func (m *sessionManager) provision(sessionID string) {
+	if _, err := m.ws.call("Emulation.setUserAgentOverride", m.uaParams, sessionID); err != nil {
+		log.Printf("configure: setUserAgentOverride on %s: %v", sessionID, err)
+	}
+	authID, err := m.ws.addVirtualAuthenticator(sessionID)
+	if err != nil {
+		log.Printf("configure: addVirtualAuthenticator on %s: %v", sessionID, err)
+		return
+	}
+	m.mu.Lock()
+	m.auths[sessionID] = authRef{sessionID, authID}
+	known := make([]map[string]any, 0, len(m.creds))
+	for _, c := range m.creds {
+		known = append(known, c)
+	}
+	m.mu.Unlock()
+
+	for _, c := range known {
+		if err := m.ws.addCredential(sessionID, authID, c); err != nil {
+			log.Printf("configure: addCredential on %s: %v", sessionID, err)
+		}
+	}
+	log.Printf("configure: session %s ready (UA override + authenticator + %d passkey(s))", sessionID, len(known))
+}
+
+// persistLoop periodically reconciles all live authenticators with the passkey
+// store: it collects newly created passkeys, writes them to disk, and
+// cross-injects them into every other page so a credential registered in one page
+// works for login in any page. Runs until the CDP connection drops.
+func (m *sessionManager) persistLoop() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ws.closed:
+			return
+		case <-ticker.C:
+			m.reconcile()
+		}
+	}
+}
+
+func (m *sessionManager) reconcile() {
+	m.mu.Lock()
+	auths := make([]authRef, 0, len(m.auths))
+	for _, a := range m.auths {
+		auths = append(auths, a)
+	}
+	m.mu.Unlock()
+
+	// Poll every live authenticator.
+	authCreds := make(map[string][]map[string]any, len(auths))
+	var dead []string
+	for _, a := range auths {
+		creds, err := m.ws.getCredentials(a.sessionID, a.authID)
+		if err != nil {
+			dead = append(dead, a.sessionID)
+			continue
+		}
+		authCreds[a.sessionID] = creds
+	}
+
+	// Union by credentialId, keeping the highest sign counter.
+	union := make(map[string]map[string]any)
+	for _, creds := range authCreds {
+		for _, c := range creds {
+			id, _ := c["credentialId"].(string)
+			if id == "" {
+				continue
+			}
+			if ex, ok := union[id]; !ok || signCount(c) > signCount(ex) {
+				union[id] = c
+			}
+		}
+	}
+
+	m.mu.Lock()
+	for _, sid := range dead {
+		delete(m.auths, sid)
+	}
+	// Keep disk-known credentials that no live authenticator reported (e.g. no
+	// page open yet) so they survive in the store and get restored later.
+	for id, c := range m.creds {
+		if _, ok := union[id]; !ok {
+			union[id] = c
+		}
+	}
+	m.creds = union
+	auths = auths[:0]
+	for _, a := range m.auths {
+		auths = append(auths, a)
+	}
+	m.mu.Unlock()
+
+	// Cross-inject: ensure every live authenticator holds every credential.
+	for _, a := range auths {
+		have := make(map[string]bool)
+		for _, c := range authCreds[a.sessionID] {
+			if id, ok := c["credentialId"].(string); ok {
+				have[id] = true
+			}
+		}
+		for id, c := range union {
+			if !have[id] {
+				if err := m.ws.addCredential(a.sessionID, a.authID, c); err != nil {
+					log.Printf("configure: cross-inject on %s: %v", a.sessionID, err)
+				}
+			}
+		}
+	}
+
+	// Persist to disk when the credential set changes.
+	b, err := json.Marshal(union) // map keys are marshaled sorted → stable
+	if err != nil || string(b) == m.lastSaved {
+		return
+	}
+	slice := make([]map[string]any, 0, len(union))
+	for _, c := range union {
+		slice = append(slice, c)
+	}
+	if err := savePasskeys(slice); err != nil {
+		log.Printf("passkeys: save: %v", err)
+		return
+	}
+	m.lastSaved = string(b)
+	log.Printf("passkeys: persisted %d credential(s) to %s", len(union), passkeyStorePath())
+}
+
+// signCount reads a credential's WebAuthn sign counter (0 if absent).
+func signCount(c map[string]any) float64 {
+	v, _ := c["signCount"].(float64)
+	return v
 }
 
 // userAgentMetadata is the Sec-CH-UA / navigator.userAgentData payload: the real
@@ -433,14 +653,27 @@ func userAgentMetadata() map[string]any {
 // chromehost is intentionally dependency-free (see file header), so rather than
 // pull in a WebSocket library for a handful of CDP commands, this implements just
 // enough of RFC 6455: a client handshake, masked client frames, and frame reads
-// (handling fragmentation + ping). Commands are issued synchronously (one setup
-// goroutine), so there is only ever a single writer.
+// (handling fragmentation + ping).
+//
+// A single readLoop goroutine owns all reads and routes each frame either to the
+// call() that is waiting on its id or to the events channel. That lets many
+// goroutines issue call()s concurrently (needed for Target.setAutoAttach, where
+// targets are provisioned in parallel as they attach). Writes are serialized by
+// wmu.
 
 type wsConn struct {
-	conn   net.Conn
-	br     *bufio.Reader
-	mu     sync.Mutex // serializes frame writes
-	nextID int
+	conn net.Conn
+	br   *bufio.Reader
+
+	wmu sync.Mutex // serializes frame writes
+
+	mu      sync.Mutex // guards nextID + pending
+	nextID  int
+	pending map[int]chan map[string]any
+
+	events    chan map[string]any // CDP events (messages with a "method")
+	closed    chan struct{}       // closed once the connection is torn down
+	closeOnce sync.Once
 }
 
 // wsConnect performs the RFC 6455 opening handshake against Chrome's CDP endpoint.
@@ -486,15 +719,65 @@ func wsConnect(addr, path string) (*wsConn, error) {
 			break
 		}
 	}
-	return &wsConn{conn: conn, br: br}, nil
+	w := &wsConn{
+		conn:    conn,
+		br:      br,
+		pending: make(map[int]chan map[string]any),
+		events:  make(chan map[string]any, 64),
+		closed:  make(chan struct{}),
+	}
+	go w.readLoop()
+	return w, nil
 }
 
-func (w *wsConn) close() { _ = w.conn.Close() }
+func (w *wsConn) close() { w.shutdown() }
+
+// shutdown tears the connection down once, unblocking readLoop, call()s waiting
+// on a response, and anything selecting on closed.
+func (w *wsConn) shutdown() {
+	w.closeOnce.Do(func() {
+		close(w.closed)
+		_ = w.conn.Close()
+	})
+}
+
+// readLoop is the sole reader: it dispatches each frame to the waiting call() (by
+// id) or onto the events channel, until the connection drops.
+func (w *wsConn) readLoop() {
+	defer w.shutdown()
+	for {
+		data, err := w.readMessage()
+		if err != nil {
+			return
+		}
+		var msg map[string]any
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+		if idf, ok := msg["id"].(float64); ok {
+			w.mu.Lock()
+			ch := w.pending[int(idf)]
+			delete(w.pending, int(idf))
+			w.mu.Unlock()
+			if ch != nil {
+				ch <- msg
+			}
+			continue
+		}
+		if _, ok := msg["method"]; ok {
+			select {
+			case w.events <- msg:
+			case <-w.closed:
+				return
+			}
+		}
+	}
+}
 
 // writeFrame writes a single final client frame (always masked, per RFC 6455).
 func (w *wsConn) writeFrame(opcode byte, payload []byte) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
 
 	hdr := []byte{0x80 | opcode}
 	n := len(payload)
@@ -584,11 +867,22 @@ func (w *wsConn) readMessage() ([]byte, error) {
 	}
 }
 
-// call issues a CDP command and blocks until the matching response arrives,
-// discarding unrelated events/responses (fine for sequential setup).
+// call issues a CDP command and blocks until readLoop delivers the matching
+// response (or the connection drops). Safe to call concurrently.
 func (w *wsConn) call(method string, params any, sessionID string) (map[string]any, error) {
+	w.mu.Lock()
 	w.nextID++
 	id := w.nextID
+	ch := make(chan map[string]any, 1)
+	w.pending[id] = ch
+	w.mu.Unlock()
+
+	unregister := func() {
+		w.mu.Lock()
+		delete(w.pending, id)
+		w.mu.Unlock()
+	}
+
 	msg := map[string]any{"id": id, "method": method}
 	if params != nil {
 		msg["params"] = params
@@ -598,61 +892,89 @@ func (w *wsConn) call(method string, params any, sessionID string) (map[string]a
 	}
 	b, err := json.Marshal(msg)
 	if err != nil {
+		unregister()
 		return nil, err
 	}
 	if err := w.writeFrame(0x1, b); err != nil {
+		unregister()
 		return nil, err
 	}
-	for {
-		data, err := w.readMessage()
-		if err != nil {
-			return nil, err
-		}
-		var resp map[string]any
-		if err := json.Unmarshal(data, &resp); err != nil {
-			continue
-		}
-		fid, ok := resp["id"].(float64)
-		if !ok || int(fid) != id {
-			continue
-		}
+	select {
+	case resp := <-ch:
 		if e, ok := resp["error"]; ok {
 			return nil, fmt.Errorf("cdp %s: %v", method, e)
 		}
 		return resp, nil
+	case <-w.closed:
+		unregister()
+		return nil, fmt.Errorf("cdp %s: connection closed", method)
 	}
 }
 
-// pageTargets returns the targetIds of all current page targets.
-func (w *wsConn) pageTargets() ([]string, error) {
-	resp, err := w.call("Target.getTargets", nil, "")
-	if err != nil {
-		return nil, err
+// addVirtualAuthenticator provisions a CDP virtual platform authenticator on the
+// given flat session so WebAuthn passkey ceremonies work in headless Chrome,
+// which otherwise has no platform authenticator and reports "a passkey can't be
+// created on this device". transport:"internal" presents it as a platform
+// authenticator (so isUserVerifyingPlatformAuthenticatorAvailable() is true);
+// hasResidentKey enables discoverable credentials (passkeys); isUserVerified +
+// automaticPresenceSimulation make create()/get() complete with no user gesture
+// or biometric prompt.
+//
+// Credentials created here live in the authenticator (Chrome's process memory),
+// not in the --user-data-dir profile — so they ride a VM snapshot but not a plain
+// restart. Export/re-inject with WebAuthn.getCredentials / WebAuthn.addCredential
+// for durable persistence.
+func (w *wsConn) addVirtualAuthenticator(sessionID string) (string, error) {
+	if _, err := w.call("WebAuthn.enable", map[string]any{"enableUI": false}, sessionID); err != nil {
+		return "", fmt.Errorf("WebAuthn.enable: %w", err)
 	}
-	result, _ := resp["result"].(map[string]any)
-	infos, _ := result["targetInfos"].([]any)
-	var ids []string
-	for _, ti := range infos {
-		t, _ := ti.(map[string]any)
-		if t["type"] == "page" {
-			if id, ok := t["targetId"].(string); ok {
-				ids = append(ids, id)
-			}
-		}
-	}
-	return ids, nil
-}
-
-// attach opens a flat session to a target and returns its sessionId.
-func (w *wsConn) attach(targetID string) (string, error) {
-	resp, err := w.call("Target.attachToTarget", map[string]any{"targetId": targetID, "flatten": true}, "")
+	resp, err := w.call("WebAuthn.addVirtualAuthenticator", map[string]any{
+		"options": map[string]any{
+			"protocol":                    "ctap2",
+			"transport":                   "internal",
+			"hasResidentKey":              true,
+			"hasUserVerification":         true,
+			"isUserVerified":              true,
+			"automaticPresenceSimulation": true,
+		},
+	}, sessionID)
 	if err != nil {
 		return "", err
 	}
 	result, _ := resp["result"].(map[string]any)
-	sid, ok := result["sessionId"].(string)
-	if !ok {
-		return "", fmt.Errorf("attachToTarget: no sessionId in response")
+	id, _ := result["authenticatorId"].(string)
+	if id == "" {
+		return "", fmt.Errorf("addVirtualAuthenticator: no authenticatorId in response")
 	}
-	return sid, nil
+	return id, nil
+}
+
+// addCredential injects a previously exported passkey into an authenticator. The
+// CDP WebAuthn.Credential type is shared by getCredentials (output) and
+// addCredential (input), so a credential round-trips through the on-disk store
+// without any field massaging.
+func (w *wsConn) addCredential(sessionID, authID string, cred map[string]any) error {
+	_, err := w.call("WebAuthn.addCredential", map[string]any{
+		"authenticatorId": authID,
+		"credential":      cred,
+	}, sessionID)
+	return err
+}
+
+// getCredentials returns every credential currently held by an authenticator,
+// including newly created passkeys and the advanced sign counter.
+func (w *wsConn) getCredentials(sessionID, authID string) ([]map[string]any, error) {
+	resp, err := w.call("WebAuthn.getCredentials", map[string]any{"authenticatorId": authID}, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	result, _ := resp["result"].(map[string]any)
+	raw, _ := result["credentials"].([]any)
+	creds := make([]map[string]any, 0, len(raw))
+	for _, c := range raw {
+		if m, ok := c.(map[string]any); ok {
+			creds = append(creds, m)
+		}
+	}
+	return creds, nil
 }
