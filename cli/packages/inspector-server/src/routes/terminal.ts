@@ -81,7 +81,12 @@ async function openExecStreamSession(
   };
   let exec;
   if (config?.tty === true) {
-    exec = await sandbox.execStream("", { tty: true, cwd, signal: ac.signal, env });
+    exec = await sandbox.execStream("", {
+      tty: true,
+      cwd,
+      signal: ac.signal,
+      env,
+    });
   } else {
     exec = await sandbox.execStream("/bin/sh", {
       tty: true,
@@ -263,17 +268,32 @@ router.get("/:id/:key/stream", (req: Request, res: Response) => {
     const cdpPort = await detectCdpPort(sb, { signal: ac.signal });
     if (cdpPort == null || ac.signal.aborted || browserAttached) return;
     browserAttached = true;
-    detachBrowser = attachBrowser(sb, cdpPort, {
-      sendFrame: (f) => write("browser", JSON.stringify(f)),
-      sendCtrl: (ev, d) =>
-        write(
-          `browser:${ev}`,
-          JSON.stringify({ ...d, sandboxId: sb.id, sandboxKey: sb.key }),
-        ),
-      // The browser is only one channel of this shared stream — if it closes or
-      // errors, tell the client (via the `browser:*` ctrl above) but keep the
-      // SSE open so terminal + event-feed keep flowing. Never res.end() here.
-      end: () => {},
+    const { detach, ready } = attachBrowser(
+      sb,
+      cdpPort,
+      {
+        sendFrame: (f) => write("browser", JSON.stringify(f)),
+        sendCtrl: (ev, d) =>
+          write(
+            `browser:${ev}`,
+            JSON.stringify({ ...d, sandboxId: sb.id, sandboxKey: sb.key }),
+          ),
+        // The browser is only one channel of this shared stream — if it closes or
+        // errors, tell the client (via the `browser:*` ctrl above) but keep the
+        // SSE open so terminal + event-feed keep flowing. Never res.end() here.
+        end: () => {},
+      },
+      { signal: ac.signal },
+    );
+    detachBrowser = detach;
+    // If the session never connects (after its own connect retries), free the
+    // slot so another candidate — e.g. a nested sandbox that does have a browser
+    // — can still claim the panel.
+    ready.catch(() => {
+      if (detachBrowser !== detach) return;
+      detach();
+      detachBrowser = () => {};
+      browserAttached = false;
     });
   };
   void tryAttachBrowser(sandbox).catch(() => {});

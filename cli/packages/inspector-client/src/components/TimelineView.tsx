@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ChevronDown, ChevronRight, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import {
+  MosaicWithoutDragDropContext,
+  type MosaicNode,
+} from "react-mosaic-component";
+import "react-mosaic-component/react-mosaic-component.css";
 import type { SandboxEvent, SandboxTarget } from "@/types";
 import { humanDuration } from "@/lib/utils";
 import { LLM_PROVIDERS } from "@/lib/llmProviders";
@@ -295,25 +300,25 @@ function liveBarClass(row: TimelineRow): string {
 function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
   if (bar.pending)
     return "bg-muted-foreground/40 border border-dashed border-muted-foreground/60";
-  if (bar.access === "denied" || bar.error) return "bg-red-500/80";
+  if (bar.access === "denied" || bar.error) return "bg-red-500/65";
   if (type === "egress") {
     return bar.status !== undefined && bar.status >= 400
-      ? "bg-red-500/80"
-      : "bg-blue-500/80";
+      ? "bg-red-500/65"
+      : "bg-blue-500/65";
   }
   if (type === "ingress") {
     return bar.status !== undefined && bar.status >= 400
-      ? "bg-red-500/80"
-      : "bg-blue-500/80";
+      ? "bg-red-500/65"
+      : "bg-blue-500/65";
   }
-  if (type === "exec") return "bg-emerald-500/80";
+  if (type === "exec") return "bg-emerald-500/65";
   if (type === "stdio") {
     const ev = bar.rawEvents[0];
     return ev?.type === "stdio" && ev.stderr
       ? "bg-red-400/70"
       : "bg-zinc-500/70";
   }
-  return "bg-purple-500/80";
+  return "bg-purple-500/65";
 }
 
 function methodClass(row: TimelineRow): string {
@@ -785,6 +790,10 @@ function barKey(b: TimelineBar): string {
   return `${b.sandboxKey}:${b.rawEvents[0]?.type ?? ""}:${b.id}`;
 }
 
+// The two tiles of the timeline's internal mosaic split: the event rows and the
+// selected-event detail panel.
+type TimelinePane = "rows" | "detail";
+
 export function TimelineView({
   events,
   filter,
@@ -842,29 +851,22 @@ export function TimelineView({
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     return searchParams.get("event");
   });
-  const [panelCollapsed, setPanelCollapsed] = useState(
-    () => localStorage.getItem("timeline:panelCollapsed") === "true",
-  );
   // Full-screen detail dialog. Lives here (not inside RowDetailPanel) so it stays
   // open while the user pages through events with prev/next.
   const [detailExpanded, setDetailExpanded] = useState(false);
-
-  useEffect(() => {
-    localStorage.setItem("timeline:panelCollapsed", String(panelCollapsed));
-  }, [panelCollapsed]);
 
   // Closing the detail panel (deselecting) also closes the expanded dialog.
   useEffect(() => {
     if (selectedId === null) setDetailExpanded(false);
   }, [selectedId]);
 
-  const [panelHeight, setPanelHeight] = useState(() =>
-    parseInt(localStorage.getItem("timeline:panelHeight") ?? "300", 10),
-  );
-
-  useEffect(() => {
-    localStorage.setItem("timeline:panelHeight", String(panelHeight));
-  }, [panelHeight]);
+  // Rows/detail split is resized by the mosaic splitter (a single, unified resize
+  // mechanism across the whole inspector). `detailSplit` is the percentage of the
+  // vertical space given to the timeline rows; the detail panel takes the rest.
+  const [detailSplit, setDetailSplit] = useState(() => {
+    const s = parseFloat(localStorage.getItem("timeline:detailSplit") ?? "");
+    return Number.isFinite(s) ? s : 62;
+  });
 
   const [labelW, setLabelW] = useState(() =>
     parseInt(
@@ -1063,32 +1065,55 @@ export function TimelineView({
     scrollSelectedIntoView();
   }, [selectedId, scrollSelectedIntoView]);
 
-  // Observe the ruler track for responsive tick count
+  // Observe the ruler track for responsive tick count.
+  // The callback is deferred to a rAF and only updates on a real (>0.5px) change:
+  // when the panel is very small, scrollbars flip on/off each layout pass and a
+  // synchronous ResizeObserver → setState → relayout cycle would spin the CPU.
   useEffect(() => {
     const el = trackRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(([entry]) =>
-      setTrackWidth(entry.contentRect.width),
-    );
+    let raf = 0;
+    const ro = new ResizeObserver((entries) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const w = entries[0]?.contentRect.width;
+        if (!Number.isFinite(w)) return;
+        setTrackWidth((prev) => (Math.abs(prev - w) > 0.5 ? w : prev));
+      });
+    });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allRows.length > 0]);
 
-  // Observe rows viewport for virtual scroll dimensions.
-  // Deps mirror trackRef: re-run when the scroll div first mounts (allRows.length > 0).
-  // Read dimensions immediately so the first render uses the real size.
+  // Observe rows viewport for virtual scroll dimensions. Same rAF + change-guard
+  // as above to stay stable when the panel is tiny. Read dimensions immediately
+  // so the first render uses the real size.
   useEffect(() => {
     const el = rowsScrollRef.current;
     if (!el) return;
     setViewportHeight(el.clientHeight);
     setViewportWidth(el.clientWidth);
-    const ro = new ResizeObserver(([entry]) => {
-      setViewportHeight(entry.contentRect.height);
-      setViewportWidth(entry.contentRect.width);
+    let raf = 0;
+    const ro = new ResizeObserver((entries) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const cr = entries[0]?.contentRect;
+        if (!cr) return;
+        if (Number.isFinite(cr.height))
+          setViewportHeight((h) => (Math.abs(h - cr.height) > 0.5 ? cr.height : h));
+        if (Number.isFinite(cr.width))
+          setViewportWidth((w) => (Math.abs(w - cr.width) > 0.5 ? cr.width : w));
+      });
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allRows.length > 0]);
 
@@ -1386,8 +1411,14 @@ export function TimelineView({
     startDrag(e.clientX - rect.left + sl, false);
   }
 
+  // Clamp the tick count to a finite, bounded value: if a degenerate (tiny/zero)
+  // panel ever produced a NaN/Infinity effective width, `Array.from({length})`
+  // would throw or try to allocate an unbounded array and hang the tab.
+  const tickCount = Number.isFinite(effectiveTrackWidth)
+    ? Math.min(Math.max(Math.floor(effectiveTrackWidth / 100), 0) + 1, 5000)
+    : 1;
   const tickPositions = Array.from(
-    { length: Math.floor(effectiveTrackWidth / 100) + 1 },
+    { length: tickCount },
     (_, i) => i * 100,
   ).filter(
     (px) =>
@@ -1515,30 +1546,6 @@ export function TimelineView({
     });
   }
 
-  function startPanelDrag(e: React.MouseEvent) {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startHeight = panelHeight;
-    const containerH =
-      containerRef.current?.getBoundingClientRect().height ?? 600;
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    function onMove(ev: MouseEvent) {
-      const delta = startY - ev.clientY;
-      setPanelHeight(
-        Math.max(100, Math.min(startHeight + delta, containerH - 120)),
-      );
-    }
-    function onUp() {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
-
   function startLabelDrag(e: React.MouseEvent) {
     e.preventDefault();
     const startX = e.clientX;
@@ -1562,9 +1569,11 @@ export function TimelineView({
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
-  return (
-    <div ref={containerRef} className="flex flex-col h-full">
-      <div className="relative flex flex-col min-h-0 flex-1">
+  // The timeline rows and the event-detail view are the two tiles of a mosaic
+  // split, so the whole inspector resizes through one mechanism (react-mosaic)
+  // rather than a bespoke row-resize drag here.
+  const rowsTile = (
+    <div className="relative flex flex-col h-full">
         {/* Label column splitter */}
         <div
           className="absolute top-0 z-[31] w-[5px] cursor-col-resize group/lsplit"
@@ -1650,7 +1659,7 @@ export function TimelineView({
                   <div
                     key={`sandbox:${group.sandboxKey}`}
                     style={{ height: 28 }}
-                    className="flex border-y border-border bg-sidebar cursor-pointer"
+                    className="flex bg-sidebar cursor-pointer"
                     onClick={() => toggleSandbox(group.sandboxKey)}
                   >
                     <div
@@ -2174,50 +2183,66 @@ export function TimelineView({
             );
           })()}
       </div>
-      {/* end timeline area */}
+  );
 
-      {selectedBar &&
-        !detailInDialog &&
-        (panelCollapsed ? (
-          <div className="shrink-0 border-t border-border flex items-center px-3 h-7">
-            <button
-              onClick={() => setPanelCollapsed(false)}
-              className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-            >
-              <ChevronUp className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ) : (
-          <>
-            <div
-              className="h-[5px] shrink-0 cursor-row-resize bg-border hover:bg-foreground/20 transition-colors"
-              onMouseDown={startPanelDrag}
-            />
-            <div
-              className="shrink-0 flex flex-col overflow-hidden scroll-container"
-              style={{ height: panelHeight }}
-            >
-              <RowDetailPanel
-                key={selectedBar.id}
-                bar={selectedBar}
-                prevBar={prevAnthropicBar}
-                onPrev={
-                  prevBarId !== null
-                    ? () => setSelectedId(prevBarId)
-                    : undefined
-                }
-                onNext={
-                  nextBarId !== null
-                    ? () => setSelectedId(nextBarId)
-                    : undefined
-                }
-                onExpand={() => setDetailExpanded(true)}
-                applyConfig={applyConfig}
-                onOpenFile={onOpenFile}
-              />
-            </div>
-          </>
-        ))}
+  const detailTile = selectedBar ? (
+    <div className="flex h-full flex-col overflow-hidden scroll-container">
+      <RowDetailPanel
+        key={selectedBar.id}
+        bar={selectedBar}
+        prevBar={prevAnthropicBar}
+        onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
+        onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
+        onExpand={() => setDetailExpanded(true)}
+        applyConfig={applyConfig}
+        onOpenFile={onOpenFile}
+      />
+    </div>
+  ) : null;
+
+  // Only split off the detail tile when an event is selected; otherwise the
+  // timeline rows fill the panel. (The single-column layout shows the detail in
+  // a dialog instead — `detailInDialog` — so it never splits here.)
+  const detailVisible = selectedBar !== null && !detailInDialog;
+  const mosaicValue: MosaicNode<TimelinePane> = detailVisible
+    ? {
+        direction: "column",
+        first: "rows",
+        second: "detail",
+        splitPercentage: detailSplit,
+      }
+    : "rows";
+
+  return (
+    <div ref={containerRef} className="flex flex-col h-full">
+      <div className="hive-mosaic relative min-h-0 flex-1 overflow-hidden">
+        <MosaicWithoutDragDropContext<TimelinePane>
+          className=""
+          value={mosaicValue}
+          onChange={(node) => {
+            if (
+              node &&
+              typeof node !== "string" &&
+              typeof node.splitPercentage === "number"
+            )
+              setDetailSplit(node.splitPercentage);
+          }}
+          onRelease={(node) => {
+            if (
+              node &&
+              typeof node !== "string" &&
+              typeof node.splitPercentage === "number"
+            )
+              localStorage.setItem(
+                "timeline:detailSplit",
+                String(node.splitPercentage),
+              );
+          }}
+          renderTile={(paneId) =>
+            paneId === "detail" && detailTile ? detailTile : rowsTile
+          }
+        />
+      </div>
 
       {selectedBar && (
         <Dialog

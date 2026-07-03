@@ -6,11 +6,20 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import type { MosaicNode } from "react-mosaic-component";
 
 export type Theme = "light" | "dark" | "system";
 
-/** Identifies a resizable side panel in the sandbox detail layout. */
-export type PanelId = "terminal" | "browser" | "files";
+/** Identifies a resizable panel in the sandbox detail layout. */
+export type PanelId = "timeline" | "terminal" | "browser" | "files";
+
+/** Every panel, in the canonical default order. */
+export const ALL_PANELS: PanelId[] = [
+  "timeline",
+  "terminal",
+  "browser",
+  "files",
+];
 
 /** Sizing for one resizable side panel. `defaultWidth`/`minWidth` are static
  *  config (owned by the code, reconciled on load); `width` is the user's
@@ -36,6 +45,11 @@ export interface UserPreferences {
   showBrowser: boolean;
   showFiles: boolean;
   showTimeline: boolean;
+  /** The tiling layout of the panels — a react-mosaic tree of row/column splits.
+   *  Panels can sit side-by-side or stacked in a column, in any nesting. Only
+   *  visible panels appear; the tree is reconciled against visibility on load.
+   *  null = derive a default arrangement from the visible panels. */
+  panelLayout: MosaicNode<PanelId> | null;
   /** Sizing for each resizable side panel (terminal, browser, files). */
   panelSizes: PanelSize[];
   /** Height (px) of the browser sub-panel stacked below the terminal in their
@@ -58,6 +72,7 @@ export const DEFAULT_PREFS: UserPreferences = {
   showBrowser: true,
   showFiles: true,
   showTimeline: true,
+  panelLayout: null,
   panelSizes: [
     { id: "terminal", defaultWidth: 360, minWidth: 240, width: null },
     { id: "browser", defaultWidth: 420, minWidth: 300, width: null },

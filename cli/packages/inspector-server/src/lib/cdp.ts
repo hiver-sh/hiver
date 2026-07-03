@@ -1,11 +1,25 @@
 import { Sandbox } from "@hiver.sh/client";
 import WebSocket from "ws";
 import { waitForSandbox } from "./waitForSandbox.js";
+import { retryWithBackoff } from "./backoff.js";
 
 // The port chrome-headless-shell's CDP relay listens on inside the browser
 // image (see docker/browser/Dockerfile `EXPOSE 9223`). Detection still probes
 // every exposed port, but this lets us try the likely one first.
 const LIKELY_CDP_PORT = 9223;
+
+// How long detectCdpPort keeps retrying before giving up for this connection.
+// After the sandbox is reachable the browser image still needs a few seconds to
+// expose 9223 and bind chrome-headless-shell's CDP relay, so a single probe
+// races startup — we back off and retry across this window instead.
+const CDP_DETECT_TIMEOUT_MS = 30_000;
+
+// How long openSession keeps retrying to bring up the upstream socket + attached
+// screencast before giving up. Detection only proves the relay answered a probe;
+// the actual session (socket open + Target.attach + startScreencast) can still
+// lose a race with a just-booted headless-shell, so we retry that too — that's
+// what makes the panel connect without a manual inspector refresh.
+const CDP_CONNECT_TIMEOUT_MS = 30_000;
 
 // The resident host fronts Chrome's DevTools endpoint with a stable `/cdp`
 // alias on 0.0.0.0 (see docker/browser/chromehost). We reach it through the
@@ -14,11 +28,15 @@ function cdpWsUrl(sandbox: Sandbox, port: number): string {
   return sandbox.proxyUrl(port).replace(/^http/, "ws") + "/cdp";
 }
 
+// Cache of the detected CDP port per sandbox key so reconnects don't re-probe.
+// Only *positive* results are cached — the port won't move once found. A miss
+// is deliberately not cached, so a browser that comes up after our retry budget
+// still gets picked up on the next connection.
+const detectedPort = new Map<string, number>();
 
-// Cache the detected CDP port per sandbox key so the stream handler and the
-// status endpoint don't each re-probe. `undefined` = not yet probed;
-// `null` = probed, no CDP port; a number = the detected port.
-const detectedPort = new Map<string, number | null>();
+// In-flight detections, deduped by key so concurrent stream connections to the
+// same sandbox share one probe/backoff loop instead of each hammering the relay.
+const detecting = new Map<string, Promise<number | null>>();
 
 // Open the `/cdp` relay and ask Chrome for its version. A real CDP endpoint
 // answers Browser.getVersion with a product string ("HeadlessShell/..",
@@ -71,39 +89,72 @@ function probeCdp(sandbox: Sandbox, port: number): Promise<boolean> {
   });
 }
 
-// Return the sandbox's CDP port, or null if none of its exposed ports speak
-// CDP. Result is cached per key; pass `force` to re-probe.
+// The sandbox's exposed ports, ordered so the conventional CDP port (9223) is
+// probed first and the rest follow. Re-read on every attempt because the ports
+// list itself fills in asynchronously as the browser image boots — 9223 may not
+// be there on the first look. A transient getPorts failure yields no candidates
+// (the retry loop simply tries again).
+async function orderedCdpPorts(sandbox: Sandbox): Promise<number[]> {
+  let ports: number[];
+  try {
+    ports = await sandbox.getPorts();
+  } catch {
+    return [];
+  }
+  return [
+    ...ports.filter((p) => p === LIKELY_CDP_PORT),
+    ...ports.filter((p) => p !== LIKELY_CDP_PORT),
+  ];
+}
+
+// Return the sandbox's CDP port, or null if none of its exposed ports speak CDP
+// within the retry window. Positive results are cached per key; pass `force` to
+// re-probe. Concurrent callers for the same key share a single detection.
 export async function detectCdpPort(
   sandbox: Sandbox,
   { signal, force = false }: { signal?: AbortSignal; force?: boolean } = {},
 ): Promise<number | null> {
-  const cached = detectedPort.get(sandbox.key);
-  if (cached !== undefined && !force) return cached;
-
-  let ports: number[];
-  try {
-    await waitForSandbox(sandbox, { signal });
-    ports = await sandbox.getPorts();
-  } catch {
-    return null; // don't cache transient failures — allow a later retry
+  const key = sandbox.key;
+  if (!force) {
+    const cached = detectedPort.get(key);
+    if (cached !== undefined) return cached;
+    const inflight = detecting.get(key);
+    if (inflight) return inflight;
   }
 
-  // Probe the conventional CDP port first, then the rest.
-  const ordered = [
-    ...ports.filter((p) => p === LIKELY_CDP_PORT),
-    ...ports.filter((p) => p !== LIKELY_CDP_PORT),
-  ];
-  for (const port of ordered) {
-    if (signal?.aborted) return null;
-    if (await probeCdp(sandbox, port)) {
-      detectedPort.set(sandbox.key, port);
-      return port;
+  const run = (async (): Promise<number | null> => {
+    try {
+      await waitForSandbox(sandbox, { signal });
+    } catch {
+      return null; // client went away or sandbox never became reachable
     }
-  }
-  detectedPort.set(sandbox.key, null);
-  return null;
-}
 
+    // Check the exposed ports and probe CDP with exponential backoff: both the
+    // ports list and the CDP relay appear asynchronously during browser boot,
+    // so a one-shot probe loses the race. Each attempt re-reads the ports and
+    // tries 9223 first, then the rest, returning the first that speaks CDP.
+    const port = await retryWithBackoff(
+      async () => {
+        for (const p of await orderedCdpPorts(sandbox)) {
+          if (signal?.aborted) return null;
+          if (await probeCdp(sandbox, p)) return p;
+        }
+        return null;
+      },
+      { signal, timeoutMs: CDP_DETECT_TIMEOUT_MS },
+    );
+
+    if (port != null) detectedPort.set(key, port);
+    return port;
+  })();
+
+  detecting.set(key, run);
+  try {
+    return await run;
+  } finally {
+    detecting.delete(key);
+  }
+}
 
 export interface BrowserClientHandle {
   // A JPEG screencast frame (base64) with its viewport dimensions in CSS px, so
@@ -126,7 +177,14 @@ export type BrowserInput =
       deltaX?: number;
       deltaY?: number;
     }
-  | { type: "key"; event: "down" | "up"; key: string; code: string; text?: string; keyCode?: number }
+  | {
+      type: "key";
+      event: "down" | "up";
+      key: string;
+      code: string;
+      text?: string;
+      keyCode?: number;
+    }
   | { type: "text"; text: string };
 
 // Subset of CDP's Target.TargetInfo we read from discovery events.
@@ -138,7 +196,9 @@ interface TargetInfo {
 }
 
 interface BrowserSession {
-  ws: WebSocket;
+  // The upstream CDP socket. Null between connect attempts (openSession retries
+  // with backoff), so command senders must guard against it.
+  ws: WebSocket | null;
   ready: Promise<void>;
   // CDP flatten-mode session id for the attached page target.
   sessionId: string | null;
@@ -165,7 +225,11 @@ interface BrowserSession {
 
 const sessions = new Map<string, BrowserSession>();
 
-function send(s: BrowserSession, method: string, params?: object): Promise<unknown> {
+function send(
+  s: BrowserSession,
+  method: string,
+  params?: object,
+): Promise<unknown> {
   const id = s.nextId++;
   const frame: Record<string, unknown> = { id, method };
   if (params) frame.params = params;
@@ -173,6 +237,7 @@ function send(s: BrowserSession, method: string, params?: object): Promise<unkno
   return new Promise((resolve) => {
     s.pending.set(id, resolve);
     try {
+      if (!s.ws) throw new Error("no cdp socket");
       s.ws.send(JSON.stringify(frame));
     } catch {
       s.pending.delete(id);
@@ -196,6 +261,7 @@ function sendOn(
   return new Promise((resolve) => {
     s.pending.set(id, resolve);
     try {
+      if (!s.ws) throw new Error("no cdp socket");
       s.ws.send(JSON.stringify(frame));
     } catch {
       s.pending.delete(id);
@@ -238,13 +304,19 @@ async function attachAndScreencast(
 // Point the shared screencast at a different page target: stop and detach the
 // current one, then attach + screencast the new one. All watching clients
 // follow, since they share this single session.
-async function switchTarget(s: BrowserSession, targetId: string): Promise<void> {
+async function switchTarget(
+  s: BrowserSession,
+  targetId: string,
+): Promise<void> {
   const old = s.sessionId;
   if (old) {
     await sendOn(s, "Page.stopScreencast", undefined, old).catch(() => {});
-    await sendOn(s, "Target.detachFromTarget", { sessionId: old }, undefined).catch(
-      () => {},
-    );
+    await sendOn(
+      s,
+      "Target.detachFromTarget",
+      { sessionId: old },
+      undefined,
+    ).catch(() => {});
   }
   s.sessionId = null;
   s.lastFrame = null;
@@ -304,13 +376,137 @@ async function goHistory(s: BrowserSession, delta: number): Promise<void> {
   const entries = h?.entries ?? [];
   const target = idx + delta;
   if (target >= 0 && target < entries.length)
-    await send(s, "Page.navigateToHistoryEntry", { entryId: entries[target].id });
+    await send(s, "Page.navigateToHistoryEntry", {
+      entryId: entries[target].id,
+    });
 }
 
-function openSession(sandbox: Sandbox, port: number, key: string): BrowserSession {
-  const ws = new WebSocket(cdpWsUrl(sandbox, port));
+// Tear down a *connected* session: drop it from the registry and tell every
+// client the browser channel closed. Only wired up after a successful connect,
+// so a failed attempt during the retry loop never kills clients that are still
+// waiting for the panel to come up.
+function teardownSession(s: BrowserSession, key: string): void {
+  if (sessions.get(key) === s) sessions.delete(key);
+  for (const c of s.clients) {
+    c.sendCtrl("close", {});
+    c.end();
+  }
+  s.clients.clear();
+}
+
+// Once the socket is open: discover targets, seed the tab strip, and attach the
+// screencast to a page (creating a blank one if the browser has none yet). This
+// is the part most likely to lose a race with a just-booted headless-shell, so
+// connectOnce treats a throw here as a failed attempt to retry.
+async function initSession(s: BrowserSession): Promise<void> {
+  // Discover targets so we get targetCreated/Destroyed/InfoChanged events for
+  // the tab strip, then seed the initial tab list.
+  await sendOn(s, "Target.setDiscoverTargets", { discover: true }, undefined);
+  const targets = (await sendOn(
+    s,
+    "Target.getTargets",
+    undefined,
+    undefined,
+  )) as {
+    targetInfos?: {
+      targetId: string;
+      type: string;
+      title?: string;
+      url?: string;
+    }[];
+  };
+  for (const t of targets?.targetInfos ?? []) {
+    if (t.type === "page")
+      s.tabs.set(t.targetId, { title: t.title ?? "", url: t.url ?? "" });
+  }
+  let targetId = [...s.tabs.keys()][0];
+  // A freshly-launched headless-shell may have no page target yet; make one
+  // rather than failing the whole panel.
+  if (!targetId) {
+    const created = (await sendOn(
+      s,
+      "Target.createTarget",
+      { url: "about:blank" },
+      undefined,
+    )) as { targetId?: string };
+    targetId = created?.targetId ?? "";
+    if (targetId) s.tabs.set(targetId, { title: "", url: "about:blank" });
+  }
+  if (!targetId) throw new Error(s.lastError || "no page target");
+  await attachAndScreencast(s, targetId);
+}
+
+// One attempt at bringing up the upstream socket + attached screencast on the
+// session. Resolves once it's live; rejects (after closing the socket) if the
+// socket errors/closes or initSession fails, so the caller can back off and
+// retry. Resets per-attempt state up front so a retry after a partial attach
+// starts clean.
+function connectOnce(
+  s: BrowserSession,
+  sandbox: Sandbox,
+  port: number,
+  key: string,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(cdpWsUrl(sandbox, port));
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+    s.ws = ws;
+    s.sessionId = null;
+    s.tabs.clear();
+    s.pending.clear();
+
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    const fail = (reason: string) =>
+      settle(() => {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        reject(new Error(reason));
+      });
+
+    ws.addEventListener("message", (ev) => handleCdpMessage(s, key, ev.data));
+    ws.addEventListener("error", () => fail("cdp ws error"));
+    // A close before we've settled is a failed attempt; the post-connect
+    // teardown listener (installed by openSession on success) handles a drop
+    // *after* we're live.
+    ws.addEventListener("close", () =>
+      settle(() => reject(new Error("cdp ws closed"))),
+    );
+    ws.addEventListener("open", () => {
+      void (async () => {
+        try {
+          await initSession(s);
+          settle(resolve);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`[cdp] ${key}: attach attempt failed: ${reason}`);
+          fail(reason);
+        }
+      })();
+    });
+  });
+}
+
+function openSession(
+  sandbox: Sandbox,
+  port: number,
+  key: string,
+  signal?: AbortSignal,
+): BrowserSession {
   const s: BrowserSession = {
-    ws,
+    ws: null,
     ready: Promise.resolve(),
     sessionId: null,
     width: 0,
@@ -325,192 +521,156 @@ function openSession(sandbox: Sandbox, port: number, key: string): BrowserSessio
     pending: new Map(),
     close: () => {
       try {
-        ws.close();
+        s.ws?.close();
       } catch {
         /* ignore */
       }
     },
   };
 
-  const teardown = () => {
-    sessions.delete(key);
-    for (const c of s.clients) {
-      c.sendCtrl("close", {});
-      c.end();
-    }
-    s.clients.clear();
-  };
+  // Bring up the upstream with backoff. Detection only proved the relay answered
+  // a probe; the real session (socket + attach + screencast) can still fail for
+  // a moment after a just-booted browser, and a one-shot attempt would leave the
+  // client stuck with a `browser:error` until a manual inspector refresh. Retry
+  // until an attempt succeeds or the budget runs out; only on success do we
+  // install the teardown-on-close, so a failed attempt mid-retry doesn't tear
+  // down clients that are still waiting for the panel.
+  s.ready = (async () => {
+    const ok = await retryWithBackoff(
+      async () => {
+        await connectOnce(s, sandbox, port, key);
+        return true;
+      },
+      { signal, timeoutMs: CDP_CONNECT_TIMEOUT_MS },
+    );
+    if (!ok) throw new Error(s.lastError || "cdp session did not connect");
+    // Live now: from here an upstream drop means the session is gone — tear it
+    // down and notify clients.
+    const live = s.ws;
+    live?.addEventListener("close", () => teardownSession(s, key));
+    live?.addEventListener("error", () => teardownSession(s, key));
+  })();
 
-  s.ready = new Promise<void>((resolve, reject) => {
-    ws.addEventListener("error", () => reject(new Error("cdp ws error")));
-    ws.addEventListener("close", () => {
-      teardown();
-      reject(new Error("cdp ws closed"));
-    });
-    ws.addEventListener("open", () => {
-      void (async () => {
-        try {
-          // Discover targets so we get targetCreated/Destroyed/InfoChanged events
-          // for the tab strip, then seed the initial tab list.
-          await sendOn(s, "Target.setDiscoverTargets", { discover: true }, undefined);
-          const targets = (await sendOn(
-            s,
-            "Target.getTargets",
-            undefined,
-            undefined,
-          )) as {
-            targetInfos?: {
-              targetId: string;
-              type: string;
-              title?: string;
-              url?: string;
-            }[];
-          };
-          for (const t of targets?.targetInfos ?? []) {
-            if (t.type === "page")
-              s.tabs.set(t.targetId, { title: t.title ?? "", url: t.url ?? "" });
-          }
-          let targetId = [...s.tabs.keys()][0];
-          // A freshly-launched headless-shell may have no page target yet; make
-          // one rather than failing the whole panel.
-          if (!targetId) {
+  return s;
+}
+
+// Handle one CDP frame off the upstream socket: resolve pending commands, then
+// fan screencast frames / tab + navigation updates out to clients.
+function handleCdpMessage(s: BrowserSession, key: string, data: unknown): void {
+  let msg: {
+    id?: number;
+    method?: string;
+    params?: Record<string, unknown>;
+    result?: unknown;
+    error?: { message?: string; code?: number };
+  };
+  try {
+    msg = JSON.parse(String(data));
+  } catch {
+    return;
+  }
+  if (typeof msg.id === "number" && s.pending.has(msg.id)) {
+    const cb = s.pending.get(msg.id)!;
+    s.pending.delete(msg.id);
+    if (msg.error) {
+      s.lastError = msg.error.message ?? `CDP error ${msg.error.code}`;
+      console.error(`[cdp] ${key}: command error: ${s.lastError}`);
+    }
+    cb(msg.result);
+    return;
+  }
+  if (msg.method === "Page.screencastFrame") {
+    const p = msg.params as {
+      data: string;
+      sessionId: number;
+      metadata?: { deviceWidth?: number; deviceHeight?: number };
+    };
+    const width = Math.round(p.metadata?.deviceWidth ?? s.width);
+    const height = Math.round(p.metadata?.deviceHeight ?? s.height);
+    if (width) s.width = width;
+    if (height) s.height = height;
+    const frame = { data: p.data, width: s.width, height: s.height };
+    s.lastFrame = frame;
+    for (const c of s.clients) c.sendFrame(frame);
+    // Ack so Chrome keeps sending frames.
+    void send(s, "Page.screencastFrameAck", { sessionId: p.sessionId });
+  } else if (msg.method === "Page.frameNavigated") {
+    // Track main-frame navigations (no parentId) so the client's address bar
+    // reflects where the page actually went — redirects, link clicks, etc.
+    const f = (msg.params as { frame?: { url?: string; parentId?: string } })
+      .frame;
+    if (f && !f.parentId && f.url) {
+      s.currentUrl = f.url;
+      const tab = s.currentTargetId && s.tabs.get(s.currentTargetId);
+      if (tab) tab.url = f.url;
+      for (const c of s.clients) c.sendCtrl("url", { url: f.url });
+      broadcastTabs(s);
+      void broadcastNavState(s);
+    }
+  } else if (msg.method === "Target.targetCreated") {
+    const t = (msg.params as { targetInfo?: TargetInfo }).targetInfo;
+    if (t && t.type === "page") {
+      s.tabs.set(t.targetId, { title: t.title ?? "", url: t.url ?? "" });
+      broadcastTabs(s);
+    }
+  } else if (msg.method === "Target.targetInfoChanged") {
+    const t = (msg.params as { targetInfo?: TargetInfo }).targetInfo;
+    if (t && t.type === "page" && s.tabs.has(t.targetId)) {
+      s.tabs.set(t.targetId, { title: t.title ?? "", url: t.url ?? "" });
+      broadcastTabs(s);
+      // Keep the address bar in sync when the *active* tab's URL changes,
+      // including navigations that don't surface as Page.frameNavigated.
+      if (t.targetId === s.currentTargetId && (t.url ?? "") !== s.currentUrl) {
+        s.currentUrl = t.url ?? "";
+        for (const c of s.clients) c.sendCtrl("url", { url: s.currentUrl });
+      }
+    }
+  } else if (msg.method === "Target.targetDestroyed") {
+    const targetId = (msg.params as { targetId?: string }).targetId;
+    if (targetId && s.tabs.delete(targetId)) {
+      broadcastTabs(s);
+      // If the active tab was closed, follow another one (or open a blank
+      // page if that was the last tab) so the screencast never goes dead.
+      if (s.currentTargetId === targetId) {
+        void (async () => {
+          const next = [...s.tabs.keys()][0];
+          if (next) {
+            await switchTarget(s, next);
+          } else {
             const created = (await sendOn(
               s,
               "Target.createTarget",
               { url: "about:blank" },
               undefined,
             )) as { targetId?: string };
-            targetId = created?.targetId ?? "";
-            if (targetId) s.tabs.set(targetId, { title: "", url: "about:blank" });
-          }
-          if (!targetId) throw new Error(s.lastError || "no page target");
-          await attachAndScreencast(s, targetId);
-          resolve();
-        } catch (err) {
-          const reason = err instanceof Error ? err.message : String(err);
-          console.error(`[cdp] ${key}: attach failed: ${reason}`);
-          reject(new Error(reason));
-          s.close();
-        }
-      })();
-    });
-  });
-
-  ws.addEventListener("message", (ev) => {
-    let msg: {
-      id?: number;
-      method?: string;
-      params?: Record<string, unknown>;
-      result?: unknown;
-      error?: { message?: string; code?: number };
-    };
-    try {
-      msg = JSON.parse(String(ev.data));
-    } catch {
-      return;
-    }
-    if (typeof msg.id === "number" && s.pending.has(msg.id)) {
-      const cb = s.pending.get(msg.id)!;
-      s.pending.delete(msg.id);
-      if (msg.error) {
-        s.lastError = msg.error.message ?? `CDP error ${msg.error.code}`;
-        console.error(`[cdp] ${key}: command error: ${s.lastError}`);
-      }
-      cb(msg.result);
-      return;
-    }
-    if (msg.method === "Page.screencastFrame") {
-      const p = msg.params as {
-        data: string;
-        sessionId: number;
-        metadata?: { deviceWidth?: number; deviceHeight?: number };
-      };
-      const width = Math.round(p.metadata?.deviceWidth ?? s.width);
-      const height = Math.round(p.metadata?.deviceHeight ?? s.height);
-      if (width) s.width = width;
-      if (height) s.height = height;
-      const frame = { data: p.data, width: s.width, height: s.height };
-      s.lastFrame = frame;
-      for (const c of s.clients) c.sendFrame(frame);
-      // Ack so Chrome keeps sending frames.
-      void send(s, "Page.screencastFrameAck", { sessionId: p.sessionId });
-    } else if (msg.method === "Page.frameNavigated") {
-      // Track main-frame navigations (no parentId) so the client's address bar
-      // reflects where the page actually went — redirects, link clicks, etc.
-      const f = (msg.params as { frame?: { url?: string; parentId?: string } })
-        .frame;
-      if (f && !f.parentId && f.url) {
-        s.currentUrl = f.url;
-        const tab = s.currentTargetId && s.tabs.get(s.currentTargetId);
-        if (tab) tab.url = f.url;
-        for (const c of s.clients) c.sendCtrl("url", { url: f.url });
-        broadcastTabs(s);
-        void broadcastNavState(s);
-      }
-    } else if (msg.method === "Target.targetCreated") {
-      const t = (msg.params as { targetInfo?: TargetInfo }).targetInfo;
-      if (t && t.type === "page") {
-        s.tabs.set(t.targetId, { title: t.title ?? "", url: t.url ?? "" });
-        broadcastTabs(s);
-      }
-    } else if (msg.method === "Target.targetInfoChanged") {
-      const t = (msg.params as { targetInfo?: TargetInfo }).targetInfo;
-      if (t && t.type === "page" && s.tabs.has(t.targetId)) {
-        s.tabs.set(t.targetId, { title: t.title ?? "", url: t.url ?? "" });
-        broadcastTabs(s);
-        // Keep the address bar in sync when the *active* tab's URL changes,
-        // including navigations that don't surface as Page.frameNavigated.
-        if (t.targetId === s.currentTargetId && (t.url ?? "") !== s.currentUrl) {
-          s.currentUrl = t.url ?? "";
-          for (const c of s.clients) c.sendCtrl("url", { url: s.currentUrl });
-        }
-      }
-    } else if (msg.method === "Target.targetDestroyed") {
-      const targetId = (msg.params as { targetId?: string }).targetId;
-      if (targetId && s.tabs.delete(targetId)) {
-        broadcastTabs(s);
-        // If the active tab was closed, follow another one (or open a blank
-        // page if that was the last tab) so the screencast never goes dead.
-        if (s.currentTargetId === targetId) {
-          void (async () => {
-            const next = [...s.tabs.keys()][0];
-            if (next) {
-              await switchTarget(s, next);
-            } else {
-              const created = (await sendOn(
-                s,
-                "Target.createTarget",
-                { url: "about:blank" },
-                undefined,
-              )) as { targetId?: string };
-              if (created?.targetId) {
-                s.tabs.set(created.targetId, { title: "", url: "about:blank" });
-                await switchTarget(s, created.targetId);
-              }
+            if (created?.targetId) {
+              s.tabs.set(created.targetId, { title: "", url: "about:blank" });
+              await switchTarget(s, created.targetId);
             }
-          })().catch(() => {});
-        }
+          }
+        })().catch(() => {});
       }
     }
-  });
-
-  return s;
+  }
 }
 
 // attachBrowser wires a client into the sandbox's single shared CDP screencast
 // session, opening the upstream on the first client and fanning frames out to
-// the rest. Returns a detach function; the session is torn down once the last
-// client leaves. Mirrors attachTerminal's shape so the stream handler treats
-// both channels the same way.
+// the rest. Returns a `detach` function (the session is torn down once the last
+// client leaves) plus the session's `ready` promise, which resolves once the
+// browser is connected or rejects after the connect retries are exhausted — so
+// the caller can free its slot and let another sandbox take the panel. Mirrors
+// attachTerminal's shape so the stream handler treats both channels the same.
 export function attachBrowser(
   sandbox: Sandbox,
   port: number,
   handle: BrowserClientHandle,
-): () => void {
+  { signal }: { signal?: AbortSignal } = {},
+): { detach: () => void; ready: Promise<void> } {
   const key = sandbox.key;
   let s = sessions.get(key);
   if (!s) {
-    s = openSession(sandbox, port, key);
+    s = openSession(sandbox, port, key, signal);
     sessions.set(key, s);
     s.ready.catch(() => {
       /* handled via teardown/close paths */
@@ -524,9 +684,13 @@ export function attachBrowser(
   session.ready
     .then(() => {
       if (detached) return;
-      handle.sendCtrl("connected", { width: session.width, height: session.height });
+      handle.sendCtrl("connected", {
+        width: session.width,
+        height: session.height,
+      });
       handle.sendCtrl("tabs", { tabs: tabList(session) });
-      if (session.currentUrl) handle.sendCtrl("url", { url: session.currentUrl });
+      if (session.currentUrl)
+        handle.sendCtrl("url", { url: session.currentUrl });
       if (session.lastFrame) handle.sendFrame(session.lastFrame);
       // Back/forward availability needs a history round-trip; send it to just
       // this client once it resolves.
@@ -546,7 +710,7 @@ export function attachBrowser(
       handle.end();
     });
 
-  return () => {
+  const detach = () => {
     detached = true;
     session.clients.delete(handle);
     if (session.clients.size === 0) {
@@ -554,6 +718,7 @@ export function attachBrowser(
       session.close();
     }
   };
+  return { detach, ready: session.ready };
 }
 
 // Translate one client input event into the matching CDP Input.* command on the
@@ -646,7 +811,12 @@ export async function browserControl(
     case "closeTab":
       // Closing the active tab is handled by the Target.targetDestroyed event,
       // which switches the screencast to another tab (or a fresh one).
-      await sendOn(s, "Target.closeTarget", { targetId: cmd.targetId }, undefined);
+      await sendOn(
+        s,
+        "Target.closeTarget",
+        { targetId: cmd.targetId },
+        undefined,
+      );
       return;
     case "newPage": {
       // Create a target at the requested URL (blank if none) and switch the
@@ -660,7 +830,10 @@ export async function browserControl(
       )) as { targetId?: string };
       if (created?.targetId) {
         if (!s.tabs.has(created.targetId))
-          s.tabs.set(created.targetId, { title: "", url: cmd.url || "about:blank" });
+          s.tabs.set(created.targetId, {
+            title: "",
+            url: cmd.url || "about:blank",
+          });
         await switchTarget(s, created.targetId);
       }
       return;

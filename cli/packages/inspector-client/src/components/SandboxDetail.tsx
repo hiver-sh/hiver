@@ -5,12 +5,15 @@ import {
   Filter,
   FolderTree,
   Globe,
+  GripVertical,
   Loader2,
   LocateFixed,
   Menu,
   Pause,
   Play,
+  Plus,
   Power,
+  RefreshCw,
   SlidersHorizontal,
   SquareTerminal,
   Trash2,
@@ -20,11 +23,17 @@ import {
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import {
+  Mosaic,
+  MosaicWindow,
+  getLeaves,
+  type MosaicNode,
+} from "react-mosaic-component";
+import "react-mosaic-component/react-mosaic-component.css";
 import { useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
@@ -32,6 +41,7 @@ import type { ConfigProposal } from "@/components/SandboxConfigDialog";
 import { Terminal, type TerminalSink } from "@/components/Terminal";
 import {
   BrowserView,
+  tabLabel,
   type BrowserSink,
   type BrowserTab,
 } from "@/components/BrowserView";
@@ -64,13 +74,51 @@ import { cn } from "@/lib/utils";
 import { langForPath } from "@/lib/fileUtils";
 import type { SandboxEvent, SandboxRef, SandboxTarget } from "@/types";
 import { useTransport } from "@/lib/transport";
-import { useUserPreferences } from "@/lib/userPreferences";
+import { useUserPreferences, ALL_PANELS } from "@/lib/userPreferences";
 import type { PanelId } from "@/lib/userPreferences";
 
-const MIN_TIMELINE_WIDTH = 300;
-const DRAG_HANDLE_WIDTH = 5;
-// Smallest height a panel keeps when the layout stacks vertically.
-const MIN_PANEL_HEIGHT = 140;
+// Header label for each panel.
+const PANEL_TITLE: Record<PanelId, string> = {
+  timeline: "Timeline",
+  terminal: "Terminal",
+  browser: "Browser",
+  files: "Files",
+};
+
+type Tree = MosaicNode<PanelId> | null;
+
+// Drop `id` from the tree, collapsing the branch it left behind (a parent with
+// one child becomes that child).
+function removeLeaf(node: Tree, id: PanelId): Tree {
+  if (node == null) return null;
+  if (typeof node === "string") return node === id ? null : node;
+  const first = removeLeaf(node.first, id);
+  const second = removeLeaf(node.second, id);
+  if (first == null) return second;
+  if (second == null) return first;
+  return { ...node, first, second };
+}
+
+// Add `id` as a new right-hand column.
+function addLeaf(node: Tree, id: PanelId): Tree {
+  if (node == null) return id;
+  return { direction: "row", first: node, second: id };
+}
+
+// Reconcile a stored tree against the set of currently-visible panels: drop any
+// panel that's now hidden, and append any newly-visible one. `visible` is in the
+// order new panels should be added.
+function reconcileTree(stored: Tree, visible: PanelId[]): Tree {
+  let tree = stored;
+  for (const leaf of tree ? getLeaves(tree) : []) {
+    if (!visible.includes(leaf)) tree = removeLeaf(tree, leaf);
+  }
+  const present = new Set(tree ? getLeaves(tree) : []);
+  for (const id of visible) {
+    if (!present.has(id)) tree = addLeaf(tree, id);
+  }
+  return tree;
+}
 
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
@@ -154,49 +202,37 @@ export function SandboxDetail({
   const [browserAvailable, setBrowserAvailable] = useState(false);
   const showBrowser = prefs.showBrowser && browserAvailable;
   const setShowBrowser = (v: boolean) => setPref("showBrowser", v);
-  const panelSizes = prefs.panelSizes;
-  const terminalPanel = panelSizes.find((p) => p.id === "terminal")!;
-  const browserPanel = panelSizes.find((p) => p.id === "browser")!;
-  const filesPanel = panelSizes.find((p) => p.id === "files")!;
-  const setPanelWidth = (id: PanelId, v: number) =>
-    setPref(
-      "panelSizes",
-      panelSizes.map((p) => (p.id === id ? { ...p, width: v } : p)),
-    );
-  const setFilesWidth = (v: number) => setPanelWidth("files", v);
-  const setTerminalWidth = (v: number) => setPanelWidth("terminal", v);
-  // Width of each side panel: the user's resized value, or the panel default.
-  const terminalWidth = terminalPanel.width ?? terminalPanel.defaultWidth;
-  const filesWidth = filesPanel.width ?? filesPanel.defaultWidth;
-  // The terminal and browser share one column (browser stacked below the
-  // terminal), so the column's min width is the larger of the two panels'.
-  const showTerminalCol = showTerminal || showBrowser;
-  const terminalColMinWidth = Math.max(
-    showTerminal ? terminalPanel.minWidth : 0,
-    showBrowser ? browserPanel.minWidth : 0,
+  // The browser tab strip is hoisted into the panel header, so tab state lives
+  // here (fed from the shared stream) rather than inside BrowserView.
+  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([]);
+
+  // Which panels are visible, in canonical order (used when adding new tiles).
+  const panelVisible: Record<PanelId, boolean> = {
+    timeline: showTimeline,
+    terminal: showTerminal,
+    browser: showBrowser,
+    files: showFiles,
+  };
+  const visiblePanels = ALL_PANELS.filter((id) => panelVisible[id]);
+
+  // The tiling tree, kept in local state so live drags/resizes update smoothly;
+  // persisted to prefs when a change completes (Mosaic.onRelease). We reconcile
+  // against the *saved* layout, not the previous rendered one, so a panel's
+  // position is retained even while it's temporarily hidden (e.g. the browser
+  // before CDP is detected) rather than popping out to a new column.
+  const savedLayout = prefs.panelLayout;
+  const [layout, setLayout] = useState<Tree>(() =>
+    reconcileTree(savedLayout, visiblePanels),
   );
-  // Height (px) of the browser sub-panel within that column, resized by the
-  // horizontal splitter between the terminal and the browser. Persisted like
-  // the panel widths.
-  const browserHeight = prefs.browserPanelHeight;
-  const setBrowserHeight = (v: number) => setPref("browserPanelHeight", v);
-  const terminalColRef = useRef<HTMLDivElement>(null);
-  // Measured width of the panel row. Used to decide when the panels can no
-  // longer all satisfy their min widths and the layout should stack vertically.
-  const [contentWidth, setContentWidth] = useState(0);
-  const requiredWidth =
-    (showTimeline ? MIN_TIMELINE_WIDTH : 0) +
-    (showTerminalCol ? terminalColMinWidth + DRAG_HANDLE_WIDTH : 0) +
-    (showFiles ? filesPanel.minWidth + DRAG_HANDLE_WIDTH : 0);
-  // Below the combined min widths, stack panels vertically instead of side by
-  // side. `contentWidth === 0` means we haven't measured yet — stay horizontal.
-  const vertical = contentWidth > 0 && contentWidth < requiredWidth;
+  const visibleKey = visiblePanels.join(",");
+  useEffect(() => {
+    setLayout(reconcileTree(savedLayout, visiblePanels));
+  }, [savedLayout, visibleKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showConfig, setShowConfig] = useState(false);
   const [showSnapshot, setShowSnapshot] = useState(false);
   const [configProposal, setConfigProposal] = useState<
     ConfigProposal | undefined
   >();
-  const contentRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
@@ -215,31 +251,29 @@ export function SandboxDetail({
   // Which sandbox actually owns the attached browser — the primary, or a nested
   // one it spawned. Carried on `browser:connected` and used to route input.
   const browserTargetRef = useRef<{ id: string; key: string } | null>(null);
-  // Last browser frame, replayed to a BrowserView that mounts after the stream
-  // already connected, so the panel paints immediately instead of staying blank
-  // until the next screencast frame.
+  // Last browser frame + chrome state (tabs, url, nav), replayed to a BrowserView
+  // that mounts after the stream already connected. The browser panel only
+  // mounts once `browser:connected` flips availability on, so the `browser:tabs`
+  // /url/navstate frames that arrive alongside it land before the sink exists —
+  // buffering them here lets the freshly-mounted panel restore full state
+  // instead of showing an empty tab strip after a refresh.
   const lastBrowserFrameRef = useRef<{
     data: string;
     width: number;
     height: number;
+  } | null>(null);
+  const lastBrowserTabsRef = useRef<BrowserTab[] | null>(null);
+  const lastBrowserUrlRef = useRef<string | null>(null);
+  const lastBrowserNavRef = useRef<{
+    canGoBack: boolean;
+    canGoForward: boolean;
   } | null>(null);
   const [filePreview, setFilePreview] = useState<{
     path: string;
     content: string;
     lang: string;
   } | null>(null);
-
-  // Track the panel row width so the default panel split can be expressed as a
-  // percentage of the available space.
-  useLayoutEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const update = () => setContentWidth(el.getBoundingClientRect().width);
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const filesRefreshRef = useRef<(() => void) | null>(null);
 
   // Load the sandbox's exposed ports (image EXPOSE directives) for the header.
   useEffect(() => {
@@ -271,6 +305,10 @@ export function SandboxDetail({
     browserConnectedRef.current = false;
     browserTargetRef.current = null;
     lastBrowserFrameRef.current = null;
+    lastBrowserTabsRef.current = null;
+    lastBrowserUrlRef.current = null;
+    lastBrowserNavRef.current = null;
+    setBrowserTabs([]);
   }, [sandbox.id, sandbox.key]);
 
   // Load the sandbox's isolation mechanism (container/microvm) for the header.
@@ -322,6 +360,25 @@ export function SandboxDetail({
       } catch {
         /* ignore */
       }
+    },
+    [sandbox.id, sandbox.key, serverUrl, transport],
+  );
+
+  // Browser tab actions posted from the header strip. Route to the sandbox that
+  // owns the attached browser (primary or a nested one), same as BrowserView.
+  const postBrowserControl = useCallback(
+    (body: unknown) => {
+      const t = browserTargetRef.current ?? { id: sandbox.id, key: sandbox.key };
+      const url = new URL(
+        `${serverUrl}/api/sandboxes/${encodeURIComponent(t.id)}/${encodeURIComponent(t.key)}/browser/control`,
+      );
+      void transport
+        .fetch(url.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+        .catch(() => {});
     },
     [sandbox.id, sandbox.key, serverUrl, transport],
   );
@@ -398,6 +455,14 @@ export function SandboxDetail({
         sink.onConnected(
           browserTargetRef.current ?? { id: sandbox.id, key: sandbox.key },
         );
+        // Restore the chrome state the panel missed by mounting late, so a
+        // refresh shows the real tabs / address / nav instead of a bare strip.
+        if (lastBrowserTabsRef.current)
+          sink.onTabs(lastBrowserTabsRef.current);
+        if (lastBrowserUrlRef.current !== null)
+          sink.onUrl(lastBrowserUrlRef.current);
+        if (lastBrowserNavRef.current)
+          sink.onNavState(lastBrowserNavRef.current);
         if (lastBrowserFrameRef.current)
           sink.onFrame(lastBrowserFrameRef.current);
       }
@@ -518,18 +583,19 @@ export function SandboxDetail({
               } else if (eventName === "browser:url") {
                 try {
                   const { url } = JSON.parse(dataLine) as { url: string };
+                  lastBrowserUrlRef.current = url;
                   browserSinkRef.current?.onUrl(url);
                 } catch {
                   // ignore malformed frame
                 }
               } else if (eventName === "browser:navstate") {
                 try {
-                  browserSinkRef.current?.onNavState(
-                    JSON.parse(dataLine) as {
-                      canGoBack: boolean;
-                      canGoForward: boolean;
-                    },
-                  );
+                  const nav = JSON.parse(dataLine) as {
+                    canGoBack: boolean;
+                    canGoForward: boolean;
+                  };
+                  lastBrowserNavRef.current = nav;
+                  browserSinkRef.current?.onNavState(nav);
                 } catch {
                   // ignore malformed frame
                 }
@@ -538,6 +604,8 @@ export function SandboxDetail({
                   const { tabs } = JSON.parse(dataLine) as {
                     tabs: BrowserTab[];
                   };
+                  lastBrowserTabsRef.current = tabs;
+                  setBrowserTabs(tabs);
                   browserSinkRef.current?.onTabs(tabs);
                 } catch {
                   // ignore malformed frame
@@ -598,71 +666,269 @@ export function SandboxDetail({
     }
   }
 
-  function makeDragHandler(
-    setWidth: (w: number) => void,
-    currentWidth: number,
-    minWidth: number,
-    getMaxWidth: () => number,
-  ) {
-    return function startDrag(e: React.MouseEvent) {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startWidth = currentWidth;
-      const maxWidth = getMaxWidth();
+  // The timeline panel's header controls (event count + filter + pause + follow
+  // + clear), hoisted into the mosaic panel header. `onMouseDown` stops the
+  // mosaic from starting a drag when a control is pressed, and `normal-case`
+  // undoes the header's uppercasing for the filter label.
+  const timelineHeaderControls = (
+    <div
+      className="timeline-toolbar ml-auto flex cursor-default items-center gap-2 normal-case"
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <span className="text-[10px] text-muted-foreground/70">
+        {isFilterActive(filter) ? (
+          <>
+            {filteredTotalBars}
+            <span className="text-muted-foreground/40"> / {totalBars}</span>
+          </>
+        ) : (
+          totalBars
+        )}{" "}
+        event{totalBars !== 1 ? "s" : ""}
+      </span>
+      {zoomWindow && (
+        <button
+          className="text-[10px] text-muted-foreground bg-muted/40 hover:bg-muted/70 border border-border rounded px-2 py-0.5 transition-colors"
+          onClick={() => setZoomWindow(null)}
+          title="Reset zoom (Esc)"
+        >
+          × reset zoom
+        </button>
+      )}
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            className={cn(
+              "flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] transition-colors",
+              isFilterActive(filter)
+                ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+                : "border-border text-muted-foreground hover:bg-muted/40",
+            )}
+          >
+            <Filter className="h-3 w-3" />
+            {isFilterActive(filter)
+              ? [
+                  filter.kind !== "all" &&
+                    KIND_OPTIONS.find((o) => o.value === filter.kind)?.label,
+                  filter.access !== "all" &&
+                    ACCESS_OPTIONS.find((o) => o.value === filter.access)
+                      ?.label,
+                  filter.query || null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : "Filter"}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-max p-2 flex flex-col gap-2">
+          <input
+            autoFocus
+            type="text"
+            placeholder="Search domain or path…"
+            value={filter.query}
+            onChange={(e) =>
+              setFilter((f) => ({ ...f, query: e.target.value }))
+            }
+            className="w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50 focus:border-blue-500/50"
+          />
+          <div className="flex gap-1">
+            {KIND_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setFilter((f) => ({ ...f, kind: opt.value }))}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
+                  filter.kind === opt.value
+                    ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+                    : "border-border text-muted-foreground hover:bg-muted/40",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className="h-px bg-border" />
+          <div className="flex gap-1">
+            {ACCESS_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setFilter((f) => ({ ...f, access: opt.value }))}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
+                  filter.access === opt.value
+                    ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+                    : "border-border text-muted-foreground hover:bg-muted/40",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {isFilterActive(filter) && (
+            <button
+              onClick={() => setFilter(EMPTY_FILTER)}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+            >
+              <X className="h-3 w-3" /> Clear filter
+            </button>
+          )}
+        </PopoverContent>
+      </Popover>
+      <button
+        onClick={() => {
+          if (streamingPaused) {
+            setStreamingPaused(false);
+            startStream();
+          } else {
+            setStreamingPaused(true);
+            abortRef.current?.abort();
+            setConnected(false);
+          }
+        }}
+        title={streamingPaused ? "Resume streaming" : "Pause streaming"}
+        className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
+      >
+        {streamingPaused ? (
+          <Play className="h-3 w-3" />
+        ) : (
+          <Pause className="h-3 w-3" />
+        )}
+      </button>
+      <button
+        onClick={() => setFollow(!follow)}
+        title="Follow latest events"
+        className={cn(
+          "flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors",
+          follow
+            ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+            : "border-border text-muted-foreground hover:bg-muted/40",
+        )}
+      >
+        <LocateFixed className="h-3 w-3" />
+      </button>
+      {events.length > 0 && (
+        <button
+          onClick={() => {
+            setEvents([]);
+            seenEventKeysRef.current = new Set();
+            clearStoredEvents();
+          }}
+          title="Clear events"
+          className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
 
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
+  // The browser panel's tab strip, hoisted into the mosaic panel header. Same
+  // `onMouseDown`/`normal-case` treatment as the timeline controls.
+  const browserHeaderControls = (
+    <div
+      className="ml-auto flex cursor-default items-center gap-2 normal-case opacity-0 transition-opacity group-hover/panel:opacity-100"
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {browserTabs.map((tab) => (
+        <div
+          key={tab.targetId}
+          onClick={() => {
+            if (!tab.active)
+              postBrowserControl({
+                action: "activateTab",
+                targetId: tab.targetId,
+              });
+          }}
+          title={tab.url || tabLabel(tab)}
+          className={cn(
+            "group flex max-w-[160px] min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] transition-colors",
+            tab.active
+              ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+              : "border-border text-muted-foreground hover:bg-muted/40",
+          )}
+        >
+          <span className="truncate">{tabLabel(tab)}</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              postBrowserControl({
+                action: "closeTab",
+                targetId: tab.targetId,
+              });
+            }}
+            title="Close tab"
+            className={cn(
+              // -my-0.5 offsets the p-0.5 hit area so the close button doesn't
+              // grow the pill past the tab's text line height.
+              "-my-0.5 shrink-0 rounded p-0.5 transition hover:bg-foreground/10 hover:text-foreground",
+              tab.active ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+            )}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => postBrowserControl({ action: "newPage" })}
+        title="Open a new page"
+        className="flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-muted-foreground transition-colors hover:bg-muted/40"
+      >
+        <Plus className="h-3 w-3" />
+      </button>
+    </div>
+  );
 
-      function onMove(e: MouseEvent) {
-        const delta = startX - e.clientX;
-        setWidth(Math.max(minWidth, Math.min(startWidth + delta, maxWidth)));
-      }
+  // The inner content of each panel (the SortablePanel wrapper supplies the
+  // drag-handle header and sizing).
+  const timelineBody = (
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <TimelineView
+          events={events}
+          filter={filter}
+          applyConfig={proposePolicy}
+          onOpenFile={openFile}
+          zoomWindow={zoomWindow}
+          setZoomWindow={setZoomWindow}
+          follow={follow}
+          onDisableFollow={() => setFollow(false)}
+          paused={streamingPaused}
+          detailInDialog={false}
+        />
+      </div>
+    </div>
+  );
 
-      function onUp() {
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      }
-
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    };
-  }
-
-  // Vertical sibling of makeDragHandler for the terminal/browser split. The
-  // browser sits at the bottom, so dragging the handle up makes it taller.
-  function makeVDragHandler(
-    setHeight: (h: number) => void,
-    currentHeight: number,
-    minHeight: number,
-    getMaxHeight: () => number,
-  ) {
-    return function startDrag(e: React.MouseEvent) {
-      e.preventDefault();
-      const startY = e.clientY;
-      const startHeight = currentHeight;
-      const maxHeight = getMaxHeight();
-
-      document.body.style.cursor = "row-resize";
-      document.body.style.userSelect = "none";
-
-      function onMove(e: MouseEvent) {
-        const delta = startY - e.clientY;
-        setHeight(Math.max(minHeight, Math.min(startHeight + delta, maxHeight)));
-      }
-
-      function onUp() {
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      }
-
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    };
-  }
+  const panelBody: Record<PanelId, React.ReactNode> = {
+    timeline: timelineBody,
+    terminal: (
+      <Terminal
+        sandboxId={sandbox.id}
+        sandboxKey={sandbox.key}
+        serverUrl={serverUrl}
+        subscribe={subscribeTerminal}
+      />
+    ),
+    browser: (
+      <BrowserView
+        sandboxId={sandbox.id}
+        sandboxKey={sandbox.key}
+        serverUrl={serverUrl}
+        subscribe={subscribeBrowser}
+      />
+    ),
+    files: (
+      <FileExplorer
+        sandboxId={sandbox.id}
+        sandboxKey={sandbox.key}
+        serverUrl={serverUrl}
+        events={fsWriteEvents}
+        refreshRef={filesRefreshRef}
+      />
+    ),
+  };
 
   return (
     <div
@@ -673,7 +939,7 @@ export function SandboxDetail({
       aria-busy={isShuttingDown}
     >
       {/* Header */}
-      <div className="flex h-[70px] items-center justify-between gap-4 p-4 pb-3">
+      <div className="flex h-12 items-center justify-between gap-4 px-4">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-base font-semibold">{sandbox.key}</h2>
           {isolation && (
@@ -802,356 +1068,54 @@ export function SandboxDetail({
 
       <Separator />
 
-      {/* Content */}
-      <div
-        ref={contentRef}
-        className={cn(
-          "min-h-0 flex-1 flex",
-          vertical
-            ? "flex-col overflow-y-auto overflow-x-hidden"
-            : "overflow-x-auto overflow-y-hidden",
-        )}
-      >
-        {showTimeline && (
-          <div
-            className="flex flex-1 flex-col overflow-hidden"
-            style={
-              vertical
-                ? { minHeight: MIN_PANEL_HEIGHT }
-                : { minWidth: MIN_TIMELINE_WIDTH }
-            }
-          >
-            {/* Toolbar: event count + filter + clear */}
-            <div className="relative flex items-center justify-between px-5 py-1.5 text-xs text-muted-foreground border-b border-border">
-              <span>
-                {isFilterActive(filter) ? (
-                  <>
-                    {filteredTotalBars}{" "}
-                    <span className="text-muted-foreground/40">
-                      / {totalBars}
-                    </span>
-                  </>
-                ) : (
-                  totalBars
-                )}{" "}
-                event{totalBars !== 1 ? "s" : ""}
-              </span>
-              {zoomWindow && (
-                <button
-                  className="absolute left-1/2 -translate-x-1/2 text-[11px] text-muted-foreground bg-muted/40 hover:bg-muted/70 border border-border rounded px-2 py-0.5 transition-colors"
-                  onClick={() => setZoomWindow(null)}
-                  title="Reset zoom (Esc)"
-                >
-                  × reset zoom
-                </button>
-              )}
-              <div className="flex items-stretch gap-3">
-                <Popover>
-                  <PopoverTrigger asChild>
+      {/* Content: a tiling mosaic — drag a panel's header onto another panel's
+          edge to split (side-by-side) or stack (in a column); drag the splitters
+          to resize. Layout persists to prefs. */}
+      <div className="hive-mosaic min-h-0 flex-1 overflow-hidden">
+        <Mosaic<PanelId>
+          value={layout}
+          onChange={setLayout}
+          onRelease={(next) => setPref("panelLayout", next)}
+          className=""
+          renderTile={(id, path) => (
+            <MosaicWindow<PanelId>
+              path={path}
+              title={PANEL_TITLE[id]}
+              className="group/panel"
+              toolbarControls={<span />}
+              renderToolbar={() => (
+                // Slim, quiet header — a bottom border, a muted label, and an
+                // always-visible drag grip as the reorder affordance. (The
+                // always-present mosaic drag preview behind the window is hidden
+                // via CSS, so a translucent header is safe here.)
+                <div className="flex h-7 w-full cursor-grab items-center gap-1 px-2 text-[10px] font-medium tracking-wide text-muted-foreground/70 uppercase active:cursor-grabbing">
+                  <GripVertical className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+                  <span className="truncate">{PANEL_TITLE[id]}</span>
+                  {id === "timeline" && timelineHeaderControls}
+                  {id === "browser" && browserHeaderControls}
+                  {id === "files" && (
                     <button
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors",
-                        isFilterActive(filter)
-                          ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                          : "border-border text-muted-foreground hover:bg-muted/40",
-                      )}
+                      onClick={(e) => { e.stopPropagation(); filesRefreshRef.current?.(); }}
+                      className="ml-auto flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-muted/40 group-hover/panel:opacity-100"
+                      title="Refresh files"
                     >
-                      <Filter className="h-3 w-3" />
-                      {isFilterActive(filter)
-                        ? [
-                            filter.kind !== "all" &&
-                              KIND_OPTIONS.find((o) => o.value === filter.kind)
-                                ?.label,
-                            filter.access !== "all" &&
-                              ACCESS_OPTIONS.find(
-                                (o) => o.value === filter.access,
-                              )?.label,
-                            filter.query || null,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")
-                        : "Filter"}
+                      <RefreshCw className="h-3 w-3" />
                     </button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-max p-2 flex flex-col gap-2">
-                    <input
-                      autoFocus
-                      type="text"
-                      placeholder="Search domain or path…"
-                      value={filter.query}
-                      onChange={(e) =>
-                        setFilter((f) => ({ ...f, query: e.target.value }))
-                      }
-                      className="w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50 focus:border-blue-500/50"
-                    />
-                    <div className="flex gap-1">
-                      {KIND_OPTIONS.map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() =>
-                            setFilter((f) => ({ ...f, kind: opt.value }))
-                          }
-                          className={cn(
-                            "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
-                            filter.kind === opt.value
-                              ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                              : "border-border text-muted-foreground hover:bg-muted/40",
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="h-px bg-border" />
-                    <div className="flex gap-1">
-                      {ACCESS_OPTIONS.map((opt) => (
-                        <button
-                          key={opt.value}
-                          onClick={() =>
-                            setFilter((f) => ({ ...f, access: opt.value }))
-                          }
-                          className={cn(
-                            "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
-                            filter.access === opt.value
-                              ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                              : "border-border text-muted-foreground hover:bg-muted/40",
-                          )}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                    {isFilterActive(filter) && (
-                      <button
-                        onClick={() => setFilter(EMPTY_FILTER)}
-                        className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-                      >
-                        <X className="h-3 w-3" /> Clear filter
-                      </button>
-                    )}
-                  </PopoverContent>
-                </Popover>
-                <button
-                  onClick={() => {
-                    if (streamingPaused) {
-                      setStreamingPaused(false);
-                      // The server replays stored history on reconnect;
-                      // seenEventKeysRef dedupes it against what we already have.
-                      startStream();
-                    } else {
-                      setStreamingPaused(true);
-                      abortRef.current?.abort();
-                      setConnected(false);
-                    }
-                  }}
-                  title={
-                    streamingPaused ? "Resume streaming" : "Pause streaming"
-                  }
-                  className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
-                >
-                  {streamingPaused ? (
-                    <Play className="h-3 w-3" />
-                  ) : (
-                    <Pause className="h-3 w-3" />
                   )}
-                </button>
-                <button
-                  onClick={() => setFollow(!follow)}
-                  title="Follow latest events"
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors",
-                    follow
-                      ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                      : "border-border text-muted-foreground hover:bg-muted/40",
-                  )}
-                >
-                  <LocateFixed className="h-3 w-3" />
-                </button>
-                {events.length > 0 && (
-                  <button
-                    onClick={() => {
-                      setEvents([]);
-                      seenEventKeysRef.current = new Set();
-                      clearStoredEvents();
-                    }}
-                    title="Clear events"
-                    className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                )}
+                </div>
+              )}
+            >
+              <div className="h-full w-full overflow-hidden">
+                {panelBody[id]}
               </div>
+            </MosaicWindow>
+          )}
+          zeroStateView={
+            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+              No panels shown — enable one from the toolbar above.
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <TimelineView
-                events={events}
-                filter={filter}
-                applyConfig={proposePolicy}
-                onOpenFile={openFile}
-                zoomWindow={zoomWindow}
-                setZoomWindow={setZoomWindow}
-                follow={follow}
-                onDisableFollow={() => setFollow(false)}
-                paused={streamingPaused}
-                detailInDialog={vertical}
-              />
-            </div>
-          </div>
-        )}
-
-        {showTerminalCol && (
-          <>
-            {showTimeline &&
-              (vertical ? (
-                <div
-                  className="shrink-0 bg-border"
-                  style={{ height: DRAG_HANDLE_WIDTH }}
-                />
-              ) : (
-                <div
-                  className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
-                  style={{ width: DRAG_HANDLE_WIDTH }}
-                  onMouseDown={makeDragHandler(
-                    setTerminalWidth,
-                    terminalWidth,
-                    terminalColMinWidth,
-                    () => {
-                      const w =
-                        contentRef.current?.getBoundingClientRect().width ??
-                        1200;
-                      return (
-                        w -
-                        MIN_TIMELINE_WIDTH -
-                        (showFiles ? filesWidth + DRAG_HANDLE_WIDTH : 0) -
-                        DRAG_HANDLE_WIDTH
-                      );
-                    },
-                  )}
-                />
-              ))}
-            {/* Terminal (top) + browser (bottom) stacked in one column. */}
-            <div
-              ref={terminalColRef}
-              className="flex flex-col overflow-hidden"
-              style={
-                vertical
-                  ? { flex: 1, minHeight: MIN_PANEL_HEIGHT }
-                  : showTimeline
-                    ? {
-                        width: terminalWidth,
-                        flexShrink: 0,
-                        minWidth: terminalColMinWidth,
-                      }
-                    : { flex: 1, minWidth: terminalColMinWidth }
-              }
-            >
-              {showTerminal && (
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  <Terminal
-                    sandboxId={sandbox.id}
-                    sandboxKey={sandbox.key}
-                    serverUrl={serverUrl}
-                    subscribe={subscribeTerminal}
-                  />
-                </div>
-              )}
-              {showTerminal && showBrowser && (
-                <div
-                  className="shrink-0 cursor-row-resize bg-border hover:bg-foreground/20 transition-colors"
-                  style={{ height: DRAG_HANDLE_WIDTH }}
-                  onMouseDown={makeVDragHandler(
-                    setBrowserHeight,
-                    browserHeight,
-                    MIN_PANEL_HEIGHT,
-                    () => {
-                      const h =
-                        terminalColRef.current?.getBoundingClientRect()
-                          .height ?? 600;
-                      return h - MIN_PANEL_HEIGHT - DRAG_HANDLE_WIDTH;
-                    },
-                  )}
-                />
-              )}
-              {showBrowser && (
-                <div
-                  className="min-h-0 overflow-hidden"
-                  style={
-                    showTerminal
-                      ? {
-                          height: browserHeight,
-                          flexShrink: 0,
-                          minHeight: MIN_PANEL_HEIGHT,
-                        }
-                      : { flex: 1 }
-                  }
-                >
-                  <BrowserView
-                    sandboxId={sandbox.id}
-                    sandboxKey={sandbox.key}
-                    serverUrl={serverUrl}
-                    subscribe={subscribeBrowser}
-                  />
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {showFiles && (
-          <>
-            {(showTimeline || showTerminalCol) &&
-              (vertical ? (
-                <div
-                  className="shrink-0 bg-border"
-                  style={{ height: DRAG_HANDLE_WIDTH }}
-                />
-              ) : (
-                <div
-                  className="shrink-0 cursor-col-resize bg-border hover:bg-foreground/20 transition-colors"
-                  style={{ width: DRAG_HANDLE_WIDTH }}
-                  onMouseDown={makeDragHandler(
-                    setFilesWidth,
-                    filesWidth,
-                    filesPanel.minWidth,
-                    () => {
-                      const w =
-                        contentRef.current?.getBoundingClientRect().width ??
-                        1200;
-                      return (
-                        w -
-                        MIN_TIMELINE_WIDTH -
-                        (showTerminalCol
-                          ? terminalWidth + DRAG_HANDLE_WIDTH
-                          : 0) -
-                        DRAG_HANDLE_WIDTH
-                      );
-                    },
-                  )}
-                />
-              ))}
-            <div
-              className="overflow-hidden"
-              style={
-                vertical
-                  ? { flex: 1, minHeight: MIN_PANEL_HEIGHT }
-                  : showTimeline || showTerminalCol
-                    ? {
-                        width: filesWidth,
-                        flexShrink: 0,
-                        minWidth: filesPanel.minWidth,
-                      }
-                    : { flex: 1, minWidth: filesPanel.minWidth }
-              }
-            >
-              <FileExplorer
-                sandboxId={sandbox.id}
-                sandboxKey={sandbox.key}
-                serverUrl={serverUrl}
-                events={fsWriteEvents}
-              />
-            </div>
-          </>
-        )}
+          }
+        />
       </div>
 
       <Dialog

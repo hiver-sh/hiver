@@ -6,9 +6,8 @@ import {
   Folder,
   FolderOpen,
   Loader2,
-  RefreshCw,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { CodeViewer, CODE_DIALOG_CLASS } from "@/components/CodeViewer";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -41,6 +40,7 @@ interface Props {
   sandboxKey: string;
   serverUrl: string;
   events: Extract<SandboxEvent, { type: "fs.request" }>[];
+  refreshRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 function updateNode(
@@ -101,7 +101,7 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
   });
 }
 
-export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events }: Props) {
+export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refreshRef }: Props) {
   const { transport } = useTransport();
   const { prefs, toggleExpandedPath } = useUserPreferences();
   const [roots, setRoots] = useState<TreeNode[]>([]);
@@ -235,6 +235,10 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events }: Props
   useEffect(() => {
     loadMounts();
   }, [loadMounts]);
+
+  useEffect(() => {
+    if (refreshRef) refreshRef.current = loadMounts;
+  }, [loadMounts, refreshRef]);
 
   useEffect(() => {
     rootsRef.current = roots;
@@ -425,19 +429,6 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events }: Props
   return (
     <>
       <div className="flex h-full flex-col">
-        <div className="flex items-center justify-between border-b border-border px-3 py-2">
-          <span className="text-xs font-medium text-muted-foreground">
-            Files
-          </span>
-          <button
-            onClick={loadMounts}
-            className="text-muted-foreground/50 transition-colors hover:text-muted-foreground"
-            title="Refresh mounts"
-          >
-            <RefreshCw className="h-3 w-3" />
-          </button>
-        </div>
-
         <div className="flex-1 overflow-y-auto scroll-container py-1">
           {configLoading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground/40">

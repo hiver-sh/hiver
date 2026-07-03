@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Plus, RotateCw, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { ArrowLeft, ArrowRight, RotateCw } from "lucide-react";
 import { useTransport } from "@/lib/transport";
 
 /** One open page target, as reflected in the tab strip. */
@@ -33,7 +32,7 @@ export interface BrowserSink {
 }
 
 // A short label for a tab: its title, else the URL host, else a placeholder.
-function tabLabel(tab: BrowserTab): string {
+export function tabLabel(tab: BrowserTab): string {
   if (tab.title) return tab.title;
   try {
     return new URL(tab.url).host || tab.url;
@@ -106,7 +105,6 @@ export function BrowserView({
   const [url, setUrl] = useState("");
   const urlFocusedRef = useRef(false);
   const [nav, setNav] = useState({ canGoBack: false, canGoForward: false });
-  const [tabs, setTabs] = useState<BrowserTab[]>([]);
 
   const postControl = (body: unknown) => {
     const { id, key } = targetRef.current;
@@ -129,11 +127,6 @@ export function BrowserView({
     if (!target) return;
     setUrl(target);
     postControl({ action: "navigate", url: target });
-    containerRef.current?.focus();
-  };
-
-  const newPage = () => {
-    postControl({ action: "newPage" });
     containerRef.current?.focus();
   };
 
@@ -389,7 +382,9 @@ export function BrowserView({
         if (!urlFocusedRef.current) setUrl(u === "about:blank" ? "" : u);
       },
       onNavState: setNav,
-      onTabs: setTabs,
+      // Tabs are rendered in the panel header (owned by the parent), so this
+      // panel ignores the tab set.
+      onTabs: () => {},
     });
 
     return () => {
@@ -408,58 +403,13 @@ export function BrowserView({
 
   return (
     <div className="flex h-full w-full flex-col">
-      {/* Browser chrome: the tab strip and address bar share one recessed
-          surface, and the active tab is painted in the address bar's own color
-          so it merges into the toolbar instead of floating above it. */}
-      <div className="flex shrink-0 flex-col border-b border-border bg-muted">
-        {/* Tabs */}
-        <div className="flex items-end gap-0.5 overflow-x-auto px-1.5 pt-1.5">
-          {tabs.map((tab) => (
-            <div
-              key={tab.targetId}
-              onClick={() => {
-                if (!tab.active)
-                  postControl({ action: "activateTab", targetId: tab.targetId });
-              }}
-              title={tab.url || tabLabel(tab)}
-              className={cn(
-                "group flex max-w-[180px] min-w-0 cursor-pointer items-center gap-1.5 rounded-t-lg px-3 py-1.5 text-xs transition-colors",
-                tab.active
-                  ? "bg-background text-foreground"
-                  : "text-muted-foreground hover:bg-background/40",
-              )}
-            >
-              <span className="truncate">{tabLabel(tab)}</span>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  postControl({ action: "closeTab", targetId: tab.targetId });
-                }}
-                title="Close tab"
-                className={cn(
-                  "shrink-0 rounded p-0.5 text-muted-foreground/70 transition hover:bg-foreground/10 hover:text-foreground",
-                  tab.active ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-                )}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            onClick={newPage}
-            title="Open a new page"
-            className="mb-1 ml-0.5 flex shrink-0 items-center rounded-md p-1 text-foreground/60 transition-colors hover:bg-background/60 hover:text-foreground"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Address bar — the front surface the active tab merges into. */}
+      {/* Browser chrome: the tab strip lives in the panel header (owned by the
+          parent); this panel keeps the address bar. */}
+      <div className="flex shrink-0 flex-col border-b border-border bg-background">
+        {/* Address bar */}
         <form
           onSubmit={navigate}
-          className="flex items-center gap-1 bg-background px-2 py-1.5"
+          className="flex items-center gap-1 bg-muted/50 px-2 py-1.5"
         >
           <button
             type="button"
@@ -479,6 +429,13 @@ export function BrowserView({
           >
             <ArrowRight className="h-4 w-4" />
           </button>
+          <button
+            type="submit"
+            title="Reload"
+            className="rounded p-1 text-foreground/70 transition-colors hover:bg-background hover:text-foreground"
+          >
+            <RotateCw className="h-4 w-4" />
+          </button>
           <input
             type="text"
             value={url}
@@ -494,13 +451,6 @@ export function BrowserView({
             spellCheck={false}
             className="min-w-0 flex-1 rounded-md border border-border bg-muted px-2.5 py-1 font-mono text-[11px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-blue-500/60"
           />
-          <button
-            type="submit"
-            title="Reload"
-            className="rounded p-1 text-foreground/70 transition-colors hover:bg-background hover:text-foreground"
-          >
-            <RotateCw className="h-4 w-4" />
-          </button>
         </form>
       </div>
       <div

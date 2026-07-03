@@ -144,6 +144,13 @@
   background: var(--scrollbar-thumb-visible-hover);
 }
 
+/* Timeline scrollbars are clutter when idle: keep the thumb hidden until the
+   mouse enters the timeline, at which point `.scrollbar-visible` (toggled by
+   useScrollbarVisibility) reveals it via the rules above. */
+.timeline-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
 .detail-header-scroll {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -161,4 +168,108 @@
     var(--stripe-color) 16px
   );
   animation: stripe-slide 0.5s linear infinite;
+}
+
+/* react-mosaic panel tiling — the library's base CSS is hardcoded light/white,
+   so re-theme it to the app's tokens. Scoped to .hive-mosaic. */
+.hive-mosaic .mosaic {
+  background: transparent;
+}
+/* Remove react-mosaic's default 3px insets so panels sit flush (no gap above
+   the headers or between tiles) — the splitters still mark the boundaries. */
+.hive-mosaic .mosaic-root {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+.hive-mosaic .mosaic-tile {
+  margin: 0;
+}
+.hive-mosaic .mosaic-window,
+.hive-mosaic .mosaic-preview {
+  border-radius: 0;
+  box-shadow: none;
+}
+.hive-mosaic .mosaic-window .mosaic-window-toolbar,
+.hive-mosaic .mosaic-preview .mosaic-window-toolbar {
+  height: auto;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  /* One clean full-width line under the header (on the toolbar itself, not the
+     inner content div, so it never steps). */
+  border-bottom: 1px solid hsl(var(--border));
+}
+/* Hide the always-present in-window drag preview (z-index 0). It's only used as
+   the drag image; hiding it lets the header be translucent without bleed-through
+   (the browser falls back to a default drag ghost). */
+.hive-mosaic .mosaic-window > .mosaic-preview {
+  display: none;
+}
+.hive-mosaic .mosaic-window .mosaic-window-body,
+.hive-mosaic .mosaic-preview .mosaic-window-body {
+  background: hsl(var(--background));
+}
+.hive-mosaic .mosaic-window .mosaic-window-body-overlay {
+  background: hsl(var(--background));
+}
+/* resize splitter. The library gives each split TWO parts: `.mosaic-split` is a
+   6px grab strip pulled back with a -3px negative margin so it straddles the
+   boundary, and `.mosaic-split-line` is the visible line nested inside it. We
+   keep the 6px grab strip (so there's a comfortable hover/drag target, wider
+   than the visible line) but make it transparent so it no longer covers the
+   neighbouring panels' edge content, and draw only a flush 1px line via
+   `.mosaic-split-line`. The line stays 1px throughout — only its colour changes:
+   on hover it lightens to a gray, and while the user is actively dragging
+   (:active — set on mousedown and held through the drag even as the pointer
+   leaves the strip) it turns the timeline splitter's blue (blue-700 / blue-400).
+   Lifted above all panel content (body z-index 1, header z-index 4). */
+.hive-mosaic .mosaic-split {
+  z-index: 5;
+  background: transparent;
+}
+.hive-mosaic .mosaic-split .mosaic-split-line {
+  background: hsl(var(--border));
+  transition: background-color 0.15s ease;
+}
+/* flush 1px line centred on the boundary (the 6px strip's midpoint is at 3px) */
+.hive-mosaic .mosaic-split.-row .mosaic-split-line {
+  left: 3px;
+  right: 2px;
+}
+.hive-mosaic .mosaic-split.-column .mosaic-split-line {
+  top: 3px;
+  bottom: 2px;
+}
+/* hover: lighter gray */
+.hive-mosaic .mosaic-split:hover .mosaic-split-line {
+  background: hsl(var(--muted-foreground));
+}
+/* active (dragging): blue */
+.hive-mosaic .mosaic-split:active .mosaic-split-line {
+  background: #1d4ed8; /* blue-700 */
+}
+.dark .hive-mosaic .mosaic-split:active .mosaic-split-line {
+  background: #60a5fa; /* blue-400 */
+}
+/* drop target overlay shown while dragging a panel to a new spot */
+.hive-mosaic .mosaic-drop-target .drop-target-container .drop-target {
+  background: hsl(217 91% 60% / 0.18);
+  border: 2px solid hsl(217 91% 60% / 0.7);
+}
+
+/* Timeline header controls auto-hide: the filter/pause/follow/clear group in
+   the timeline panel's header stays hidden until the pointer is inside that
+   panel — its scrollable rows area or the header itself — keeping the header
+   quiet otherwise. Scoped by the .timeline-toolbar marker so only the timeline
+   panel is affected; opacity (not display) keeps its slot so nothing reflows. */
+.hive-mosaic .mosaic-window .timeline-toolbar {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.hive-mosaic .mosaic-window:hover .timeline-toolbar {
+  opacity: 1;
+  pointer-events: auto;
 }

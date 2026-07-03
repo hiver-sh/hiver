@@ -128,6 +128,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
             vm: {
               key: "browser-vm",
             },
+            files: {
+              key: "browser-files",
+              write_on_shutdown: true,
+              include: ["/opt/hiver/chrome-profile/*"],
+            },
           },
         }),
       },
