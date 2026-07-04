@@ -32,7 +32,8 @@ async function main() {
     snapshot: { vm: { key: 'browser-vm' } }
   });
 
-  const { path: dest, bytes } = await sandbox.writeFile(DESTINATION, filename, content);
+  const destPath = path.posix.join(DESTINATION, filename);
+  const { path: dest, bytes } = await sandbox.writeFile(destPath, content);
   process.stdout.write(JSON.stringify({ status: 'ok', path: dest, bytes }) + '\n');
 }
 

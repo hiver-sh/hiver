@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@hiver.sh/client": "latest",
+    "@hiver.sh/client": "^0.1.24",
     "ws": "latest"
   }
 }
