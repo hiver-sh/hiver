@@ -26,26 +26,106 @@ Connect to `/tmp/cdp.sock` and write newline-terminated JSON. Responses are broa
 node /home/agent/.claude/skills/browser/scripts/cdp-send.js '{"id":1,"method":"Browser.getVersion","params":{}}'
 ```
 
-## Reading the page
+### Attach to the page target first (mandatory, once per session)
 
-To understand page content, **prefer the accessibility tree** — it's a compact, structured, text representation of what's on screen (roles, names, values) and is far cheaper and more reliable to reason over than an image.
+Before any `Runtime.evaluate` / DOM work you **must** attach to the page target and
+then pass its `sessionId` on **every** subsequent command. Skipping this doesn't
+error — commands run against the wrong (browser-level) scope and evals silently come
+back `undefined`, which is a slow thing to debug. Do it once, right after the bridge
+is ready:
 
 ```bash
-# enable, then fetch the full accessibility tree
-node /home/agent/.claude/skills/browser/scripts/cdp-send.js '{"id":1,"method":"Accessibility.enable","params":{}}'
-node /home/agent/.claude/skills/browser/scripts/cdp-send.js '{"id":2,"method":"Accessibility.getFullAXTree","params":{}}'
+# 1. list targets, find the one with "type":"page"
+node .../cdp-send.js '{"id":1,"method":"Target.getTargets","params":{}}'
+# 2. attach to that page target with flatten:true — the reply carries a sessionId
+node .../cdp-send.js '{"id":2,"method":"Target.attachToTarget","params":{"targetId":"<pageTargetId>","flatten":true}}'
+# -> {"id":2,"result":{"sessionId":"<SID>"}}
 ```
 
-You can also read the DOM/text directly (e.g. `DOM.getDocument`, `Runtime.evaluate` returning `document.body.innerText`) when the accessibility tree isn't enough.
+From here on, **include `"sessionId":"<SID>"`** at the top level of every command
+(`cdp-send.js`), or pass it as the 2nd arg to `cdp-eval.js` (below).
+
+### Running JS in the page — use `cdp-eval.js`
+
+For any DOM action (click, type, read a value), don't hand-build a `Runtime.evaluate`
+payload and pipe it through `cdp-send.js` — that's a write-file → build-JSON → send
+dance of three tool calls per interaction. Run it in **one** call with `cdp-eval.js`,
+which reads your JS, wraps it, and sends it.
+
+**Prefer piping the script over stdin** (pass `-` as the file arg) — no scratch file
+needed. Use a **quoted heredoc** (`<<'JS'`) so the shell passes the JS through
+literally, side-stepping the embedded-text quoting problem entirely:
+
+```bash
+node /home/agent/.claude/skills/browser/scripts/cdp-eval.js - <SID> <<'JS'
+const el = document.querySelector('[aria-label="Reply"]');
+el.click();
+return el.getAttribute('aria-label');
+JS
+# prints the script's returned value as JSON
+```
+
+Only write the JS to a file when you want to keep/iterate on it; then pass the path
+instead of `-`: `cdp-eval.js /workspace/click.js <SID>`.
+
+Pass the attached target's `<SID>` (from the attach step above) as the arg after the
+script source — without it the script evaluates in the wrong scope and returns
+`undefined`.
+
+`cdp-eval.js` wraps the script in an **async IIFE**, so you can `await` and `return` a
+value, and — critically — your declarations are scoped.
+
+**Always wrap injected scripts in an IIFE** (`cdp-eval.js` does this for you; do it by
+hand if you call `Runtime.evaluate` directly). A raw `Runtime.evaluate` runs in the
+page's shared global scope that **persists across calls**, so a top-level
+`const el = ...` in one script makes the next script reusing `el` throw
+`Identifier 'el' has already been declared`. Wrapping in `(async () => { ... })()`
+gives each script its own scope and avoids the collision.
+
+## Reading the page
+
+To understand page content, **prefer text over an image** — roles, names, and values are far cheaper and more reliable to reason over than a screenshot.
+
+**Default to targeted reads.** Pull just the region you care about with `Runtime.evaluate` — e.g. `document.querySelector('...').innerText`, or a small array of `{text, ariaLabel}` for candidate elements. These are fast, precise, and cheap:
+
+```bash
+node .../cdp-send.js '{"id":1,"method":"Runtime.evaluate","params":{"expression":"document.querySelector(\"[role=main]\").innerText","returnByValue":true}}'
+```
+
+**Use `Accessibility.getFullAXTree` sparingly.** A full-tree dump is large and mostly noise for a focused task — reach for it only when you genuinely need the whole page's structure (roles/names) and targeted reads aren't enough. When you do need the tree, prefer a scoped query (`Accessibility.queryAXTree` on a node) over dumping everything.
+
+```bash
+node .../cdp-send.js '{"id":1,"method":"Accessibility.enable","params":{}}'
+node .../cdp-send.js '{"id":2,"method":"Accessibility.getFullAXTree","params":{}}'
+```
+
+**Screenshots are a last resort** — see below.
+
+### Selecting elements
+
+Prefer **stable attribute selectors** — `[aria-label="..."]`, `[data-*]`, `role`, `id` — over matching on visible text content. Text matching is brittle: it hits the wrong node when the label appears in multiple places (Gmail, for instance, repeats "Reply" across the UI), breaks on whitespace/case, and picks up hidden or duplicate elements. Reach for text matching only when no stable attribute is available.
+
+### Typing / setting text (encoding)
+
+Content is UTF-8. When you inject text via `Runtime.evaluate`, **do not decode with `atob()`** — it decodes byte-per-char and mangles any non-ASCII (em dashes, curly quotes, accents) into mojibake. Either:
+
+- pass the string directly (properly JSON-escaped) in the `expression`/`value`, or
+- if you must base64 to avoid escaping, decode UTF-8-aware: `new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)))`.
+
+When in doubt, keep injected content ASCII-only (`-` instead of `—`, `"` instead of `"`) to sidestep the issue entirely.
+
+**Injecting JS with embedded text? Write a throwaway Node script, don't inline it.** A `Runtime.evaluate` expression that contains a text string quickly hits shell quoting hell through bash/heredoc (and Python one-liners fare no better). Skip straight to writing a small `.js` file and running it with `node` — that's the reliable first move, not the fallback.
 
 **Screenshots are a last resort** — only capture one (`Page.captureScreenshot`) when the accessibility tree and DOM don't give you what you need, such as verifying visual layout, rendering, or content that isn't exposed as text.
 
 ## Uploading / attaching a file
 
 Headless Chrome has no OS file picker, so clicking an "Attach"/upload button
-opens a native dialog that never renders and the flow just hangs. Instead, stage
-the file in the sandbox, then click the button as a human would but intercept the
-picker over CDP and feed it the staged path.
+opens a native dialog that never renders and the flow just hangs. The fix is to
+set the file directly on the page's `<input type=file>` over CDP. Always stage
+the file first, then **try the direct-DOM path before the chooser interception** —
+most pages (Gmail included) already have a usable `<input type=file>` in the DOM,
+and the direct path is fewer round trips and doesn't hang.
 
 **Step 1 — stage the file in the sandbox.** `DOM.setFileInputFiles` takes file
 *paths on the machine running Chrome*, not bytes, so the file has to exist inside
@@ -57,26 +137,40 @@ node /home/agent/.claude/skills/browser/scripts/write-file.js ./report.pdf
 # -> {"status":"ok","path":"/workspace/report.pdf","bytes":12345}
 ```
 
-**Step 2 — intercept the file chooser.** Turn the native dialog into a CDP event
-so clicking the button never opens a real picker:
+**Step 2 — try the direct DOM path first.** Look for an existing file input and
+set the staged path on it directly. This is the common case (Gmail's attach
+control has one) and should be your first attempt:
+
+```bash
+node .../cdp-send.js '{"id":1,"method":"DOM.getDocument","params":{}}'
+node .../cdp-send.js '{"id":2,"method":"DOM.querySelector","params":{"nodeId":<docNodeId>,"selector":"input[type=file]"}}'
+# if that returns a non-zero nodeId, set files on it and you're done:
+node .../cdp-send.js '{"id":3,"method":"DOM.setFileInputFiles","params":{"nodeId":<id>,"files":["/workspace/report.pdf"]}}'
+```
+
+Setting files populates `input.files` and fires the `change` event — exactly as
+if a human had picked the file — so the page starts the upload. Then continue the
+normal flow (e.g. click "Send"). **Only fall back to Step 3 if no
+`input[type=file]` exists** (querySelector returns nodeId `0`).
+
+**Step 3 — fallback: intercept the file chooser.** Use this only when the page
+has no reachable file input and instead opens a native picker on click. Turn that
+dialog into a CDP event:
 
 ```bash
 node .../cdp-send.js '{"id":1,"method":"Page.enable","params":{}}'
 node .../cdp-send.js '{"id":2,"method":"Page.setInterceptFileChooserDialog","params":{"enabled":true}}'
 ```
 
-**Step 3 — click "Attach" and read the chooser event.** Click the upload button
-the normal way (via the accessibility node / a `Runtime.evaluate` click). Chrome
-emits a `Page.fileChooserOpened` event instead of opening a dialog; it carries a
-`backendNodeId` identifying the `<input type=file>`:
+Click the upload button the normal way (accessibility node / `Runtime.evaluate`
+click). Chrome emits a `Page.fileChooserOpened` event instead of a dialog,
+carrying a `backendNodeId` for the input:
 
 ```json
 {"method":"Page.fileChooserOpened","params":{"mode":"selectSingle","backendNodeId":<id>}}
 ```
 
-**Step 4 — set the staged path on that input.** This populates `input.files` and
-fires the `change` event, which is what makes the page start the upload — exactly
-as if a human had picked the file:
+Set the staged path on that backend node:
 
 ```bash
 node .../cdp-send.js '{"id":3,"method":"DOM.setFileInputFiles","params":{"backendNodeId":<id>,"files":["/workspace/report.pdf"]}}'
@@ -84,11 +178,6 @@ node .../cdp-send.js '{"id":3,"method":"DOM.setFileInputFiles","params":{"backen
 
 Pass multiple paths in `files` for a multi-file input (`mode` is
 `"selectMultiple"`). Then continue the page's normal flow (e.g. click "Send").
-
-**If the `<input type=file>` is already visible in the DOM**, you can skip the
-interception and set files on it directly: `DOM.getDocument` →
-`DOM.querySelector` with selector `input[type=file]` to get a `nodeId`, then
-`setFileInputFiles` with `{"nodeId":<id>,"files":[...]}`.
 
 ## Credentials and sensitive information (PII)
 
