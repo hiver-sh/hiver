@@ -654,7 +654,7 @@ export function RowDetailPanel({
           className={`flex flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}
         >
           <div
-            className={`overflow-y-auto scroll-container ${!narrow && reqRawBody ? "flex-1 min-w-0 border-r border-border" : narrow && reqRawBody ? "shrink-0 border-b border-border" : "flex-1"}`}
+            className={`overflow-y-auto ${!narrow && reqRawBody ? "flex-1 min-w-0 border-r border-border" : narrow && reqRawBody ? "shrink-0 border-b border-border" : "flex-1"}`}
           >
             <div className="p-3">
               <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
@@ -761,7 +761,7 @@ export function RowDetailPanel({
           className={`flex flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}
         >
           <div
-            className={`overflow-y-auto scroll-container ${!narrow && (chunks.length > 0 || resRawBody) ? "flex-1 min-w-0 border-r border-border" : narrow && (chunks.length > 0 || resRawBody) ? "shrink-0 border-b border-border" : "flex-1"}`}
+            className={`overflow-y-auto ${!narrow && (chunks.length > 0 || resRawBody) ? "flex-1 min-w-0 border-r border-border" : narrow && (chunks.length > 0 || resRawBody) ? "shrink-0 border-b border-border" : "flex-1"}`}
           >
             <div className="p-3">
               {res ? (
@@ -825,7 +825,7 @@ export function RowDetailPanel({
                 Body
               </div>
               {isWebSocket ? (
-                <div className="flex flex-1 min-h-0 flex-col overflow-y-auto py-1 scroll-container">
+                <div className="flex flex-1 min-h-0 flex-col overflow-y-auto py-1">
                   {chunks.map((chunk) => (
                     <WsChunkRow key={chunk.id} chunk={chunk} />
                   ))}

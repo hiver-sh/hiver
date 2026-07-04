@@ -27,12 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  Mosaic,
-  MosaicWindow,
-  getLeaves,
-  type MosaicNode,
-} from "react-mosaic-component";
+import { Mosaic, MosaicWindow } from "react-mosaic-component";
 import "react-mosaic-component/react-mosaic-component.css";
 import { useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -62,7 +57,6 @@ import type {
   FilterAccess,
   FilterState,
 } from "@/components/TimelineView";
-import { Separator } from "@/components/ui/separator";
 import {
   Popover,
   PopoverContent,
@@ -76,6 +70,8 @@ import type { SandboxEvent, SandboxRef, SandboxTarget } from "@/types";
 import { useTransport } from "@/lib/transport";
 import { useUserPreferences, ALL_PANELS } from "@/lib/userPreferences";
 import type { PanelId } from "@/lib/userPreferences";
+import { usePanelLayout } from "@/lib/usePanelLayout";
+import { useScrollbarVisibility } from "@/lib/useScrollbarVisibility";
 
 // Header label for each panel.
 const PANEL_TITLE: Record<PanelId, string> = {
@@ -84,41 +80,6 @@ const PANEL_TITLE: Record<PanelId, string> = {
   browser: "Browser",
   files: "Files",
 };
-
-type Tree = MosaicNode<PanelId> | null;
-
-// Drop `id` from the tree, collapsing the branch it left behind (a parent with
-// one child becomes that child).
-function removeLeaf(node: Tree, id: PanelId): Tree {
-  if (node == null) return null;
-  if (typeof node === "string") return node === id ? null : node;
-  const first = removeLeaf(node.first, id);
-  const second = removeLeaf(node.second, id);
-  if (first == null) return second;
-  if (second == null) return first;
-  return { ...node, first, second };
-}
-
-// Add `id` as a new right-hand column.
-function addLeaf(node: Tree, id: PanelId): Tree {
-  if (node == null) return id;
-  return { direction: "row", first: node, second: id };
-}
-
-// Reconcile a stored tree against the set of currently-visible panels: drop any
-// panel that's now hidden, and append any newly-visible one. `visible` is in the
-// order new panels should be added.
-function reconcileTree(stored: Tree, visible: PanelId[]): Tree {
-  let tree = stored;
-  for (const leaf of tree ? getLeaves(tree) : []) {
-    if (!visible.includes(leaf)) tree = removeLeaf(tree, leaf);
-  }
-  const present = new Set(tree ? getLeaves(tree) : []);
-  for (const id of visible) {
-    if (!present.has(id)) tree = addLeaf(tree, id);
-  }
-  return tree;
-}
 
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
@@ -131,8 +92,13 @@ export function SandboxDetail({
   serverUrl,
   onConnectedChange,
 }: SandboxDetailProps) {
+  // Toggle `.scrollbar-visible` on hovered scroll-containers (timeline rows,
+  // event-detail panel, files). Called here — not just in the standalone App —
+  // so the hover-reveal also works when SandboxDetail is consumed via the
+  // exported library (e.g. the embed), where App never mounts.
+  useScrollbarVisibility();
   const { transport, player, gatewayUrl } = useTransport();
-  const { prefs, setPref } = useUserPreferences();
+  const { prefs, setPref, showHeader } = useUserPreferences();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
   const [connected, setConnected] = useState(false);
   useEffect(() => {
@@ -215,19 +181,8 @@ export function SandboxDetail({
   };
   const visiblePanels = ALL_PANELS.filter((id) => panelVisible[id]);
 
-  // The tiling tree, kept in local state so live drags/resizes update smoothly;
-  // persisted to prefs when a change completes (Mosaic.onRelease). We reconcile
-  // against the *saved* layout, not the previous rendered one, so a panel's
-  // position is retained even while it's temporarily hidden (e.g. the browser
-  // before CDP is detected) rather than popping out to a new column.
-  const savedLayout = prefs.panelLayout;
-  const [layout, setLayout] = useState<Tree>(() =>
-    reconcileTree(savedLayout, visiblePanels),
-  );
-  const visibleKey = visiblePanels.join(",");
-  useEffect(() => {
-    setLayout(reconcileTree(savedLayout, visiblePanels));
-  }, [savedLayout, visibleKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The tiling tree Mosaic renders, plus its persist-on-release handler.
+  const { layout, setLayout, persistLayout } = usePanelLayout(visiblePanels);
   const [showConfig, setShowConfig] = useState(false);
   const [showSnapshot, setShowSnapshot] = useState(false);
   const [configProposal, setConfigProposal] = useState<
@@ -939,7 +894,7 @@ export function SandboxDetail({
       aria-busy={isShuttingDown}
     >
       {/* Header */}
-      <div className="flex h-12 items-center justify-between gap-4 px-4">
+      {showHeader && <div className="flex h-12 items-center justify-between gap-4 px-4 border-b border-border">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-base font-semibold">{sandbox.key}</h2>
           {isolation && (
@@ -1064,9 +1019,7 @@ export function SandboxDetail({
             )}
           </Button>
         </div>
-      </div>
-
-      <Separator />
+      </div>}
 
       {/* Content: a tiling mosaic — drag a panel's header onto another panel's
           edge to split (side-by-side) or stack (in a column); drag the splitters
@@ -1075,7 +1028,7 @@ export function SandboxDetail({
         <Mosaic<PanelId>
           value={layout}
           onChange={setLayout}
-          onRelease={(next) => setPref("panelLayout", next)}
+          onRelease={persistLayout}
           className=""
           renderTile={(id, path) => (
             <MosaicWindow<PanelId>

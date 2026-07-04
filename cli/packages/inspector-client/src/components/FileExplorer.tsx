@@ -113,15 +113,15 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refresh
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const rootsRef = useRef<TreeNode[]>([]);
   const expandedPathsPrefRef = useRef<string[]>(
-    prefs.expandedPaths[sandboxId] ?? [],
+    prefs.expandedPaths[sandboxKey] ?? [],
   );
   const lastProcessedIdxRef = useRef(0);
   const pendingDirsRef = useRef<Set<string>>(new Set());
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    expandedPathsPrefRef.current = prefs.expandedPaths[sandboxId] ?? [];
-  }, [prefs.expandedPaths, sandboxId]);
+    expandedPathsPrefRef.current = prefs.expandedPaths[sandboxKey] ?? [];
+  }, [prefs.expandedPaths, sandboxKey]);
 
   const fileUrl = useCallback(
     (path: string) => {
@@ -291,7 +291,7 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refresh
     if (!node || !node.is_dir) return;
 
     if (node.expanded) {
-      toggleExpandedPath(sandboxId, path);
+      toggleExpandedPath(sandboxKey, path);
       setRoots((prev) =>
         updateNode(prev, path, (n) => ({ ...n, expanded: false })),
       );

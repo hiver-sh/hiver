@@ -8,6 +8,7 @@ import {
 import "react-mosaic-component/react-mosaic-component.css";
 import type { SandboxEvent, SandboxTarget } from "@/types";
 import { humanDuration } from "@/lib/utils";
+import { useTransport } from "@/lib/transport";
 import { LLM_PROVIDERS } from "@/lib/llmProviders";
 import { RowDetailPanel } from "./TimelineDetail";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -250,6 +251,20 @@ const LANES_ENABLED = false;
 const MERGE_OVERLAPS = true;
 const VIRTUAL_SCROLL = false;
 const GAP_THRESHOLD_MS = 60_000;
+// Geometric step for quantizing the visible time span (see the span
+// computation below). Larger values freeze the scale for longer between
+// re-fits but reserve more empty space on the right (up to step−1 of the
+// track); 1.25 caps the reserved space at ~20%.
+const SPAN_STEP = 1.25;
+// Width of the vertical scrollbar (see `::-webkit-scrollbar { width }` in
+// index.css). Reserved on the right of the fit-mode track so the content
+// wrapper stays a fixed `tile - gutter` wide regardless of whether the vertical
+// scrollbar is showing. Without this the fit-mode wrapper equals the client
+// width exactly, so a streaming event that tips content height past the viewport
+// flips the vertical scrollbar on, which forces a horizontal scrollbar, which
+// steals height, which flips the vertical scrollbar again — a per-frame thrash
+// that makes the grid jitter ~1px while events stream.
+const SCROLLBAR_GUTTER_PX = 10;
 
 function computeLanes(
   bars: TimelineBar[],
@@ -845,6 +860,59 @@ export function TimelineView({
   }, [events]);
 
   const allRows = useMemo(() => [...rowsByKey.values()].flat(), [rowsByKey]);
+
+  // Latest timestamp across all events — the timeline's notion of "now".
+  // Live (in-flight) bars are sized against this, NOT the wall clock: for
+  // recorded/replayed traces the timestamps are historical, and wall-clock
+  // now would stretch the span across the whole gap between the recording
+  // and today, crushing the trace into a sliver. For live sessions the two
+  // are equivalent, since renders only happen when events arrive anyway.
+  const latestEventMs = useMemo(() => {
+    let max = 0;
+    for (const e of events) {
+      const t = new Date(e.timestamp).getTime();
+      if (t > max) max = t;
+    }
+    return max;
+  }, [events]);
+
+  // "Now" for sizing in-flight bars, in event-timestamp coordinates. Anchored
+  // at the latest event and advanced by the *transport's* clock: the trace
+  // player's speed-scaled replay clock when replaying, the wall clock for
+  // live sessions. Time in a trace is mocked — it runs at TransportProvider's
+  // `speed`, can be re-paced or paused, and its event timestamps are
+  // historical — so the browser clock must never be compared against event
+  // timestamps directly.
+  const { player } = useTransport();
+  const tickerNow = player ? player.elapsedReplayMs : Date.now();
+  const liveAnchorRef = useRef({ eventAbs: 0, ticker: 0 });
+  if (
+    liveAnchorRef.current.eventAbs === 0 ||
+    latestEventMs < liveAnchorRef.current.eventAbs
+  ) {
+    // First events, or the event list was cleared/reloaded: (re)anchor.
+    liveAnchorRef.current = { eventAbs: latestEventMs, ticker: tickerNow };
+  } else if (latestEventMs > liveAnchorRef.current.eventAbs) {
+    // New event: re-anchor at the later of the event time and our running
+    // clock, so "now" never steps backward on delivery jitter.
+    const anchoredNow =
+      liveAnchorRef.current.eventAbs +
+      Math.max(0, tickerNow - liveAnchorRef.current.ticker);
+    liveAnchorRef.current = {
+      eventAbs: Math.max(latestEventMs, anchoredNow),
+      ticker: tickerNow,
+    };
+  }
+  const liveNowMs =
+    liveAnchorRef.current.eventAbs +
+    Math.max(0, tickerNow - liveAnchorRef.current.ticker);
+
+  // Re-render on a slow tick while anything is in flight, so live bars keep
+  // growing between event arrivals (renders otherwise only happen when events
+  // arrive). Skipped once live bars are capped at the span end — a recorded
+  // trace with a dangling in-flight request would tick forever otherwise.
+  const hasLiveBars = allRows.some((r) => r.bars.some(isLiveBar));
+  const [, setLiveTick] = useState(0);
   const [trackWidth, setTrackWidth] = useState(600);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -959,13 +1027,23 @@ export function TimelineView({
     effectiveDur: (b: TimelineBar) => number;
     labelW: number;
     resourceStickyHeight: number;
+    liveCapped: boolean;
   }>({
     vsections: [],
     realToDisplay: () => 0,
     effectiveDur: () => 0,
     labelW: DEFAULT_labelW,
     resourceStickyHeight: 0,
+    liveCapped: false,
   });
+
+  useEffect(() => {
+    if (!hasLiveBars) return;
+    const id = setInterval(() => {
+      if (!computedRef.current.liveCapped) setLiveTick((n) => n + 1);
+    }, 250);
+    return () => clearInterval(id);
+  }, [hasLiveBars]);
 
   function toggleCategory(sandboxKey: string, cat: Category) {
     const k = `${sandboxKey}:${cat}`;
@@ -1198,15 +1276,36 @@ export function TimelineView({
     ...filteredBars.map((b) => b.startTime + b.durationMs),
     minTime + 1,
   );
-  const rightEdge = maxEventEnd;
+  // Extend the timeline to the latest event timestamp so live bars have room
+  // to be drawn at their elapsed-so-far width (chunk/resource events advance
+  // it past maxEventEnd, which only counts completed bar durations). The span
+  // quantization below keeps the scale frozen as it advances.
+  const rightEdge = Math.max(maxEventEnd, latestEventMs);
   const rawSpan = Math.max(rightEdge - minTime, 1);
-  const rightPad =
-    trackWidth > 0 ? (30 / trackWidth) * rawSpan : rawSpan * 0.03;
-  const totalSpan = rawSpan + rightPad;
+  // Quantize the span up to a geometric step so the time→px scale stays frozen
+  // while events stream in. Recomputing the scale on every append made the
+  // whole grid self-adjust (every bar compressing a hair per event) and let
+  // the content width oscillate around the viewport width, flipping the
+  // horizontal scrollbar on/off — each flip steals/returns the scrollbar's
+  // height and reflows the grid. With a quantized span the mapping only
+  // changes when the session outgrows the current step (~every 25% of
+  // growth); between steps, new events render into already-reserved space
+  // and nothing moves.
+  const span = Math.pow(
+    SPAN_STEP,
+    Math.ceil(Math.log(rawSpan) / Math.log(SPAN_STEP)),
+  );
+  const spanEnd = minTime + span;
+  const rightPad = trackWidth > 0 ? (30 / trackWidth) * span : span * 0.03;
+  const totalSpan = span + rightPad;
 
+  // Live (in-flight egress/fs/exec) bars are drawn at their elapsed-so-far
+  // width: they grow as the (transport) clock advances and freeze in place
+  // when the response lands. Clamped to the reserved span end so a dangling
+  // in-flight request can never stretch the scale on its own.
   function effectiveDur(bar: TimelineBar): number {
     if (isLiveBar(bar)) {
-      return Math.max(totalSpan - (bar.startTime - minTime), 0);
+      return Math.max(Math.min(liveNowMs, spanEnd) - bar.startTime, 0);
     }
     return bar.durationMs;
   }
@@ -1262,7 +1361,10 @@ export function TimelineView({
       });
       dispPos += gapNatural;
     }
-    const evW = Math.max(1, (iEnd - iStart) * pxPerMs);
+    // No 1px floor here: point events get their visual minimum at render time
+    // (MIN_BAR_PX). Flooring the *mapping* made dispPos creep by 1px per point
+    // event, nudging fitScale and reflowing the whole track on every append.
+    const evW = (iEnd - iStart) * pxPerMs;
     segments.push({
       realStart: iStart,
       realEnd: iEnd,
@@ -1273,17 +1375,43 @@ export function TimelineView({
     dispPos += evW;
     prevEnd = Math.max(prevEnd, iEnd);
   }
+  // Trailing segment: cover the span from the last event interval up to the
+  // (quantized) span end. Without it, that trailing time is compressed to
+  // zero width, which makes the track width oscillate while events stream:
+  // each resource tick grows the span (shrinking pxPerMs and every segment
+  // with it — track shrinks), then the next real event reveals the trailing
+  // region as a brand-new gap segment at full natural width (track expands
+  // again). With the mapping always covering [minTime, spanEnd], the natural
+  // width is span·pxPerMs = trackWidth·span/totalSpan, which is constant, so
+  // the content width can never flip the horizontal scrollbar on and off.
+  if (spanEnd > prevEnd) {
+    const gapMs = spanEnd - prevEnd;
+    const gapNatural = gapMs * pxPerMs;
+    segments.push({
+      realStart: prevEnd,
+      realEnd: spanEnd,
+      dispStart: dispPos,
+      dispEnd: dispPos + gapNatural,
+      isGap: gapMs >= GAP_THRESHOLD_MS,
+    });
+    dispPos += gapNatural;
+  }
 
   const fitScale =
-    trackWidth > 0 && dispPos > 0 && dispPos + 10 < trackWidth
-      ? (trackWidth - 10) / dispPos
+    trackWidth > 0 && dispPos > 0 && dispPos + SCROLLBAR_GUTTER_PX < trackWidth
+      ? (trackWidth - SCROLLBAR_GUTTER_PX) / dispPos
       : 1;
   for (const seg of segments) {
     seg.dispStart *= fitScale;
     seg.dispEnd *= fitScale;
   }
+  // In fit mode the content fills `trackWidth - gutter` (via fitScale). Pin the
+  // wrapper to that same width — not the full `trackWidth` — so it never equals
+  // the scroller's client width exactly and can't fight the vertical scrollbar.
   const contentTrackWidth =
-    fitScale !== 1 ? trackWidth : Math.ceil(dispPos * fitScale + 10);
+    fitScale !== 1
+      ? trackWidth - SCROLLBAR_GUTTER_PX
+      : Math.ceil(dispPos * fitScale + SCROLLBAR_GUTTER_PX);
 
   function realToDisplay(realMs: number): number {
     for (const seg of segments) {
@@ -1322,7 +1450,7 @@ export function TimelineView({
 
   if (zoomWindow) {
     const zDispStart = realToDisplay(Math.max(minTime, zoomWindow.realStart));
-    const zDispEnd = realToDisplay(Math.min(rightEdge, zoomWindow.realEnd));
+    const zDispEnd = realToDisplay(Math.min(spanEnd, zoomWindow.realEnd));
     const zSpan = Math.max(1, zDispEnd - zDispStart);
     const scale = trackWidth / zSpan;
     toDisplay = (t: number) => realToDisplay(t) * scale;
@@ -1512,6 +1640,10 @@ export function TimelineView({
     effectiveDur,
     labelW,
     resourceStickyHeight,
+    // Live bars have hit the reserved span end — the growth tick is a no-op
+    // until new events extend the span (or never, for a recorded trace that
+    // ends with a dangling in-flight request).
+    liveCapped: liveNowMs >= spanEnd,
   };
 
   // ─── Visibility windows ───────────────────────────────────────────────────
@@ -1645,7 +1777,11 @@ export function TimelineView({
         {/* Rows — virtual scroll */}
         <div
           ref={rowsScrollRef}
-          className="timeline-scroll scroll-container min-h-0 flex-1 overflow-auto text-xs cursor-default select-none"
+          // `overflow-scroll` (not auto): keep both scrollbar tracks reserved at
+          // all times so their appearance can never steal width/height and
+          // reflow the grid mid-stream. The timeline-scroll CSS paints the
+          // idle tracks as background, so the reserved gutters read as empty.
+          className="timeline-scroll scroll-container min-h-0 flex-1 overflow-scroll text-xs cursor-default select-none"
           onScroll={onScroll}
           onMouseDown={onRowsMouseDown}
         >
@@ -1992,15 +2128,11 @@ export function TimelineView({
                                         <div
                                           key={bar.id}
                                           className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                          style={
-                                            isLive
-                                              ? { left: leftPx, right: 10 }
-                                              : {
-                                                  left: leftPx,
-                                                  width: rightPx - leftPx,
-                                                  maxWidth: `calc(100% - ${leftPx}px)`,
-                                                }
-                                          }
+                                          style={{
+                                            left: leftPx,
+                                            width: rightPx - leftPx,
+                                            maxWidth: `calc(100% - ${leftPx}px)`,
+                                          }}
                                         >
                                           <div
                                             className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? liveBarClass(vl.row) : barClass(bar, vl.row.type)}`}
@@ -2018,19 +2150,14 @@ export function TimelineView({
                                           </div>
                                           <div
                                             className="absolute inset-y-0 z-10 cursor-pointer"
-                                            style={
-                                              isLive
-                                                ? { inset: 0 }
-                                                : {
-                                                    left: "50%",
-                                                    transform:
-                                                      "translateX(-50%)",
-                                                    width: Math.max(
-                                                      rightPx - leftPx,
-                                                      MIN_CLICK_TARGET_BAR_PX,
-                                                    ),
-                                                  }
-                                            }
+                                            style={{
+                                              left: "50%",
+                                              transform: "translateX(-50%)",
+                                              width: Math.max(
+                                                rightPx - leftPx,
+                                                MIN_CLICK_TARGET_BAR_PX,
+                                              ),
+                                            }}
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               if (dragHappenedRef.current)
@@ -2087,15 +2214,11 @@ export function TimelineView({
                                       <div
                                         key={first.id}
                                         className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
-                                        style={
-                                          isLive
-                                            ? { left: group.leftPx, right: 10 }
-                                            : {
-                                                left: group.leftPx,
-                                                width: w,
-                                                maxWidth: `calc(100% - ${group.leftPx}px)`,
-                                              }
-                                        }
+                                        style={{
+                                          left: group.leftPx,
+                                          width: w,
+                                          maxWidth: `calc(100% - ${group.leftPx}px)`,
+                                        }}
                                       >
                                         <div
                                           className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? liveBarClass(vl.row) : barClass(first, vl.row.type)}`}
@@ -2115,18 +2238,14 @@ export function TimelineView({
                                         </div>
                                         <div
                                           className="absolute inset-y-0 z-10 cursor-pointer"
-                                          style={
-                                            isLive
-                                              ? { inset: 0 }
-                                              : {
-                                                  left: "50%",
-                                                  transform: "translateX(-50%)",
-                                                  width: Math.max(
-                                                    w,
-                                                    MIN_CLICK_TARGET_BAR_PX,
-                                                  ),
-                                                }
-                                          }
+                                          style={{
+                                            left: "50%",
+                                            transform: "translateX(-50%)",
+                                            width: Math.max(
+                                              w,
+                                              MIN_CLICK_TARGET_BAR_PX,
+                                            ),
+                                          }}
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (dragHappenedRef.current) return;
@@ -2186,7 +2305,7 @@ export function TimelineView({
   );
 
   const detailTile = selectedBar ? (
-    <div className="flex h-full flex-col overflow-hidden scroll-container">
+    <div className="flex h-full flex-col overflow-hidden scroll-container detail-scroll">
       <RowDetailPanel
         key={selectedBar.id}
         bar={selectedBar}
@@ -2206,10 +2325,10 @@ export function TimelineView({
   const detailVisible = selectedBar !== null && !detailInDialog;
   const mosaicValue: MosaicNode<TimelinePane> = detailVisible
     ? {
+        type: "split",
         direction: "column",
-        first: "rows",
-        second: "detail",
-        splitPercentage: detailSplit,
+        children: ["rows", "detail"],
+        splitPercentages: [detailSplit, 100 - detailSplit],
       }
     : "rows";
 
@@ -2223,19 +2342,21 @@ export function TimelineView({
             if (
               node &&
               typeof node !== "string" &&
-              typeof node.splitPercentage === "number"
+              node.type === "split" &&
+              node.splitPercentages
             )
-              setDetailSplit(node.splitPercentage);
+              setDetailSplit(node.splitPercentages[0]);
           }}
           onRelease={(node) => {
             if (
               node &&
               typeof node !== "string" &&
-              typeof node.splitPercentage === "number"
+              node.type === "split" &&
+              node.splitPercentages
             )
               localStorage.setItem(
                 "timeline:detailSplit",
-                String(node.splitPercentage),
+                String(node.splitPercentages[0]),
               );
           }}
           renderTile={(paneId) =>
@@ -2255,7 +2376,7 @@ export function TimelineView({
             else setDetailExpanded(false);
           }}
         >
-          <DialogContent className="max-w-7xl p-0 flex flex-col overflow-hidden h-[80vh]">
+          <DialogContent className="max-w-7xl p-0 flex flex-col overflow-hidden h-[80vh] scroll-container detail-scroll">
             <DialogTitle className="sr-only">Event detail</DialogTitle>
             <RowDetailPanel
               key={selectedBar.id}

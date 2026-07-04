@@ -32,6 +32,14 @@ const key = cli.args[0] as string | undefined;
 // Resolved below (after the gateway is up): the client routes by <id>/<key>, so
 // a key alone isn't enough — we look up the sandbox's id first.
 let inspectPath = "";
+let resolvedSandbox: { id: string; key: string } | undefined;
+
+if (recording && !key) {
+  console.error(
+    `  ${red("✖")} --record requires a sandbox key: hiver inspect <key> --record\n`,
+  );
+  process.exit(1);
+}
 let gatewayUrl = resolveGatewayUrl(opts.gatewayUrl);
 
 if (!existsSync(SERVER_ENTRY)) {
@@ -64,16 +72,19 @@ if (key) {
       (s) => s.key === key,
     );
     if (sandbox) {
+      resolvedSandbox = sandbox;
       inspectPath = `/#/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(key)}`;
     } else {
       console.error(
-        `  ${red("✖")} no sandbox with key ${dim(key)} — opening the home view\n`,
+        `  ${red("✖")} no sandbox with key ${dim(key)}${recording ? "" : " — opening the home view"}\n`,
       );
+      if (recording) process.exit(1);
     }
   } catch (err) {
     console.error(
-      `  ${red("✖")} could not resolve ${dim(key)} (${err instanceof Error ? err.message : String(err)}) — opening the home view\n`,
+      `  ${red("✖")} could not resolve ${dim(key)} (${err instanceof Error ? err.message : String(err)})${recording ? "" : " — opening the home view"}\n`,
     );
+    if (recording) process.exit(1);
   }
 }
 
@@ -91,7 +102,7 @@ console.log();
 // Now that the gateway URL is settled, create the recorder if requested.
 const recorder =
   recording && tracePath
-    ? new EventRecorder(gatewayUrl, serverUrl, tracePath)
+    ? new EventRecorder(gatewayUrl, serverUrl, tracePath, resolvedSandbox)
     : undefined;
 
 function openBrowser(url: string) {

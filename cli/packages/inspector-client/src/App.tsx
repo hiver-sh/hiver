@@ -232,7 +232,7 @@ function AppContent() {
     } finally {
       setLoading(false);
     }
-  }, [serverUrl, gatewayUrl, transport]);
+  }, [serverUrl, transport]);
 
   useEffect(() => {
     fetchSandboxes();
@@ -418,7 +418,7 @@ function AppContent() {
         <Routes>
           <Route
             path="/"
-            element={<GettingStarted gatewayUrl={gatewayUrl} />}
+            element={<GettingStarted />}
           />
           <Route
             path="/sandboxes/:id/:key"

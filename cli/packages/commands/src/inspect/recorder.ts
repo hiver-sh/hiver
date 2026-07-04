@@ -19,6 +19,7 @@ export class EventRecorder {
     private gatewayUrl: string | undefined,
     private serverUrl: string,
     private outputPath: string,
+    private sandbox?: { id: string; key: string },
   ) {}
 
   private elapsed(): number {
@@ -172,6 +173,12 @@ export class EventRecorder {
 
   start(): void {
     writeFileSync(this.outputPath, "");
+
+    if (this.sandbox) {
+      this.trackSandbox(this.sandbox.id, this.sandbox.key);
+      return;
+    }
+
     const listUrl = this.buildUrl("/api/sandboxes");
 
     const fetchOnce = async (): Promise<void> => {

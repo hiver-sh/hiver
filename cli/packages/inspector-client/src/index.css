@@ -17,6 +17,16 @@
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* The terminal container scrolls horizontally when the program draws wider than
+   the panel, but the native horizontal scrollbar is visual clutter. Hide the
+   scrollbar chrome while leaving the scroll itself intact. */
+.terminal-container {
+  scrollbar-width: none;
+}
+.terminal-container::-webkit-scrollbar {
+  display: none;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -149,6 +159,21 @@
    useScrollbarVisibility) reveals it via the rules above. */
 .timeline-scroll::-webkit-scrollbar-thumb {
   background: transparent;
+}
+
+/* The event-detail panel does the same for every scroller nested inside it: keep
+   the thumb hidden until the mouse is over the panel. The panel wrapper carries
+   both `.scroll-container` (so useScrollbarVisibility toggles `.scrollbar-visible`
+   on it) and `.detail-scroll`; its inner scrollers are plain, so the whole panel
+   is a single hover region. */
+.detail-scroll ::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.detail-scroll.scrollbar-visible ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-visible);
+}
+.detail-scroll.scrollbar-visible ::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-visible-hover);
 }
 
 .detail-header-scroll {

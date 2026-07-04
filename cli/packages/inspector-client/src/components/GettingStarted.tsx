@@ -21,7 +21,7 @@ sandbox, _ := hive.GetOrCreateSandbox("agent-1", hive.SandboxConfig{})
 result, _ := sandbox.Exec([]string{"claude", "-p", "Write a poem and save it as pdf"})
 fmt.Println(result.Stdout)`;
 
-export function GettingStarted({ gatewayUrl }: { gatewayUrl: string }) {
+export function GettingStarted() {
   return (
     <div className="h-full overflow-y-auto scroll-container">
       <div className="w-full max-w-4xl mx-auto flex flex-col gap-6 px-8 py-16">

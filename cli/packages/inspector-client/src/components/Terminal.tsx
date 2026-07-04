@@ -32,6 +32,10 @@ const FONT_FAMILY = "ui-monospace, Monaco, monospace";
 const DARK_THEME = {
   background: "#000000",
   foreground: "#dddddd",
+  // Make the 1px line xterm draws between the content and the overview-ruler
+  // scrollbar fully transparent (alpha 0). xterm's color parser ignores the
+  // "transparent" keyword but honors an alpha hex like "#0000".
+  overviewRulerBorder: "#0000",
   cursor: "#dddddd",
   cursorAccent: "#000000",
   selectionBackground: "#4c83c4",
@@ -57,6 +61,10 @@ const DARK_THEME = {
 const LIGHT_THEME = {
   background: "#ffffff",
   foreground: "#000000",
+  // Make the 1px line xterm draws between the content and the overview-ruler
+  // scrollbar fully transparent (alpha 0). xterm's color parser ignores the
+  // "transparent" keyword but honors an alpha hex like "#0000".
+  overviewRulerBorder: "#0000",
   cursor: "#000000",
   cursorAccent: "#ffffff",
   selectionBackground: "#4c83c4",
@@ -112,6 +120,9 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
         fontFamily: FONT_FAMILY,
         drawBoldTextInBrightColors: true,
         scrollback: 10000,
+        // xterm 6's VS Code-style scrollbar defaults to 14px wide; narrow it to
+        // 10px so it matches the app's other scrollbars (e.g. the timeline).
+        overviewRuler: { width: 10 },
         theme: isDark() ? DARK_THEME : LIGHT_THEME,
       });
 
@@ -423,6 +434,9 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
   }, [sandboxId, sandboxKey, serverUrl, transport, subscribe]);
 
   return (
-    <div ref={containerRef} className="h-full w-full overflow-hidden p-1" />
+    <div
+      ref={containerRef}
+      className="terminal-container h-full w-full overflow-hidden p-1"
+    />
   );
 }
