@@ -142,12 +142,6 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refresh
       );
       url.searchParams.set("path", path);
 
-      console.log(
-        "[FileExplorer] fetchChildren",
-        path,
-        "transport:",
-        transport.constructor?.name ?? transport,
-      );
       const data = await transport
         .fetch(url)
         .then((r) => r.json() as Promise<{ entries: DirEntry[] }>);
@@ -283,7 +277,7 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refresh
           })
           .catch(() => {});
       }
-    }, 400);
+    }, 1000);
   }, [events, fetchChildren]);
 
   async function toggle(path: string) {

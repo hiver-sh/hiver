@@ -97,13 +97,19 @@ export function SandboxDetail({
   // so the hover-reveal also works when SandboxDetail is consumed via the
   // exported library (e.g. the embed), where App never mounts.
   useScrollbarVisibility();
-  const { transport, player, gatewayUrl } = useTransport();
+  const { transport, player, gatewayUrl, notifyFirstEvent } = useTransport();
   const { prefs, setPref, showHeader } = useUserPreferences();
   const [events, setEvents] = useState<SandboxEvent[]>([]);
   const [connected, setConnected] = useState(false);
   useEffect(() => {
     onConnectedChange?.(connected);
   }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Post-commit: the first event is now actually in the rendered timeline —
+  // during trace playback this drives TransportProvider's onFirstEvent, which
+  // hosts use to dismiss their loading indicator.
+  useEffect(() => {
+    if (events.length > 0) notifyFirstEvent();
+  }, [events, notifyFirstEvent]);
   const [shutdownLoading, setShutdownLoading] = useState(false);
   // Shutting down = either our request is in flight, or the lifecycle stream
   // has reported the sandbox is no longer running.

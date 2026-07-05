@@ -98,6 +98,11 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
   clipboardCopyRef.current = prefs.terminalClipboardCopy;
   const scrollPassthroughRef = useRef(terminalScrollPassthrough);
   scrollPassthroughRef.current = terminalScrollPassthrough;
+  // transport is only used in sendInput (POST), which is a no-op during replay
+  // (connected=false guards it). Reading it via a ref means traceVersion bumps
+  // while a trace streams in don't re-run this effect and rebuild xterm.
+  const transportRef = useRef(transport);
+  transportRef.current = transport;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -376,7 +381,7 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
           `/api/sandboxes/${encodeURIComponent(sandboxId)}/${encodeURIComponent(sandboxKey)}/terminal/input`,
           serverUrl,
         );
-        transport
+        transportRef.current
           .fetch(url.toString(), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -385,6 +390,30 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
           .catch(() => {});
       }
 
+      // Batch writes within one rAF so that sequences like clear-screen +
+      // repaint — which arrive as separate SSE events with an async gap
+      // between them — are merged into a single xterm render. Without this
+      // the intermediate cleared (blank) state is painted and visible as a
+      // flash.
+      const pendingBytes: Uint8Array[] = [];
+      const pendingTexts: string[] = [];
+      let flushRaf = 0;
+      const flushWrites = () => {
+        flushRaf = 0;
+        if (!pendingBytes.length) return;
+        // Scan all buffered chunks for width first; may call term.resize().
+        for (const text of pendingTexts) scanForSize(text);
+        // Concatenate and write in one call so xterm renders the final state.
+        let len = 0;
+        for (const b of pendingBytes) len += b.length;
+        const combined = new Uint8Array(len);
+        let off = 0;
+        for (const b of pendingBytes) { combined.set(b, off); off += b.length; }
+        pendingBytes.length = 0;
+        pendingTexts.length = 0;
+        term.write(combined);
+      };
+
       // Output + lifecycle come from the parent's shared per-sandbox stream
       // (one connection carries both the event feed and this terminal), instead
       // of the terminal holding its own SSE. Input/resize still go out as POSTs.
@@ -392,10 +421,11 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
         onData: (base64) => {
           const bin = atob(base64);
           const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-          term.write(bytes);
           // Decode as UTF-8 (streaming, so multibyte chars split across frames
           // are handled) so the column scanner counts characters, not bytes.
-          scanForSize(utf8.decode(bytes, { stream: true }));
+          pendingBytes.push(bytes);
+          pendingTexts.push(utf8.decode(bytes, { stream: true }));
+          if (!flushRaf) flushRaf = requestAnimationFrame(flushWrites);
         },
         onConnected: () => {
           connected = true;
@@ -417,6 +447,7 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
       });
 
       cleanup = () => {
+        if (flushRaf) cancelAnimationFrame(flushRaf);
         cancelAnimationFrame(rafId);
         ro.disconnect();
         themeObs.disconnect();
@@ -431,7 +462,7 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
       disposed = true;
       cleanup();
     };
-  }, [sandboxId, sandboxKey, serverUrl, transport, subscribe]);
+  }, [sandboxId, sandboxKey, serverUrl, subscribe]);
 
   return (
     <div

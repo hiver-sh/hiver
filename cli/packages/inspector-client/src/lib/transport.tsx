@@ -4,9 +4,12 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import TraceLoaderWorker from "./traceLoader.worker?worker&inline";
+import type { TraceWorkerMessage } from "./traceLoader.worker";
 import { useUserPreferences } from "./userPreferences";
 import { DEFAULT_GATEWAY_URL } from "@/types";
 
@@ -409,15 +412,28 @@ export class TraceTransport implements Transport {
         }
 
         (async () => {
-          for (const entry of entries) {
+          // Coalesce all entries sharing a timestamp into a single enqueue so
+          // the consumer sees them in one read turn. The recorder can split an
+          // atomic terminal update — e.g. a clear-screen (`ESC[2J`) immediately
+          // followed by its full repaint — into separate frames at the same
+          // millisecond. Delivered as two reads, a paint can land between them
+          // and the cleared, blank buffer flashes on screen before the repaint.
+          // Emitting them together makes the update atomic: the terminal never
+          // renders the intermediate empty state.
+          let i = 0;
+          while (i < entries.length) {
             if (signal?.aborted) return;
-            await player.waitUntil(entry.time);
+            const t = entries[i].time;
+            await player.waitUntil(t);
             if (signal?.aborted) return;
-            const text = entry.payload.endsWith("\n\n")
-              ? entry.payload
-              : entry.payload + "\n\n";
+            let combined = "";
+            while (i < entries.length && entries[i].time === t) {
+              const p = entries[i].payload;
+              combined += p.endsWith("\n\n") ? p : p + "\n\n";
+              i++;
+            }
             try {
-              controller.enqueue(encoder.encode(text));
+              controller.enqueue(encoder.encode(combined));
             } catch {
               return; // controller already closed/errored
             }
@@ -442,6 +458,10 @@ export interface TransportContextValue {
   clearTrace: () => void;
   gatewayUrl: string;
   setGatewayUrl: (url: string) => void;
+  // Called by consumers (SandboxDetail) after the first event has actually
+  // been committed to the UI. Relays to TransportProvider's onFirstEvent
+  // callback, at most once per trace load.
+  notifyFirstEvent: () => void;
 }
 
 export const TransportContext = createContext<TransportContextValue>({
@@ -453,6 +473,7 @@ export const TransportContext = createContext<TransportContextValue>({
   clearTrace: () => {},
   gatewayUrl: DEFAULT_GATEWAY_URL,
   setGatewayUrl: () => {},
+  notifyFirstEvent: () => {},
 });
 
 export function useTransport(): TransportContextValue {
@@ -464,6 +485,11 @@ export interface TransportProviderProps {
   tracePath?: string;
   traceData?: TraceData;
   speed?: number;
+  // Fires once per trace load, when the first replayed event has actually
+  // been committed to the UI (SandboxDetail reports it via the context's
+  // notifyFirstEvent). Traces with no event records at all fire it at end
+  // of load instead, so a host's loading indicator can't hang forever.
+  onFirstEvent?: () => void;
 }
 
 export function TransportProvider({
@@ -471,9 +497,20 @@ export function TransportProvider({
   tracePath,
   traceData: initialTraceData,
   speed = 1,
+  onFirstEvent,
 }: TransportProviderProps) {
   const { enableNetworkRequests } = useUserPreferences();
   const [player, setPlayer] = useState<TracePlayer | null>(null);
+  // Kept in a ref so an inline callback prop doesn't restart the trace-
+  // loading effects on every render.
+  const onFirstEventRef = useRef(onFirstEvent);
+  onFirstEventRef.current = onFirstEvent;
+  const firstEventFiredRef = useRef(false);
+  const notifyFirstEvent = useCallback(() => {
+    if (firstEventFiredRef.current) return;
+    firstEventFiredRef.current = true;
+    onFirstEventRef.current?.();
+  }, []);
   const [playbackSpeed, setPlaybackSpeedState] = useState(speed);
   const [gatewayUrl, setGatewayUrlState] = useState(() => {
     // The server injects the CLI-resolved gateway as a global on every page
@@ -564,44 +601,52 @@ export function TransportProvider({
   }, []);
 
   useEffect(() => {
-    if (initialTraceData) setPlayer(new TracePlayer(initialTraceData, speed));
+    if (initialTraceData) {
+      firstEventFiredRef.current = false;
+      setPlayer(new TracePlayer(initialTraceData, speed));
+    }
   }, [initialTraceData]);
 
   useEffect(() => {
     if (!tracePath) return;
+    firstEventFiredRef.current = false;
     const player = new TracePlayer({}, speed);
     setPlayer(player);
-    const ac = new AbortController();
 
-    const addLine = (line: string) => {
-      const t = line.trim();
-      if (!t) return;
-      const { endpoint, ...record } = JSON.parse(t) as {
-        endpoint: string;
-      } & TraceRecord;
-      player.addRecord(endpoint, record);
-    };
-
-    (async () => {
-      const res = await globalThis.fetch(tracePath, { signal: ac.signal });
-      if (!res.body) return;
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? ""; // keep the trailing partial line
-        for (const line of lines) addLine(line);
+    // Fetching, decompressing, and JSON-parsing a full trace (hundreds of MB,
+    // tens of thousands of lines) runs in a Worker so it can't block the main
+    // thread's rendering — see traceLoader.worker.ts. This effect just drains
+    // parsed records into the player as they arrive.
+    const worker = new TraceLoaderWorker();
+    worker.onmessage = (e: MessageEvent<TraceWorkerMessage>) => {
+      const msg = e.data;
+      if (msg.type === "records") {
+        for (const { endpoint, ...record } of msg.records) {
+          player.addRecord(endpoint, record);
+        }
+      } else if (msg.type === "done") {
+        // The first-event signal normally fires from SandboxDetail once the
+        // timeline has committed an event. A trace with no event records will
+        // never reach that, so release the signal at end of load instead.
+        if (!msg.sawEvent) notifyFirstEvent();
+      } else if (msg.type === "error") {
+        console.error("Failed to load trace:", msg.message);
       }
-      addLine(buf); // flush the final line (no trailing newline)
-    })().catch((e) => {
-      if (!ac.signal.aborted) console.error("Failed to load trace:", e);
-    });
+    };
+    // Resolved to absolute here, on the main thread, where `window.location`
+    // is the real page origin. A blob-URL worker's own `self.location` is the
+    // blob: URL it was constructed from, which a relative path can't resolve
+    // against — fetch() inside the worker would throw trying to parse it.
+    const absoluteTracePath = new URL(tracePath, window.location.href).href;
+    worker.postMessage({ type: "load", tracePath: absoluteTracePath });
 
-    return () => ac.abort();
+    // Terminating abandons the worker's in-flight fetch/decompress loop
+    // immediately — no separate cancellation protocol needed.
+    return () => worker.terminate();
+    // speed intentionally excluded: only seeds this load's initial playback
+    // speed, doesn't need to restart the load if it changes afterward.
+    // notifyFirstEvent is stable (useCallback, refs only) — safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracePath]);
 
   return (
@@ -615,6 +660,7 @@ export function TransportProvider({
         clearTrace,
         gatewayUrl,
         setGatewayUrl,
+        notifyFirstEvent,
       }}
     >
       {children}
