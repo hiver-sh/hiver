@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { useTransport } from "@/lib/transport";
 import { useUserPreferences } from "@/lib/userPreferences";
 import { Terminal as XTerm } from "@xterm/xterm";
@@ -87,7 +87,7 @@ const LIGHT_THEME = {
   brightWhite: "#444444",
 };
 
-export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props) {
+function TerminalInner({ sandboxId, sandboxKey, serverUrl, subscribe }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { transport } = useTransport();
   const { prefs, terminalScrollPassthrough } = useUserPreferences();
@@ -471,3 +471,7 @@ export function Terminal({ sandboxId, sandboxKey, serverUrl, subscribe }: Props)
     />
   );
 }
+
+// Memoized so unrelated SandboxDetail re-renders don't re-render the xterm host;
+// it re-renders only when its own props change.
+export const Terminal = memo(TerminalInner);

@@ -284,17 +284,3 @@
   border: 2px solid hsl(217 91% 60% / 0.7);
 }
 
-/* Timeline header controls auto-hide: the filter/pause/follow/clear group in
-   the timeline panel's header stays hidden until the pointer is inside that
-   panel — its scrollable rows area or the header itself — keeping the header
-   quiet otherwise. Scoped by the .timeline-toolbar marker so only the timeline
-   panel is affected; opacity (not display) keeps its slot so nothing reflows. */
-.hive-mosaic .mosaic-window .timeline-toolbar {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
-}
-.hive-mosaic .mosaic-window:hover .timeline-toolbar {
-  opacity: 1;
-  pointer-events: auto;
-}

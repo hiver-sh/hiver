@@ -189,12 +189,18 @@ export class TracePlayer {
   private _baseReplayMs = 0;
   private _baseWallMs: number;
   private _listeners = new Set<() => void>();
+  private _loadComplete: boolean;
+  private _recordWaiters = new Set<() => void>();
 
-  constructor(trace: TraceData, speed = 1) {
+  // `streaming: true` marks a player that starts (near-)empty and fills in as
+  // the trace loads (the tracePath flow) — callers must invoke finishLoading()
+  // when the load settles. Non-streaming players are complete on construction.
+  constructor(trace: TraceData, speed = 1, streaming = false) {
     this._trace = trace;
     this._index = buildIndex(trace);
     this._speed = speed;
     this._baseWallMs = Date.now();
+    this._loadComplete = !streaming;
   }
 
   // Notified whenever records are added (e.g. while a trace streams in), so
@@ -202,6 +208,54 @@ export class TracePlayer {
   subscribe(fn: () => void): () => void {
     this._listeners.add(fn);
     return () => this._listeners.delete(fn);
+  }
+
+  // True once the trace is fully loaded — no more records will be added.
+  get loadComplete(): boolean {
+    return this._loadComplete;
+  }
+
+  // Called when the streaming load settles (success OR failure), so consumers
+  // blocked in waitForRecords stop waiting and treat the trace as final.
+  finishLoading(): void {
+    if (this._loadComplete) return;
+    this._loadComplete = true;
+    const waiters = [...this._recordWaiters];
+    this._recordWaiters.clear();
+    for (const w of waiters) w();
+  }
+
+  // Wakes waitForRecords callers at most once per synchronous batch of
+  // addRecord calls (the loader worker delivers records in batches): each
+  // wakeup makes waiters re-check state — e.g. a waiting fetch re-running
+  // findEntries — so waking per record would rescan tens of thousands of times
+  // over a large load for no benefit.
+  private _wakeScheduled = false;
+  private _wakeRecordWaiters(): void {
+    if (this._wakeScheduled || this._recordWaiters.size === 0) return;
+    this._wakeScheduled = true;
+    queueMicrotask(() => {
+      this._wakeScheduled = false;
+      const waiters = [...this._recordWaiters];
+      this._recordWaiters.clear();
+      for (const w of waiters) w();
+    });
+  }
+
+  // Resolves when new records arrive, the load completes, or `signal` aborts —
+  // whichever comes first. Lets the trace transport wait out the window where a
+  // recorded endpoint hasn't been loaded yet instead of failing the request.
+  waitForRecords(signal?: AbortSignal): Promise<void> {
+    if (this._loadComplete || signal?.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        this._recordWaiters.delete(done);
+        signal?.removeEventListener("abort", done);
+        resolve();
+      };
+      this._recordWaiters.add(done);
+      signal?.addEventListener("abort", done, { once: true });
+    });
   }
 
   get speed() {
@@ -241,6 +295,7 @@ export class TracePlayer {
       this._index.set(pathname + (qs ? `?${qs}` : ""), records);
     }
     records.push(record);
+    this._wakeRecordWaiters();
     for (const fn of this._listeners) fn();
   }
 
@@ -327,13 +382,32 @@ class TraceEventSource implements EventSourceLike {
   onerror: (() => void) | null = null;
   private _closed = false;
 
-  constructor(entries: TraceRecord[], player: TracePlayer) {
+  // Resolves its entries from the player lazily (instead of taking a snapshot)
+  // for the same reasons as TraceTransport.fetch: the endpoint may not have
+  // loaded yet when the source is opened, and the live entries array keeps
+  // growing while the trace streams in. Opened-then-empty stays silent, exactly
+  // like the NoopEventSource it replaces in that case.
+  constructor(url: string | URL, player: TracePlayer) {
     (async () => {
       await Promise.resolve(); // yield so caller can set onopen/onmessage
-      if (this._closed) return;
+      let entries = player.findEntries(url);
+      while ((!entries || entries.length === 0) && !player.loadComplete) {
+        await player.waitForRecords();
+        if (this._closed) return;
+        entries = player.findEntries(url);
+      }
+      if (this._closed || !entries || entries.length === 0) return;
       this.onopen?.();
 
-      for (const entry of entries) {
+      let i = 0;
+      while (true) {
+        if (this._closed) return;
+        if (i >= entries.length) {
+          if (player.loadComplete) return;
+          await player.waitForRecords();
+          continue;
+        }
+        const entry = entries[i++];
         await player.waitUntil(entry.time);
         if (this._closed) return;
         const data = parseSseData(entry.payload);
@@ -358,7 +432,18 @@ export class TraceTransport implements Transport {
       return new Response(null, { status: 204 });
     }
 
-    const entries = this._player.findEntries(url);
+    // While the trace is still loading, an endpoint with no records yet may
+    // simply not have arrived from the loader worker — wait for records rather
+    // than failing. (The consumer's fetch of the event stream races the worker's
+    // first batch; answering 404 here killed playback outright now that the
+    // transport identity is stable and nothing retries the request.) Once the
+    // load settles, a missing endpoint is genuinely "not recorded".
+    let entries = this._player.findEntries(url);
+    while ((!entries || entries.length === 0) && !this._player.loadComplete) {
+      await this._player.waitForRecords(init?.signal ?? undefined);
+      if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      entries = this._player.findEntries(url);
+    }
     if (!entries || entries.length === 0) {
       // During trace playback we never hit the network — a request with no
       // recorded entry resolves to an empty "not recorded" response.
@@ -386,12 +471,9 @@ export class TraceTransport implements Transport {
   }
 
   openEventSource(url: string | URL): EventSourceLike {
-    const entries = this._player.findEntries(url);
-    if (!entries || entries.length === 0) {
-      // No recorded stream — stay silent rather than opening a real connection.
-      return new NoopEventSource();
-    }
-    return new TraceEventSource(entries, this._player);
+    // Entry resolution (including the not-loaded-yet wait and the no-recorded-
+    // stream silent case) lives inside TraceEventSource.
+    return new TraceEventSource(url, this._player);
   }
 
   private _buildSseStream(
@@ -420,9 +502,21 @@ export class TraceTransport implements Transport {
           // and the cleared, blank buffer flashes on screen before the repaint.
           // Emitting them together makes the update atomic: the terminal never
           // renders the intermediate empty state.
+          // `entries` is the live array the player appends into as the trace
+          // streams in (see findEntries/addRecord), so a drained stream isn't
+          // necessarily finished: while the load is still in flight, wait for
+          // more records instead of closing. (Closing early silently truncated
+          // playback whenever the feed played faster than the trace loaded —
+          // previously masked by the transport-identity churn re-opening the
+          // stream every 250ms.)
           let i = 0;
-          while (i < entries.length) {
+          while (true) {
             if (signal?.aborted) return;
+            if (i >= entries.length) {
+              if (player.loadComplete) break;
+              await player.waitForRecords(signal);
+              continue;
+            }
             const t = entries[i].time;
             await player.waitUntil(t);
             if (signal?.aborted) return;
@@ -545,23 +639,16 @@ export function TransportProvider({
     }
   }, []);
 
-  // Bumped (throttled) whenever the player gains records while a trace streams
-  // in, so the transport identity changes and consumers re-query for new data.
-  const [traceVersion, setTraceVersion] = useState(0);
-  useEffect(() => {
-    if (!player) return;
-    let scheduled = false;
-    const unsub = player.subscribe(() => {
-      if (scheduled) return;
-      scheduled = true;
-      setTimeout(() => {
-        scheduled = false;
-        setTraceVersion((v) => v + 1);
-      }, 250);
-    });
-    return unsub;
-  }, [player]);
-
+  // Identity changes only on REAL transport swaps — the player being created or
+  // cleared, the gateway changing, network mode toggling. That identity change
+  // is a load-bearing signal: data-loading effects across the app key on
+  // `transport` (e.g. FileExplorer's loadMounts), and the live→trace swap must
+  // re-run them or panels mounted before the player exists stay empty against
+  // the noop transport. Crucially it does NOT change while a trace streams in:
+  // the TraceTransport reads live from the player and waits for records (see
+  // waitForRecords), so nothing needs re-querying as the trace fills — the old
+  // throttled `traceVersion` identity churn re-rendered every useTransport()
+  // consumer ~4x/sec for the whole replay, clearing selections and popovers.
   const baseTransport = useMemo(
     () =>
       player
@@ -569,10 +656,7 @@ export function TransportProvider({
         : enableNetworkRequests
           ? liveTransport
           : noopTransport,
-    // traceVersion intentionally included: a new transport identity makes
-    // consumers re-fetch as the streaming trace fills in.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [player, enableNetworkRequests, traceVersion],
+    [player, enableNetworkRequests],
   );
 
   const transport = useMemo(
@@ -610,7 +694,9 @@ export function TransportProvider({
   useEffect(() => {
     if (!tracePath) return;
     firstEventFiredRef.current = false;
-    const player = new TracePlayer({}, speed);
+    // `streaming: true`: the player starts empty and fills in below, so trace
+    // reads wait for records instead of failing while the load is in flight.
+    const player = new TracePlayer({}, speed, true);
     setPlayer(player);
 
     // Fetching, decompressing, and JSON-parsing a full trace (hundreds of MB,
@@ -625,11 +711,16 @@ export function TransportProvider({
           player.addRecord(endpoint, record);
         }
       } else if (msg.type === "done") {
+        player.finishLoading();
         // The first-event signal normally fires from SandboxDetail once the
         // timeline has committed an event. A trace with no event records will
         // never reach that, so release the signal at end of load instead.
         if (!msg.sawEvent) notifyFirstEvent();
       } else if (msg.type === "error") {
+        // Settle the load even on failure so consumers waiting for records
+        // (see TraceTransport.fetch / waitForRecords) resolve instead of
+        // hanging on a trace that will never finish.
+        player.finishLoading();
         console.error("Failed to load trace:", msg.message);
       }
     };
@@ -641,28 +732,50 @@ export function TransportProvider({
     worker.postMessage({ type: "load", tracePath: absoluteTracePath });
 
     // Terminating abandons the worker's in-flight fetch/decompress loop
-    // immediately — no separate cancellation protocol needed.
-    return () => worker.terminate();
+    // immediately — no separate cancellation protocol needed. Settle the player
+    // too so anything still waiting on records unblocks.
+    return () => {
+      worker.terminate();
+      player.finishLoading();
+    };
     // speed intentionally excluded: only seeds this load's initial playback
     // speed, doesn't need to restart the load if it changes afterward.
     // notifyFirstEvent is stable (useCallback, refs only) — safe to omit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracePath]);
 
+  // Memoized so the value identity is stable across traceVersion bumps (and any
+  // other provider re-render) — otherwise every consumer re-renders on each bump
+  // even though `transport` is now stable. All fields are stable references
+  // (setters are useCallback, transport is memoized) except player/speed/gateway,
+  // which change rarely.
+  const contextValue = useMemo<TransportContextValue>(
+    () => ({
+      transport,
+      player,
+      playbackSpeed,
+      setPlaybackSpeed,
+      loadTraceFromData,
+      clearTrace,
+      gatewayUrl,
+      setGatewayUrl,
+      notifyFirstEvent,
+    }),
+    [
+      transport,
+      player,
+      playbackSpeed,
+      setPlaybackSpeed,
+      loadTraceFromData,
+      clearTrace,
+      gatewayUrl,
+      setGatewayUrl,
+      notifyFirstEvent,
+    ],
+  );
+
   return (
-    <TransportContext.Provider
-      value={{
-        transport,
-        player,
-        playbackSpeed,
-        setPlaybackSpeed,
-        loadTraceFromData,
-        clearTrace,
-        gatewayUrl,
-        setGatewayUrl,
-        notifyFirstEvent,
-      }}
-    >
+    <TransportContext.Provider value={contextValue}>
       {children}
     </TransportContext.Provider>
   );

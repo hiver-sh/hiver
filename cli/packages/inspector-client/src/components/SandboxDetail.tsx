@@ -21,11 +21,15 @@ import {
 } from "lucide-react";
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
+  type Dispatch,
+  type SetStateAction,
 } from "react";
 import { Mosaic, MosaicWindow } from "react-mosaic-component";
 import "react-mosaic-component/react-mosaic-component.css";
@@ -42,7 +46,7 @@ import {
 } from "@/components/BrowserView";
 import { PortUsageDialog } from "@/components/PortUsageDialog";
 import { SnapshotDialog } from "@/components/SnapshotDialog";
-import { FileExplorer } from "@/components/FileExplorer";
+import { FileExplorer, type TreeNode } from "@/components/FileExplorer";
 import {
   TimelineView,
   EMPTY_FILTER,
@@ -68,6 +72,12 @@ import { cn } from "@/lib/utils";
 import { langForPath } from "@/lib/fileUtils";
 import type { SandboxEvent, SandboxRef, SandboxTarget } from "@/types";
 import { useTransport } from "@/lib/transport";
+import {
+  EventStore,
+  EventStoreProvider,
+  useEvents,
+  useEventCount,
+} from "@/lib/eventStore";
 import { useUserPreferences, ALL_PANELS } from "@/lib/userPreferences";
 import type { PanelId } from "@/lib/userPreferences";
 import { usePanelLayout } from "@/lib/usePanelLayout";
@@ -80,6 +90,186 @@ const PANEL_TITLE: Record<PanelId, string> = {
   browser: "Browser",
   files: "Files",
 };
+
+// The timeline filter button + popover, extracted and memoized so it is NOT
+// re-rendered on every streamed event. It lives in the timeline panel's mosaic
+// toolbar, which MosaicWindow re-runs on each render; while events stream in,
+// SandboxDetail re-renders constantly (the "N events" counter, follow-scroll),
+// and reconciling the radix Popover subtree on every one of those was dropping
+// its open state — the popover snapped shut the instant an event arrived. Its
+// only inputs are `filter` and the stable `setFilter`, so memo lets it sit
+// still through the streaming churn and stay open.
+const TimelineFilterButton = memo(function TimelineFilterButton({
+  filter,
+  setFilter,
+}: {
+  filter: FilterState;
+  setFilter: Dispatch<SetStateAction<FilterState>>;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          className={cn(
+            "flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] transition-colors",
+            isFilterActive(filter)
+              ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+              : "border-border text-muted-foreground hover:bg-muted/40",
+          )}
+        >
+          <Filter className="h-3 w-3" />
+          {isFilterActive(filter)
+            ? [
+                filter.kind !== "all" &&
+                  KIND_OPTIONS.find((o) => o.value === filter.kind)?.label,
+                filter.access !== "all" &&
+                  ACCESS_OPTIONS.find((o) => o.value === filter.access)?.label,
+                filter.query || null,
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            : "Filter"}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-max p-2 flex flex-col gap-2">
+        <input
+          autoFocus
+          type="text"
+          placeholder="Search domain or path…"
+          value={filter.query}
+          onChange={(e) => setFilter((f) => ({ ...f, query: e.target.value }))}
+          className="w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50 focus:border-blue-500/50"
+        />
+        <div className="flex gap-1">
+          {KIND_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setFilter((f) => ({ ...f, kind: opt.value }))}
+              className={cn(
+                "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
+                filter.kind === opt.value
+                  ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+                  : "border-border text-muted-foreground hover:bg-muted/40",
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="h-px bg-border" />
+        <div className="flex gap-1">
+          {ACCESS_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setFilter((f) => ({ ...f, access: opt.value }))}
+              className={cn(
+                "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
+                filter.access === opt.value
+                  ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+                  : "border-border text-muted-foreground hover:bg-muted/40",
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {isFilterActive(filter) && (
+          <button
+            onClick={() => setFilter(EMPTY_FILTER)}
+            className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+          >
+            <X className="h-3 w-3" /> Clear filter
+          </button>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+});
+
+// The fs.request "write" slice the file tree consumes.
+function isFsWriteEvent(
+  e: SandboxEvent,
+): e is Extract<SandboxEvent, { type: "fs.request" }> {
+  return (
+    e.type === "fs.request" &&
+    (e as Extract<SandboxEvent, { type: "fs.request" }>).operation === "write"
+  );
+}
+
+// Thin subscribing wrappers: they read the event feed from the store (so THEY
+// re-render on each streamed event) and forward it to the presentational panels
+// via the existing `events` prop. This keeps the event dependency out of
+// SandboxDetail — the terminal, browser, and filter popover, which don't render
+// these wrappers, never re-render on the stream.
+function TimelineViewLive(
+  props: Omit<ComponentProps<typeof TimelineView>, "events">,
+) {
+  const events = useEvents();
+  return <TimelineView events={events} {...props} />;
+}
+
+function FileExplorerLive(
+  props: Omit<ComponentProps<typeof FileExplorer>, "events">,
+) {
+  const events = useEvents();
+  const fsWriteEvents = useMemo(() => events.filter(isFsWriteEvent), [events]);
+  return <FileExplorer events={fsWriteEvents} {...props} />;
+}
+
+// The "N events" counter in the timeline toolbar. Isolated so its per-event
+// updates don't re-render the rest of the toolbar (notably the filter popover).
+function TimelineEventCount({ filter }: { filter: FilterState }) {
+  const events = useEvents();
+  const rows = useMemo(() => buildRows(events), [events]);
+  const totalBars = useMemo(
+    () => rows.reduce((sum, r) => sum + r.bars.length, 0),
+    [rows],
+  );
+  const filteredTotalBars = useMemo(
+    () => applyFilter(rows, filter).reduce((sum, r) => sum + r.bars.length, 0),
+    [rows, filter],
+  );
+  return (
+    <span className="text-[10px] text-muted-foreground/70">
+      {isFilterActive(filter) ? (
+        <>
+          {filteredTotalBars}
+          <span className="text-muted-foreground/40"> / {totalBars}</span>
+        </>
+      ) : (
+        totalBars
+      )}{" "}
+      event{totalBars !== 1 ? "s" : ""}
+    </span>
+  );
+}
+
+// The clear button, shown only once there are events. Its own subscribing node
+// so the count gate doesn't re-render the surrounding toolbar.
+function TimelineClearButton({ onClear }: { onClear: () => void }) {
+  const count = useEventCount();
+  if (count === 0) return null;
+  return (
+    <button
+      onClick={onClear}
+      title="Clear events"
+      className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
+    >
+      <Trash2 className="h-3 w-3" />
+    </button>
+  );
+}
+
+// Fires the transport's first-event signal once the first event has actually
+// been committed to the UI (this component subscribes to the feed, so its effect
+// runs post-commit). Hosts use it to dismiss their loading indicator.
+function FirstEventSignal({ notify }: { notify: () => void }) {
+  const events = useEvents();
+  useEffect(() => {
+    if (events.length > 0) notify();
+  }, [events, notify]);
+  return null;
+}
 
 export interface SandboxDetailProps {
   sandbox: SandboxRef;
@@ -99,17 +289,16 @@ export function SandboxDetail({
   useScrollbarVisibility();
   const { transport, player, gatewayUrl, notifyFirstEvent } = useTransport();
   const { prefs, setPref, showHeader } = useUserPreferences();
-  const [events, setEvents] = useState<SandboxEvent[]>([]);
+  // The event feed lives in an external store, not React state, so appending an
+  // event re-renders only the components that subscribe to it (timeline, file
+  // tree, event counter) — not SandboxDetail and its whole panel tree. See
+  // EventStore. Stable for this component's lifetime; the reset effect below
+  // clears it when the sandbox/trace changes.
+  const [eventStore] = useState(() => new EventStore());
   const [connected, setConnected] = useState(false);
   useEffect(() => {
     onConnectedChange?.(connected);
   }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Post-commit: the first event is now actually in the rendered timeline —
-  // during trace playback this drives TransportProvider's onFirstEvent, which
-  // hosts use to dismiss their loading indicator.
-  useEffect(() => {
-    if (events.length > 0) notifyFirstEvent();
-  }, [events, notifyFirstEvent]);
   const [shutdownLoading, setShutdownLoading] = useState(false);
   // Shutting down = either our request is in flight, or the lifecycle stream
   // has reported the sandbox is no longer running.
@@ -128,6 +317,8 @@ export function SandboxDetail({
   } | null>(null);
   const follow = prefs.followEvents;
   const setFollow = (v: boolean) => setPref("followEvents", v);
+  // Stable so it doesn't defeat TimelineView's memo (setPref is itself stable).
+  const disableFollow = useCallback(() => setPref("followEvents", false), [setPref]);
   const [streamingPaused, setStreamingPaused] = useState(false);
 
   const [filter, setFilter] = useState<FilterState>(() => {
@@ -235,6 +426,10 @@ export function SandboxDetail({
     lang: string;
   } | null>(null);
   const filesRefreshRef = useRef<(() => void) | null>(null);
+  // Survives FileExplorer remounts (which react-mosaic triggers when the panel
+  // layout restructures — e.g. the browser panel appearing) so the file tree is
+  // restored instantly instead of collapsing and re-fetching. See FileExplorer.
+  const filesTreeCacheRef = useRef<Map<string, TreeNode[]>>(new Map());
 
   // Load the sandbox's exposed ports (image EXPOSE directives) for the header.
   useEffect(() => {
@@ -369,28 +564,9 @@ export function SandboxDetail({
     [sandbox.id, sandbox.key, serverUrl, transport],
   );
 
-  const fsWriteEvents = useMemo(
-    () =>
-      events.filter(
-        (e): e is Extract<SandboxEvent, { type: "fs.request" }> =>
-          e.type === "fs.request" &&
-          (e as Extract<SandboxEvent, { type: "fs.request" }>).operation ===
-            "write",
-      ),
-    [events],
-  );
-
-  const rows = useMemo(() => buildRows(events), [events]);
-  const filteredRows = useMemo(() => applyFilter(rows, filter), [rows, filter]);
-
-  const totalBars = useMemo(
-    () => rows.reduce((sum, r) => sum + r.bars.length, 0),
-    [rows],
-  );
-  const filteredTotalBars = useMemo(
-    () => filteredRows.reduce((sum, r) => sum + r.bars.length, 0),
-    [filteredRows],
-  );
+  // Event-derived values (fs.write slice, row/bar counts) now live in the small
+  // subscribing components that consume them (FileExplorerLive,
+  // TimelineEventCount) so they don't re-render SandboxDetail on every event.
 
   // A mounted Terminal registers here to receive output from the shared stream.
   // If the upstream terminal is already attached when this Terminal mounts (the
@@ -499,7 +675,7 @@ export function SandboxDetail({
                   const eventKey = `${event.sandbox_key ?? ""}:${event.id}`;
                   if (seenEventKeysRef.current.has(eventKey)) continue;
                   seenEventKeysRef.current.add(eventKey);
-                  setEvents((prev) => [...prev, event]);
+                  eventStore.append(event);
                 } catch {
                   // ignore malformed frame
                 }
@@ -594,19 +770,33 @@ export function SandboxDetail({
       });
       void run();
     },
-    [sandbox.id, sandbox.key, serverUrl, transport, player],
+    [eventStore, sandbox.id, sandbox.key, serverUrl, transport, player],
   );
 
+  // Reset the accumulated feed only when the sandbox or the trace player itself
+  // changes (a genuinely new stream) — NOT on every transport-identity change.
+  // During trace replay the transport identity is bumped ~every 250ms (see
+  // traceVersion in transport.tsx) purely so lazy data consumers re-query as the
+  // recorded feed streams in. Resetting the event list on that churn wiped the
+  // timeline and momentarily dropped the selected event, which is what made the
+  // timeline flicker and the expanded event-detail dialog open and close during
+  // replay.
   useEffect(() => {
-    setEvents([]);
+    eventStore.reset();
     seenEventKeysRef.current = new Set();
-    // The server replays persisted history at the head of the stream (or, in
-    // trace mode, the recorded feed plays from the start), so we just connect.
+  }, [eventStore, sandbox.id, sandbox.key, player]);
+
+  // (Re)open the stream. This still re-runs when the transport identity changes
+  // (startStream closes over it), so a replay stream that drained and closed
+  // resumes over the now-longer recorded feed. Re-reading the replayed history
+  // from the start is idempotent: seenEventKeysRef dedupes already-seen events,
+  // so a restart appends only genuinely-new events instead of resetting the feed.
+  useEffect(() => {
     startStream();
     return () => {
       abortRef.current?.abort();
     };
-  }, [startStream, player]);
+  }, [startStream]);
 
   async function handleShutdown() {
     if (!confirm(`Shut down sandbox "${sandbox.key}"?`)) return;
@@ -636,17 +826,7 @@ export function SandboxDetail({
       className="timeline-toolbar ml-auto flex cursor-default items-center gap-2 normal-case"
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <span className="text-[10px] text-muted-foreground/70">
-        {isFilterActive(filter) ? (
-          <>
-            {filteredTotalBars}
-            <span className="text-muted-foreground/40"> / {totalBars}</span>
-          </>
-        ) : (
-          totalBars
-        )}{" "}
-        event{totalBars !== 1 ? "s" : ""}
-      </span>
+      <TimelineEventCount filter={filter} />
       {zoomWindow && (
         <button
           className="text-[10px] text-muted-foreground bg-muted/40 hover:bg-muted/70 border border-border rounded px-2 py-0.5 transition-colors"
@@ -656,85 +836,7 @@ export function SandboxDetail({
           × reset zoom
         </button>
       )}
-      <Popover>
-        <PopoverTrigger asChild>
-          <button
-            className={cn(
-              "flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] transition-colors",
-              isFilterActive(filter)
-                ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                : "border-border text-muted-foreground hover:bg-muted/40",
-            )}
-          >
-            <Filter className="h-3 w-3" />
-            {isFilterActive(filter)
-              ? [
-                  filter.kind !== "all" &&
-                    KIND_OPTIONS.find((o) => o.value === filter.kind)?.label,
-                  filter.access !== "all" &&
-                    ACCESS_OPTIONS.find((o) => o.value === filter.access)
-                      ?.label,
-                  filter.query || null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")
-              : "Filter"}
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-max p-2 flex flex-col gap-2">
-          <input
-            autoFocus
-            type="text"
-            placeholder="Search domain or path…"
-            value={filter.query}
-            onChange={(e) =>
-              setFilter((f) => ({ ...f, query: e.target.value }))
-            }
-            className="w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50 focus:border-blue-500/50"
-          />
-          <div className="flex gap-1">
-            {KIND_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setFilter((f) => ({ ...f, kind: opt.value }))}
-                className={cn(
-                  "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
-                  filter.kind === opt.value
-                    ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                    : "border-border text-muted-foreground hover:bg-muted/40",
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          <div className="h-px bg-border" />
-          <div className="flex gap-1">
-            {ACCESS_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setFilter((f) => ({ ...f, access: opt.value }))}
-                className={cn(
-                  "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
-                  filter.access === opt.value
-                    ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                    : "border-border text-muted-foreground hover:bg-muted/40",
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {isFilterActive(filter) && (
-            <button
-              onClick={() => setFilter(EMPTY_FILTER)}
-              className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-            >
-              <X className="h-3 w-3" /> Clear filter
-            </button>
-          )}
-        </PopoverContent>
-      </Popover>
+      <TimelineFilterButton filter={filter} setFilter={setFilter} />
       <button
         onClick={() => {
           if (streamingPaused) {
@@ -767,19 +869,13 @@ export function SandboxDetail({
       >
         <LocateFixed className="h-3 w-3" />
       </button>
-      {events.length > 0 && (
-        <button
-          onClick={() => {
-            setEvents([]);
-            seenEventKeysRef.current = new Set();
-            clearStoredEvents();
-          }}
-          title="Clear events"
-          className="flex items-center gap-1.5 rounded-md border px-2 py-0.5 transition-colors border-border text-muted-foreground hover:bg-muted/40"
-        >
-          <Trash2 className="h-3 w-3" />
-        </button>
-      )}
+      <TimelineClearButton
+        onClear={() => {
+          eventStore.reset();
+          seenEventKeysRef.current = new Set();
+          clearStoredEvents();
+        }}
+      />
     </div>
   );
 
@@ -787,7 +883,7 @@ export function SandboxDetail({
   // `onMouseDown`/`normal-case` treatment as the timeline controls.
   const browserHeaderControls = (
     <div
-      className="ml-auto flex cursor-default items-center gap-2 normal-case opacity-0 transition-opacity group-hover/panel:opacity-100"
+      className="ml-auto flex cursor-default items-center gap-2 normal-case"
       onMouseDown={(e) => e.stopPropagation()}
     >
       {browserTabs.map((tab) => (
@@ -819,12 +915,9 @@ export function SandboxDetail({
               });
             }}
             title="Close tab"
-            className={cn(
-              // -my-0.5 offsets the p-0.5 hit area so the close button doesn't
-              // grow the pill past the tab's text line height.
-              "-my-0.5 shrink-0 rounded p-0.5 transition hover:bg-foreground/10 hover:text-foreground",
-              tab.active ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-            )}
+            // -my-0.5 offsets the p-0.5 hit area so the close button doesn't
+            // grow the pill past the tab's text line height.
+            className="-my-0.5 shrink-0 rounded p-0.5 transition hover:bg-foreground/10 hover:text-foreground"
           >
             <X className="h-3 w-3" />
           </button>
@@ -846,15 +939,14 @@ export function SandboxDetail({
   const timelineBody = (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-hidden">
-        <TimelineView
-          events={events}
+        <TimelineViewLive
           filter={filter}
           applyConfig={proposePolicy}
           onOpenFile={openFile}
           zoomWindow={zoomWindow}
           setZoomWindow={setZoomWindow}
           follow={follow}
-          onDisableFollow={() => setFollow(false)}
+          onDisableFollow={disableFollow}
           paused={streamingPaused}
           detailInDialog={false}
         />
@@ -881,18 +973,20 @@ export function SandboxDetail({
       />
     ),
     files: (
-      <FileExplorer
+      <FileExplorerLive
         sandboxId={sandbox.id}
         sandboxKey={sandbox.key}
         serverUrl={serverUrl}
-        events={fsWriteEvents}
         refreshRef={filesRefreshRef}
+        treeCacheRef={filesTreeCacheRef}
       />
     ),
   };
 
   return (
-    <div
+    <EventStoreProvider value={eventStore}>
+      <FirstEventSignal notify={notifyFirstEvent} />
+      <div
       className={cn(
         "flex h-full flex-col transition-[filter,opacity] duration-300",
         isShuttingDown && "pointer-events-none grayscale opacity-50",
@@ -1040,7 +1134,6 @@ export function SandboxDetail({
             <MosaicWindow<PanelId>
               path={path}
               title={PANEL_TITLE[id]}
-              className="group/panel"
               toolbarControls={<span />}
               renderToolbar={() => (
                 // Slim, quiet header — a bottom border, a muted label, and an
@@ -1055,7 +1148,7 @@ export function SandboxDetail({
                   {id === "files" && (
                     <button
                       onClick={(e) => { e.stopPropagation(); filesRefreshRef.current?.(); }}
-                      className="ml-auto flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-muted/40 group-hover/panel:opacity-100"
+                      className="ml-auto flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-muted-foreground transition-colors hover:bg-muted/40"
                       title="Refresh files"
                     >
                       <RefreshCw className="h-3 w-3" />
@@ -1130,6 +1223,7 @@ export function SandboxDetail({
         open={showSnapshot}
         onOpenChange={setShowSnapshot}
       />
-    </div>
+      </div>
+    </EventStoreProvider>
   );
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
@@ -805,11 +805,42 @@ function barKey(b: TimelineBar): string {
   return `${b.sandboxKey}:${b.rawEvents[0]?.type ?? ""}:${b.id}`;
 }
 
+// buildRows creates fresh bar objects on every run, but the SandboxEvents they
+// wrap are immutable and referentially stable (the feed is append-only), so two
+// bars with the same key, scalar fields, and rawEvents are the same content.
+function barEquivalent(a: TimelineBar, b: TimelineBar): boolean {
+  return (
+    barKey(a) === barKey(b) &&
+    a.startTime === b.startTime &&
+    a.durationMs === b.durationMs &&
+    a.status === b.status &&
+    a.access === b.access &&
+    a.error === b.error &&
+    a.pending === b.pending &&
+    a.rawEvents.length === b.rawEvents.length &&
+    a.rawEvents[0] === b.rawEvents[0] &&
+    a.rawEvents[a.rawEvents.length - 1] === b.rawEvents[b.rawEvents.length - 1]
+  );
+}
+
+// Keeps a bar's object identity stable across renders while its content is
+// unchanged, so the memoized RowDetailPanel doesn't re-render (and clear the
+// user's text selection) every time a streamed event batch rebuilds the rows.
+function useStableBar(candidate: TimelineBar | null): TimelineBar | null {
+  const ref = useRef<TimelineBar | null>(null);
+  const stable =
+    candidate && ref.current && barEquivalent(ref.current, candidate)
+      ? ref.current
+      : candidate;
+  ref.current = stable;
+  return stable;
+}
+
 // The two tiles of the timeline's internal mosaic split: the event rows and the
 // selected-event detail panel.
 type TimelinePane = "rows" | "detail";
 
-export function TimelineView({
+function TimelineViewInner({
   events,
   filter,
   applyConfig,
@@ -1203,10 +1234,14 @@ export function TimelineView({
     });
   }, [follow, events.length]);
 
-  const selectedBar =
+  // Identity-stabilized (useStableBar) so the memoized RowDetailPanel skips
+  // re-rendering — and the user's text selection inside it survives — while
+  // streamed events rebuild the rows around an unchanged selection.
+  const selectedBar = useStableBar(
     selectedId !== null
       ? (allRows.flatMap((r) => r.bars).find((b) => barKey(b) === selectedId) ?? null)
-      : null;
+      : null,
+  );
 
   const llmBars = useMemo(
     () =>
@@ -1222,10 +1257,25 @@ export function TimelineView({
     [allRows],
   );
 
-  const prevAnthropicBar = (() => {
-    const idx = llmBars.findIndex((b) => barKey(b) === selectedId);
-    return idx > 0 ? llmBars[idx - 1] : null;
-  })();
+  const prevAnthropicBar = useStableBar(
+    (() => {
+      const idx = llmBars.findIndex((b) => barKey(b) === selectedId);
+      return idx > 0 ? llmBars[idx - 1] : null;
+    })(),
+  );
+
+  // Stable nav/expand handler identities for the memoized RowDetailPanel; the
+  // prev/next targets are computed further down (after the early returns) and
+  // read through refs at click time.
+  const prevBarIdRef = useRef<string | null>(null);
+  const nextBarIdRef = useRef<string | null>(null);
+  const selectPrevBar = useCallback(() => {
+    if (prevBarIdRef.current !== null) setSelectedId(prevBarIdRef.current);
+  }, []);
+  const selectNextBar = useCallback(() => {
+    if (nextBarIdRef.current !== null) setSelectedId(nextBarIdRef.current);
+  }, []);
+  const expandDetail = useCallback(() => setDetailExpanded(true), []);
 
   if (allRows.length === 0) {
     return (
@@ -1270,6 +1320,9 @@ export function TimelineView({
     selectedBarIdx >= 0 && selectedBarIdx < filteredBars.length - 1
       ? barKey(filteredBars[selectedBarIdx + 1])
       : null;
+  // Feed the stable nav handlers (see selectPrevBar/selectNextBar above).
+  prevBarIdRef.current = prevBarId;
+  nextBarIdRef.current = nextBarId;
 
   const minTime = Math.min(...filteredBars.map((b) => b.startTime));
   const maxEventEnd = Math.max(
@@ -2310,9 +2363,9 @@ export function TimelineView({
         key={selectedBar.id}
         bar={selectedBar}
         prevBar={prevAnthropicBar}
-        onPrev={prevBarId !== null ? () => setSelectedId(prevBarId) : undefined}
-        onNext={nextBarId !== null ? () => setSelectedId(nextBarId) : undefined}
-        onExpand={() => setDetailExpanded(true)}
+        onPrev={prevBarId !== null ? selectPrevBar : undefined}
+        onNext={nextBarId !== null ? selectNextBar : undefined}
+        onExpand={expandDetail}
         applyConfig={applyConfig}
         onOpenFile={onOpenFile}
       />
@@ -2382,12 +2435,8 @@ export function TimelineView({
               key={selectedBar.id}
               bar={selectedBar}
               prevBar={prevAnthropicBar}
-              onPrev={
-                prevBarId !== null ? () => setSelectedId(prevBarId) : undefined
-              }
-              onNext={
-                nextBarId !== null ? () => setSelectedId(nextBarId) : undefined
-              }
+              onPrev={prevBarId !== null ? selectPrevBar : undefined}
+              onNext={nextBarId !== null ? selectNextBar : undefined}
               applyConfig={applyConfig}
               onOpenFile={onOpenFile}
               expandedView
@@ -2398,3 +2447,8 @@ export function TimelineView({
     </div>
   );
 }
+
+// Memoized so unrelated SandboxDetail state changes (ports/isolation loading,
+// browser tabs, file preview dialog, etc.) don't re-render this heavy component;
+// it re-renders only when its own props change (events, filter, selection).
+export const TimelineView = memo(TimelineViewInner);

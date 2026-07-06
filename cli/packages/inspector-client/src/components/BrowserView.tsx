@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, RotateCw } from "lucide-react";
 import { useTransport } from "@/lib/transport";
 
@@ -80,7 +80,7 @@ const KEY_CODES: Record<string, number> = {
   PageDown: 34,
 };
 
-export function BrowserView({
+function BrowserViewInner({
   sandboxId,
   sandboxKey,
   serverUrl,
@@ -468,3 +468,7 @@ export function BrowserView({
     </div>
   );
 }
+
+// Memoized so unrelated SandboxDetail re-renders don't re-render the live
+// browser canvas; it re-renders only when its own props change.
+export const BrowserView = memo(BrowserViewInner);

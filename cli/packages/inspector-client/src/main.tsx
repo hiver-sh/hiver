@@ -1,3 +1,8 @@
+// Worker wiring lives in the app entry ONLY. The published lib bundle
+// (consumed e.g. by hive-site) must NOT set self.MonacoEnvironment — that host
+// installs its own (CDN-loaded) workers, and having the bundled `?worker`
+// version overwrite it breaks worker startup. `?worker` imports add only a tiny
+// wrapper here, not Monaco core, so this stays out of the lazy-loading budget.
 import "./monacoWorkers.ts";
 import React from "react";
 import ReactDOM from "react-dom/client";

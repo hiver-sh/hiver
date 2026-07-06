@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -329,7 +329,7 @@ function DetailNav({
   );
 }
 
-export function RowDetailPanel({
+function RowDetailPanelInner({
   bar,
   prevBar,
   onPrev,
@@ -877,3 +877,11 @@ export function RowDetailPanel({
     </div>
   );
 }
+
+// Memoized so the timeline's once-per-frame re-render during event streaming
+// doesn't touch this panel's DOM while the selected event is unchanged —
+// re-rendering it replaced text nodes and wiped the user's text selection.
+// Effective because TimelineView keeps `bar`/`prevBar` referentially stable
+// while their content is unchanged and passes stable handler identities (see
+// useStableBar / the ref-backed nav callbacks there).
+export const RowDetailPanel = memo(RowDetailPanelInner);

@@ -7,7 +7,7 @@ import {
   FolderOpen,
   Loader2,
 } from "lucide-react";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { CodeViewer, CODE_DIALOG_CLASS } from "@/components/CodeViewer";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -23,7 +23,7 @@ interface DirEntry {
   size: number;
 }
 
-interface TreeNode extends DirEntry {
+export interface TreeNode extends DirEntry {
   children: TreeNode[] | null; // null = dir not yet fetched
   expanded: boolean;
   loading: boolean;
@@ -40,7 +40,15 @@ interface Props {
   sandboxKey: string;
   serverUrl: string;
   events: Extract<SandboxEvent, { type: "fs.request" }>[];
-  refreshRef?: React.MutableRefObject<(() => void) | null>;
+  refreshRef?: React.RefObject<(() => void) | null>;
+  // Loaded-tree cache owned by the parent (SandboxDetail), keyed by sandbox.
+  // react-mosaic remounts a tile when the layout tree restructures — e.g. when
+  // the browser panel appears mid-session and the files tile gets re-nested — so
+  // this component can be torn down and rebuilt while the sandbox is unchanged.
+  // Seeding `roots` from (and writing back to) this parent-owned cache lets a
+  // remount restore the already-loaded tree instantly instead of collapsing to a
+  // spinner and re-fetching from scratch.
+  treeCacheRef?: React.RefObject<Map<string, TreeNode[]>>;
 }
 
 function updateNode(
@@ -101,12 +109,17 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
   });
 }
 
-export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refreshRef }: Props) {
+function FileExplorerInner({ sandboxId, sandboxKey, serverUrl, events, refreshRef, treeCacheRef }: Props) {
   const { transport } = useTransport();
   const { prefs, toggleExpandedPath } = useUserPreferences();
-  const [roots, setRoots] = useState<TreeNode[]>([]);
+  // Seed from the parent-owned cache so a remount (see Props.treeCacheRef)
+  // restores the loaded tree immediately rather than flashing empty.
+  const cachedRoots = treeCacheRef?.current.get(sandboxKey);
+  const [roots, setRoots] = useState<TreeNode[]>(() => cachedRoots ?? []);
   const [mountBackends, setMountBackends] = useState<Map<string, string>>(new Map());
-  const [configLoading, setConfigLoading] = useState(true);
+  // Only show the full-panel spinner on a genuine cold load; a warm remount with
+  // a seeded tree refreshes in the background without flashing the spinner.
+  const [configLoading, setConfigLoading] = useState(() => (cachedRoots?.length ?? 0) === 0);
   const [configError, setConfigError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [imagePreview, setImagePreview] = useState<{ path: string; url: string } | null>(null);
@@ -151,7 +164,10 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refresh
   );
 
   const loadMounts = useCallback(async () => {
-    setConfigLoading(true);
+    // Only spin when there's nothing to show yet. A refresh over an already-
+    // loaded tree (manual refresh, or a warm remount seeded from the cache)
+    // updates in place via buildTree below, so keep the tree visible meanwhile.
+    setConfigLoading(rootsRef.current.length === 0);
     setConfigError(null);
     try {
       const treeExpandedPaths: string[] = [];
@@ -236,7 +252,9 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refresh
 
   useEffect(() => {
     rootsRef.current = roots;
-  }, [roots]);
+    // Write through so a later remount can seed from the last-known tree.
+    if (treeCacheRef && roots.length > 0) treeCacheRef.current.set(sandboxKey, roots);
+  }, [roots, sandboxKey, treeCacheRef]);
 
   useEffect(() => {
     // Reset index when events are cleared
@@ -491,3 +509,8 @@ export function FileExplorer({ sandboxId, sandboxKey, serverUrl, events, refresh
     </>
   );
 }
+
+// Memoized so unrelated SandboxDetail re-renders don't re-render (and, more
+// importantly, don't churn) the file tree; it re-renders only when its own props
+// change (fsWriteEvents, sandbox identity).
+export const FileExplorer = memo(FileExplorerInner);
