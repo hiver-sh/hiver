@@ -37,6 +37,8 @@ it("getOrCreateSandbox sends POST /v1/sandboxes/{id} with JSON body and x-hiver-
   expect(headers["content-type"]).toBe("application/json");
   // No image in config → the default logical image name routes the create.
   expect(headers["x-hiver-image"]).toBe(DEFAULT_IMAGE_NAME);
+  // The gateway consistent-hashes the create onto a pack host by this header.
+  expect(headers["x-hiver-key"]).toBe("test-sandbox");
   expect(JSON.parse(init.body as string)).toMatchObject(BASE_CONFIG);
 });
 

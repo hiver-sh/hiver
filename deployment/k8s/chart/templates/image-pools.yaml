@@ -111,6 +111,12 @@ metadata:
   labels:
     app: {{ .name }}
 spec:
+  # Headless (clusterIP: None) so the Service DNS name resolves to one A record
+  # per pod rather than a single ClusterIP VIP. The gateway's STRICT_DNS cluster
+  # relies on this to see the individual pack hosts as endpoints and
+  # consistent-hash creates across them by x-hiver-key (see hiver.envoyConfig).
+  # A VIP would push load-balancing down to kube-proxy and break the hash.
+  clusterIP: None
   selector:
     app: {{ .name }}
   ports:

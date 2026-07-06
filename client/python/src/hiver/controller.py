@@ -70,7 +70,14 @@ async def get_or_create_sandbox(
             res = await http.post(
                 f"{base}/v1/sandboxes/{key}",
                 json=validated.model_dump(exclude_none=True),
-                headers={"x-hiver-image": validated.image or DEFAULT_IMAGE_NAME},
+                headers={
+                    "x-hiver-image": validated.image or DEFAULT_IMAGE_NAME,
+                    # The gateway consistent-hashes the create onto a pack host
+                    # by this header (the image clusters' MAGLEV hash_policy), so
+                    # every get-or-create for a key lands on the same pod. The
+                    # key is also in the path, but Envoy hashes on the header.
+                    "x-hiver-key": key,
+                },
                 timeout=req_timeout,
             )
         except httpx.ConnectError as err:

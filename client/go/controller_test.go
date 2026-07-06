@@ -50,6 +50,10 @@ func TestClient_GetOrCreateSandbox_201(t *testing.T) {
 		if got := r.Header.Get("x-hiver-image"); got != DefaultImageName {
 			t.Errorf("x-hiver-image: got %q, want %q", got, DefaultImageName)
 		}
+		// The gateway consistent-hashes the create onto a pack host by this header.
+		if got := r.Header.Get("x-hiver-key"); got != "my-key" {
+			t.Errorf("x-hiver-key: got %q, want %q", got, "my-key")
+		}
 		writeJSON(w, http.StatusCreated, SandboxRef{ID: "id-1", Key: "my-key"})
 	}))
 	defer srv.Close()

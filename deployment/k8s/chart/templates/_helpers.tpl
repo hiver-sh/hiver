@@ -92,12 +92,14 @@ static_resources:
                       domains: ["*"]
                       routes:
                         # Create leg (design §3, §8). Routed on the
-                        # x-hiver-image header to the per-image Service (one
-                        # STRICT_DNS cluster below per image). The path is
-                        # rewritten /v1/sandboxes/ → /v1/ so the pod's sandboxd
-                        # receives it on its native POST /v1/{key} pack endpoint.
-                        # These must precede the /sandbox/ execute leg and the
-                        # /controller/ catch-all. Generated from .Values.images.
+                        # x-hiver-image header to the per-image cluster (one
+                        # MAGLEV cluster below per image, resolving the image's
+                        # headless Service to its individual pod IPs). The path
+                        # is rewritten /v1/sandboxes/ → /v1/ so the pod's
+                        # sandboxd receives it on its native POST /v1/{key} pack
+                        # endpoint. These must precede the /sandbox/ execute leg
+                        # and the /controller/ catch-all. Generated from
+                        # .Values.images.
                         {{- range .Values.images }}
                         - match:
                             prefix: "/v1/sandboxes/"
@@ -112,6 +114,18 @@ static_resources:
                                 regex: "^/v1/sandboxes/"
                               substitution: "/v1/"
                             timeout: 0s
+                            # Consistent-hash the create onto one pack host by
+                            # the caller's key (x-hiver-key header), so every
+                            # get-or-create for a key lands on the same pod. That
+                            # pod owns the sandbox and returns its routing id; the
+                            # /sandbox/<id> execute leg then dials it directly, so
+                            # the hash only has to be stable, not authoritative.
+                            # Paired with lb_policy: MAGLEV on the cluster below.
+                            # A request missing the header falls back to random
+                            # endpoint selection.
+                            hash_policy:
+                              - header:
+                                  header_name: "x-hiver-key"
                             # The pack pods carry no readiness probe, so the
                             # Service endpoint is live before sandboxd is listening
                             # (connection-refused window). Retry instead of failing
@@ -165,14 +179,20 @@ static_resources:
                       address: controller
                       port_value: {{ .Values.controller.port }}
 
-    # One STRICT_DNS cluster per image (design §5, §8). The create routes above
-    # match the x-hiver-image header to one of these; kube-proxy round-robins
-    # across the Service's pods. Cross-namespace FQDN so the gateway in the
-    # control-plane namespace can resolve Services in the sandbox namespace.
+    # One MAGLEV cluster per image (design §5, §8). The create routes above
+    # match the x-hiver-image header to one of these and consistent-hash on
+    # x-hiver-key. STRICT_DNS against the image's *headless* Service returns one
+    # A record per pod, so Envoy sees the individual pack hosts as endpoints and
+    # hashes across them itself (a ClusterIP Service would collapse to a single
+    # VIP and hand load-balancing to kube-proxy, defeating the hash). MAGLEV
+    # gives even distribution with minimal reshuffling when the pod set changes.
+    # Cross-namespace FQDN so the gateway in the control-plane namespace can
+    # resolve Services in the sandbox namespace.
     {{- range .Values.images }}
     - name: {{ .name }}
       connect_timeout: 30s
       type: STRICT_DNS
+      lb_policy: MAGLEV
       load_assignment:
         cluster_name: {{ .name }}
         endpoints:

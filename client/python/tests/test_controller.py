@@ -30,6 +30,8 @@ async def test_get_or_create_sandbox_sends_post_with_json_body() -> None:
     assert req.method == "POST"
     assert req.headers["content-type"] == "application/json"
     assert req.headers["x-hiver-image"] == DEFAULT_IMAGE_NAME
+    # The gateway consistent-hashes the create onto a pack host by this header.
+    assert req.headers["x-hiver-key"] == "test-sandbox"
     import json
     body = json.loads(req.content)
     assert body["fs"][0]["mount"] == "/workspace"

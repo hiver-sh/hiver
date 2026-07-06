@@ -118,6 +118,11 @@ func (c *Client) GetOrCreateSandbox(ctx context.Context, key string, config Sand
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-hiver-image", image)
+	// The gateway consistent-hashes the create onto a pack host by this header
+	// (see the image clusters' MAGLEV hash_policy), so every get-or-create for a
+	// key lands on the same pod. The key is also in the path, but Envoy hashes on
+	// the header.
+	req.Header.Set("x-hiver-key", key)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

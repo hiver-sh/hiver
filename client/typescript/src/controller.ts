@@ -129,6 +129,11 @@ async function provisionSandbox(
         headers: {
           "content-type": "application/json",
           "x-hiver-image": imageName,
+          // The gateway consistent-hashes the create onto a pack host by this
+          // header (the image clusters' MAGLEV hash_policy), so every
+          // get-or-create for a key lands on the same pod. The key is also in
+          // the path, but Envoy hashes on the header.
+          "x-hiver-key": key,
         },
         body: JSON.stringify(config),
         signal: timeout > 0 ? AbortSignal.timeout(timeout) : undefined,

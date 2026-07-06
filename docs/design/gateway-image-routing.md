@@ -21,7 +21,7 @@ call sites.
 ## 2. URL Structure
 
 ```
-POST /v1/sandboxes/{key}                →  create a new sandbox (round-robin)
+POST /v1/sandboxes/{key}                →  get-or-create a sandbox (consistent-hashed on key)
 *    /sandbox/<id>/v1/<key>/...         →  talk to an existing sandbox (direct)
 ```
 
@@ -33,23 +33,32 @@ The controller's `PUT /v1/sandboxes/{key}` becomes `POST /v1/sandboxes/{key}`.
 
 ## 3. Create Flow
 
-The client populates an `x-hiver-image` header with the image name on every
-create request. The gateway routes on this header — no URL parsing, no JSON body
-inspection needed. It strips `/sandboxes` from the path so the pod's sandbox
-server receives the request on its native `POST /v1/{key}` endpoint.
+The client populates two headers on every create request: `x-hiver-image` with
+the image name, and `x-hiver-key` with the caller's key. The gateway routes on
+the image header (no URL parsing, no JSON body inspection) and then
+**consistent-hashes** onto a single pod within that image's pool by the key
+header. It strips `/sandboxes` from the path so the pod's sandbox server receives
+the request on its native `POST /v1/{key}` endpoint.
+
+Consistent hashing makes get-or-create idempotent at the routing layer: every
+create for a given key lands on the same pack host, so a repeated call reaches
+the pod that already owns the sandbox and gets the existing record back — no
+duplicate on a sibling pod. For Envoy to hash across the *individual* pods rather
+than a single Service VIP, the image Service is **headless** (`clusterIP: None`);
+its DNS name then returns one A record per pod, which STRICT_DNS turns into
+per-pod endpoints. The cluster's `lb_policy: MAGLEV` does the hashing.
 
 ```
 client
   │  POST /v1/sandboxes/{key}
   │  x-hiver-image: playwright
+  │  x-hiver-key:   {key}
   ▼
 Envoy gateway
   │  matches header x-hiver-image: playwright
+  │  consistent-hashes x-hiver-key → one playwright pod (MAGLEV)
   │  rewrites path: /v1/sandboxes/{key} → /v1/{key}
-  │  routes to playwright cluster (STRICT_DNS → playwright Service)
-  ▼
-playwright Service  (ClusterIP, round-robin)
-  │
+  │  routes to playwright cluster (STRICT_DNS → headless playwright Service → pod IPs)
   ▼
 pod  POST /v1/{key}  (sandbox_server.yaml)
   │  picks a slot, creates microVM
@@ -57,6 +66,11 @@ pod  POST /v1/{key}  (sandbox_server.yaml)
   ▼
 client stores id
 ```
+
+The hash only needs to be *stable*, not authoritative: once the pod returns its
+`id` (which encodes the pod IP), the execute leg dials that pod directly, so even
+if the ring later reshuffles the key to a different pod, existing sandboxes keep
+routing correctly by `id`.
 
 The Envoy route match for this:
 
@@ -74,6 +88,11 @@ The Envoy route match for this:
         regex: "^/v1/sandboxes/"
       substitution: "/v1/"
     timeout: 0s
+    # Consistent-hash onto a pod by the caller's key. A request missing the
+    # header falls back to random endpoint selection.
+    hash_policy:
+      - header:
+          header_name: "x-hiver-key"
 ```
 
 The pod constructs the `id` UUID by encoding its own IP (from the downward API
@@ -129,6 +148,7 @@ metadata:
   name: playwright
   namespace: hiver-sandbox
 spec:
+  clusterIP: None          # headless: DNS returns one A record per pod
   selector:
     app: playwright
   ports:
@@ -136,9 +156,12 @@ spec:
       targetPort: 8099
 ```
 
-No headless service is needed for the create path — kube-proxy round-robin is
-fine here since we don't need pod-level affinity until *after* the pod returns
-its UUID.
+The Service is **headless** (`clusterIP: None`) so the gateway can
+consistent-hash creates across the individual pods by key. A ClusterIP Service
+would collapse to a single VIP and hand load-balancing to kube-proxy (round
+robin), which would break the key→pod affinity get-or-create relies on. The
+affinity only matters at create time — once the pod returns its UUID, the execute
+leg routes by `id` directly and no longer depends on the hash.
 
 In the Kubernetes environment, pods are never created manually at runtime — the
 Deployment controller manages the pod pool. Sandbox slots are claimed from
@@ -205,7 +228,8 @@ clients such as the inspector.
 
 ## 8. Envoy Config Changes
 
-Add a STRICT_DNS cluster per image and a route that matches before `/sandbox/`:
+Add a per-image MAGLEV cluster (STRICT_DNS against the headless Service) and a
+route that matches before `/sandbox/` and consistent-hashes on `x-hiver-key`:
 
 ```yaml
 routes:
@@ -222,6 +246,9 @@ routes:
           regex: "^/v1/sandboxes/"
         substitution: "/v1/"
       timeout: 0s
+      hash_policy:
+        - header:
+            header_name: "x-hiver-key"
 
   - match:
       prefix: "/v1/sandboxes/"
@@ -236,6 +263,9 @@ routes:
           regex: "^/v1/sandboxes/"
         substitution: "/v1/"
       timeout: 0s
+      hash_policy:
+        - header:
+            header_name: "x-hiver-key"
 
   - match:
       prefix: "/sandbox/"
@@ -250,6 +280,7 @@ routes:
 clusters:
   - name: playwright
     type: STRICT_DNS
+    lb_policy: MAGLEV          # consistent-hash across the headless Service's pod IPs
     connect_timeout: 30s
     load_assignment:
       cluster_name: playwright
@@ -263,6 +294,7 @@ clusters:
 
   - name: chromium
     type: STRICT_DNS
+    lb_policy: MAGLEV
     connect_timeout: 30s
     load_assignment:
       cluster_name: chromium
