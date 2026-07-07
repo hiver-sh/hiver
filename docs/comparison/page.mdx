@@ -1,0 +1,69 @@
+export const metadata = { title: "Hiver vs. alternatives" }
+
+# Hiver vs. alternatives
+
+A growing number of platforms give AI agents a sandbox to run code in. Most solve the same first problem, isolated ephemeral compute, and stop there. Hiver is built for what comes after: **seeing and governing everything the agent does.** Every LLM call, command, file access, and network request in a run, across every sandbox it touches, plus a live view of the agent's browser, lands on one correlated, replayable timeline. The same policies that make that visibility possible, egress rules, file ACLs, and credential injection, are enforced per run, all self-hostable next to your own data.
+
+This page compares Hiver to the sandbox runtimes teams most often evaluate. The short version:
+
+- **See and audit everything, across the whole run.** The [Inspector](/docs/inspector) is Chrome DevTools for agents: one time-aligned timeline spanning every sandbox in a run, LLM calls attributed by model, and each command, file access, and network request lined up against a live view of the agent's browser. It's all captured to a [replayable event stream](/docs/events), so the same data drives live debugging, after-the-fact audit, and improving how tasks run.
+- **Governed by policy, per run.** Declare [network egress](/docs/network-policy), [file ACLs](/docs/file-policy), and [credential injection](/docs/network/overrides) as config on each sandbox; the runtime enforces them beneath the agent and you can change them on a running sandbox with [`applyConfig`](/docs/network-policy#updating-egress-at-runtime). Egress filtering is common now, but Hiver matches by HTTP method and path (not just domain or IP) and pairs it with per-path file ACLs, so one policy layer covers both the network and the filesystem.
+- **One runtime, both isolation models.** Every sandbox runs as a [container](/docs/runtime/container) or a [microVM](/docs/runtime/microvm) with its own guest kernel, selected automatically from the image, not a config flag.
+- **Yours to run anywhere.** Hiver is open source and [Kubernetes-native](/docs/deploy/kubernetes). Develop and test on your laptop, even offline, then deploy the identical runtime to your VPC or [GKE](/docs/deploy/gke), right alongside your most sensitive data, no BYOC tier or sales call required.
+
+<Callout>The competitor details below are drawn from each vendor's public documentation as of July 2026. This space moves fast, verify specifics against the source before making a decision.</Callout>
+
+## At a glance
+
+| Platform | Isolation | Self-host | Local dev | Cold start | Browser | Observability & policy |
+|----------|-----------|-----------|-----------|------------|---------|------------------------|
+| **Hiver** | Container **and** microVM (Firecracker/KVM), per image | Yes, open source, K8s-native, run anywhere | Yes | Under 100ms | Built in: resident headless Chromium + CDP, snapshot-warm, agent skill | Egress allow-list (method/path) + Lua request overrides, per-path file ACLs, event stream + Inspector |
+| **E2B** | microVM (Firecracker) | Cloud PaaS; BYOC/self-host on enterprise only | Self-host only (heavy) | ~150ms | Full GUI desktop (E2B Desktop, computer use) | Egress allow/deny (IP/CIDR) + per-host header injection; no file ACLs; logs |
+| **Daytona** | Container (Linux namespaces, shared host kernel) | Yes, open source + managed | Yes | Under 90ms create | GUI desktop + CDP/VNC (Computer Use) | Network firewall (limits); no file ACLs; logs |
+| **Vercel Sandbox** | microVM (Firecracker) | Cloud only (open-source client SDK) | No | Milliseconds | Headless (agent-browser) | Egress firewall (SNI/CIDR, runtime-updatable); no file ACLs; logs |
+| **Modal** | gVisor (user-space kernel) | Cloud only | No | Sub-second; memory snapshots | DIY (install Playwright) | Egress allow-list (domain/CIDR, runtime-updatable); no file ACLs; logs |
+| **Cloudflare** | Isolates (Dynamic Workers) + containers (Sandboxes) | Cloud only (edge) | No | Milliseconds (isolates) | Separate product (Browser Run) | Egress proxy credential injection, PTY, snapshots |
+| **Fly.io Sprites** | microVM (Firecracker), persistent | Cloud only | No | 1–12s cold; under 1s checkpoint/restore | DIY (install Playwright) | Stateful 100GB NVMe per sprite |
+
+## How Hiver is different
+
+**Observability you can actually see, across the whole run.** Most sandbox runtimes give you logs. Hiver gives you the [Inspector](/docs/inspector), a live, replayable picture of everything happening inside a run:
+
+- **One timeline across every sandbox.** An orchestrator VM and the browser VM it drives, or a whole [agent swarm](/docs/agent-swarm), share a single time-aligned view, so you follow how work moves between them instead of stitching separate logs together.
+- **Reasoning, action, and effect lined up.** LLM calls are attributed by model (say Sonnet-5 vs. Haiku) with their durations, right next to the exact commands they triggered, the per-host network [egress](/docs/network-policy) those commands produced, and the [files](/docs/file-policy) they touched, all at the same timestamp.
+- **A live view of what the agent sees.** When the agent drives a [browser](/docs/examples/browser-use), the actual page renders in the Inspector alongside the timeline, so a navigation event and the page it produced sit side by side.
+- **Captured, not summarized.** Everything lands on a [replayable event stream](/docs/events) with a cursor, so the same trace powers live debugging, after-the-fact auditing, and improving how tasks run.
+
+This is the hardest part of the stack to assemble yourself, and the piece most platforms leave entirely to you: they hand you per-sandbox logs and a terminal, and you reconstruct the story.
+
+**One runtime, both isolation models.** Most platforms commit to a single boundary: Firecracker microVMs (E2B, Vercel, Fly), user-space kernels (Modal's gVisor), or shared-kernel containers (Daytona). Hiver runs [containers](/docs/runtime/container) *and* [microVMs](/docs/runtime/microvm) under one identical API, and picks the mechanism from the image, not a config flag. Start on containers for speed, ship the same code on a microVM image when you need a hardware-virtualized boundary for fully untrusted work.
+
+**Self-hostable, right next to your data.** Hiver is open source and installs anywhere, from a laptop to your own [Kubernetes](/docs/deploy/kubernetes) cluster, with no special tooling. That matters when the whole point is to give an agent direct access to private data and internal services: the runtime, the data, and the policy stay inside your trust boundary. Vercel Sandbox, Modal, Cloudflare, and Fly Sprites run only on the vendor's infrastructure; E2B's self-host path is gated behind an enterprise BYOC agreement. Daytona is the other genuinely self-hostable open-source option, but it uses shared-kernel container isolation rather than per-sandbox microVMs.
+
+**Local dev with the same code.** Because it's one open-source runtime end to end, you develop and test on your laptop, even offline, then ship the identical code to production, with the Docker runtime giving container isolation locally and a microVM image switching on where KVM is available. Daytona is the other open-source runtime you can run on a laptop; Cloudflare offers Docker-based local dev with some parity caveats (container code isn't hot-reloaded, and concurrency differs from production); E2B's self-host is a full infrastructure project (Nomad/Consul/Firecracker via Terraform), not a laptop install; and Vercel, Modal, and Fly Sprites have no local runtime at all.
+
+**Policy that applies per run, enforced underneath.** Hiver treats security as configuration you set at instantiation and change at runtime with `applyConfig`:
+
+- [Network egress](/docs/network-policy) is an ordered allow-list evaluated at request time, matched by host, port, method, and path. Provide any rule and the model flips to default-deny.
+- [Credential injection and request rewriting](/docs/network/overrides) attach API keys through the proxy so a third-party API works without the key ever entering the agent's context. For logic a static rule can't express, a sandboxed **Lua** `override_script` rewrites headers or the body per request (derive a signature, route conditionally, pin a field).
+- [File ACLs](/docs/file-policy) (`rw` / `ro` / `deny`, longest-prefix-first) are enforced beneath the sandbox before any process can touch a file, returning `EACCES` on violation.
+
+Built-in egress filtering is now common: E2B, Vercel, Modal, Daytona, and Cloudflare all offer some form, typically by domain, SNI, or IP/CIDR, and several update at runtime. Hiver's is finer-grained, matching HTTP method and path rather than just the host. Static credential injection is shared ground with E2B and Cloudflare, but Hiver's overrides go further, rewriting the body or query, re-routing the upstream, and running a sandboxed **Lua** script for per-request logic. And the piece few others expose at all is per-path **file ACLs** enforced beneath the sandbox, so on Hiver one policy model governs the filesystem as well as the network.
+
+**A governed file system, not just a disk.** Mount [GCS, Google Drive, or any store you back with a small HTTP host](/docs/remote-file-systems) (`external`) behind one FUSE surface, alongside local scratch. Files load on access, so an agent launches right away and reads them lazily, no baking data into the image and no copying it in before start, and the backing store keeps its own versions. Mounting cloud storage this way is now common (Modal, Daytona, E2B, and Cloudflare all offer some form). What's less common is the combination: a **Google Drive** backend (the others are object stores only), a fully pluggable `external` backend for any system you can put behind HTTP, and per-mount **ACLs** so the agent's access to that store is governed and every read and write lands on the [event stream](/docs/events). Combined with [snapshots](/docs/snapshots), a keyed file tarball and full microVM VM-state for sub-100ms resume, an agent's accumulated context comes back exactly where it left off.
+
+**A browser that's already warm.** The [`browser` image](/docs/examples/browser-use) ships a resident headless Chromium with its CDP endpoint open. Drive it with Playwright over the [proxy](/docs/ingress) or from inside the sandbox, and because the running browser is captured in the microVM [snapshot](/docs/snapshots), a resumed sandbox comes back with Chromium already listening, no cold browser launch on the critical path. Modal and Fly Sprites leave you to install and manage Playwright yourself; Cloudflare runs the browser as a separate product. E2B and Daytona take a different tack, a full GUI desktop for pixel-based computer use, which is heavier but also drives non-browser apps. Whichever you use, Hiver's browser traffic flows through the same [egress policy](/docs/network-policy) and lands on the same [event stream](/docs/events), and an agent can drive it hands-off through the built-in [`browser` skill](/docs/examples/browser-use).
+
+## When another platform may fit better
+
+- **Modal** has unmatched GPU support. If your agent generates and runs ML code end to end, Modal keeps it on one platform. Its gVisor boundary is lighter than a microVM, and it's Python-first.
+- **Vercel Sandbox** and **Cloudflare** are compelling if you're already building on their platform and want zero-ops, edge-adjacent execution with billing that charges only for active CPU.
+- **Fly.io Sprites** lead on long-lived stateful sessions, a 100GB NVMe filesystem per sprite that persists indefinitely between sessions.
+- **E2B** is a mature, code-interpreter-focused product with a large ecosystem if a managed cloud service meets your needs.
+- **Daytona** is a strong open-source choice when shared-kernel container isolation is acceptable and you want fast dev-environment-style sandboxes.
+
+Hiver's bet is that production agents eventually need all of it at once, strong isolation, governed data access, per-run policy, deep observability, and the freedom to run it inside your own trust boundary, and that you shouldn't have to assemble that from separate parts.
+
+---
+
+Next: [Release Notes](/docs/release-notes)

@@ -63,7 +63,7 @@ The [GKE Terraform](/docs/deploy/gke) provisions a node pool with all of this co
 
 ## Resume from a snapshot
 
-The microVM's headline capability is **VM-state snapshots**: the full guest (memory and CPU) is captured, so a sandbox can **resume** in well under 100ms instead of cold-booting. A `getOrCreateSandbox` under a `snapshot.vm.key` resumes the keyed snapshot if one exists, otherwise it cold-boots and captures one. This is how a warm workload, like a resident browser, comes back instantly per request. See [Snapshots](/docs/snapshots).
+The microVM's headline capability is **VM-state snapshots**: the full guest (memory and CPU) is captured, so a sandbox can **resume** in well under 80ms instead of cold-booting. A `getOrCreateSandbox` under a `snapshot.vm.key` resumes the keyed snapshot if one exists, otherwise it cold-boots and captures one. This is how a warm workload, like a resident browser, comes back instantly per request. See [Snapshots](/docs/snapshots).
 
 ```typescript
 const sandbox = await getOrCreateSandbox("warm", {
