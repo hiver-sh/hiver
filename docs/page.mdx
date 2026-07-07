@@ -23,12 +23,7 @@ However, production agents are different. They share memories, reuse skills, bro
 
 This happens quickly. An agent generates memories from each run. Another agent should reuse those memories instead of rediscovering the same context. A skill improves. A policy changes. A browser session needs to be replayed. Suddenly you need versioning, access control, provenance, and observability across the whole system.
 
-Or think about iterating on skills. Say you make a change to a skill. How do you roll it out? You need a way to version it, test it against real runs, and promote it to every agent that depends on it without breaking the ones already in flight.
-
-How about policies? What if you want to apply a security policy to one specific run, not a shared policy that takes minutes to propagate or iterate on? You want per-run rules that take effect the moment the agent starts, scoped to exactly that workload and nothing else.
-
-
-This is what Hiver is designed to do: multi-agent systems that do real work at scale.
+Hiver keeps those changes scoped, replayable, and governed per run.
 
 <img
   src="/static/inspector-triage-light.png"
