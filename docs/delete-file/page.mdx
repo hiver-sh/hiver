@@ -1,0 +1,52 @@
+export const metadata = { title: "Delete a File" }
+
+# Delete a File
+
+Remove a file (or an empty directory) from a sandbox directly from your client. The path is the **agent-visible absolute path** (e.g. `/workspace/tmp.txt`) and must resolve beneath one of the sandbox's configured [mounts](/docs/remote-file-systems).
+
+## Delete
+
+Removes the target. Deleting a directory only works if it's **empty**, [list it](/docs/list-directory) and delete the children first otherwise.
+
+```typescript
+await sandbox.deleteFile("/workspace/tmp.txt");
+```
+
+```python
+await sandbox.delete_file("/workspace/tmp.txt")
+```
+
+```go
+if err := sandbox.DeleteFile(ctx, "/workspace/tmp.txt"); err != nil {
+    log.Fatal(err)
+}
+```
+
+Clear a directory by listing it and deleting each child:
+
+```typescript
+for (const e of await sandbox.listDirectory("/workspace/scratch")) {
+  if (!e.is_dir) await sandbox.deleteFile(e.path);
+}
+```
+
+```python
+for e in await sandbox.list_directory("/workspace/scratch"):
+    if not e["is_dir"]:
+        await sandbox.delete_file(e["path"])
+```
+
+```go
+entries, _ := sandbox.ListDirectory(ctx, "/workspace/scratch")
+for _, e := range entries {
+    if !e.IsDir {
+        sandbox.DeleteFile(ctx, e.Path)
+    }
+}
+```
+
+<Callout>Like the other file methods, this runs as the **operator** and **bypasses the per-mount [ACLs](/docs/file-policy)**. It deletes through the mount's backend, so removing a file on a [GCS or Drive mount](/docs/remote-file-systems) deletes the underlying object. Deletes are permanent, there's no trash.</Callout>
+
+---
+
+Next: [Network Access](/docs/network-policy)

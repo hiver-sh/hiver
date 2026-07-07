@@ -1,0 +1,219 @@
+export const metadata = { title: "Snapshots" }
+
+# Snapshots
+
+By default a sandbox is ephemeral, everything it writes is discarded when it stops. A **snapshot** captures state so it comes back on the next start. Snapshots are configured in `SandboxConfig.snapshot` and have two independent parts:
+
+- **`files`**, captures part of the sandbox's filesystem as a portable tarball. Restored before the next start (even for paths outside a host-backed mount) and, with `write_on_shutdown`, captured automatically when the sandbox stops.
+- **`vm`**, captures the full microVM state (memory + CPU), so the sandbox resumes exactly where it left off. A no-op on container isolation.
+
+Either part can be used on its own.
+
+## Persist files across restarts
+
+Give `files` a `key` and list the paths to capture with `include`. Set `write_on_shutdown` so the snapshot is written automatically when the sandbox stops. Boot the sandbox under the same key later and the files come back before anything runs.
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  image: "python",
+  snapshot: {
+    files: {
+      key: "session-42",          // restored on start, written on shutdown
+      include: ["/workspace/**"],  // glob paths to capture
+      write_on_shutdown: true,
+    },
+  },
+});
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, Snapshot, SnapshotFiles
+
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    image="python",
+    snapshot=Snapshot(
+        files=SnapshotFiles(
+            key="session-42",          # restored on start, written on shutdown
+            include=["/workspace/**"],  # glob paths to capture
+            write_on_shutdown=True,
+        ),
+    ),
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    Image: "python",
+    Snapshot: &client.Snapshot{
+        Files: &client.SnapshotFiles{
+            Key:             "session-42",              // restored on start, written on shutdown
+            Include:         []string{"/workspace/**"}, // glob paths to capture
+            WriteOnShutdown: true,
+        },
+    },
+})
+```
+
+On the first run the key doesn't exist yet, so the sandbox starts fresh and the snapshot is written at shutdown. Every subsequent start restores from that point. The key must match `^[A-Za-z0-9_-]{1,64}$`.
+
+## Capture on demand
+
+Instead of (or in addition to) `write_on_shutdown`, capture a snapshot at any moment while the sandbox keeps running with `sandbox.snapshot()`. Useful for checkpointing mid-task.
+
+```typescript
+const result = await sandbox.snapshot({
+  files: { key: "session-42", include: ["/workspace/**"] },
+});
+console.log(result.files?.captured, result.files?.bytes);
+```
+
+```python
+result = await sandbox.snapshot(Snapshot(
+    files=SnapshotFiles(key="session-42", include=["/workspace/**"]),
+))
+print(result.files.captured, result.files.bytes)
+```
+
+```go
+result, err := sandbox.Snapshot(ctx, client.Snapshot{
+    Files: &client.SnapshotFiles{Key: "session-42", Include: []string{"/workspace/**"}},
+})
+fmt.Println(result.Files.Captured, result.Files.Bytes)
+```
+
+## Branching
+
+Because restore happens on start and capture happens on shutdown (or on demand), you branch by keying each run differently. A common pattern is a per-session key so each session accumulates its own state across restarts:
+
+```typescript
+const snapshot = {
+  files: {
+    key: `session-${sessionId}`,
+    include: ["/workspace/**", "/home/user/.config/**"],
+    write_on_shutdown: true,
+  },
+};
+```
+
+```python
+snapshot = Snapshot(files=SnapshotFiles(
+    key=f"session-{session_id}",
+    include=["/workspace/**", "/home/user/.config/**"],
+    write_on_shutdown=True,
+))
+```
+
+```go
+snapshot := &client.Snapshot{Files: &client.SnapshotFiles{
+    Key:             fmt.Sprintf("session-%s", sessionID),
+    Include:         []string{"/workspace/**", "/home/user/.config/**"},
+    WriteOnShutdown: true,
+}}
+```
+
+To fork a shared baseline into parallel workstreams without mutating it, capture the baseline once, then restore from it while writing to a new key with an on-demand `sandbox.snapshot()` under the branch key.
+
+## Resume a microVM
+
+On microVM isolation, `vm` captures live memory and CPU state so the sandbox resumes instantly instead of cold-booting. A get-or-create resumes the keyed VM snapshot if one exists; otherwise it cold-boots.
+
+```typescript
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  image: "my-microvm-image",
+  snapshot: { vm: { key: "warm-pool-1" } },
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    image="my-microvm-image",
+    snapshot=Snapshot(vm=SnapshotVM(key="warm-pool-1")),
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    Image:    "my-microvm-image",
+    Snapshot: &client.Snapshot{VM: &client.SnapshotVM{Key: "warm-pool-1"}},
+})
+```
+
+<Callout>VM snapshots require a microVM image (one that ships a guest kernel). On container isolation the request is accepted but reports `captured: false` with a reason.</Callout>
+
+## Store snapshots in a remote drive
+
+By default a files snapshot is written to the host's local snapshot directory. Set `files.mount` to the mount path of a remote-backed file system and the tarball is written and read there instead, so snapshots survive the host entirely and can be restored on any node. Point it at an `internal` file system (mounted for the runtime but hidden from the agent) so the agent never sees the snapshot store:
+
+```typescript
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  image: "python",
+  fs: [
+    { backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] },
+    {
+      backend: "gcs",
+      mount: "/snapshots",
+      internal: true, // hidden from the agent; used only as the snapshot store
+      gcs_bucket: "my-snapshots",
+      gcs_service_account_json: process.env.GCS_SERVICE_ACCOUNT_JSON!,
+    },
+  ],
+  snapshot: {
+    files: {
+      key: "session-42",
+      include: ["/workspace/**"],
+      write_on_shutdown: true,
+      mount: "/snapshots", // write/read the tarball through the GCS drive
+    },
+  },
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    image="python",
+    fs=[
+        LocalFileSystem(backend="local", mount="/workspace",
+                        acls=[ACLRule(path="/workspace/**", access="rw")]),
+        GCSFileSystem(backend="gcs", mount="/snapshots", internal=True,
+                      gcs_bucket="my-snapshots",
+                      gcs_service_account_json=os.environ["GCS_SERVICE_ACCOUNT_JSON"]),
+    ],
+    snapshot=Snapshot(files=SnapshotFiles(
+        key="session-42",
+        include=["/workspace/**"],
+        write_on_shutdown=True,
+        mount="/snapshots",  # write/read the tarball through the GCS drive
+    )),
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    Image: "python",
+    FS: []client.FileSystem{
+        {Backend: "local", Mount: "/workspace",
+            ACLs: []client.ACLRule{{Path: "/workspace/**", Access: "rw"}}},
+        {Backend: "gcs", Mount: "/snapshots", Internal: true,
+            GCSBucket:             "my-snapshots",
+            GCSServiceAccountJSON: os.Getenv("GCS_SERVICE_ACCOUNT_JSON")},
+    },
+    Snapshot: &client.Snapshot{Files: &client.SnapshotFiles{
+        Key:             "session-42",
+        Include:         []string{"/workspace/**"},
+        WriteOnShutdown: true,
+        Mount:           "/snapshots", // write/read the tarball through the GCS drive
+    }},
+})
+```
+
+## Gotchas
+
+- **Keep `include` narrow.** Only paths matching a pattern are captured. Snapshotting large, churny directories (build caches, `node_modules`, package downloads) bloats the tarball and slows restore. Capture only what your agent produces and needs to resume from.
+- **`files` vs. a persistent mount.** A snapshot is a point-in-time tarball keyed by name. If you instead want files to live continuously in durable storage, use a [Fuse Drive](/docs/remote-file-systems) (GCS, Google Drive) backend rather than a snapshot.
+- **Snapshots restore before any process starts**, so restored files are already in place when your entrypoint runs.
+
+---
+
+Next: [Read a File](/docs/read-file)

@@ -1,0 +1,76 @@
+export const metadata = { title: "Events" }
+
+# Events
+
+All sandbox activity is observable through the event stream, `sandbox.getEventsStream()`: a chronological, real-time record of everything the sandbox does. It doubles as an audit log, every command, file access, and network request the agent makes shows up here.
+
+## Streaming events
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-sandbox");
+
+const ac = new AbortController();
+
+for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
+  console.log(event.id, event.timestamp, event.type);
+}
+
+// Stop the stream
+ac.abort();
+```
+
+The stream auto-reconnects on network drops (exponential backoff). Pass a `signal` to stop it cleanly.
+
+## Event types
+
+| Event | Fields | Description |
+|-------|--------|-------------|
+| `config.apply` | `success`, `changes`, `errorMessage?` | Sandbox config changed |
+| `egress.request` | `access`, `host`, `method`, `path`, `query?`, `headers?`, `body?` | Outbound HTTP request |
+| `egress.response` | `request_id`, `status`, `duration_ms`, `headers?` | Response to an egress request |
+| `egress.chunk` | `request_id`, `body`, `label?` | Streaming/WebSocket frame (`label`: `up` or `down`) |
+| `ingress.request` | `port`, `method`, `path`, `query?`, `headers?`, `body?` | Inbound request to a port exposed by the sandbox |
+| `ingress.response` | `request_id`, `status`, `duration_ms`, `headers?`, `body?` | Response to an ingress request |
+| `fs.request` | `access`, `mount`, `path`, `operation` | File access attempt (`read` or `write`) |
+| `fs.response` | `backend`, `request_id`, `duration_ms`, `error?` | File operation result |
+| `stdio` | `stdout?`, `stderr?` | Process output |
+| `resource.usage` | `cpu_percent`, `memory_bytes` | Periodic resource sample |
+| `exec.request` | `cwd`, `command` | Exec call started |
+| `exec.response` | `request_id` | Exec call completed |
+
+`access` on `egress.request` and `fs.request` is `"allowed"` or `"denied"`.
+
+## Resuming from a cursor
+
+Each event has a numeric `id`. Pass `lastEventId` to resume from where you left off, for example after a reconnect or process restart:
+
+```typescript
+let cursor: number | undefined;
+
+for await (const event of sandbox.getEventsStream({ signal: ac.signal })) {
+  cursor = event.id;
+}
+
+// Later, replay only events after the saved cursor
+for await (const event of sandbox.getEventsStream({ lastEventId: cursor })) {
+  // only events after id `cursor`
+}
+```
+
+## Filtering
+
+Filter events by checking `event.type` in the loop:
+
+```typescript
+for await (const event of sandbox.getEventsStream()) {
+  if (event.type === "egress.request" && event.access === "denied") {
+    console.log("blocked:", event.host, event.method, event.path);
+  }
+
+  if (event.type === "fs.request" && event.access === "denied") {
+    console.log("file denied:", event.path, event.operation);
+  }
+}
+```

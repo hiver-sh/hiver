@@ -19,10 +19,10 @@
     "microvm": "hiversh/copilot:latest-microvm",
     "config": { "tty": true, "cwd": "/workspace", "entrypoint": "copilot" }
   },
-  "opencode": {
-    "image": "hiversh/opencode:latest",
-    "microvm": "hiversh/opencode:latest-microvm",
-    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "opencode" }
+  "openclaw": {
+    "image": "hiversh/openclaw:latest",
+    "microvm": "hiversh/openclaw:latest-microvm",
+    "config": { "tty": true, "cwd": "/workspace", "entrypoint": "openclaw" }
   },
   "antigravity": {
     "image": "hiversh/antigravity:latest",

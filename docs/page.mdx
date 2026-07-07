@@ -1,0 +1,58 @@
+import { AgentSandboxDiagram, MultiAgentBrowserDiagram } from "@/components/ArchDiagrams"
+
+export const metadata = { title: "Introduction" }
+
+# Introduction
+
+Hiver is the platform for building <b>reliable agents</b> that do real work, designed from the ground up for security, performance, and trust.
+
+It's flexible by design: run it locally on your laptop, or scale it out in the cloud. It's also all open source, so you can run it anywhere, right alongside your most private and valuable data.
+
+Hiver includes a secured sandbox and orchestration for agent-to-agent communication. It ships an inspector for end-to-end observability, support for all the popular agent harnesses, and a remote browser. On top of that, you get client APIs for TypeScript, Python, and Go, plus a CLI.
+
+## Why Hiver?
+
+Agent prototypes start simple: one harness, one runtime, one task.
+
+<AgentSandboxDiagram />
+
+However, production agents are different. They share memories, reuse skills, browse the web, call APIs, persist files, and need policy boundaries.
+
+<MultiAgentBrowserDiagram />
+
+
+This happens quickly. An agent generates memories from each run. Another agent should reuse those memories instead of rediscovering the same context. A skill improves. A policy changes. A browser session needs to be replayed. Suddenly you need versioning, access control, provenance, and observability across the whole system.
+
+Or think about iterating on skills. Say you make a change to a skill. How do you roll it out? You need a way to version it, test it against real runs, and promote it to every agent that depends on it without breaking the ones already in flight.
+
+How about policies? What if you want to apply a security policy to one specific run, not a shared policy that takes minutes to propagate or iterate on? You want per-run rules that take effect the moment the agent starts, scoped to exactly that workload and nothing else.
+
+
+This is what Hiver is designed to do: multi-agent systems that do real work at scale.
+
+<img
+  src="/static/inspector-triage-light.png"
+  alt="The Hiver Inspector showing an agent's timeline, terminal, and browser as it triages email"
+  className="my-12 block w-full rounded-xl border border-black/10 shadow-xl dark:hidden"
+/>
+<img
+  src="/static/inspector-triage.png"
+  alt="The Hiver Inspector showing an agent's timeline, terminal, and browser as it triages email"
+  className="my-12 hidden w-full rounded-xl border border-white/10 shadow-xl dark:block"
+/>
+
+As agents become distributed systems, Hiver gives them runtime, policy, storage, and replay.
+
+<h2>Core features</h2>
+* Fast startup (Claude Code in 10ms<sup>1</sup>, Web browser in 25ms<sup>2</sup>)
+* File systems: S3, GCS, Google Drive, your own service, Overlayfs, Fusefs.
+* Transparent proxy with powerful request overwrite rules.
+* VM and file snapshotting. Automatic checkpointing.
+* Container and microvm isolation.
+* Kubernetes native. No special tooling required.
+* End-to-end observability across agents and environments.
+* Develop, test and improve agents locally (even offline). Then, deploy to your favorite cloud.
+
+---
+
+Next: [Installation](/docs/installation)

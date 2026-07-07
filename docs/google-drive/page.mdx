@@ -1,0 +1,82 @@
+export const metadata = { title: "Google Drive" }
+
+# Google Drive
+
+Mount a Google Drive folder into a sandbox with the `gdrive` backend. Everything the agent writes to the mount persists to Drive and survives restarts. Configure it as an entry in [`SandboxConfig.fs`](/docs/remote-file-systems); access under the mount is governed by [ACLs](/docs/file-policy).
+
+## Authenticate
+
+Use OAuth tokens or a service account.
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("drive", {
+  fs: [{
+    backend: "gdrive",
+    mount: "/drive",
+    gdrive_access_token: process.env.GDRIVE_ACCESS_TOKEN,
+    gdrive_refresh_token: process.env.GDRIVE_REFRESH_TOKEN,
+    gdrive_client_id: process.env.GDRIVE_CLIENT_ID,
+    gdrive_client_secret: process.env.GDRIVE_CLIENT_SECRET,
+    gdrive_folder_id: "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs", // optional; scopes to a folder
+    acls: [{ path: "/drive/**", access: "rw" }],
+  }],
+});
+```
+
+```python
+import os
+from hiver import get_or_create_sandbox, SandboxConfig, GDriveFileSystem, ACLRule
+
+sandbox = await get_or_create_sandbox("drive", SandboxConfig(
+    fs=[GDriveFileSystem(
+        backend="gdrive",
+        mount="/drive",
+        gdrive_access_token=os.environ["GDRIVE_ACCESS_TOKEN"],
+        gdrive_refresh_token=os.environ["GDRIVE_REFRESH_TOKEN"],
+        gdrive_client_id=os.environ["GDRIVE_CLIENT_ID"],
+        gdrive_client_secret=os.environ["GDRIVE_CLIENT_SECRET"],
+        gdrive_folder_id="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs",  # optional; scopes to a folder
+        acls=[ACLRule(path="/drive/**", access="rw")],
+    )],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "drive", client.SandboxConfig{
+    FS: []client.FileSystem{{
+        Backend:            "gdrive",
+        Mount:              "/drive",
+        GDriveAccessToken:  os.Getenv("GDRIVE_ACCESS_TOKEN"),
+        GDriveRefreshToken: os.Getenv("GDRIVE_REFRESH_TOKEN"),
+        GDriveClientID:     os.Getenv("GDRIVE_CLIENT_ID"),
+        GDriveClientSecret: os.Getenv("GDRIVE_CLIENT_SECRET"),
+        GDriveFolderID:     "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs", // optional; scopes to a folder
+        ACLs:               []client.ACLRule{{Path: "/drive/**", Access: "rw"}},
+    }},
+})
+```
+
+Prefer a service account? Supply `gdrive_service_account_json` **instead of** the OAuth fields.
+
+## Fields
+
+| Field | Description |
+|-------|-------------|
+| `gdrive_access_token` | OAuth access token. Required when not using a service account. |
+| `gdrive_refresh_token` | OAuth refresh token, used to renew the access token automatically. |
+| `gdrive_client_id` / `gdrive_client_secret` | OAuth client credentials from your Google Cloud project. |
+| `gdrive_service_account_json` | Full service account JSON key. Provide this instead of the OAuth fields. |
+| `gdrive_folder_id` | Optional. Drive folder ID to scope the mount. Omit to mount the account root. |
+| `gdrive_prefix` | Optional subfolder path within the folder (created if absent). |
+
+**Getting OAuth tokens**, run the [Google OAuth 2.0 flow](https://developers.google.com/identity/protocols/oauth2) with the `https://www.googleapis.com/auth/drive` scope. `gdrive_refresh_token` is used to keep the access token fresh automatically.
+
+**Finding a folder ID**, it's in the folder's URL: `drive.google.com/drive/folders/<folder-id>`. Scoping to a folder keeps the sandbox out of the rest of the account.
+
+<Callout>Combine a Drive mount with other backends in the same sandbox, for example a read-write `local` `/workspace` for scratch plus a `/drive` mount for durable output. Mount paths must be unique and non-overlapping. See [Local Files](/docs/remote-file-systems) and [GCS](/docs/gcs).</Callout>
+
+---
+
+Next: [Snapshots](/docs/snapshots)

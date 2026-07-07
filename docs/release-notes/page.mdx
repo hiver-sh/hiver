@@ -1,0 +1,83 @@
+export const metadata = { title: "Release Notes" }
+
+# Release Notes
+
+## 2025-05-30
+
+### New Features
+
+- **TTY support**, `execStream` now accepts `tty: true` to allocate a pseudo-terminal, enabling interactive programs and terminal UIs inside a sandbox.
+- **Exec event stream**, sandbox events now include `exec.request` and `exec.response` types so the Inspector and audit log can trace every command invocation.
+- **Snapshots**, configure `snapshot` in `SandboxConfig` with `restore_key`, `write_key`, and `include` glob patterns. The runtime captures a snapshot on shutdown and restores it on the next start, eliminating cold-start overhead for stateful workloads.
+
+### Improvements
+
+- `getEventsStream` auto-resumes across disconnects using exponential backoff (up to 30 s). Callers never miss events across transient network blips, the iterator reconnects with the last observed event ID.
+- `applyConfig` returns a structured `ApplyResult` with `applied`, the post-apply `config`, a `changes` diff (added/removed `fs` entries and egress rules), and any non-fatal `warnings`.
+- `SandboxError` now carries `status`, `operation`, and the upstream `body` (with `details`) so callers can switch on structured error context without re-parsing.
+
+### Bug Fixes
+
+- Fixed a race where `execStream` could drop the first bytes of stdout if the SSE reader started before the process was registered on the server side. The client now awaits the 200 response headers before yielding the `ExecProcess` handle.
+- `getOrCreateSandbox` retries once on connection-refused to handle the case where the controller process is still starting.
+
+---
+
+## 2025-04-15
+
+### New Features
+
+- **File operations**, three new `Sandbox` methods for interacting with mounted file systems:
+  - `writeFile(path, content)`, write a file into a mount.
+  - `readFile(path)`, fetch raw bytes from any agent-visible path.
+  - `listDirectory(path)`, enumerate immediate children with `name`, `path`, `is_dir`, and `size`.
+- **Egress rules with overrides**, `EgressRule` now supports `host`, `ports`, `methods`, and `paths` filtering. An optional `override` block injects query parameters or headers into matching outbound requests without exposing the values to the agent.
+- **ACLs on file system mounts**, each `FileSystem` entry accepts an `acls` array of `ACLRule` objects (`path` + `access: "rw" | "ro" | "deny"`), evaluated longest-prefix-first with deny as the default when no rule matches.
+- **GCS backend**, added `GCSFileSystem` (`backend: "gcs"`) with `gcs_bucket`, optional `gcs_prefix`, and `gcs_service_account_json` (falls back to Application Default Credentials when omitted).
+
+### Improvements
+
+- `listSandboxes` returns fully constructed `Sandbox` handles rather than raw refs, so callers can immediately call `exec`, `getConfig`, etc. on any running sandbox.
+- `SandboxConfig` validates `fs` mount paths at schema-parse time (must be absolute) and enforces that `snapshot` keys match `[A-Za-z0-9_-]{1,64}`.
+- All controller functions (`getOrCreateSandbox`, `listSandboxes`, `shutdown`) accept a `timeoutMs` option that applies to every fetch and to the readiness-polling loop. Pass `0` to disable timeouts entirely.
+
+### Bug Fixes
+
+- `shutdown` now returns cleanly on HTTP 204 (no content) without throwing.
+- `applyConfig` validates the config locally before sending, so a malformed request fails fast on the client side instead of producing a 400 from the server.
+
+---
+
+## 2025-03-01
+
+### New Features
+
+- **TypeScript client**, initial release of the `@hive-run/sdk` package with:
+  - `getOrCreateSandbox(id, config)`, idempotent sandbox provisioning via `PUT /v1/sandboxes/{id}`. Polls until the sandbox is reachable before returning.
+  - `listSandboxes()`, enumerate all running sandboxes.
+  - `shutdown(sandbox)`, stop and remove a sandbox container.
+- **`sandbox.exec`**, run a command and await buffered `stdout`, `stderr`, and `exit_code`.
+- **`sandbox.execStream`**, run a command and receive an `ExecProcess` handle with:
+  - `pipes`, async iterable of `{ stdout?, stderr? }` chunks streamed in real time.
+  - `exitCode`, promise that resolves to the process exit code.
+  - `writeStdin(data)`, send input to the running process.
+- **`sandbox.getEventsStream`**, long-lived async iterator over structured `SandboxEvent`s. Event types: `config.apply`, `egress.request`, `egress.response`, `fs.request`, `fs.response`, `stdio`, `resource.usage`, `exec.request`, `exec.response`.
+- **`sandbox.applyConfig` / `getConfig`**, read and live-update sandbox configuration without restarting the container.
+- **`SandboxConfig`**, full configuration schema covering:
+  - `image` and `entrypoint`, custom Docker image and entrypoint override.
+  - `env`, environment variables injected at start time.
+  - `ttl`, idle timeout in seconds (reset by `sandbox.ping()`); use `0` to disable.
+  - `fs`, one or more file system mounts with `local`, `gdrive`, and `gcs` backends, each supporting `acls`.
+  - `egress`, ordered list of egress rules with host/port/method/path filtering and `override` injection.
+  - `snapshot`, save/restore sandbox state with `restore_key`, `write_key`, and `include` patterns.
+- **Custom Docker images**, specify any OCI-compatible image in `SandboxConfig.image`.
+- **Google Drive backend**, `GDriveFileSystem` supports OAuth tokens, refresh tokens, and service account credentials. Scope to a specific folder with `gdrive_folder_id`.
+
+### Improvements
+
+- `HIVE_API_KEY` is read automatically from the environment in all SDK operations.
+- Schema validation runs on the client before any network request, giving immediate feedback on malformed configs.
+
+---
+
+Back to [Introduction](/docs)

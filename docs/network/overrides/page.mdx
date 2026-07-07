@@ -1,0 +1,279 @@
+export const metadata = { title: "Network · Overrides" }
+
+# Overrides
+
+An **override** rewrites a matching outbound request after it leaves the agent but before it reaches the upstream, the agent never sees the change. It's the recommended way to inject secrets, re-route traffic, or shape request bodies without trusting the agent with any of it.
+
+Overrides are set with the `override` field on an `allow` egress rule and apply only to requests that match that rule's `host`, `ports`, `methods`, and `paths` filters. The agent cannot read injected values back.
+
+## Inject credentials
+
+The most common use: give an agent access to an authenticated API without putting the key in its context or environment. The proxy attaches the header to every matching request.
+
+```typescript
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  egress: [{
+    access: "allow",
+    host: "api.finnhub.io",
+    override: { headers: { "X-Finnhub-Token": process.env.FINNHUB_API_KEY! } },
+  }],
+});
+```
+
+```python
+import os
+from hiver import get_or_create_sandbox, SandboxConfig, EgressRule, EgressOverride
+
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    egress=[EgressRule(
+        access="allow",
+        host="api.finnhub.io",
+        override=EgressOverride(headers={"X-Finnhub-Token": os.environ["FINNHUB_API_KEY"]}),
+    )],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    Egress: []client.EgressRule{{
+        Access: "allow",
+        Host:   "api.finnhub.io",
+        Override: &client.EgressOverride{
+            Headers: map[string]string{"X-Finnhub-Token": os.Getenv("FINNHUB_API_KEY")},
+        },
+    }},
+})
+```
+
+The agent can now `curl https://api.finnhub.io/...` with no credentials, the token is added transparently.
+
+## What you can override
+
+| Field | Description |
+|-------|-------------|
+| `headers` | Add or overwrite request headers (e.g. `Authorization`). |
+| `query` | Add or overwrite URL query parameters (e.g. `?api_key=…`). |
+| `host` | Re-route the request to a different upstream (`"hostname[:port]"`). The agent-visible Host header and TLS SNI keep the original hostname. |
+| `prefix_path` | Prepend a path prefix to the outbound request (`/mock` turns `/v1/user` into `/mock/v1/user`). |
+| `body` | Rewrite the request body. A string replaces it verbatim; an object merges into (or replaces) the agent's JSON body. |
+
+If the agent already set the same header or query parameter, the override wins.
+
+### Query parameters
+
+Some APIs authenticate with a query parameter instead of a header:
+
+```typescript
+override: {
+  query: { api_key: process.env.SERVICE_API_KEY! },
+}
+```
+
+```python
+override=EgressOverride(query={"api_key": os.environ["SERVICE_API_KEY"]})
+```
+
+```go
+Override: &client.EgressOverride{
+    Query: map[string]string{"api_key": os.Getenv("SERVICE_API_KEY")},
+}
+```
+
+### Multiple headers at once
+
+```typescript
+override: {
+  headers: {
+    Authorization: `Bearer ${process.env.API_KEY}`,
+    "X-Tenant-Id": process.env.TENANT_ID!,
+  },
+}
+```
+
+```python
+override=EgressOverride(headers={
+    "Authorization": f"Bearer {os.environ['API_KEY']}",
+    "X-Tenant-Id": os.environ["TENANT_ID"],
+})
+```
+
+```go
+Override: &client.EgressOverride{Headers: map[string]string{
+    "Authorization": "Bearer " + os.Getenv("API_KEY"),
+    "X-Tenant-Id":   os.Getenv("TENANT_ID"),
+}}
+```
+
+## Rewrite the request body
+
+An object `body` is shallow-merged into the agent's JSON body by default (`body_strategy: "merge"`), your keys win, the agent's other keys are preserved. Use this to pin fields the agent shouldn't control. Set `body_strategy: "replace"` to discard the agent's body entirely, or pass a string to replace it verbatim.
+
+```typescript
+override: {
+  // Force these fields no matter what the agent sends
+  body: { model: "gpt-4o-mini", temperature: 0 },
+  body_strategy: "merge", // default
+}
+```
+
+```python
+override=EgressOverride(
+    body={"model": "gpt-4o-mini", "temperature": 0},
+    body_strategy="merge",  # default
+)
+```
+
+```go
+Override: &client.EgressOverride{
+    Body:         map[string]any{"model": "gpt-4o-mini", "temperature": 0},
+    BodyStrategy: client.BodyStrategyMerge, // default
+}
+```
+
+## Programmatic rewrites with a Lua script
+
+When a static override can't express the logic, deriving a header from the body, conditional routing, rewriting part of a payload, set `override_script` to a small **Lua** script. It's a sibling of `override` on the egress rule (not a field inside it) and runs against each matching inspected HTTP request *after* the static `override` is applied.
+
+`override_script` sits alongside `override` on the rule:
+
+```typescript
+egress: [{
+  access: "allow",
+  host: "api.example.com",
+  override: { headers: { "X-Tenant": "acme" } }, // static override runs first
+  override_script: `
+    -- then the script runs and can rewrite headers/body
+    headers["X-Request-Path"] = path
+  `,
+}]
+```
+
+```python
+egress=[EgressRule(
+    access="allow",
+    host="api.example.com",
+    override=EgressOverride(headers={"X-Tenant": "acme"}),  # static override runs first
+    override_script="""
+      -- then the script runs and can rewrite headers/body
+      headers["X-Request-Path"] = path
+    """,
+)]
+```
+
+```go
+Egress: []client.EgressRule{{
+    Access:   "allow",
+    Host:     "api.example.com",
+    Override: &client.EgressOverride{Headers: map[string]string{"X-Tenant": "acme"}}, // runs first
+    OverrideScript: `
+      -- then the script runs and can rewrite headers/body
+      headers["X-Request-Path"] = path
+    `,
+}},
+```
+
+### The scripting environment
+
+The script runs in a restricted Lua VM (base, `string`, `table`, and `math` libraries only, no file, network, or OS access).
+
+| Name | Kind | Description |
+|------|------|-------------|
+| `body` | mutable string | The request body. Reassign it to rewrite what's sent upstream. |
+| `headers` | mutable table | Header name → value. Assign to add/overwrite; set to `nil` to drop. |
+| `method` | read-only string | HTTP method. |
+| `host` | read-only string | Request host. |
+| `path` | read-only string | Request path. |
+| `query` | read-only string | Raw query string, without the leading `?`. |
+| `urldecode` / `urlencode` | helper | URL-decode / URL-encode a string. |
+| `b64decode` / `b64encode` | helper | Base64 decode / encode a string. |
+
+Header names in the `headers` table are canonicalized (`X-Raw-Key`, not `x-raw-key`), so index them in that form. Reassigning `method`/`host`/`path`/`query` has no effect, only `body` and `headers` are written back.
+
+### Examples
+
+**Turn a raw key into a Base64 auth header**, the agent sends a plain key, the proxy encodes it and removes the original:
+
+```lua
+headers["Authorization"] = "Basic " .. b64encode(headers["X-Raw-Key"])
+headers["X-Raw-Key"] = nil
+```
+
+**Add a header only for certain paths**, conditional logic a static override can't do:
+
+```lua
+if string.match(path, "^/admin/") then
+  headers["X-Require-Approval"] = "true"
+end
+```
+
+**Rewrite the body**, force a field in a JSON payload with a string substitution:
+
+```lua
+-- pin "stream": true regardless of what the agent sent
+body = string.gsub(body, '"stream"%s*:%s*false', '"stream": true')
+```
+
+**Move a query parameter into a header**, read from `query`, inject a header:
+
+```lua
+local key = string.match(query, "api_key=([^&]+)")
+if key then
+  headers["Authorization"] = "Bearer " .. urldecode(key)
+end
+```
+
+<Callout>Reach for `override_script` only when the static fields can't do the job, `headers`, `query`, and `body` cover most cases. Scripts apply to inspected HTTP requests only (CONNECT and passthrough TLS are unaffected), are bounded to 200&nbsp;ms and an 8&nbsp;MiB body, and **fail open**: if the script errors, it's logged and the request proceeds with the static `override` applied but the script's changes skipped.</Callout>
+
+## Re-route the upstream
+
+`host` sends matching requests to a different destination, handy for pointing an agent at a mock or a proxy without it knowing. The agent still sees the original hostname in the request it made.
+
+```typescript
+override: { host: "localhost:8080" }
+```
+
+```python
+override=EgressOverride(host="localhost:8080")
+```
+
+```go
+Override: &client.EgressOverride{Host: "localhost:8080"}
+```
+
+## Update overrides at runtime
+
+Rotate a token or change routing on a running sandbox with `applyConfig`:
+
+```typescript
+await sandbox.applyConfig({
+  ...(await sandbox.getConfig()),
+  egress: [{
+    access: "allow",
+    host: "api.example.com",
+    override: { headers: { Authorization: `Bearer ${newToken}` } },
+  }],
+});
+```
+
+```python
+current = await sandbox.get_config()
+await sandbox.apply_config(current.model_copy(update={
+    "egress": [EgressRule(access="allow", host="api.example.com",
+                          override=EgressOverride(headers={"Authorization": f"Bearer {new_token}"}))],
+}))
+```
+
+```go
+current, _ := sandbox.GetConfig(ctx)
+current.Egress = []client.EgressRule{{
+    Access: "allow", Host: "api.example.com",
+    Override: &client.EgressOverride{Headers: map[string]string{"Authorization": "Bearer " + newToken}},
+}}
+_, err := sandbox.ApplyConfig(ctx, *current)
+```
+
+The new override applies to all subsequent matching requests.
+
+---
+
+Back to [Access](/docs/network-policy)

@@ -1,0 +1,123 @@
+export const metadata = { title: "Browser Use" }
+
+# Browser Use
+
+The `browser` image ships a resident, headless Chromium with its DevTools/CDP endpoint open. You drive it from your client with Playwright over CDP, all the automation logic lives in your code, and the browser runs isolated in the sandbox.
+
+## Connect Playwright over CDP
+
+Attach to the sandbox's Chromium through the [proxy](/docs/ingress#exposed-ports) and drive it as if it were local. Chromium's CDP endpoint listens on port **9223** inside the sandbox, exposed at a stable `/cdp` path.
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+import { chromium } from "playwright-core";
+
+const sandbox = await hiver.getOrCreateSandbox("browser", { image: "browser" });
+
+// Build the CDP WebSocket URL: proxy URL for port 9223, http -> ws, + /cdp
+const wsEndpoint = sandbox.proxyUrl(9223).replace(/^http/, "ws") + "/cdp";
+
+const browser = await chromium.connectOverCDP(wsEndpoint);
+const context = browser.contexts()[0];
+const page = context.pages()[0] ?? (await context.newPage());
+
+await page.goto("https://news.ycombinator.com", { waitUntil: "domcontentloaded" });
+const titles = await page.$$eval(".titleline > a", (els) => els.map((e) => e.textContent));
+console.log(titles);
+
+await browser.close(); // disconnects the client; the sandbox browser stays warm
+```
+
+```python
+import asyncio
+import hiver
+from playwright.async_api import async_playwright
+
+async def main():
+    sandbox = await hiver.get_or_create_sandbox("browser", hiver.SandboxConfig(image="browser"))
+
+    # Build the CDP WebSocket URL: proxy URL for port 9223, http -> ws, + /cdp
+    ws_endpoint = sandbox.proxy_url(9223).replace("http", "ws", 1) + "/cdp"
+
+    async with async_playwright() as p:
+        browser = await p.chromium.connect_over_cdp(ws_endpoint)
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        await page.goto("https://news.ycombinator.com", wait_until="domcontentloaded")
+        titles = await page.eval_on_selector_all(".titleline > a", "els => els.map(e => e.textContent)")
+        print(titles)
+
+        await browser.close()  # disconnects the client; the sandbox browser stays warm
+
+asyncio.run(main())
+```
+
+<Callout>`browser.close()` only disconnects your CDP client, it does **not** kill the resident browser, so the sandbox stays warm for the next attach. Your local Playwright version is independent of the Chromium baked into the image, because CDP is a wire protocol.</Callout>
+
+## Why this is fast
+
+Under microVM isolation the warm browser is captured in the sandbox [snapshot](/docs/snapshots), so a resumed sandbox comes back with Chromium already listening, no cold browser launch on the critical path. Reuse the resident context and page (rather than creating new ones) to keep that speed.
+
+## Driving a browser from inside
+
+Alternatively, run a browser-automation script **inside** the sandbox with [`execStream`](/docs/execution), launch Chromium once in a REPL session and reuse it across many page loads, paying the startup cost a single time. This keeps all traffic within the sandbox and is a good fit for agent-authored scripts.
+
+> Go clients can drive the same CDP endpoint with a library like [`chromedp`](https://github.com/chromedp/chromedp) or [`rod`](https://github.com/go-rod/rod), point it at the `/cdp` WebSocket URL above.
+
+## Let an agent drive the browser
+
+The examples above put *you* in control of the browser. If you'd rather let an **agent** browse, load a JS-heavy or login-gated page, click, type, fill a form, read the page, the agent images ship a ready-made **`browser` skill**. It's a [Claude Code skill](https://docs.claude.com/en/docs/claude-code) that drives the sandbox's headless Chrome over CDP, reading the accessibility tree to understand pages and interacting with stable selectors.
+
+You don't call the skill directly, Claude discovers it and uses it on its own when a task needs a browser. Just run Claude Code with a browsing prompt:
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("browser-agent", {
+  image: "browser",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+});
+
+const result = await sandbox.exec(
+  ["claude", "-p", "Open news.ycombinator.com and list the top 5 story titles"],
+  { cwd: "/workspace" },
+);
+console.log(result.stdout);
+```
+
+```python
+import os
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("browser-agent", SandboxConfig(
+    image="browser",
+    env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+))
+
+result = await sandbox.exec(
+    ["claude", "-p", "Open news.ycombinator.com and list the top 5 story titles"],
+    cwd="/workspace",
+)
+print(result["stdout"])
+```
+
+```go
+c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "browser-agent", client.SandboxConfig{
+    Image: "browser",
+    Env:   map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")},
+})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"claude", "-p", "Open news.ycombinator.com and list the top 5 story titles"},
+    CWD:     "/workspace",
+})
+fmt.Println(result.Stdout)
+```
+
+Behind the scenes the skill starts a small CDP bridge, attaches to the page, and drives Chrome, the agent handles all of that. Watch it work live in the Inspector's [Terminal](/docs/inspector), and [stream the output](/docs/execution) for long sessions. To ship your own skills (or tweak this one), mount a skills directory with `origin`, see [skill iteration](/docs/remote-file-systems#skill-iteration).
+
+---
+
+Next: [Python Sandbox](/docs/examples/python-sandbox)

@@ -1,0 +1,57 @@
+export const metadata = { title: "Node.js packages" }
+
+# Node.js packages
+
+`allowedNpmPackages` generates the [egress rules](/docs/network-policy) a sandbox needs to `npm install` a specific set of packages, and nothing else. Any `npm install` for a package you didn't name is blocked, so an agent can pull the dependencies it needs without opening the network wide.
+
+Spread the result into `SandboxConfig.egress`.
+
+```typescript
+import { getOrCreateSandbox, allowedNpmPackages } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("node", {
+  image: "node",
+  egress: [...allowedNpmPackages("lodash", "zod")],
+});
+
+await sandbox.exec(["npm", "install", "lodash", "zod"], { cwd: "/workspace" });
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, allowed_npm_packages
+
+sandbox = await get_or_create_sandbox("node", SandboxConfig(
+    image="node",
+    egress=allowed_npm_packages("lodash", "zod"),
+))
+
+await sandbox.exec(["npm", "install", "lodash", "zod"], cwd="/workspace")
+```
+
+The helper returns a plain `EgressRule[]`, so you can spread extra allows alongside it:
+
+```typescript
+const sandbox = await getOrCreateSandbox("node", {
+  image: "node",
+  egress: [
+    ...allowedNpmPackages("undici"),
+    { access: "allow", host: "api.github.com", methods: ["GET"] },
+  ],
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("node", SandboxConfig(
+    image="node",
+    egress=[
+        *allowed_npm_packages("undici"),
+        EgressRule(access="allow", host="api.github.com", methods=["GET"]),
+    ],
+))
+```
+
+<Callout>`allowedNpmPackages` ships in the TypeScript and Python clients. In Go, add the equivalent npm-registry egress rules to `SandboxConfig.Egress` directly. See also [Python packages](/docs/utils/python-packages).</Callout>
+
+---
+
+Next: [Allow Sandbox](/docs/utils/allow-sandbox)

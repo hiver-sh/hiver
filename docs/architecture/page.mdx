@@ -1,0 +1,58 @@
+import { AgentSandboxDiagram, AgentSandboxEmbededDiagram, RuntimeDiagram } from "@/components/ArchDiagrams"
+import { ColdStartBoxChart } from "@/components/ColdStartChart"
+
+export const metadata = { title: "Architecture" }
+
+# Architecture
+
+Network and file policies apply instantly, so you can customize them for a given agent run. Combined with millisecond cold starts, that adds up to a very flexible stack for running agents. Whether scheduled tasks or on-demand, Hiver scales smoothly.
+
+Every sandbox runs inside a microVM with its own kernel, so compute stays ephemeral and strongly isolated by default. Hiver ships with the primitives agents need to do real work: a range of file systems for structured and unstructured knowledge, a built-in proxy for reaching trusted services securely, and an event stream that captures every interaction in real time.
+
+As agents draw on that knowledge to get work done, Hiver watches closely: every file read, network call, and tool invocation is captured with full fidelity as it happens, not summarized after the fact.
+
+The result is a durable trace of how each task was performed, so systems improve over time and organizational knowledge compounds.
+
+To understand why Hiver exists, consider how agents are built today:
+
+<AgentSandboxDiagram />
+
+An agent harness contains a loop, MCPs, and tools, usually with access to internal APIs. Occasionally an agent needs to compute something, say `sqrt(10)`, and that work is offloaded to an isolated sandbox.
+
+The premise: the `Agent Harness` runs as a trusted workload (with access to secrets, etc.) while the sandbox does not. But that separation creates complexities that cap how much intelligence you can actually deliver:
+
+1. Models can't freely write code to reshape inputs and outputs. They're constrained to whatever the tools expose.
+2. Tools are limited to their designed purpose, so slightly different queries fail because tools aren't composable the way a programming language is.
+3. Context management is harder without a file system: writing a large blob to disk and referencing it by name is far simpler and cheaper than threading it through tool calls.
+4. Development and improvement suffer, because state lives in two places that can drift out of sync.
+
+Meanwhile, state-of-the-art models are increasingly capable of operating an entire computer. They open files, spin up dev servers, launch browser tabs, click around, write code, evaluate results, and store new knowledge. These models don't just use tools, they operate at the level of the full machine.
+
+Hiver was built around a single question: what if you gave models direct access to all your data and services?
+
+<AgentSandboxEmbededDiagram />
+
+To make that possible, Hiver collapses the architecture so the sandbox and the agent harness become one and the same.
+
+That introduces an obvious problem: unconstrained access to data and systems is dangerous. Hiver addresses it with a runtime purpose-built for untrusted code.
+
+<RuntimeDiagram />
+
+Each sandbox runs as a container or microVM, so workloads stay fully isolated at the kernel level even when they share a physical node. Within that boundary, every agent operation is intercepted transparently, so the agent is never aware it's being observed or constrained. Access controls are enforced underneath through policies defined at instantiation time.
+
+Developers configure all of this through a simple API: policies, mounts, and network rules, with no operational overhead and no dependency on infra teams.
+
+The file system itself is designed to act as the database, holding structured, semi-structured, and unstructured data side by side. Agents read and write files the way they already do, and that same surface becomes the durable store for everything they learn. Access is governed by ACLs, so each agent only sees and acts on the data it's permitted to.
+
+With Hiver, you can build and evolve your own agent harness, or run an existing one like Claude Code, Codex, Copilot CLI, Gemini CLI, or OpenClaw.
+
+<div className="flex justify-center gap-10">
+  <div className="flex-1"><ColdStartBoxChart description="launching chromium with playwright on a 2 vCPU node" /></div>
+  <div className="flex-1"><ColdStartBoxChart description="launching claude code on a 2 vCPU" /></div>
+</div>
+
+Last but not least, the Hiver Inspector is Chrome DevTools for agents: every operation is visible in real time, and because it's all captured, the same data is available afterward for auditing and improvement.
+
+---
+
+Next: [Installation](/docs/installation)

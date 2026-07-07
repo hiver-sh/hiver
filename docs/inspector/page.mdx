@@ -1,0 +1,45 @@
+export const metadata = { title: "Inspector" }
+
+# Inspector
+
+The Inspector is **Chrome DevTools for agents**, a browser-based tool built into the Hiver gateway that lets you observe and interact with running sandboxes in real time. Every operation is visible as it happens, and because it's all captured, the same data is available afterward for auditing and improvement.
+
+Launch it from the CLI with `hiver inspect`, or open the gateway web UI (http://localhost:10000 by default) and click a running sandbox. You can also go straight to `/inspect/<sandbox-id>`:
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-sandbox", { image: "claude" });
+
+console.log("Sandbox ID:", sandbox.id);
+// Open: http://localhost:10000/inspect/<sandbox.id>
+```
+
+## Terminal
+
+The Terminal tab gives you a full PTY-backed shell connected directly to the sandbox, type commands, check logs, or explore the filesystem interactively, exactly as if you had SSHed in. It shares the same filesystem and process namespace as the running agent, so commands you run here show up as `exec.request` events in Traces and the [Events](/docs/events).
+
+Use it to inspect files the agent created, run debugging commands without touching your agent code, kill or inspect processes, or check environment and installed dependencies. To drive a sandbox terminal from your own code instead of the browser, see [Pseudo Terminals](/docs/pseudo-terminals).
+
+## Traces
+
+The Traces tab shows a chronological timeline of every command run against the sandbox, command, exit code, duration, and stdout/stderr. Every [`exec` and `execStream`](/docs/execution) call appears here automatically, built from the underlying `exec.request` and `exec.response` events. Use it to trace exactly what an agent ran, what it returned, and in what order.
+
+The same data is available in code via the [event stream](/docs/events):
+
+```typescript
+for await (const event of sandbox.getEventsStream()) {
+  if (event.type === "exec.request") console.log("ran:", event.command);
+  if (event.type === "exec.response") console.log("finished:", event.request_id);
+}
+```
+
+## LLM
+
+The LLM tab shows the model calls made during the session, model, prompt, completion, token usage, and latency, captured from the agent's outbound traffic. Each row expands to the full message list sent to the model and the response returned, giving you visibility into what the agent was reasoning about at each step.
+
+Programmatically, the underlying model API calls surface as [`egress` events](/docs/events) on the event stream, so you can log or analyze them alongside every other outbound request.
+
+---
+
+Next: [Agent CLI](/docs/examples/agent-cli)

@@ -1,0 +1,136 @@
+export const metadata = { title: "Custom Docker image" }
+
+# Custom Docker image
+
+Any Docker image can run on Hiver. The CLI's `hiver bundle` command wraps the Hiver runtime inside your image so it can run as a sandbox, your Dockerfiles need no special configuration.
+
+## Bundle an existing image
+
+Point `hiver bundle` at any image from a registry and give the result a tag:
+
+```bash
+hiver bundle python:3.13-alpine --tag python
+```
+
+Then reference the tag as `image` when you provision:
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("py", { image: "python" });
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("py", SandboxConfig(image="python"))
+```
+
+```go
+c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "py", client.SandboxConfig{Image: "python"})
+```
+
+## Bring your own Dockerfile
+
+Set up the environment however you normally would, then bundle the build context (a path instead of an image reference):
+
+```dockerfile Dockerfile
+FROM python:3.12-slim
+
+WORKDIR /workspace
+RUN pip install requests numpy pandas
+
+CMD ["tail", "-f", "/dev/null"]
+```
+
+```bash
+hiver bundle ./my-image --tag data-tools
+```
+
+<Callout>If the image's default `CMD`/`ENTRYPOINT` exits immediately (common with language runtime images), the container stops as soon as it starts. Keep it alive by running a long-lived process, `CMD ["tail", "-f", "/dev/null"]` in the image, or the `entrypoint` config field when you provision.</Callout>
+
+```typescript
+const sandbox = await getOrCreateSandbox("data", {
+  image: "data-tools",
+  entrypoint: "tail -f /dev/null",
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("data", SandboxConfig(
+    image="data-tools",
+    entrypoint="tail -f /dev/null",
+))
+```
+
+```go
+sandbox, _ := c.GetOrCreateSandbox(ctx, "data", client.SandboxConfig{
+    Image:      "data-tools",
+    Entrypoint: "tail -f /dev/null",
+})
+```
+
+## Build a harness image
+
+To run a long-lived service inside the sandbox, like the [Claude Agent SDK](/docs/examples/agent-sdk-anthropic) server, `EXPOSE` its port and start it as the entrypoint. Build on `hiversh/agent-cli`, which already has the agent CLIs installed:
+
+```dockerfile agent/Dockerfile
+FROM node:22-slim
+
+ENV IS_SANDBOX=1
+WORKDIR /app
+
+COPY package.json .
+RUN npm install
+COPY server.ts .
+
+EXPOSE 3000
+CMD ["npx", "tsx", "server.ts"]
+```
+
+Bundle it:
+
+```bash
+hiver bundle ./agent --tag my-agent
+```
+
+Then provision from the tag and reach the service through the [proxy](/docs/ingress#exposed-ports), `getPorts` lists exposed ports, and `proxyUrl(port)` builds a URL that routes to the process inside:
+
+```typescript
+const sandbox = await getOrCreateSandbox("my-agent", { image: "my-agent" });
+
+console.log(await sandbox.getPorts()); // [3000]
+const res = await fetch(`${sandbox.proxyUrl(3000)}/health`);
+console.log(await res.text());
+```
+
+```python
+sandbox = await get_or_create_sandbox("my-agent", SandboxConfig(image="my-agent"))
+
+print(await sandbox.get_ports())  # [3000]
+async with httpx.AsyncClient() as http:
+    res = await http.get(sandbox.proxy_url(3000) + "/health")
+    print(res.text)
+```
+
+```go
+sandbox, _ := c.GetOrCreateSandbox(ctx, "my-agent", client.SandboxConfig{Image: "my-agent"})
+
+fmt.Println(sandbox.GetPorts(ctx)) // [3000]
+resp, _ := http.Get(sandbox.ProxyURL(3000) + "/health")
+```
+
+## Multi-platform builds
+
+Produce an image for multiple architectures in one bundle:
+
+```bash
+hiver bundle ./agent --tag my-agent --platform linux/amd64,linux/arm64
+```
+
+See the [CLI reference](/docs/cli#bundle-an-image) for all `bundle` options.
+
+---
+
+Next: [Execution](/docs/execution)

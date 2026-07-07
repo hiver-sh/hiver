@@ -1,0 +1,221 @@
+export const metadata = { title: "Python Sandbox" }
+
+# Python Sandbox
+
+Run untrusted Python in an isolated sandbox, evaluate model-generated code, crunch data, or execute a user script, all with a file system and network policy you control. The `python` image ships Python ready to run.
+
+## Run a snippet
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("py", { image: "python" });
+
+const result = await sandbox.exec(["python3", "-c", "print(sum(range(100)))"]);
+console.log(result.stdout.trim()); // "4950"
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("py", SandboxConfig(image="python"))
+
+result = await sandbox.exec(["python3", "-c", "print(sum(range(100)))"])
+print(result["stdout"].strip())  # "4950"
+```
+
+```go
+c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "py", client.SandboxConfig{Image: "python"})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{Command: []string{"python3", "-c", "print(sum(range(100)))"}})
+fmt.Println(result.Stdout) // "4950"
+```
+
+## Run a script
+
+[Write](/docs/write-file) the code into the sandbox, then run it:
+
+```typescript
+await sandbox.writeFile("/workspace/main.py", `
+import json
+data = [{"n": i, "sq": i * i} for i in range(5)]
+print(json.dumps(data))
+`);
+
+const { stdout } = await sandbox.exec(["python3", "/workspace/main.py"], { cwd: "/workspace" });
+console.log(JSON.parse(stdout));
+```
+
+```python
+await sandbox.write_file("/workspace/main.py", """
+import json
+data = [{"n": i, "sq": i * i} for i in range(5)]
+print(json.dumps(data))
+""")
+
+out = await sandbox.exec(["python3", "/workspace/main.py"], cwd="/workspace")
+print(json.loads(out["stdout"]))
+```
+
+```go
+sandbox.WriteFile(ctx, "/workspace/main.py", []byte(`
+import json
+data = [{"n": i, "sq": i * i} for i in range(5)]
+print(json.dumps(data))
+`))
+
+out, _ := sandbox.Exec(ctx, client.ExecRequest{Command: []string{"python3", "/workspace/main.py"}, CWD: "/workspace"})
+fmt.Println(out.Stdout)
+```
+
+## Install only the packages you allow
+
+By default the sandbox can't reach the network. `allowedPythonPackages` generates the exact egress rules `pip` needs for the packages you name, and nothing else, so any other install is blocked.
+
+```typescript
+import { getOrCreateSandbox, allowedPythonPackages } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("py", {
+  image: "python",
+  egress: [...allowedPythonPackages("numpy", "pandas")],
+});
+
+await sandbox.exec(["pip", "install", "numpy", "pandas"], { cwd: "/workspace" });
+const { stdout } = await sandbox.exec(["python3", "-c", "import numpy; print(numpy.__version__)"]);
+console.log(stdout.trim());
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, allowed_python_packages
+
+sandbox = await get_or_create_sandbox("py", SandboxConfig(
+    image="python",
+    egress=allowed_python_packages("numpy", "pandas"),
+))
+
+await sandbox.exec(["pip", "install", "numpy", "pandas"], cwd="/workspace")
+out = await sandbox.exec(["python3", "-c", "import numpy; print(numpy.__version__)"])
+print(out["stdout"].strip())
+```
+
+> The `allowed*` package helpers ship in the TypeScript and Python clients. In Go, add the equivalent `pip` egress rules to `SandboxConfig.Egress` directly.
+
+## Keep a Python session warm
+
+For repeated evaluations, keep one interpreter alive with [`execStream`](/docs/execution#passing-stdin-to-a-running-process) and feed it code over stdin, imports and loaded data persist across calls instead of paying startup each time.
+
+## End-to-end: an agent that runs Python
+
+Wire the sandbox up as an agent's **code interpreter**. Give the model a `run_python` tool whose handler executes the code in the sandbox and feeds the output back, the model writes code, sees the result, and iterates until it has an answer. Everything the model runs stays isolated in the sandbox.
+
+<Tabs>
+<Tab label="Anthropic SDK">
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("py-agent", { image: "python" });
+const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY
+
+const runPython = {
+  name: "run_python",
+  description: "Execute Python 3 code in a sandbox and return its stdout/stderr.",
+  input_schema: {
+    type: "object",
+    properties: { code: { type: "string" } },
+    required: ["code"],
+  },
+} as const;
+
+const messages: Anthropic.MessageParam[] = [
+  { role: "user", content: "Compute the 20th Fibonacci number and print just the number." },
+];
+
+while (true) {
+  const res = await anthropic.messages.create({
+    model: "claude-opus-4-8",
+    max_tokens: 1024,
+    tools: [runPython],
+    messages,
+  });
+  messages.push({ role: "assistant", content: res.content });
+
+  const toolUse = res.content.find((b) => b.type === "tool_use");
+  if (res.stop_reason !== "tool_use" || !toolUse) {
+    const text = res.content.find((b) => b.type === "text");
+    console.log("answer:", text?.text); // "answer: 6765"
+    break;
+  }
+
+  // Run the model's code inside the sandbox and return the result.
+  const { code } = toolUse.input as { code: string };
+  const { stdout, stderr, exit_code } = await sandbox.exec(["python3", "-c", code]);
+
+  messages.push({
+    role: "user",
+    content: [{
+      type: "tool_result",
+      tool_use_id: toolUse.id,
+      content: stdout || stderr,
+      is_error: exit_code !== 0,
+    }],
+  });
+}
+```
+
+</Tab>
+<Tab label="OpenAI SDK">
+
+```typescript
+import OpenAI from "openai";
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("py-agent", { image: "python" });
+const openai = new OpenAI(); // reads OPENAI_API_KEY
+
+const tools = [{
+  type: "function",
+  name: "run_python",
+  description: "Execute Python 3 code in a sandbox and return its stdout/stderr.",
+  parameters: {
+    type: "object",
+    properties: { code: { type: "string" } },
+    required: ["code"],
+    additionalProperties: false,
+  },
+  strict: true,
+}];
+
+const input: any[] = [
+  { role: "user", content: "Compute the 20th Fibonacci number and print just the number." },
+];
+
+while (true) {
+  const res = await openai.responses.create({ model: "gpt-5", tools, input });
+  input.push(...res.output);
+
+  const calls = res.output.filter((o) => o.type === "function_call");
+  if (calls.length === 0) {
+    console.log("answer:", res.output_text); // "answer: 6765"
+    break;
+  }
+
+  // Run the model's code inside the sandbox and return the result.
+  for (const call of calls) {
+    const { code } = JSON.parse(call.arguments);
+    const { stdout, stderr } = await sandbox.exec(["python3", "-c", code]);
+    input.push({ type: "function_call_output", call_id: call.call_id, output: stdout || stderr });
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+The loop is the whole pattern: **model → `run_python` → sandbox → result → model**, repeating until the model stops calling the tool. Swap `python3 -c` for [`writeFile`](/docs/write-file) + `python3 file.py` to run longer programs, or add [`allowedPythonPackages`](/docs/utils/python-packages) so the code can `pip install` a fixed set of libraries.
+
+---
+
+Next: [Node Sandbox](/docs/examples/node-sandbox)

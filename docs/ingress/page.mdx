@@ -1,0 +1,139 @@
+export const metadata = { title: "Ingress" }
+
+# Ingress
+
+A service running **inside** a sandbox can receive requests from **outside** it. Any TCP port a process binds is reachable through the gateway's ingress proxy, you build the URL with `proxyUrl(port)` and call it like any HTTP endpoint. This is how you send commands to a long-running agent or server living in the sandbox.
+
+## Start a server, then call it
+
+Here we write a tiny HTTP server that receives a command and returns a result, start it with [`execStream`](/docs/execution) so it keeps running, then reach it from the client through the proxy.
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("server", { image: "python" });
+
+// A minimal server that echoes back whatever command it receives.
+await sandbox.writeFile("/workspace/server.py", `
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers["content-length"])
+        cmd = json.loads(self.rfile.read(n))["cmd"]
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(json.dumps({"ran": cmd, "ok": True}).encode())
+
+HTTPServer(("0.0.0.0", 8000), H).serve_forever()
+`);
+
+// Start it in the background, execStream returns immediately and keeps it alive.
+const server = await sandbox.execStream(["python3", "/workspace/server.py"], { cwd: "/workspace" });
+
+// Give it a moment to bind, then send it a command through the proxy.
+await new Promise((r) => setTimeout(r, 500));
+
+const res = await fetch(`${sandbox.proxyUrl(8000)}/run`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ cmd: "build" }),
+});
+console.log(await res.json()); // { ran: "build", ok: true }
+```
+
+```python
+import asyncio, httpx
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("server", SandboxConfig(image="python"))
+
+await sandbox.write_file("/workspace/server.py", """
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers["content-length"])
+        cmd = json.loads(self.rfile.read(n))["cmd"]
+        self.send_response(200); self.end_headers()
+        self.wfile.write(json.dumps({"ran": cmd, "ok": True}).encode())
+
+HTTPServer(("0.0.0.0", 8000), H).serve_forever()
+""")
+
+server = await sandbox.exec_stream(["python3", "/workspace/server.py"], cwd="/workspace")
+await asyncio.sleep(0.5)
+
+async with httpx.AsyncClient() as http:
+    res = await http.post(sandbox.proxy_url(8000) + "/run", json={"cmd": "build"})
+    print(res.json())  # {"ran": "build", "ok": True}
+```
+
+```go
+sandbox, _ := c.GetOrCreateSandbox(ctx, "server", client.SandboxConfig{Image: "python"})
+
+sandbox.WriteFile(ctx, "/workspace/server.py", []byte(`
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers["content-length"])
+        cmd = json.loads(self.rfile.read(n))["cmd"]
+        self.send_response(200); self.end_headers()
+        self.wfile.write(json.dumps({"ran": cmd, "ok": True}).encode())
+
+HTTPServer(("0.0.0.0", 8000), H).serve_forever()
+`))
+
+sandbox.ExecStream(ctx, client.ExecStreamRequest{Command: []string{"python3", "/workspace/server.py"}, CWD: "/workspace"})
+time.Sleep(500 * time.Millisecond)
+
+body, _ := json.Marshal(map[string]string{"cmd": "build"})
+resp, _ := http.Post(sandbox.ProxyURL(8000)+"/run", "application/json", bytes.NewReader(body))
+defer resp.Body.Close()
+io.Copy(os.Stdout, resp.Body) // {"ran": "build", "ok": true}
+```
+
+## Exposed ports
+
+If your image declares ports with `EXPOSE`, list them with `getPorts` (`get_ports` / `GetPorts`); each is reachable via `proxyUrl`. A process that binds a port at runtime (like the server above) is reachable the same way without an `EXPOSE`.
+
+```typescript
+console.log(await sandbox.getPorts()); // e.g. [8000]
+```
+
+For a service baked into an image as its entrypoint, see [Custom Docker image](/docs/examples/custom-docker-image) and the [Claude Agent SDK](/docs/examples/agent-sdk-anthropic) example.
+
+## Observing inbound traffic
+
+Every inbound call surfaces on the [event stream](/docs/events) as an `ingress.request` / `ingress.response` pair, the mirror image of the `egress.*` events for outbound traffic. Watch them to audit what's hitting your in-sandbox service:
+
+```typescript
+for await (const event of sandbox.getEventsStream()) {
+  if (event.type === "ingress.request") {
+    console.log("in:", event.method, event.path, "→ port", event.port);
+  }
+}
+```
+
+```python
+async for event in sandbox.get_events_stream():
+    if event.type == "ingress.request":
+        print("in:", event.method, event.path, "-> port", event.port)
+```
+
+```go
+events, _ := sandbox.WatchEvents(ctx, -1)
+for evt := range events {
+    if evt.Type == "ingress.request" {
+        fmt.Println("in:", evt.Method, evt.Path, "-> port", evt.Port)
+    }
+}
+```
+
+---
+
+Next: [File Access](/docs/file-policy)

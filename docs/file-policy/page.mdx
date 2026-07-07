@@ -1,0 +1,144 @@
+export const metadata = { title: "File Access" }
+
+# File Access
+
+Control which paths inside a sandbox can be read or written using **ACL rules** on each file system mount. Rules are defined per-mount in `SandboxConfig.fs[].acls` and enforced underneath the sandbox before any process can touch a file.
+
+## The ACL model
+
+Each rule has two fields:
+
+| Field | Description |
+|-------|-------------|
+| `path` | A glob matched against the absolute path (e.g. `/workspace/**`, `/workspace/*.env`). |
+| `access` | `"rw"` (read-write), `"ro"` (read-only), or `"deny"` (block all access). |
+
+Rules are matched **longest-prefix-first**, the most specific matching `path` wins. If no rule matches, access is **denied by default**.
+
+## Read-write workspace
+
+The simplest policy grants full access to a single mount. This is also the default when you omit `fs` entirely.
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  fs: [{
+    backend: "local",
+    mount: "/workspace",
+    acls: [{ path: "/workspace/**", access: "rw" }],
+  }],
+});
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, LocalFileSystem, ACLRule
+
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    fs=[LocalFileSystem(
+        backend="local",
+        mount="/workspace",
+        acls=[ACLRule(path="/workspace/**", access="rw")],
+    )],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    FS: []client.FileSystem{{
+        Backend: "local",
+        Mount:   "/workspace",
+        ACLs:    []client.ACLRule{{Path: "/workspace/**", Access: "rw"}},
+    }},
+})
+```
+
+## Deny sensitive paths
+
+Combine rules to allow broad reads while blocking secrets and permitting writes only to an output directory. Because matching is longest-prefix-first, the specific rules win over the broad fallback regardless of order:
+
+```typescript
+fs: [{
+  backend: "local",
+  mount: "/workspace",
+  acls: [
+    { path: "/workspace/secrets/**", access: "deny" },
+    { path: "/workspace/.env",       access: "deny" },
+    { path: "/workspace/output/**",  access: "rw"   },
+    { path: "/workspace/**",         access: "ro"   }, // fallback: read-only
+  ],
+}]
+```
+
+```python
+fs=[LocalFileSystem(
+    backend="local",
+    mount="/workspace",
+    acls=[
+        ACLRule(path="/workspace/secrets/**", access="deny"),
+        ACLRule(path="/workspace/.env",       access="deny"),
+        ACLRule(path="/workspace/output/**",  access="rw"),
+        ACLRule(path="/workspace/**",         access="ro"),  # fallback: read-only
+    ],
+)]
+```
+
+```go
+FS: []client.FileSystem{{
+    Backend: "local",
+    Mount:   "/workspace",
+    ACLs: []client.ACLRule{
+        {Path: "/workspace/secrets/**", Access: "deny"},
+        {Path: "/workspace/.env",       Access: "deny"},
+        {Path: "/workspace/output/**",  Access: "rw"},
+        {Path: "/workspace/**",         Access: "ro"}, // fallback: read-only
+    },
+}},
+```
+
+The `secrets/**` and `.env` rules block access, `output/**` is writable, and everything else under `/workspace` is readable but not writable.
+
+## Change ACLs at runtime
+
+Use `applyConfig` to tighten or loosen access on a running sandbox without restarting it. The change is atomic, there's no window where both old and new rules are active.
+
+```typescript
+const current = await sandbox.getConfig();
+const result = await sandbox.applyConfig({
+  ...current,
+  fs: current.fs.map(f =>
+    f.mount === "/workspace"
+      ? { ...f, acls: [{ path: "/workspace/**", access: "ro" }] }
+      : f
+  ),
+});
+console.log(result.applied); // true if applied
+```
+
+```python
+current = await sandbox.get_config()
+for f in current.fs:
+    if f.mount == "/workspace":
+        f.acls = [ACLRule(path="/workspace/**", access="ro")]
+result = await sandbox.apply_config(current)
+print(result.applied)  # True if applied
+```
+
+```go
+current, _ := sandbox.GetConfig(ctx)
+for i := range current.FS {
+    if current.FS[i].Mount == "/workspace" {
+        current.FS[i].ACLs = []client.ACLRule{{Path: "/workspace/**", Access: "ro"}}
+    }
+}
+result, err := sandbox.ApplyConfig(ctx, *current)
+fmt.Println(result.Applied) // true if applied
+```
+
+Access violations return `EACCES` to the process and are recorded on the event stream as `fs.request` events with `access: "denied"`, see the [Events](/docs/events).
+
+<Callout>ACLs govern what the <b>agent</b> (code running inside the sandbox) can touch. The client file methods, `writeFile` / `readFile` and friends, operate as the operator and bypass ACLs by design.</Callout>
+
+---
+
+Next: [Fuse Drives](/docs/remote-file-systems)

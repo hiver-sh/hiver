@@ -1,0 +1,200 @@
+export const metadata = { title: "Bash Sandbox" }
+
+# Bash Sandbox
+
+Run arbitrary shell commands in an isolated sandbox, the general-purpose escape hatch for anything a language runtime doesn't cover: `git`, `curl`, `ffmpeg`, build tools, or a chain of commands. The default image includes `bash`; pass a `bash -lc` argv and read back stdout, stderr, and the exit code.
+
+## Run a command
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("sh");
+
+const result = await sandbox.exec(["bash", "-lc", "echo $((6 * 7))"]);
+console.log(result.stdout.trim()); // "42"
+console.log(result.exit_code);     // 0
+```
+
+```python
+from hiver import get_or_create_sandbox
+
+sandbox = await get_or_create_sandbox("sh")
+
+result = await sandbox.exec(["bash", "-lc", "echo $((6 * 7))"])
+print(result["stdout"].strip())  # "42"
+print(result["exit_code"])       # 0
+```
+
+```go
+c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "sh", client.SandboxConfig{})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{Command: []string{"bash", "-lc", "echo $((6 * 7))"}})
+fmt.Println(result.Stdout) // "42\n"
+```
+
+Passing `bash -lc "<script>"` as argv runs the string through a shell, so pipes, redirects, `&&`, and variable expansion all work — while the command stays a single, quote-safe array element on your side.
+
+## Run a script
+
+[Write](/docs/write-file) a script into the sandbox, make it executable, and run it:
+
+```typescript
+await sandbox.writeFile("/workspace/build.sh", `#!/usr/bin/env bash
+set -euo pipefail
+echo "building..."
+date +%s > /workspace/built-at.txt
+echo "done"
+`);
+
+const { stdout } = await sandbox.exec(["bash", "/workspace/build.sh"], { cwd: "/workspace" });
+console.log(stdout);
+```
+
+```python
+await sandbox.write_file("/workspace/build.sh", """#!/usr/bin/env bash
+set -euo pipefail
+echo "building..."
+date +%s > /workspace/built-at.txt
+echo "done"
+""")
+
+out = await sandbox.exec(["bash", "/workspace/build.sh"], cwd="/workspace")
+print(out["stdout"])
+```
+
+```go
+sandbox.WriteFile(ctx, "/workspace/build.sh", []byte(`#!/usr/bin/env bash
+set -euo pipefail
+echo "building..."
+date +%s > /workspace/built-at.txt
+echo "done"
+`))
+
+out, _ := sandbox.Exec(ctx, client.ExecRequest{Command: []string{"bash", "/workspace/build.sh"}, CWD: "/workspace"})
+fmt.Println(out.Stdout)
+```
+
+## Keep a shell session warm
+
+For a back-and-forth session where state (environment variables, working directory, background processes) should persist across commands, keep one shell alive with [`execStream`](/docs/execution#passing-stdin-to-a-running-process) and write commands to its stdin:
+
+```typescript
+const shell = await sandbox.execStream(["bash"], { cwd: "/workspace" });
+
+await shell.writeStdin("cd /tmp && export TOKEN=abc\n");
+await shell.writeStdin("echo $TOKEN in $(pwd)\n"); // "abc in /tmp"
+await shell.writeStdin("exit\n");
+
+for await (const chunk of shell.pipes) {
+  if (chunk.stdout) process.stdout.write(chunk.stdout);
+}
+```
+
+## End-to-end: an agent that runs shell
+
+Give a model a single `bash` tool whose handler runs the command in the sandbox, and it can accomplish multi-step tasks on its own, isolated from your host.
+
+<Tabs>
+<Tab label="Anthropic SDK">
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("sh-agent");
+const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY
+
+const bash = {
+  name: "bash",
+  description: "Run a bash command in a sandbox and return its output.",
+  input_schema: {
+    type: "object",
+    properties: { command: { type: "string" } },
+    required: ["command"],
+  },
+} as const;
+
+const messages: Anthropic.MessageParam[] = [
+  { role: "user", content: "Create /workspace/notes/ and write today's date into a file inside it, then list the folder." },
+];
+
+while (true) {
+  const res = await anthropic.messages.create({
+    model: "claude-opus-4-8",
+    max_tokens: 1024,
+    tools: [bash],
+    messages,
+  });
+  messages.push({ role: "assistant", content: res.content });
+
+  const toolUse = res.content.find((b) => b.type === "tool_use");
+  if (res.stop_reason !== "tool_use" || !toolUse) {
+    console.log(res.content.find((b) => b.type === "text")?.text);
+    break;
+  }
+
+  const { command } = toolUse.input as { command: string };
+  const { stdout, stderr, exit_code } = await sandbox.exec(["bash", "-lc", command]);
+
+  messages.push({
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: toolUse.id, content: stdout || stderr, is_error: exit_code !== 0 }],
+  });
+}
+```
+
+</Tab>
+<Tab label="OpenAI SDK">
+
+```typescript
+import OpenAI from "openai";
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("sh-agent");
+const openai = new OpenAI(); // reads OPENAI_API_KEY
+
+const tools = [{
+  type: "function",
+  name: "bash",
+  description: "Run a bash command in a sandbox and return its output.",
+  parameters: {
+    type: "object",
+    properties: { command: { type: "string" } },
+    required: ["command"],
+    additionalProperties: false,
+  },
+  strict: true,
+}];
+
+const input: any[] = [
+  { role: "user", content: "Create /workspace/notes/ and write today's date into a file inside it, then list the folder." },
+];
+
+while (true) {
+  const res = await openai.responses.create({ model: "gpt-5", tools, input });
+  input.push(...res.output);
+
+  const calls = res.output.filter((o) => o.type === "function_call");
+  if (calls.length === 0) {
+    console.log(res.output_text);
+    break;
+  }
+
+  for (const call of calls) {
+    const { command } = JSON.parse(call.arguments);
+    const { stdout, stderr } = await sandbox.exec(["bash", "-lc", command]);
+    input.push({ type: "function_call_output", call_id: call.call_id, output: stdout || stderr });
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+<Callout>Alpine-based images (like `python:3.13-alpine`) ship `sh`, not `bash`. Use `["sh", "-lc", …]` there, or bundle an image that includes bash.</Callout>
+
+---
+
+Next: [Custom Docker image](/docs/examples/custom-docker-image)

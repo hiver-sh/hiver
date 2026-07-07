@@ -1,0 +1,32 @@
+export const metadata = { title: "Container" }
+
+# Container
+
+Container isolation is the default. The sandbox runs as an isolated container with its own filesystem and process namespace, and its CPU and memory are enforced as cgroup limits. It's fast to start and the right choice for most workloads.
+
+## When you get it
+
+Isolation isn't a config field. It's selected automatically from the **image**: a standard Docker image runs as a container, while an image that ships its own guest kernel runs as a [microVM](/docs/runtime/microvm). From your side the API is identical either way. Read the active mechanism with `getInfo`:
+
+```typescript
+const { isolation } = await sandbox.getInfo();
+console.log(isolation); // "container"
+```
+
+```python
+info = await sandbox.get_info()
+print(info.isolation)  # "container"
+```
+
+```go
+info, _ := sandbox.GetInfo(ctx)
+fmt.Println(info.Isolation) // "container"
+```
+
+## CPU and memory
+
+`cpu` (which may be fractional) and `memory` are applied as the container's cgroup limits. Both are set at creation and can't be changed afterward.
+
+---
+
+Next: [MicroVM](/docs/runtime/microvm)

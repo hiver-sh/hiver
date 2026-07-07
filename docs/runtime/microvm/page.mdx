@@ -1,0 +1,79 @@
+export const metadata = { title: "MicroVM" }
+
+# MicroVM
+
+MicroVM isolation runs the sandbox inside a lightweight virtual machine with its **own guest kernel**. Because the workload is separated from the host by hardware virtualization rather than just namespaces, it's the strongest boundary, safe to run fully untrusted code on shared nodes.
+
+From your side nothing changes: `exec`, files, terminals, egress, and events all behave exactly as they do on a [container](/docs/runtime/container). The difference is under the hood.
+
+## Build a microVM image
+
+Isolation isn't a config field. It's baked into the **image**: a microVM image ships a guest kernel and root filesystem. Produce one from any Docker image by passing `--microvm` to `hiver bundle`:
+
+```bash
+hiver bundle python:3.13-alpine --tag python-vm --microvm
+```
+
+The prebuilt agent images also ship microVM variants (for example `hiversh/python:3.13-alpine-microvm`), so you often don't need to build your own.
+
+## Run it
+
+Pass the image tag as `image` when you provision, exactly like any other sandbox. The runtime selects microVM isolation from the image automatically:
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("vm", { image: "python-vm" });
+
+const { isolation } = await sandbox.getInfo();
+console.log(isolation); // "microvm"
+```
+
+```python
+sandbox = await get_or_create_sandbox("vm", SandboxConfig(image="python-vm"))
+
+info = await sandbox.get_info()
+print(info.isolation)  # "microvm"
+```
+
+```go
+sandbox, _ := c.GetOrCreateSandbox(ctx, "vm", client.SandboxConfig{Image: "python-vm"})
+
+info, _ := sandbox.GetInfo(ctx)
+fmt.Println(info.Isolation) // "microvm"
+```
+
+## Requirements
+
+MicroVMs run on **Firecracker**, which needs **KVM** (hardware virtualization) on the host node. Container isolation has no such requirement, so plan the host accordingly:
+
+- **A Linux host with `/dev/kvm`.** Bare-metal Linux exposes KVM directly. In the cloud, the node must have **nested virtualization** enabled. The local Docker runtime (macOS/Windows) has no KVM, so use container images for local development.
+- **Privileged sandbox pods.** On Kubernetes the runtime launches sandboxes as privileged pods, so their namespace must allow the `privileged` Pod Security Standard.
+
+## Deploying on Kubernetes
+
+On GKE (or any cluster), the node pool that runs sandboxes needs:
+
+- **Nested virtualization** enabled (`advancedMachineFeatures.enableNestedVirtualization`).
+- An **Ubuntu** node image (`UBUNTU_CONTAINERD`). Container-Optimized OS ships no KVM.
+- A CPU platform of **Haswell or newer**.
+- **Local SSD (NVMe)** for the snapshot/resume fast path (recommended, not required).
+
+The [GKE Terraform](/docs/deploy/gke) provisions a node pool with all of this configured; the [Kubernetes](/docs/deploy/kubernetes) chart deploys the control plane on top. Kubernetes defaults to microVM isolation for images that ship a guest kernel.
+
+## Resume from a snapshot
+
+The microVM's headline capability is **VM-state snapshots**: the full guest (memory and CPU) is captured, so a sandbox can **resume** in well under 100ms instead of cold-booting. A `getOrCreateSandbox` under a `snapshot.vm.key` resumes the keyed snapshot if one exists, otherwise it cold-boots and captures one. This is how a warm workload, like a resident browser, comes back instantly per request. See [Snapshots](/docs/snapshots).
+
+```typescript
+const sandbox = await getOrCreateSandbox("warm", {
+  image: "python-vm",
+  snapshot: { vm: { key: "warm-pool-1" } },
+});
+```
+
+<Callout>`cpu` and `memory` are boot-time properties of the guest, baked into a VM snapshot at capture. A sandbox resumed from a snapshot gets the CPU and RAM the guest had when the snapshot was **created**, so set them when creating the snapshot as well as on resume.</Callout>
+
+---
+
+Next: [Allow Sandbox](/docs/utils/allow-sandbox)

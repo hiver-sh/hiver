@@ -1,0 +1,59 @@
+export const metadata = { title: "Installation" }
+
+# Installation
+
+## Requirements
+
+- Node.js 18+
+- Docker
+
+## Install the CLI
+
+<CodeBlock tabs={[
+  { label: "npm", lang: "bash", icon: "bash", filename: "Run", code: "npm i -g @hiver.sh/cli" },
+  { label: "Bash", lang: "sh", icon: "bash", filename: "Run", code: "curl -fsSL https://hiver.sh/install | sh" },
+  { label: "PowerShell", lang: "shell", icon: "bash", filename: "Run", code: "irm https://hiver.sh/install.ps1 | iex" },
+]} />
+
+## Install the client SDK
+
+Add the Hiver client to your project to provision and control sandboxes from code.
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", icon: "bash", filename: "Run", code: "npm install --save @hiver.sh/client" },
+  { label: "PY", lang: "python", icon: "bash", filename: "Run", code: "pip install hiver-py" },
+  { label: "Go", lang: "go", icon: "bash", filename: "Run", code: "go get github.com/hiver-sh/hiver/client" },
+]} />
+
+## Hiver skill
+
+Just say install the Hiver skill to get the full documentation in your favorite coding agent.
+
+<CodeBlock tabs={[
+  { label: "curl", lang: "bash", icon: "bash", filename: "Run", code: "curl https://hiver.sh/SKILL.md" },
+]} />
+
+<Tabs>
+<Tab label="Claude Code">
+
+Save it as a project skill so it's picked up automatically:
+
+<CodeBlock tabs={[
+  { label: "Bash", lang: "sh", icon: "bash", filename: "Run", code: "mkdir -p .claude/skills/hiver\ncurl https://hiver.sh/SKILL.md -o .claude/skills/hiver/SKILL.md" },
+]} />
+
+</Tab>
+<Tab label="Codex">
+
+Append it to your project's `AGENTS.md` so it's loaded into context automatically:
+
+<CodeBlock tabs={[
+  { label: "Bash", lang: "sh", icon: "bash", filename: "Run", code: "curl https://hiver.sh/SKILL.md >> AGENTS.md" },
+]} />
+
+</Tab>
+</Tabs>
+
+---
+
+Next: [Getting Started](/docs/getting-started)

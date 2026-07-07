@@ -1,0 +1,199 @@
+export const metadata = { title: "Pseudo Terminals" }
+
+# Pseudo Terminals
+
+A pseudo-terminal (PTY) makes a program behave as if a human were typing at a real terminal, so full-screen **TUIs** (Claude Code, `vim`, `htop`), colors, prompts, and cursor control all work. Pass `tty: true` to `execStream` and you get a PTY-backed process you can drive from your own code.
+
+This is exactly how the [Inspector's Terminal](/docs/inspector) works, and it's how you'd attach your local terminal to an agent CLI running inside a sandbox.
+
+## What a PTY changes
+
+- **stderr merges into stdout**, all output arrives on the stdout channel.
+- **Input is raw**, every keystroke (arrows, `Ctrl-C`, `Tab`) is delivered to the program instead of being line-buffered.
+- **The terminal has a size**, programs query rows × columns to lay out their UI, so you must tell the PTY how big your terminal is (and update it on resize).
+
+## Anatomy of a terminal
+
+To wire your local terminal to a program running on a PTY inside the sandbox, you do four things:
+
+1. **Start the program on a PTY**, `execStream(cmd, { tty: true })`.
+2. **Send the initial size** and keep it in sync on resize (a `CSI 8` sequence, below).
+3. **Forward keystrokes**, put your local terminal in raw mode and pipe each byte to `writeStdin`.
+4. **Render output**, stream `proc.pipes` (stdout) straight to your terminal.
+
+## Run Claude Code in your terminal
+
+This attaches your local terminal to Claude Code running inside a sandbox, you get the full interactive TUI, but the agent (and everything it does) runs in the isolated sandbox.
+
+```typescript
+import process from "node:process";
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("claude-tui", {
+  image: "claude",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+});
+
+const { stdin, stdout } = process;
+
+// 1. Start the TUI on a PTY. TERM/COLORTERM let it emit colour + cursor control.
+const proc = await sandbox.execStream(["claude"], {
+  cwd: "/workspace",
+  tty: true,
+  env: { TERM: "xterm-256color", COLORTERM: "truecolor" },
+});
+
+// 2. Send the current window size. The server intercepts this CSI 8 sequence
+//    and resizes the PTY instead of forwarding it. Re-send it on stdout's
+//    "resize" event to keep the PTY in sync as your window changes.
+await proc.writeStdin(`\x1b[8;${stdout.rows ?? 24};${stdout.columns ?? 80}t`);
+
+// 3. Raw mode: forward every keystroke to the remote PTY.
+if (stdin.isTTY) stdin.setRawMode(true);
+stdin.resume();
+stdin.on("data", (buf) => proc.writeStdin(buf.toString("utf8")).catch(() => {}));
+
+// 4. Render the TUI's output to your terminal.
+for await (const chunk of proc.pipes) {
+  if (chunk.stdout) stdout.write(chunk.stdout);
+}
+
+// Restore the local terminal on exit.
+if (stdin.isTTY) stdin.setRawMode(false);
+stdin.pause();
+```
+
+```python
+import asyncio, os, sys, termios, tty, shutil
+import hiver
+
+async def main():
+    sandbox = await hiver.get_or_create_sandbox("claude-tui", hiver.SandboxConfig(
+        image="claude",
+        env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+    ))
+
+    # 1. Start the TUI on a PTY.
+    proc = await sandbox.exec_stream(["claude"], cwd="/workspace", tty=True,
+        env={"TERM": "xterm-256color", "COLORTERM": "truecolor"})
+
+    # 2. Send the current window size (CSI 8: rows;cols).
+    cols, rows = shutil.get_terminal_size()
+    await proc.write_stdin(f"\x1b[8;{rows};{cols}t")
+
+    # 3. Raw mode: forward every keystroke.
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setraw(fd)
+    loop = asyncio.get_event_loop()
+
+    async def forward_input():
+        reader = asyncio.StreamReader()
+        await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+        while True:
+            data = await reader.read(1024)
+            if not data:
+                break
+            await proc.write_stdin(data.decode(errors="ignore"))
+
+    try:
+        input_task = asyncio.create_task(forward_input())
+        # 4. Render output.
+        async for chunk in proc.pipes:
+            if "stdout" in chunk:
+                sys.stdout.write(chunk["stdout"])
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)  # restore terminal
+        input_task.cancel()
+
+asyncio.run(main())
+```
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    client "github.com/hiver-sh/hiver/client"
+    "golang.org/x/term"
+)
+
+func main() {
+    ctx := context.Background()
+    c := client.NewClient(client.DefaultGatewayURL)
+    sandbox, _ := c.GetOrCreateSandbox(ctx, "claude-tui", client.SandboxConfig{
+        Image: "claude",
+        Env:   map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")},
+    })
+
+    // 1. Start the TUI on a PTY.
+    proc, _ := sandbox.ExecStream(ctx, client.ExecStreamRequest{
+        Command: []string{"claude"},
+        CWD:     "/workspace",
+        TTY:     true,
+        Env:     map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
+    })
+
+    // 2. Send the current window size (CSI 8: rows;cols).
+    cols, rows, _ := term.GetSize(int(os.Stdout.Fd()))
+    proc.WriteStdin(ctx, fmt.Sprintf("\x1b[8;%d;%dt", rows, cols))
+
+    // 3. Raw mode: forward every keystroke.
+    old, _ := term.MakeRaw(int(os.Stdin.Fd()))
+    defer term.Restore(int(os.Stdin.Fd()), old)
+    go func() {
+        buf := make([]byte, 1024)
+        for {
+            n, err := os.Stdin.Read(buf)
+            if err != nil {
+                return
+            }
+            proc.WriteStdin(ctx, string(buf[:n]))
+        }
+    }()
+
+    // 4. Render output.
+    for chunk := range proc.Output {
+        fmt.Print(chunk.Stdout)
+    }
+}
+```
+
+Type inside the session as you would locally, Claude Code's TUI runs in the sandbox, reads and writes files in `/workspace`, and its network access is governed by your [egress policy](/docs/network-policy).
+
+## Resizing
+
+A terminal program needs to know its size to draw itself. Send the size as a **`CSI 8` sequence** on stdin, `\x1b[8;<rows>;<cols>t`, and the sandbox intercepts it and resizes the PTY (it isn't forwarded to the program as input). Send it once at startup, then again whenever your local window changes (e.g. Node's `stdout` `"resize"` event, or `SIGWINCH`).
+
+```text
+\x1b[8;40;120t   → resize the PTY to 40 rows × 120 columns
+```
+
+## Attaching to the entrypoint's terminal
+
+The example above spawns `claude` as a new process on its own PTY. Alternatively, create the sandbox with `tty: true` in its **config** so the *entrypoint itself* runs on a PTY, then attach to that same terminal by calling `execStream` with an **empty command**:
+
+```typescript
+const sandbox = await hiver.getOrCreateSandbox("claude-tui", {
+  image: "claude",
+  entrypoint: "claude",
+  tty: true, // the entrypoint runs on a PTY (container isolation only)
+});
+
+// Empty command -> attach to the entrypoint's terminal instead of spawning one
+const proc = await sandbox.execStream("", { tty: true });
+```
+
+This is useful when the agent CLI *is* the sandbox's main process and you want to view and drive it directly, multiple clients can attach to the same terminal.
+
+## In the browser
+
+The same stream drives a browser terminal. Point an [`xterm.js`](https://xtermjs.org) instance at the sandbox: write `proc.pipes` output into the terminal, send `term.onData` keystrokes to `writeStdin`, and forward `term.onResize` as the `CSI 8` sequence. That's precisely what the [Inspector's Terminal](/docs/inspector) does.
+
+---
+
+Next: [File Access](/docs/file-policy)

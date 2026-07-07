@@ -1,0 +1,95 @@
+export const metadata = { title: "Agent Loop" }
+
+# Agent Loop
+
+An agent loop drives an agent through repeated exec-observe-decide cycles inside a single sandbox. Because the sandbox persists between iterations, every step sees the files, installed packages, and side-effects left by previous steps, no setup overhead on each turn.
+
+## State persistence
+
+Every `sandbox.exec` call runs inside the same sandbox. Files written in step 0 are available in step 1, packages installed in step 1 are available in step 2, and so on. There is nothing special to configure, persistence is the default.
+
+To reset state between iterations, either create a new sandbox or restore from a [snapshot](/docs/snapshots).
+
+## Basic loop
+
+```typescript
+import { getOrCreateSandbox, shutdown } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("agent-loop", {
+  fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] }],
+  ttl: 3600,
+});
+
+// Prevent TTL expiry while the loop is running
+const pingTimer = setInterval(sandbox.ping, 10_000);
+
+let step = 0;
+const maxSteps = 10;
+
+while (step < maxSteps) {
+  const result = await sandbox.exec(["run-step", step], { cwd: "/workspace" });
+
+  if (result.exit_code !== 0) {
+    console.error(`step ${step} failed:\n${result.stderr}`);
+    break;
+  }
+
+  // Inspect stdout to decide what to do next
+  step++;
+}
+
+clearInterval(pingTimer);
+await shutdown(sandbox);
+```
+
+## Keeping the sandbox alive
+
+Sandboxes shut down after `ttl` seconds of inactivity. A long-running loop can easily exceed the idle window between exec calls while waiting for the model to decide the next action.
+
+Call `sandbox.ping` on an interval to reset the countdown:
+
+```typescript
+const pingTimer = setInterval(sandbox.ping, 10_000);
+
+// ... run the loop ...
+
+clearInterval(pingTimer); // stop pinging before shutdown
+```
+
+Ten seconds is a safe interval for any TTL of one minute or more.
+
+## Streaming output from long steps
+
+For steps that run for more than a few seconds, use `execStream` so you see output as it arrives rather than waiting for the process to finish:
+
+```typescript
+const stream = await sandbox.execStream(["run-step", step], { cwd: "/workspace" });
+
+for await (const event of stream) {
+  if (event.type === "stdout") process.stdout.write(event.text);
+  if (event.type === "stderr") process.stderr.write(event.text);
+  if (event.type === "exit" && event.code !== 0) {
+    console.error(`step ${step} exited with code ${event.code}`);
+    break;
+  }
+}
+```
+
+## Handling failure and early exit
+
+Check `exit_code` after each step and break out of the loop when something goes wrong. Anything your agent writes to `/workspace` before the failure is still there, so you can inspect, resume, or snapshot the state.
+
+```typescript
+const result = await sandbox.exec(["run-step", step], { cwd: "/workspace" });
+
+if (result.exit_code !== 0) {
+  // Log what went wrong
+  console.error(result.stderr);
+  // Optionally snapshot for debugging
+  break;
+}
+```
+
+---
+
+Next: [Agent Swarms](/docs/agent-swarm)

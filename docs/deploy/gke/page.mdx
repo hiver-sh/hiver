@@ -1,0 +1,79 @@
+export const metadata = { title: "Deploy on GKE" }
+
+# Deploy on GKE
+
+Run Hive on Google Kubernetes Engine.
+
+## Prerequisites
+
+- A GCP project with billing enabled
+- `gcloud` CLI installed and authenticated
+- `kubectl` installed
+
+## Create a GKE cluster
+
+```bash
+gcloud container clusters create hive-cluster \
+  --zone us-central1-a \
+  --num-nodes 3 \
+  --machine-type n2-standard-4
+
+gcloud container clusters get-credentials hive-cluster --zone us-central1-a
+```
+
+## Deploy the Hive controller
+
+```bash
+kubectl apply -f https://install.hive.run/operator/gke.yaml
+```
+
+Create a secret with your GCP service account key:
+
+```bash
+kubectl create secret generic hive-gcp-credentials \
+  --from-file=key.json=/path/to/service-account-key.json
+```
+
+Apply the cluster config:
+
+```yaml
+apiVersion: hive.run/v1
+kind: HiveCluster
+metadata:
+  name: hive
+spec:
+  provider: gcp
+  project: my-gcp-project
+  region: us-central1
+  credentials:
+    secretRef: hive-gcp-credentials
+  sandboxes:
+    maxConcurrent: 100
+    defaultImage: ubuntu:24.04
+```
+
+```bash
+kubectl apply -f hive-cluster.yaml
+```
+
+## Verify
+
+```bash
+kubectl get hivecluster hive
+# NAME   STATUS   ENDPOINT                        AGE
+# hive   Ready    https://hive.internal.example   2m
+```
+
+## Connect the TypeScript client
+
+Pass `gatewayUrl` to point the SDK at your deployed controller:
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  fs: [{ backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] }],
+}, {
+  gatewayUrl: "https://hive.internal.example",
+});
+```

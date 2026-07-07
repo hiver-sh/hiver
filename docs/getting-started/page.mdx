@@ -1,0 +1,229 @@
+export const metadata = { title: "Getting Started" }
+
+# Getting Started
+
+This guide walks you through starting the gateway, provisioning your first sandbox, running a command inside it, and using the inspector.
+
+## CLI
+
+Use the `hiver` command to manage a local cluster of sandboxes and agents. See the [CLI reference](/docs/cli) for every command and flag.
+
+```
+hiver
+
+⬢ Hiver · Agent Runtime
+
+  Usage: hiver <command> [options]
+
+  Commands
+    up       Bring up local stack
+    down     Bring down local stack
+    connect  Connect to remote stack
+    start    Start a sandbox
+    stop     Stop a sandbox
+    shell    Open an interactive shell in a sandbox
+    list     List the sandboxes
+    events   Stream a sandbox's events live as they happen
+    inspect  Launch the inspector
+    bundle   Bundle a Docker image into a Hiver runtime image
+
+  Run hiver <command> --help for command details.
+```
+
+### Start the gateway
+
+```bash
+hiver up
+```
+
+The gateway provides access to the agents. By default, it listens on `localhost:10000`.
+
+### Start a sandbox
+
+```bash
+hiver start agent-1
+```
+
+By default, this will prompt to start an agent running Claude Code, Codex, Copilot CLI, or Gemini CLI.
+
+### Open the Inspector
+
+```bash
+hiver inspect agent-1
+```
+
+## First app
+
+Install the client SDK for your language (see [Installation](/docs/installation)), then provision your first sandbox.
+
+### Provision a sandbox
+
+`getOrCreateSandbox` provisions a new sandbox or returns the existing one with the same key. The key allows to establish communication with an existing sandbox in the case the client connection died or reset.
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("agent-1", {
+    image: "claude",
+});` },
+  { label: "PY", lang: "python", code: `from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("agent-1", SandboxConfig(
+    image="claude",
+))` },
+  { label: "Go", lang: "go", code: `import (
+    "context"
+    client "github.com/hiver-sh/hiver/client"
+)
+
+c := client.NewClient(client.DefaultGatewayURL)
+sandbox, err := c.GetOrCreateSandbox(context.Background(), "agent-1", client.SandboxConfig{
+    Image: "claude",
+})` },
+]} />
+
+### Config options
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `image` | `string` | Container image to launch (e.g. `"claude"`). Defaults to the Hiver base image. Cannot be changed after initialization. The image also selects the isolation mechanism, a microVM image ships its own guest kernel. |
+| `cpu` | `number` | Virtual CPUs allocated to the sandbox (may be fractional, e.g. `0.5`). Defaults to `1`. Cannot be changed after initialization. |
+| `memory` | `number` | Memory in MiB. Defaults to `512`. Cannot be changed after initialization. |
+| `entrypoint` | `string` | Override the image's default entrypoint. |
+| `cwd` | `string` | Working directory for the entrypoint. Cannot be changed after initialization. |
+| `tty` | `boolean` | Launch the entrypoint with a pseudo-TTY. Container isolation only. Cannot be changed after initialization. |
+| `env` | `Record<string, string>` | Additional environment variables injected into the sandbox. |
+| `extra_hosts` | `string[]` | Additional `/etc/hosts` entries in `hostname:ip` form. Cannot be changed after initialization. |
+| `ttl` | `number` | Idle seconds before the sandbox shuts itself down. Defaults to `1800` (30 min). Use `0` to disable. |
+| `fs` | `FileSystem[]` | File systems exposed to the agent. Defaults to a local `/workspace` mount with read/write access. |
+| `egress` | `EgressRule[]` | Ordered egress rules, first match wins. All outbound traffic is allowed by default. |
+| `snapshot` | `Snapshot` | Automatic snapshot configuration, captured on shutdown, restored on start. |
+
+## Run a command
+
+`exec` runs a shell command and returns buffered stdout, stderr, and exit code once the process finishes.
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `const result = await sandbox.exec(["echo", "hello", "world"]);
+console.log(result.stdout);    // "hello world\\n"
+console.log(result.exit_code); // 0` },
+  { label: "PY", lang: "python", code: `result = await sandbox.exec(["echo", "hello", "world"])
+print(result["stdout"])    # "hello world\\n"
+print(result["exit_code"]) # 0` },
+  { label: "Go", lang: "go", code: `result, err := sandbox.Exec(ctx, client.ExecRequest{Command: []string{"echo", "hello", "world"}})
+fmt.Println(result.Stdout)   // "hello world\\n"
+fmt.Println(result.ExitCode) // 0` },
+]} />
+
+## Keep the sandbox alive
+
+Sandboxes shut down automatically after `ttl` seconds of inactivity. Call `ping` on an interval to reset the countdown while your process is running.
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `setInterval(sandbox.ping, 10_000);` },
+  { label: "PY", lang: "python", code: `import asyncio
+
+async def keep_alive():
+    while True:
+        await sandbox.ping()
+        await asyncio.sleep(10)
+
+asyncio.create_task(keep_alive())` },
+  { label: "Go", lang: "go", code: `go func() {
+    for range time.Tick(10 * time.Second) {
+        sandbox.Ping(context.Background())
+    }
+}()` },
+]} />
+
+## Shut down
+
+When you are done, call `shutdown` to release the sandbox immediately rather than waiting for the TTL to expire.
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { shutdown } from "@hiver.sh/client";
+
+await shutdown(sandbox);` },
+  { label: "PY", lang: "python", code: `from hiver import shutdown
+
+await shutdown(sandbox)` },
+  { label: "Go", lang: "go", code: `c.Shutdown(context.Background(), sandbox.Key)` },
+]} />
+
+## Full example
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { getOrCreateSandbox, shutdown } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("agent-1", {
+  image: "claude",
+});
+
+const keepAlive = setInterval(sandbox.ping, 10_000);
+
+const result = await sandbox.exec(["echo", "hello", "world"]);
+console.log(result.stdout);    // "hello world\\n"
+console.log(result.exit_code); // 0
+
+clearInterval(keepAlive);
+await shutdown(sandbox);` },
+  { label: "PY", lang: "python", code: `import asyncio
+from hiver import get_or_create_sandbox, shutdown, SandboxConfig
+
+sandbox = await get_or_create_sandbox("agent-1", SandboxConfig(
+    image="claude",
+))
+
+async def keep_alive():
+    while True:
+        await sandbox.ping()
+        await asyncio.sleep(10)
+
+asyncio.create_task(keep_alive())
+
+result = await sandbox.exec(["echo", "hello", "world"])
+print(result["stdout"])    # "hello world\\n"
+print(result["exit_code"]) # 0
+
+await shutdown(sandbox)` },
+  { label: "Go", lang: "go", code: `package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    client "github.com/hiver-sh/hiver/client"
+)
+
+func main() {
+    c := client.NewClient(client.DefaultGatewayURL)
+    sandbox, err := c.GetOrCreateSandbox(context.Background(), "agent-1", client.SandboxConfig{
+        Image: "claude",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    go func() {
+        for range time.Tick(10 * time.Second) {
+            sandbox.Ping(context.Background())
+        }
+    }()
+
+    result, err := sandbox.Exec(context.Background(), client.ExecRequest{
+        Command: []string{"echo", "hello", "world"},
+    })
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result.Stdout)   // "hello world\\n"
+    fmt.Println(result.ExitCode) // 0
+
+    c.Shutdown(context.Background(), sandbox.Key)
+}` },
+]} />
+
+---
+
+Next: [CLI](/docs/cli)

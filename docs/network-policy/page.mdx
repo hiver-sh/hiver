@@ -1,0 +1,217 @@
+export const metadata = { title: "Network Access" }
+
+# Network Access
+
+Control which hosts a sandbox can reach over the network. Egress rules are defined in `SandboxConfig.egress` and evaluated at request time, the rules are an **ordered list**, and the first matching rule wins.
+
+## Default behavior
+
+`egress` is optional. When you **omit** it entirely, the client applies an allow-all policy, the sandbox can reach any host. This is convenient for getting started, but for anything running untrusted code you should lock it down.
+
+The moment you provide **any** rules, the model flips to allow-list: a request is permitted only if a rule matches it, and **anything that matches no rule is denied**. There is no implicit fallthrough.
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+// No egress specified -> allow-all (open)
+const open = await getOrCreateSandbox("open-sandbox", { image: "python" });
+
+// Any rules specified -> only matching requests are allowed, everything else denied
+const locked = await getOrCreateSandbox("locked-sandbox", {
+  image: "python",
+  egress: [{ access: "allow", host: "api.github.com" }],
+});
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, EgressRule
+
+# No egress specified -> allow-all (open)
+open_sandbox = await get_or_create_sandbox("open-sandbox", SandboxConfig(image="python"))
+
+# Any rules specified -> only matching requests are allowed, everything else denied
+locked = await get_or_create_sandbox("locked-sandbox", SandboxConfig(
+    image="python",
+    egress=[EgressRule(access="allow", host="api.github.com")],
+))
+```
+
+```go
+// No egress specified -> allow-all (open)
+open, err := c.GetOrCreateSandbox(ctx, "open-sandbox", client.SandboxConfig{Image: "python"})
+
+// Any rules specified -> only matching requests are allowed, everything else denied
+locked, err := c.GetOrCreateSandbox(ctx, "locked-sandbox", client.SandboxConfig{
+    Image:  "python",
+    Egress: []client.EgressRule{{Access: "allow", Host: "api.github.com"}},
+})
+```
+
+## Allowing specific hosts
+
+Add an entry to `egress` for each destination you want to permit. Narrow rules further by port, HTTP method, or path, and end with an explicit `deny` catch-all to make the intent obvious:
+
+```typescript
+egress: [
+  { access: "allow", host: "api.anthropic.com" },
+  { access: "allow", host: "pypi.org", ports: [443] },
+  { access: "allow", host: "api.github.com", methods: ["GET", "POST"] },
+  { access: "allow", host: "api.example.com", paths: ["/v1/*"] },
+  { access: "deny", host: "*" }, // explicit catch-all (optional; unmatched is denied anyway)
+]
+```
+
+```python
+egress=[
+    EgressRule(access="allow", host="api.anthropic.com"),
+    EgressRule(access="allow", host="pypi.org", ports=[443]),
+    EgressRule(access="allow", host="api.github.com", methods=["GET", "POST"]),
+    EgressRule(access="allow", host="api.example.com", paths=["/v1/*"]),
+    EgressRule(access="deny", host="*"),
+]
+```
+
+```go
+Egress: []client.EgressRule{
+    {Access: "allow", Host: "api.anthropic.com"},
+    {Access: "allow", Host: "pypi.org", Ports: []int{443}},
+    {Access: "allow", Host: "api.github.com", Methods: []string{"GET", "POST"}},
+    {Access: "allow", Host: "api.example.com", Paths: []string{"/v1/*"}},
+    {Access: "deny", Host: "*"},
+},
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `access` | `"allow" \| "deny"` | Outcome for a matching request. |
+| `host` | `string` | Hostname to match. Exact (`api.github.com`) or wildcard suffix (`*.pypi.org`). |
+| `ports` | `number[]` | Restrict to specific destination ports. Omit to match any port. |
+| `methods` | `string[]` | Restrict to specific HTTP methods. Omit to match any method. |
+| `paths` | `string[]` | Restrict to specific URL paths (git-style globs). Omit to match any path. |
+
+### Path globs
+
+Path matching is segment-by-segment on `/`. `*` matches within a single segment (`/users/*` matches `/users/42` but not `/users/42/posts`); `**` matches across segments (`/repos/**` matches `/repos`, `/repos/foo`, and `/repos/foo/bar`).
+
+## Installing packages
+
+The TypeScript and Python clients ship helpers that generate the exact egress rules a package installer needs, and nothing more, so `pip`/`npm install` for any package you didn't list is blocked.
+
+```typescript
+import { allowedPythonPackages, allowedNpmPackages } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  egress: [
+    ...allowedPythonPackages("numpy", "pandas"),
+    ...allowedNpmPackages("typescript"),
+  ],
+});
+```
+
+```python
+from hiver import allowed_python_packages, allowed_npm_packages
+
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    egress=[*allowed_python_packages("numpy", "pandas"), *allowed_npm_packages("typescript")],
+))
+```
+
+## Injecting credentials with override
+
+Use `override` to attach headers (or query params) to every outbound request that matches a rule. The agent inside the sandbox cannot read the injected values back, they're applied transparently by the proxy after the request leaves the agent. This is how you give an agent access to a third-party API without ever putting the key in its context or environment.
+
+```typescript
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  egress: [{
+    access: "allow",
+    host: "api.finnhub.io",
+    override: { headers: { "X-Finnhub-Token": process.env.FINNHUB_API_KEY! } },
+  }],
+});
+```
+
+```python
+import os
+from hiver import EgressRule, EgressOverride
+
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    egress=[EgressRule(
+        access="allow",
+        host="api.finnhub.io",
+        override=EgressOverride(headers={"X-Finnhub-Token": os.environ["FINNHUB_API_KEY"]}),
+    )],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    Egress: []client.EgressRule{{
+        Access: "allow",
+        Host:   "api.finnhub.io",
+        Override: &client.EgressOverride{
+            Headers: map[string]string{"X-Finnhub-Token": os.Getenv("FINNHUB_API_KEY")},
+        },
+    }},
+})
+```
+
+See [Overrides](/docs/network/overrides) for headers, query params, body rewriting, and upstream re-routing.
+
+## Updating egress at runtime
+
+`applyConfig` replaces the egress rules on a running sandbox. Read the current config first to preserve other settings. A useful pattern is to start open, do trusted setup, then lock down before handing control to the agent:
+
+```typescript
+await sandbox.applyConfig({
+  ...(await sandbox.getConfig()),
+  egress: [{ access: "allow", host: "api.anthropic.com" }],
+});
+```
+
+```python
+current = await sandbox.get_config()
+await sandbox.apply_config(current.model_copy(update={
+    "egress": [EgressRule(access="allow", host="api.anthropic.com")],
+}))
+```
+
+```go
+current, _ := sandbox.GetConfig(ctx)
+current.Egress = []client.EgressRule{{Access: "allow", Host: "api.anthropic.com"}}
+_, err := sandbox.ApplyConfig(ctx, *current)
+```
+
+The new rules take effect immediately. In-flight requests that were already allowed are not interrupted.
+
+## Observing blocked requests
+
+Every outbound request shows up on the event stream as an `egress.request` event with `access` set to `"allowed"` or `"denied"`. Filter for denials to see exactly what your policy is blocking:
+
+```typescript
+for await (const event of sandbox.getEventsStream()) {
+  if (event.type === "egress.request" && event.access === "denied") {
+    console.log("blocked:", event.host, event.method, event.path);
+  }
+}
+```
+
+```python
+async for event in sandbox.get_events_stream():
+    if event.type == "egress.request" and event.access == "denied":
+        print("blocked:", event.host, event.method, event.path)
+```
+
+```go
+events, _ := sandbox.WatchEvents(ctx, -1)
+for evt := range events {
+    if evt.Type == "egress.request" && evt.Access == "denied" {
+        fmt.Println("blocked:", evt.Host, evt.Method, evt.Path)
+    }
+}
+```
+
+See [Events](/docs/events) for the full set of event types.
+
+---
+
+Next: [Overrides](/docs/network/overrides)

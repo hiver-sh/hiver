@@ -59,19 +59,19 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         }),
       },
       {
-        label: "OpenCode",
-        idPrefix: "opencode",
+        label: "OpenClaw",
+        idPrefix: "openclaw",
         apply: () => ({
-          image: "opencode",
-          entrypoint: "opencode",
+          image: "openclaw",
+          entrypoint: "openclaw",
           cwd: "/workspace",
           tty: true,
           snapshot: {
             vm: {
-              key: "opencode-vm",
+              key: "openclaw-vm",
             },
             files: {
-              key: "opencode-files",
+              key: "openclaw-files",
               write_on_shutdown: true,
               include: ["/workspace/*", "/home/agent/*"],
             },

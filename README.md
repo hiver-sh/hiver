@@ -105,7 +105,7 @@ Hiver ships ready-to-run images for either containers or microvms:
 | `claude`     | [Claude Code](https://github.com/anthropics/claude-code) (`@anthropic-ai/claude-code`) installed.                         |
 | `codex`      | [Codex](https://github.com/openai/codex) (`@openai/codex`) installed.                                                      |
 | `copilot`    | [GitHub Copilot CLI](https://github.com/github/copilot) (`@github/copilot`) installed.                                     |
-| `opencode`   | [OpenCode](https://github.com/sst/opencode) installed.                                                                     |
+| `openclaw`   | [OpenClaw](https://github.com/openclaw/openclaw) (`openclaw`) installed.                                                    |
 | `browser`    | Chromium with CDP (Chrome DevTools Protocol) exposed for agentic web navigation.                                           |
 | `node`       | Minimal Node.js runtime for running JavaScript/TypeScript workloads.                                                       |
 | `python`     | Minimal Python 3.13 runtime for running Python workloads.                                                                  |
@@ -123,7 +123,7 @@ hiver inspect
 It opens a live, DevTools-style UI over a running sandbox. In one place you get:
 
 - **Timeline**: a waterfall of every event the agent generates, laid out over time with per-request durations. Click any bar to inspect the full request and response (headers, body, and verdict) and see exactly where the run spent its time.
-- **LLM**: the inspector decodes the model traffic itself and renders the conversation as **system**, **user**, and **assistant** messages, tool calls and all, with no agent-side hooks required. Built-in decoders cover Claude Code / Anthropic, Codex / ChatGPT, and Gemini, and the provider interface is pluggable, so GitHub Copilot, OpenCode, or your own CLI drop in with a few lines.
+- **LLM**: the inspector decodes the model traffic itself and renders the conversation as **system**, **user**, and **assistant** messages, tool calls and all, with no agent-side hooks required. Built-in decoders cover Claude Code / Anthropic, Codex / ChatGPT, and Gemini, and the provider interface is pluggable, so GitHub Copilot, OpenClaw, or your own CLI drop in with a few lines.
 - **Network**: every egress request the agent makes, with the host, path, and whether it was **allowed** or **denied** by policy. TLS is decrypted transparently, so you see the real requests, not opaque CONNECT tunnels.
 - **Files**: every read and write the agent performs, across local, Google Drive, GCS, S3, and other backends, with the same allowed/denied verdicts.
 - **Exec**: the commands the agent runs and their output.

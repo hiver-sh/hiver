@@ -1,0 +1,74 @@
+export const metadata = { title: "List a Directory" }
+
+# List a Directory
+
+List the immediate children of a directory inside a sandbox, the way to discover what's there before you [read](/docs/read-file) or [delete](/docs/delete-file). The path is the **agent-visible absolute path** (e.g. `/workspace`) and must resolve beneath one of the sandbox's configured [mounts](/docs/remote-file-systems).
+
+## List the children of a directory
+
+Returns one entry per child. Each entry has:
+
+| Field | Description |
+|-------|-------------|
+| `name` | The entry's base name. |
+| `path` | Its agent-visible absolute path. |
+| `is_dir` | `true` for a directory, `false` for a file. |
+| `size` | Size in bytes. |
+
+```typescript
+const entries = await sandbox.listDirectory("/workspace");
+for (const e of entries) {
+  console.log(e.is_dir ? "dir " : "file", e.size, e.path);
+}
+```
+
+```python
+entries = await sandbox.list_directory("/workspace")
+for e in entries:
+    print("dir " if e["is_dir"] else "file", e["size"], e["path"])
+```
+
+```go
+entries, err := sandbox.ListDirectory(ctx, "/workspace")
+for _, e := range entries {
+    kind := "file"
+    if e.IsDir {
+        kind = "dir"
+    }
+    fmt.Println(kind, e.Size, e.Path)
+}
+```
+
+Listing returns only the **immediate** children, it does not recurse. To walk a tree, list a subdirectory whenever an entry's `is_dir` is `true`. For example, download every file directly under a directory:
+
+```typescript
+for (const e of await sandbox.listDirectory("/workspace/output")) {
+  if (!e.is_dir) {
+    const bytes = await sandbox.readFile(e.path);
+    console.log(e.name, bytes.length);
+  }
+}
+```
+
+```python
+for e in await sandbox.list_directory("/workspace/output"):
+    if not e["is_dir"]:
+        data = await sandbox.read_file(e["path"])
+        print(e["name"], len(data))
+```
+
+```go
+entries, _ := sandbox.ListDirectory(ctx, "/workspace/output")
+for _, e := range entries {
+    if !e.IsDir {
+        data, _ := sandbox.ReadFile(ctx, e.Path)
+        fmt.Println(e.Name, len(data))
+    }
+}
+```
+
+<Callout>Like the other file methods, this runs as the **operator** and **bypasses the per-mount [ACLs](/docs/file-policy)** that govern the agent.</Callout>
+
+---
+
+Next: [Delete a File](/docs/delete-file)

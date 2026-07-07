@@ -1,0 +1,83 @@
+export const metadata = { title: "Allow Sandbox" }
+
+# Allow Sandbox
+
+`allowSandbox` generates the [egress rules](/docs/network-policy) that let an agent create and reach **one nested sandbox** through the gateway, using a fixed config the agent cannot tamper with. It's the building block for [agent swarms](/docs/agent-swarm): an orchestrator agent spins up a worker, but you decide exactly what that worker is.
+
+The rules do two things: allow the `POST` that creates the nested sandbox (with its request body **replaced** by your `config`, so the agent can't change what gets created), and allow the nested sandbox's proxy routes so the agent can talk to it.
+
+Spread the result into the orchestrator's `egress`.
+
+```typescript
+import { getOrCreateSandbox, allowSandbox } from "@hiver.sh/client";
+
+const orchestrator = await getOrCreateSandbox("orchestrator", {
+  image: "claude",
+  egress: [
+    ...allowSandbox("worker-1", { image: "my-agent:latest" }),
+  ],
+});
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, allow_sandbox
+
+orchestrator = await get_or_create_sandbox("orchestrator", SandboxConfig(
+    image="claude",
+    egress=allow_sandbox("worker-1", SandboxConfig(image="my-agent:latest")),
+))
+```
+
+```go
+orchestrator, err := c.GetOrCreateSandbox(ctx, "orchestrator", client.SandboxConfig{
+    Image:  "claude",
+    Egress: client.AllowSandbox("worker-1", client.SandboxConfig{Image: "my-agent:latest"}),
+})
+```
+
+The agent inside `orchestrator` can now create and reach a sandbox keyed `worker-1`, but only with the `my-agent:latest` config you pinned, it can't launch a different image or widen the worker's own policy.
+
+## Granting file access to the nested sandbox
+
+Pass a list of directories to also open the nested sandbox's file API under those paths. Each entry allows the agent to `POST`/`GET`/`DELETE` files beneath that directory, enough to seed inputs and read back outputs, without touching the rest of the worker's filesystem.
+
+```typescript
+const orchestrator = await getOrCreateSandbox("orchestrator", {
+  image: "claude",
+  egress: [
+    ...allowSandbox(
+      "worker-1",
+      { image: "my-agent:latest" },
+      ["workspace/inputs", "workspace/outputs"],
+    ),
+  ],
+});
+```
+
+```python
+orchestrator = await get_or_create_sandbox("orchestrator", SandboxConfig(
+    image="claude",
+    egress=allow_sandbox(
+        "worker-1",
+        SandboxConfig(image="my-agent:latest"),
+        ["workspace/inputs", "workspace/outputs"],
+    ),
+))
+```
+
+```go
+orchestrator, err := c.GetOrCreateSandbox(ctx, "orchestrator", client.SandboxConfig{
+    Image: "claude",
+    Egress: client.AllowSandbox(
+        "worker-1",
+        client.SandboxConfig{Image: "my-agent:latest"},
+        "workspace/inputs", "workspace/outputs",
+    ),
+})
+```
+
+<Callout>`allowSandbox` ships in all three clients. See [Agent Swarm](/docs/agent-swarm) for the full orchestrator-and-workers pattern.</Callout>
+
+---
+
+Next: [Agent Swarm](/docs/agent-swarm)

@@ -1,0 +1,129 @@
+export const metadata = { title: "Deploy on Kubernetes" }
+
+# Deploy on Kubernetes
+
+Run Hiver on any Kubernetes cluster.
+
+## Prerequisites
+
+- A running Kubernetes cluster (1.27+)
+- `kubectl` configured to target your cluster
+- `helm` (v3+) installed
+
+## Deploy with Helm
+
+Add the Hiver Helm repository and install the chart:
+
+```bash
+helm repo add hiver https://hiver.sh/charts
+helm repo update
+```
+
+```bash
+helm install hiver hiver/hiver \
+  --namespace hiver \
+  --create-namespace
+```
+
+## Available Images
+
+| Name | Description | Container | MicroVM |
+|------|-------------|-----------|---------|
+| `claude-code` | Claude Code | `hiversh/claude-code:latest` | `hiversh/claude-code:latest-microvm` |
+| `codex` | OpenAI Codex | `hiversh/codex:latest` | `hiversh/codex:latest-microvm` |
+| `copilot` | GitHub Copilot | `hiversh/copilot:latest` | `hiversh/copilot:latest-microvm` |
+| `openclaw` | OpenClaw | `hiversh/openclaw:latest` | `hiversh/openclaw:latest-microvm` |
+| `playwright` | Playwright browser automation | `hiversh/playwright:latest` | `hiversh/playwright:latest-microvm` |
+| `python` | Python 3.13 on Alpine | `hiversh/python:3.13-alpine` | `hiversh/python:3.13-alpine-microvm` |
+| `node` | Node.js on Alpine | `hiversh/node:alpine` | `hiversh/node:alpine-microvm` |
+
+> **MicroVM images** require nested virtualization to be enabled on the host node.
+
+## Configuration
+
+Create a `values.yaml` file:
+
+```yaml values.yaml
+images:
+  python:
+    source: hiversh/python:3.13-alpine-microvm
+    sandbox:
+      cpu: 1
+      memory: 1024
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "4"
+        memory: 13Gi
+    replicaCount: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+
+```
+
+Apply it with:
+
+```bash
+helm upgrade hiver hiver/hiver \
+  --namespace hiver \
+  --values values.yaml
+```
+
+## Verify
+
+Hiver uses two namespaces:
+
+- `hiver`, control-plane services: the controller and gateway
+- `hiver-sandbox`, pods for running sandboxes
+
+```bash
+kubectl get pods -n hiver
+# NAME                                READY   STATUS    AGE
+# hiver-controller-7d9f6b8c4-xkqzp   1/1     Running   2m
+# hiver-gateway-5b8f9d6c3-rplwk      1/1     Running   2m
+
+kubectl get pods -n hiver-sandbox
+# NAME                                READY   STATUS    AGE
+# sandbox-python-6d4b8f7c2-tnxqp     1/1     Running   30s
+```
+
+## Connect the TypeScript client
+
+Pass `gatewayUrl` to point the SDK at your deployed controller:
+
+```typescript
+import { getOrCreateSandbox } from "hiver";
+
+const sandbox = await getOrCreateSandbox("my-sandbox", { image: "python" }, {
+  gatewayUrl: "https://hiver.internal.example",
+});
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, ClientConfig
+
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    image="python",
+), ClientConfig(gateway_url="https://hiver.internal.example"))
+```
+
+```go
+import (
+    "context"
+    client "github.com/hiver-sh/hiver/client"
+)
+
+c := client.NewClient("https://hiver.internal.example")
+sandbox, err := c.GetOrCreateSandbox(context.Background(), "my-sandbox", client.SandboxConfig{
+    Image: "python",
+})
+```
+
+---
+
+Next: [GKE](/docs/deploy/gke)

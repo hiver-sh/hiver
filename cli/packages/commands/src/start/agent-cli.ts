@@ -4,7 +4,7 @@ export const IMAGES = [
   { label: "Claude Code", value: "claude" },
   { label: "Codex", value: "codex" },
   { label: "Copilot", value: "copilot" },
-  { label: "OpenCode", value: "opencode" },
+  { label: "OpenClaw", value: "openclaw" },
   { label: "Web browser", value: "browser" },
   { label: "Node.js", value: "node" },
   { label: "Python", value: "python" },

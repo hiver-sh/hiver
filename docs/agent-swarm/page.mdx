@@ -1,0 +1,120 @@
+export const metadata = { title: "Agent Swarms" }
+
+# Agent Swarms
+
+Run multiple agents in parallel, each in its own isolated sandbox. Every sandbox gets an independent filesystem and process namespace, so agents can't interfere with each other.
+
+## Spawning sandboxes in parallel
+
+Use `Promise.all` to launch one sandbox per task simultaneously. Each sandbox is independent, filesystem changes in one don't affect any other.
+
+```typescript
+import { getOrCreateSandbox, shutdown } from "@hiver.sh/client";
+
+const tasks = ["fix bug in auth.ts", "add tests for api.ts", "update README"];
+
+const results = await Promise.all(
+  tasks.map(async (task, i) => {
+    const sandbox = await getOrCreateSandbox(`agent-${i}`, {
+      image: "claude",
+      env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+      fs: [
+        {
+          backend: "local",
+          mount: "/workspace",
+          acls: [{ path: "/workspace/**", access: "rw" }],
+        },
+      ],
+      egress: [{ access: "allow", host: "api.anthropic.com" }],
+    });
+
+    const result = await sandbox.exec(["claude", "-p", task], {
+      cwd: "/workspace",
+    });
+
+    await shutdown(sandbox);
+    return { task, output: result.stdout };
+  })
+);
+```
+
+## Isolated filesystems
+
+Each sandbox mounts its own filesystem. Writes made by one agent are not visible to others. This means agents can freely modify files, install packages, or produce output without coordination.
+
+If you need agents to read the same source code without copying it into every sandbox, mount a host directory as read-only (Docker runtime only):
+
+```typescript
+const sandbox = await getOrCreateSandbox(`agent-${i}`, {
+  image: "claude",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+  fs: [
+    {
+      backend: "local",
+      mount: "/workspace",
+      origin: "/host/path/to/repo",
+      acls: [{ path: "/workspace/**", access: "ro" }],
+    },
+    {
+      backend: "local",
+      mount: "/output",
+      acls: [{ path: "/output/**", access: "rw" }],
+    },
+  ],
+});
+```
+
+The `origin` field points to a directory on the Docker host. All agents see the same source files at `/workspace`, and each writes its output to its own `/output` mount.
+
+## Concurrency limiting
+
+When the task list is large, cap the number of sandboxes running at once with [`p-limit`](https://github.com/sindresorhus/p-limit):
+
+```typescript
+import pLimit from "p-limit";
+import { getOrCreateSandbox, shutdown } from "@hiver.sh/client";
+
+async function runAgent(task: string, i: number) {
+  const sandbox = await getOrCreateSandbox(`agent-${i}`, {
+    image: "claude",
+    env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+    fs: [
+      {
+        backend: "local",
+        mount: "/workspace",
+        acls: [{ path: "/workspace/**", access: "rw" }],
+      },
+    ],
+  });
+
+  const result = await sandbox.exec(["claude", "-p", task], {
+    cwd: "/workspace",
+  });
+
+  await shutdown(sandbox);
+  return { task, output: result.stdout };
+}
+
+const limit = pLimit(10); // cap at 10 concurrent sandboxes
+
+const results = await Promise.all(
+  tasks.map((task, i) => limit(() => runAgent(task, i)))
+);
+```
+
+## Collecting results
+
+`sandbox.exec` returns `stdout`, `stderr`, and `exit_code`. Gather the outputs after all agents complete and process them in the orchestrator:
+
+```typescript
+for (const { task, output } of results) {
+  console.log(`Task: ${task}`);
+  console.log(`Output:\n${output}`);
+}
+```
+
+For structured output, have each agent write a JSON file to its writable mount and read it back in the orchestrator after the sandbox shuts down.
+
+---
+
+Next: [Custom Docker image](/docs/examples/custom-docker-image)

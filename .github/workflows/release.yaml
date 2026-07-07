@@ -218,8 +218,8 @@ jobs:
             tag: hiversh/codex:latest
           - source: ./docker/copilot
             tag: hiversh/copilot:latest
-          - source: ./docker/opencode
-            tag: hiversh/opencode:latest
+          - source: ./docker/openclaw
+            tag: hiversh/openclaw:latest
           - source: ./docker/antigravity
             tag: hiversh/antigravity:latest
           - source: ./docker/browser
@@ -240,8 +240,8 @@ jobs:
           - source: ./docker/copilot
             tag: hiversh/copilot:latest-microvm
             bundler-flags: "--microvm"
-          - source: ./docker/opencode
-            tag: hiversh/opencode:latest-microvm
+          - source: ./docker/openclaw
+            tag: hiversh/openclaw:latest-microvm
             bundler-flags: "--microvm"
           - source: ./docker/antigravity
             tag: hiversh/antigravity:latest-microvm
@@ -308,7 +308,7 @@ jobs:
         env:
           VERSION: ${{ needs.push-runtime-images.outputs.version }}
         run: |
-          for img in agent-base claude codex copilot opencode antigravity browser; do
+          for img in agent-base claude codex copilot openclaw antigravity browser; do
             docker buildx imagetools create \
               --tag hiversh/$img:$VERSION \
               hiversh/$img:latest

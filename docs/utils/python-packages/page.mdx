@@ -1,0 +1,57 @@
+export const metadata = { title: "Python packages" }
+
+# Python packages
+
+`allowedPythonPackages` generates the [egress rules](/docs/network-policy) a sandbox needs to `pip install` a specific set of packages, and nothing else. Any `pip install` for a package you didn't name is blocked by the egress policy, so an agent can install what it needs without opening the network wide.
+
+Spread the result into `SandboxConfig.egress`.
+
+```typescript
+import { getOrCreateSandbox, allowedPythonPackages } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("py", {
+  image: "python",
+  egress: [...allowedPythonPackages("numpy", "pandas", "matplotlib")],
+});
+
+await sandbox.exec(["pip", "install", "numpy", "pandas", "matplotlib"], { cwd: "/workspace" });
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, allowed_python_packages
+
+sandbox = await get_or_create_sandbox("py", SandboxConfig(
+    image="python",
+    egress=allowed_python_packages("numpy", "pandas", "matplotlib"),
+))
+
+await sandbox.exec(["pip", "install", "numpy", "pandas", "matplotlib"], cwd="/workspace")
+```
+
+Combine it with your own rules, the helper returns a plain `EgressRule[]`, so you can spread additional allows alongside it:
+
+```typescript
+const sandbox = await getOrCreateSandbox("py", {
+  image: "python",
+  egress: [
+    ...allowedPythonPackages("httpx"),
+    { access: "allow", host: "api.github.com", methods: ["GET"] },
+  ],
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("py", SandboxConfig(
+    image="python",
+    egress=[
+        *allowed_python_packages("httpx"),
+        EgressRule(access="allow", host="api.github.com", methods=["GET"]),
+    ],
+))
+```
+
+<Callout>`allowedPythonPackages` ships in the TypeScript and Python clients. In Go, add the equivalent PyPI egress rules to `SandboxConfig.Egress` directly. See also [Node.js packages](/docs/utils/npm-packages).</Callout>
+
+---
+
+Next: [Node.js packages](/docs/utils/npm-packages)

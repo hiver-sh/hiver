@@ -1,0 +1,57 @@
+export const metadata = { title: "Read a File" }
+
+# Read a File
+
+Read a file out of a sandbox directly from your client, no `exec`, no `cat`. Reads take the **agent-visible absolute path** (the path as it appears inside the sandbox, e.g. `/workspace/output.json`), which must resolve beneath one of the sandbox's configured [mounts](/docs/remote-file-systems).
+
+## Read a file
+
+Returns the file's **raw bytes**. Decode them to text yourself when you need a string.
+
+```typescript
+const raw = await sandbox.readFile("/workspace/output.json");
+const text = new TextDecoder().decode(raw);
+console.log(JSON.parse(text));
+```
+
+```python
+raw = await sandbox.read_file("/workspace/output.json")
+text = raw.decode()
+print(json.loads(text))
+```
+
+```go
+raw, err := sandbox.ReadFile(ctx, "/workspace/output.json")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(string(raw))
+```
+
+Because it returns bytes, binary files work too, write them straight to disk:
+
+```typescript
+import { writeFile } from "node:fs/promises";
+
+const png = await sandbox.readFile("/workspace/chart.png");
+await writeFile("chart.png", png);
+```
+
+```python
+png = await sandbox.read_file("/workspace/chart.png")
+with open("chart.png", "wb") as f:
+    f.write(png)
+```
+
+```go
+png, err := sandbox.ReadFile(ctx, "/workspace/chart.png")
+os.WriteFile("chart.png", png, 0o644)
+```
+
+To discover what's available first, [list a directory](/docs/list-directory).
+
+<Callout>These calls run as the **operator**, not the agent, they read files directly and **bypass the per-mount [ACLs](/docs/file-policy)** that govern what code inside the sandbox can touch. They read through whatever backend the mount uses, so `readFile` on a [GCS or Drive mount](/docs/remote-file-systems) returns the object's current contents.</Callout>
+
+---
+
+Next: [Write a File](/docs/write-file)

@@ -1,0 +1,287 @@
+export const metadata = { title: "Local Files" }
+
+# Local Files
+
+Mount storage into a sandbox with `SandboxConfig.fs`. Each entry defines a **backend**, a **mount** path inside the sandbox, and an **acls** list that controls access (see [File Access](/docs/file-policy)). You can combine multiple backends in one sandbox, mount paths must be unique and non-overlapping.
+
+| Backend | Persists beyond the sandbox? | Use it for |
+|---------|------------------------------|------------|
+| `local` | No (unless snapshotted) | Ephemeral scratch space. The default. |
+| [`gdrive`](/docs/google-drive) | Yes | Files that should land in a user's Google Drive. |
+| [`gcs`](/docs/gcs) | Yes | Durable object storage / shared datasets. |
+| `external` | Yes | A file system you back with your own HTTP host. |
+
+This page covers the `local` and `external` backends. For the cloud backends see [GCS](/docs/gcs) and [Google Drive](/docs/google-drive).
+
+## Local
+
+Stores data on the sandbox's own disk. No external dependencies; discarded when the sandbox is destroyed (unless captured with a [Snapshot](/docs/snapshots)). This is the default when you omit `fs`.
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  fs: [{
+    backend: "local",
+    mount: "/workspace",
+    acls: [{ path: "/workspace/**", access: "rw" }],
+  }],
+});
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, LocalFileSystem, ACLRule
+
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    fs=[LocalFileSystem(
+        backend="local",
+        mount="/workspace",
+        acls=[ACLRule(path="/workspace/**", access="rw")],
+    )],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    FS: []client.FileSystem{{
+        Backend: "local",
+        Mount:   "/workspace",
+        ACLs:    []client.ACLRule{{Path: "/workspace/**", Access: "rw"}},
+    }},
+})
+```
+
+### Mount a host directory (Docker runtime only)
+
+During local development, set `origin` to mount a directory from your machine straight into the sandbox, changes are visible both ways with no copying. This is only supported with the local Docker runtime and is ignored in cloud deployments.
+
+```typescript
+fs: [{
+  backend: "local",
+  mount: "/workspace",
+  origin: "/Users/me/projects/my-project", // host path mounted into the sandbox
+  acls: [{ path: "/workspace/**", access: "rw" }],
+}]
+```
+
+```python
+fs=[LocalFileSystem(
+    backend="local",
+    mount="/workspace",
+    origin="/Users/me/projects/my-project",  # host path mounted into the sandbox
+    acls=[ACLRule(path="/workspace/**", access="rw")],
+)]
+```
+
+```go
+FS: []client.FileSystem{{
+    Backend: "local",
+    Mount:   "/workspace",
+    Origin:  "/Users/me/projects/my-project", // host path mounted into the sandbox
+    ACLs:    []client.ACLRule{{Path: "/workspace/**", Access: "rw"}},
+}},
+```
+
+#### Hot reload
+
+Because the mount is a live view of your host directory, a file watcher inside the sandbox picks up edits you make in your editor instantly, no rebuild, no re-upload. Mount your project and run the app under a reloader:
+
+```typescript
+const sandbox = await getOrCreateSandbox("dev", {
+  image: "python",
+  fs: [{
+    backend: "local",
+    mount: "/workspace",
+    origin: process.cwd(), // your project, live-mounted
+    acls: [{ path: "/workspace/**", access: "rw" }],
+  }],
+});
+
+// uvicorn --reload watches /workspace and restarts on every save you make locally
+const proc = await sandbox.execStream(
+  ["uvicorn", "app:main", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+  { cwd: "/workspace" },
+);
+for await (const chunk of proc.pipes) process.stdout.write(chunk.stdout ?? "");
+// edit app.py in your editor → uvicorn reloads inside the sandbox
+```
+
+```python
+import os
+
+sandbox = await get_or_create_sandbox("dev", SandboxConfig(
+    image="python",
+    fs=[LocalFileSystem(
+        backend="local",
+        mount="/workspace",
+        origin=os.getcwd(),  # your project, live-mounted
+        acls=[ACLRule(path="/workspace/**", access="rw")],
+    )],
+))
+
+proc = await sandbox.exec_stream(
+    ["uvicorn", "app:main", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+    cwd="/workspace",
+)
+async for chunk in proc.pipes:
+    sys.stdout.write(chunk.get("stdout", ""))
+# edit app.py in your editor -> uvicorn reloads inside the sandbox
+```
+
+```go
+cwd, _ := os.Getwd()
+sandbox, err := c.GetOrCreateSandbox(ctx, "dev", client.SandboxConfig{
+    Image: "python",
+    FS: []client.FileSystem{{
+        Backend: "local",
+        Mount:   "/workspace",
+        Origin:  cwd, // your project, live-mounted
+        ACLs:    []client.ACLRule{{Path: "/workspace/**", Access: "rw"}},
+    }},
+})
+
+proc, _ := sandbox.ExecStream(ctx, client.ExecStreamRequest{
+    Command: []string{"uvicorn", "app:main", "--host", "0.0.0.0", "--port", "8000", "--reload"},
+    CWD:     "/workspace",
+})
+for chunk := range proc.Output {
+    fmt.Print(chunk.Stdout)
+}
+// edit app.py in your editor -> uvicorn reloads inside the sandbox
+```
+
+The same works for any watcher, `nodemon`, `watchexec`, `flask --debug`, a test runner in `--watch` mode. Reach the running server through the [proxy](/docs/ingress#exposed-ports): `sandbox.proxyUrl(8000)`.
+
+#### Skill iteration
+
+Agents often load a directory of "skills" (prompts, scripts, tool definitions) at runtime. Mount that directory with `origin` so you can tweak a skill on your host and have the agent pick up the new version on its next run, no image rebuild between iterations:
+
+```typescript
+const sandbox = await getOrCreateSandbox("agent-dev", {
+  image: "claude",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+  fs: [
+    { backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] },
+    {
+      backend: "local",
+      mount: "/home/agent/.claude/skills",
+      origin: "./skills",              // edit skills locally, agent sees them live
+      acls: [{ path: "/home/agent/.claude/skills/**", access: "ro" }],
+    },
+  ],
+});
+
+// tweak ./skills/*.md on your host, then re-run, no rebuild needed
+await sandbox.exec(["claude", "-p", "Use the pdf-report skill to summarize report.pdf"], {
+  cwd: "/workspace",
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("agent-dev", SandboxConfig(
+    image="claude",
+    env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+    fs=[
+        LocalFileSystem(backend="local", mount="/workspace",
+                        acls=[ACLRule(path="/workspace/**", access="rw")]),
+        LocalFileSystem(
+            backend="local",
+            mount="/home/agent/.claude/skills",
+            origin="./skills",              # edit skills locally, agent sees them live
+            acls=[ACLRule(path="/home/agent/.claude/skills/**", access="ro")],
+        ),
+    ],
+))
+
+# tweak ./skills/*.md on your host, then re-run, no rebuild needed
+await sandbox.exec(["claude", "-p", "Use the pdf-report skill to summarize report.pdf"], cwd="/workspace")
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "agent-dev", client.SandboxConfig{
+    Image: "claude",
+    Env:   map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")},
+    FS: []client.FileSystem{
+        {Backend: "local", Mount: "/workspace",
+            ACLs: []client.ACLRule{{Path: "/workspace/**", Access: "rw"}}},
+        {Backend: "local", Mount: "/home/agent/.claude/skills",
+            Origin: "./skills", // edit skills locally, agent sees them live
+            ACLs:   []client.ACLRule{{Path: "/home/agent/.claude/skills/**", Access: "ro"}}},
+    },
+})
+
+// tweak ./skills/*.md on your host, then re-run, no rebuild needed
+sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"claude", "-p", "Use the pdf-report skill to summarize report.pdf"},
+    CWD:     "/workspace",
+})
+```
+
+Mounting the skills directory `ro` means the agent can read and use the skills but can't modify them, you stay in control of the source on your host.
+
+## Multiple mounts
+
+Combine backends by listing several entries. Each mount is independent, writing to one never touches another.
+
+```typescript
+fs: [
+  { backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] },
+  {
+    backend: "gcs",
+    mount: "/data",
+    gcs_bucket: "my-data",
+    gcs_service_account_json: process.env.GCS_SERVICE_ACCOUNT_JSON!,
+    acls: [{ path: "/data/**", access: "ro" }], // read-only dataset from GCS
+  },
+]
+```
+
+```python
+fs=[
+    LocalFileSystem(backend="local", mount="/workspace",
+                    acls=[ACLRule(path="/workspace/**", access="rw")]),
+    GCSFileSystem(backend="gcs", mount="/data", gcs_bucket="my-data",
+                  gcs_service_account_json=os.environ["GCS_SERVICE_ACCOUNT_JSON"],
+                  acls=[ACLRule(path="/data/**", access="ro")]),  # read-only dataset from GCS
+]
+```
+
+```go
+FS: []client.FileSystem{
+    {Backend: "local", Mount: "/workspace",
+        ACLs: []client.ACLRule{{Path: "/workspace/**", Access: "rw"}}},
+    {Backend: "gcs", Mount: "/data", GCSBucket: "my-data",
+        GCSServiceAccountJSON: os.Getenv("GCS_SERVICE_ACCOUNT_JSON"),
+        ACLs: []client.ACLRule{{Path: "/data/**", Access: "ro"}}}, // read-only dataset from GCS
+},
+```
+
+## External
+
+Back a mount with your own storage by implementing a small HTTP host. Set `backend: "external"` and point `host` at your server, each file operation the agent performs (read, write, list, delete) becomes one call against it. Use this for a database, an internal object store, or any system without a built-in backend.
+
+```typescript
+fs: [{
+  backend: "external",
+  mount: "/data",
+  host: "https://my-fs-host.internal", // trailing slash ignored
+  acls: [{ path: "/data/**", access: "rw" }],
+}]
+```
+
+```go
+FS: []client.FileSystem{{
+    Backend: "external",
+    Mount:   "/data",
+    Host:    "https://my-fs-host.internal", // trailing slash ignored
+    ACLs:    []client.ACLRule{{Path: "/data/**", Access: "rw"}},
+}},
+```
+
+## Hiding a mount from the agent
+
+Set `internal: true` on any file system to mount it for the sandbox runtime but hide it from the agent. ACLs are ignored (the agent can't reach it at all). This is used for storage the sandbox needs but the agent must not see, for example, a remote-backed [snapshot store](/docs/snapshots#store-snapshots-in-a-remote-drive).
+
+---
+
+Next: [Google Cloud Storage](/docs/gcs)

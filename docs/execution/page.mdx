@@ -1,0 +1,218 @@
+export const metadata = { title: "Execution" }
+
+# Execution
+
+There are two ways to run code in a sandbox:
+
+- **`exec`**, run a command, wait for it to finish, get the buffered output back. Best for short, self-contained commands.
+- **`execStream`**, start a process and interact with it while it runs: read its output incrementally, and **write to its stdin**. Best for long-running commands, live output, and interactive sessions.
+
+## exec, one-shot
+
+`exec` resolves once the process exits and returns `stdout`, `stderr`, and `exit_code`. Pass the command as an **array of arguments** (argv), it runs directly with no shell, so there's no quoting, word-splitting, or glob surprises even when arguments contain spaces.
+
+```typescript
+const result = await sandbox.exec(["python3", "-c", "print('hello', 6 * 7)"], {
+  cwd: "/workspace",
+  env: { PYTHONUNBUFFERED: "1" }, // merged on top of the sandbox's env
+});
+
+console.log(result.stdout.trim()); // "hello 42"
+console.log(result.exit_code);     // 0
+```
+
+```python
+result = await sandbox.exec(
+    ["python3", "-c", "print('hello', 6 * 7)"],
+    cwd="/workspace",
+    env={"PYTHONUNBUFFERED": "1"},  # merged on top of the sandbox's env
+)
+
+print(result["stdout"].strip())  # "hello 42"
+print(result["exit_code"])       # 0
+```
+
+```go
+result, err := sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"python3", "-c", "print('hello', 6 * 7)"},
+    CWD:     "/workspace",
+    Env:     map[string]string{"PYTHONUNBUFFERED": "1"}, // merged on top of the sandbox's env
+})
+
+fmt.Println(result.Stdout)   // "hello 42\n"
+fmt.Println(result.ExitCode) // 0
+```
+
+Arguments with spaces are just separate array elements, no escaping needed:
+
+```typescript
+await sandbox.exec(["git", "commit", "-m", "my message with spaces"]);
+```
+
+```python
+await sandbox.exec(["git", "commit", "-m", "my message with spaces"])
+```
+
+```go
+sandbox.Exec(ctx, client.ExecRequest{Command: []string{"git", "commit", "-m", "my message with spaces"}})
+```
+
+<Callout>A plain string is also accepted and runs through a shell (`sh -c`), handy when you actually want shell features like pipes or variable expansion (`"cat log | grep err"`). Prefer the array form otherwise.</Callout>
+
+## execStream, streaming
+
+`execStream` returns a handle immediately. Read output as it arrives, and await the exit code when the process finishes.
+
+```typescript
+const proc = await sandbox.execStream(["npm", "test"], { cwd: "/workspace" });
+
+for await (const chunk of proc.pipes) {
+  if (chunk.stdout) process.stdout.write(chunk.stdout);
+  if (chunk.stderr) process.stderr.write(chunk.stderr);
+}
+
+console.log("exit code:", await proc.exitCode);
+```
+
+```python
+proc = await sandbox.exec_stream(["npm", "test"], cwd="/workspace")
+
+async for chunk in proc.pipes:
+    if "stdout" in chunk:
+        sys.stdout.write(chunk["stdout"])
+    if "stderr" in chunk:
+        sys.stderr.write(chunk["stderr"])
+
+print("exit code:", await proc.exit_code)
+```
+
+```go
+proc, err := sandbox.ExecStream(ctx, client.ExecStreamRequest{Command: []string{"npm", "test"}, CWD: "/workspace"})
+
+for chunk := range proc.Output {
+    fmt.Print(chunk.Stdout)
+    fmt.Fprint(os.Stderr, chunk.Stderr)
+}
+
+code, _ := proc.Wait()
+fmt.Println("exit code:", code)
+```
+
+## Passing stdin to a running process
+
+The streaming handle lets you **write to the process's stdin** while it runs. This is what makes long-lived, stateful sessions possible: start a process once, then feed it input over time. The handle is ready as soon as `execStream` resolves, so it's safe to write immediately.
+
+| | TypeScript | Python | Go |
+|-|-----------|--------|----|
+| Write stdin | `proc.writeStdin(data)` | `proc.write_stdin(data)` | `proc.WriteStdin(ctx, data)` |
+| Read output | `for await (const c of proc.pipes)` | `async for c in proc.pipes` | `for c := range proc.Output` |
+| Await exit | `await proc.exitCode` | `await proc.exit_code` | `proc.Wait()` |
+
+Here a single Python REPL stays alive across several writes, keeping a running total **in memory**, the interpreter starts once and is reused:
+
+```typescript
+const proc = await sandbox.execStream(["python3", "-iq"], { cwd: "/workspace" });
+
+const commands = [
+  "total = 0",                 // setup runs once...
+  "total += 5; print(total)",  // ...and state persists across writes
+  "total += 6; print(total)",
+  "exit()",
+];
+for (const cmd of commands) {
+  await proc.writeStdin(cmd + "\n");
+}
+
+for await (const chunk of proc.pipes) {
+  if (chunk.stdout) process.stdout.write(chunk.stdout); // 5, then 11
+}
+
+console.log("exit code:", await proc.exitCode);
+```
+
+```python
+proc = await sandbox.exec_stream(["python3", "-iq"], cwd="/workspace")
+
+commands = [
+    "total = 0",                 # setup runs once...
+    "total += 5; print(total)",  # ...and state persists across writes
+    "total += 6; print(total)",
+    "exit()",
+]
+for cmd in commands:
+    await proc.write_stdin(cmd + "\n")
+
+async for chunk in proc.pipes:
+    if "stdout" in chunk:
+        sys.stdout.write(chunk["stdout"])  # 5, then 11
+
+print("exit code:", await proc.exit_code)
+```
+
+```go
+proc, err := sandbox.ExecStream(ctx, client.ExecStreamRequest{
+    Command: []string{"python3", "-iq"},
+    CWD:     "/workspace",
+})
+
+commands := []string{
+    "total = 0",                // setup runs once...
+    "total += 5; print(total)", // ...and state persists across writes
+    "total += 6; print(total)",
+    "exit()",
+}
+for _, cmd := range commands {
+    proc.WriteStdin(ctx, cmd+"\n")
+}
+
+for chunk := range proc.Output {
+    fmt.Print(chunk.Stdout) // 5, then 11
+}
+
+code, _ := proc.Wait()
+fmt.Println("exit code:", code)
+```
+
+<Callout>Include the newline (`\n`), most programs read stdin line by line and won't act on input until they see one. For interactive REPLs, a carriage return (`\r`) works too.</Callout>
+
+### Why sessions matter
+
+Because the process stays running, expensive setup happens **once** and is reused by every later write, a launched browser, a loaded ML model, an open database connection. Instead of paying that cost per command, you pay it once and stream work into the live process. A Playwright script can launch Chromium a single time and drive many page loads through the same browser; a REPL can import heavy libraries once and reuse them across dozens of evaluations.
+
+## Interactive terminals (TTY)
+
+Pass `tty: true` to allocate a pseudo-terminal. Programs then behave as they would in a real terminal (colors, prompts, line editing). With a TTY, stderr is merged into stdout, so all output arrives on the stdout channel.
+
+```typescript
+const proc = await sandbox.execStream(["bash"], { tty: true });
+await proc.writeStdin("ls -la\n");
+```
+
+```python
+proc = await sandbox.exec_stream(["bash"], tty=True)
+await proc.write_stdin("ls -la\n")
+```
+
+```go
+proc, err := sandbox.ExecStream(ctx, client.ExecStreamRequest{Command: []string{"bash"}, TTY: true})
+proc.WriteStdin(ctx, "ls -la\n")
+```
+
+**Resizing:** write a `CSI 8` sequence to stdin to resize the PTY, `\x1b[8;<rows>;<cols>t`. For example, `\x1b[8;40;120t` sets 40 rows × 120 columns.
+
+**Attaching to the entrypoint's terminal:** if the sandbox was created with `tty: true` in its config, call `execStream` with an **empty command** to attach directly to the entrypoint process's terminal instead of spawning a new one. See [Pseudo Terminals](/docs/pseudo-terminals) for a complete terminal implementation, including a TUI (Claude Code) example.
+
+## Options
+
+| Option | exec | execStream | Notes |
+|--------|:----:|:----------:|-------|
+| `cwd` | ✓ | ✓ | Working directory. Defaults to the sandbox's. |
+| `env` | ✓ | ✓ | Merged on top of the sandbox config's env, overriding same-named entries. |
+| `tty` | — | ✓ | Allocate a pseudo-terminal. |
+| `signal` / `timeoutMs` | ✓ | ✓ | (TypeScript) abort or time-bound the call. |
+
+Both `exec` and `execStream` accept `cwd` and `env`; `execStream` also takes `tty`.
+
+---
+
+Next: [Pseudo Terminals](/docs/pseudo-terminals)

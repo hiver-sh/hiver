@@ -1,0 +1,61 @@
+export const metadata = { title: "Write a File" }
+
+# Write a File
+
+Write a file into a sandbox directly from your client, handy for seeding inputs before an agent runs, or dropping in config the agent will read. The path is the **agent-visible absolute path** (e.g. `/workspace/data.csv`) and must resolve beneath one of the sandbox's configured [mounts](/docs/remote-file-systems).
+
+## Write a file
+
+Returns `{ path, bytes }`, where the file landed and how many bytes were written.
+
+```typescript
+const { path, bytes } = await sandbox.writeFile(
+  "/workspace/data.csv",
+  "name,score\nada,99\n", // string | Uint8Array | ArrayBuffer | Blob
+);
+console.log(`wrote ${bytes} bytes to ${path}`);
+```
+
+```python
+result = await sandbox.write_file(
+    "/workspace/data.csv",
+    "name,score\nada,99\n",  # str | bytes
+)
+print(f"wrote {result['bytes']} bytes to {result['path']}")
+```
+
+```go
+res, err := sandbox.WriteFile(ctx, "/workspace/data.csv",
+    []byte("name,score\nada,99\n"))
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("wrote %d bytes to %s\n", res.Bytes, res.Path)
+```
+
+Upload binary content the same way, read it from disk and pass the bytes:
+
+```typescript
+import { readFile } from "node:fs/promises";
+
+const buf = await readFile("./logo.png");
+await sandbox.writeFile("/workspace/logo.png", buf);
+```
+
+```python
+with open("logo.png", "rb") as f:
+    await sandbox.write_file("/workspace/logo.png", f.read())
+```
+
+```go
+buf, _ := os.ReadFile("logo.png")
+sandbox.WriteFile(ctx, "/workspace/logo.png", buf)
+```
+
+<Callout>Like the other file methods, `writeFile` runs as the **operator** and **bypasses the per-mount [ACLs](/docs/file-policy)**. It writes through the mount's backend, so uploading to a [GCS or Drive mount](/docs/remote-file-systems) persists the object to that store.</Callout>
+
+To remove a file, see [Delete a File](/docs/delete-file).
+
+---
+
+Next: [List a Directory](/docs/list-directory)

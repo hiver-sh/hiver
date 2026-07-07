@@ -1,0 +1,125 @@
+export const metadata = { title: "CLI" }
+
+# CLI
+
+The `hiver` CLI runs the local stack, launches sandboxes, streams their events, opens the [Inspector](/docs/inspector), and bundles your Docker images into runnable Hiver images. It's the fastest way to try Hiver and to develop against it locally.
+
+## Commands
+
+```text
+⬢ Hiver · Agent Runtime
+
+  Usage: hiver <command> [options]
+
+  Commands
+    up       Bring up local stack
+    down     Bring down local stack
+    connect  Connect to remote stack
+    start    Start a sandbox
+    stop     Stop a sandbox
+    shell    Open an interactive shell in a sandbox
+    list     List the sandboxes
+    events   Stream a sandbox's events live as they happen
+    inspect  Launch the inspector
+    bundle   Bundle a Docker image into a Hiver runtime image
+
+  Run hiver <command> --help for command details.
+```
+
+## Local stack
+
+`up` starts the gateway and runtime as local containers; `down` tears them down. The gateway listens on `localhost:10000` by default, that's the URL the clients target out of the box.
+
+```bash
+hiver up
+hiver down
+```
+
+## Connect to a remote stack
+
+Point the CLI at a gateway you're running elsewhere (e.g. a Kubernetes deployment) so `list`, `events`, `inspect`, and `shell` operate against it:
+
+```bash
+hiver connect https://gateway.example.com
+```
+
+## Manage sandboxes
+
+`start` provisions a sandbox. With no arguments it prompts you to pick an agent CLI (Claude Code, Codex, Copilot CLI, or Gemini CLI); pass a key and flags to script it.
+
+```bash
+hiver start                       # interactive: pick an agent image
+hiver start agent-1               # start under a specific key
+hiver start agent-1 --image python --entrypoint "tail -f /dev/null" --ttl 3600
+```
+
+| Flag | Description |
+|------|-------------|
+| `--image <image>` | Image to launch. Defaults to the base image, or the picker's choice. |
+| `--entrypoint <cmd>` | Override the image entrypoint. |
+| `--ttl <seconds>` | Idle seconds before shutdown. `0` disables the timeout. |
+| `--tty` | Attach a pseudo-TTY to the entrypoint. |
+
+<Callout>Language runtime images (like `python`) whose default command exits immediately will stop as soon as they start. Keep one alive with `--entrypoint "tail -f /dev/null"`.</Callout>
+
+For anything the flags don't cover, most notably `env`, pipe a JSON [`SandboxConfig`](/docs/getting-started#config-options) to stdin instead:
+
+```bash
+hiver start claude <<EOF
+{
+  "image": "claude",
+  "env": { "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY" }
+}
+EOF
+```
+
+Flags and stdin can combine; flags win where both set the same field.
+
+Stop, list, and open a shell:
+
+```bash
+hiver stop agent-1
+hiver list
+hiver shell agent-1                       # interactive shell inside the sandbox
+hiver shell agent-1 --command /bin/bash   # choose the shell
+```
+
+## Stream events
+
+Tail a sandbox's live event stream, every command, file access, and outbound request, in your terminal:
+
+```bash
+hiver events agent-1
+hiver events agent-1 --gateway-url https://gateway.example.com
+```
+
+## Inspector
+
+Launch the [Inspector](/docs/inspector), Chrome DevTools for agents, in your browser. Add `--record` to capture a session for later replay.
+
+```bash
+hiver inspect
+hiver inspect --record
+```
+
+## Bundle an image
+
+`bundle` wraps any Docker image with the Hiver runtime so it can run as a sandbox. Pass an image reference (from a registry or built locally) or a path to a build context.
+
+```bash
+hiver bundle python:3.13-alpine --tag python
+hiver bundle ./my-agent --tag my-agent
+hiver bundle ./my-agent --tag my-agent --platform linux/amd64,linux/arm64
+```
+
+| Flag | Description |
+|------|-------------|
+| `--tag <tag>` | Tag for the produced Hiver runtime image (used as `image` when provisioning). |
+| `--platform <list>` | Comma-separated target platforms, e.g. `linux/amd64,linux/arm64`. |
+| `--microvm` | Build a [microVM](/docs/runtime/microvm)-isolation image (bakes a guest kernel + rootfs). |
+
+The resulting tag is what you pass as `image` in `SandboxConfig`. See [Custom Docker image](/docs/examples/custom-docker-image) for a full walkthrough.
+
+---
+
+Next: [Inspector](/docs/inspector)

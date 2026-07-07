@@ -1,0 +1,399 @@
+export const metadata = { title: "Agent CLI" }
+
+# Agent CLI
+
+Hiver ships the popular agent CLIs, each in a ready-to-run image. Pick one, provision its image, pass the right credential as an env var, and drive it with `exec` (one-shot) or `execStream` (live output).
+
+<Tabs>
+<Tab label="Claude Code">
+
+Run [Claude Code](https://claude.com/claude-code) inside a sandbox. The `claude` image ships the CLI ready to go.
+
+### One-shot task
+
+`claude -p` runs a single prompt non-interactively and prints the result. Use `exec` when you just need the final output.
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("claude", {
+  image: "claude",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+});
+
+const result = await sandbox.exec(["claude", "-p", "Fix the bug in src/main.ts"], {
+  cwd: "/workspace",
+});
+console.log(result.stdout);` },
+  { label: "PY", lang: "python", code: `import os
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("claude", SandboxConfig(
+    image="claude",
+    env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+))
+
+result = await sandbox.exec(["claude", "-p", "Fix the bug in src/main.ts"], cwd="/workspace")
+print(result["stdout"])` },
+  { label: "Go", lang: "go", code: `c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "claude", client.SandboxConfig{
+    Image: "claude",
+    Env:   map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")},
+})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"claude", "-p", "Fix the bug in src/main.ts"},
+    CWD:     "/workspace",
+})
+fmt.Println(result.Stdout)` },
+  { label: "Command line", lang: "bash", icon: "bash", filename: "Terminal", code: `hiver start claude <<EOF
+{
+  "image": "claude",
+  "env": { "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY" }
+}
+EOF
+hiver shell claude --command "claude -p 'Fix the bug in src/main.ts'"` },
+]} />
+
+The key is injected once at creation and is immutable, every later `exec` on this sandbox inherits it automatically, so you never pass it again.
+
+### Streaming output
+
+Agents can run for a while and produce a lot of output. Use `execStream` to see stdout and stderr as they happen instead of waiting for the process to finish.
+
+```typescript
+const proc = await sandbox.execStream(["claude", "-p", "Refactor the auth module"], {
+  cwd: "/workspace",
+});
+
+for await (const chunk of proc.pipes) {
+  if (chunk.stdout) process.stdout.write(chunk.stdout);
+  if (chunk.stderr) process.stderr.write(chunk.stderr);
+}
+
+console.log("exit code:", await proc.exitCode);
+```
+
+```python
+proc = await sandbox.exec_stream(["claude", "-p", "Refactor the auth module"], cwd="/workspace")
+
+async for chunk in proc.pipes:
+    if "stdout" in chunk:
+        sys.stdout.write(chunk["stdout"])
+    if "stderr" in chunk:
+        sys.stderr.write(chunk["stderr"])
+
+print("exit code:", await proc.exit_code)
+```
+
+```go
+proc, _ := sandbox.ExecStream(ctx, client.ExecStreamRequest{
+    Command: []string{"claude", "-p", "Refactor the auth module"},
+    CWD:     "/workspace",
+})
+for chunk := range proc.Output {
+    fmt.Print(chunk.Stdout)
+    fmt.Fprint(os.Stderr, chunk.Stderr)
+}
+code, _ := proc.Wait()
+fmt.Println("exit code:", code)
+```
+
+### Interactive TUI
+
+To drive Claude Code's full-screen interface from your own terminal, attach over a PTY, see [Pseudo Terminals](/docs/pseudo-terminals) for a complete example.
+
+<Callout>Keep secrets out of the agent's reach: rather than giving Claude your third-party API keys, allow the hosts it needs and inject credentials with an egress [override](/docs/network/overrides), the agent uses them without ever seeing them.</Callout>
+
+</Tab>
+<Tab label="Codex">
+
+Run [OpenAI Codex](https://github.com/openai/codex) inside a sandbox. The `codex` image ships the CLI.
+
+`codex exec` runs a single prompt non-interactively, which pairs naturally with `exec`:
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("codex", {
+  image: "codex",
+  env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY! },
+});
+
+const result = await sandbox.exec(["codex", "exec", "Add tests for src/parser.ts"], {
+  cwd: "/workspace",
+});
+console.log(result.stdout);` },
+  { label: "PY", lang: "python", code: `import os
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("codex", SandboxConfig(
+    image="codex",
+    env={"OPENAI_API_KEY": os.environ["OPENAI_API_KEY"]},
+))
+
+result = await sandbox.exec(["codex", "exec", "Add tests for src/parser.ts"], cwd="/workspace")
+print(result["stdout"])` },
+  { label: "Go", lang: "go", code: `c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "codex", client.SandboxConfig{
+    Image: "codex",
+    Env:   map[string]string{"OPENAI_API_KEY": os.Getenv("OPENAI_API_KEY")},
+})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"codex", "exec", "Add tests for src/parser.ts"},
+    CWD:     "/workspace",
+})
+fmt.Println(result.Stdout)` },
+  { label: "Command line", lang: "bash", icon: "bash", filename: "Terminal", code: `hiver start codex <<EOF
+{
+  "image": "codex",
+  "env": { "OPENAI_API_KEY": "$OPENAI_API_KEY" }
+}
+EOF
+hiver shell codex --command "codex exec 'Add tests for src/parser.ts'"` },
+]} />
+
+### Streaming output
+
+For longer runs, stream output as it's produced with `execStream`:
+
+```typescript
+const proc = await sandbox.execStream(["codex", "exec", "Migrate the app to ESM"], {
+  cwd: "/workspace",
+});
+for await (const chunk of proc.pipes) {
+  if (chunk.stdout) process.stdout.write(chunk.stdout);
+}
+console.log("exit code:", await proc.exitCode);
+```
+
+```python
+proc = await sandbox.exec_stream(["codex", "exec", "Migrate the app to ESM"], cwd="/workspace")
+async for chunk in proc.pipes:
+    if "stdout" in chunk:
+        sys.stdout.write(chunk["stdout"])
+print("exit code:", await proc.exit_code)
+```
+
+```go
+proc, _ := sandbox.ExecStream(ctx, client.ExecStreamRequest{
+    Command: []string{"codex", "exec", "Migrate the app to ESM"},
+    CWD:     "/workspace",
+})
+for chunk := range proc.Output {
+    fmt.Print(chunk.Stdout)
+}
+code, _ := proc.Wait()
+fmt.Println("exit code:", code)
+```
+
+The `OPENAI_API_KEY` you set at creation is inherited by every later `exec`, so you set it once. To drive Codex's interactive UI from your terminal, attach over a PTY, see [Pseudo Terminals](/docs/pseudo-terminals).
+
+</Tab>
+<Tab label="Copilot">
+
+Run the [GitHub Copilot CLI](https://github.com/github/copilot-cli) inside a sandbox. The `copilot` image ships the CLI; authenticate with a GitHub token.
+
+`copilot -p` runs a single prompt non-interactively:
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("copilot", {
+  image: "copilot",
+  env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN! },
+});
+
+const result = await sandbox.exec(
+  ["copilot", "-p", "Explain what src/server.ts does", "--allow-all-tools"],
+  { cwd: "/workspace" },
+);
+console.log(result.stdout);` },
+  { label: "PY", lang: "python", code: `import os
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("copilot", SandboxConfig(
+    image="copilot",
+    env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
+))
+
+result = await sandbox.exec(
+    ["copilot", "-p", "Explain what src/server.ts does", "--allow-all-tools"],
+    cwd="/workspace",
+)
+print(result["stdout"])` },
+  { label: "Go", lang: "go", code: `c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "copilot", client.SandboxConfig{
+    Image: "copilot",
+    Env:   map[string]string{"GITHUB_TOKEN": os.Getenv("GITHUB_TOKEN")},
+})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"copilot", "-p", "Explain what src/server.ts does", "--allow-all-tools"},
+    CWD:     "/workspace",
+})
+fmt.Println(result.Stdout)` },
+  { label: "Command line", lang: "bash", icon: "bash", filename: "Terminal", code: `hiver start copilot <<EOF
+{
+  "image": "copilot",
+  "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" }
+}
+EOF
+hiver shell copilot --command "copilot -p 'Explain what src/server.ts does' --allow-all-tools"` },
+]} />
+
+### Streaming output
+
+Stream output live for longer tasks:
+
+```typescript
+const proc = await sandbox.execStream(
+  ["copilot", "-p", "Add a health check endpoint", "--allow-all-tools"],
+  { cwd: "/workspace" },
+);
+for await (const chunk of proc.pipes) {
+  if (chunk.stdout) process.stdout.write(chunk.stdout);
+}
+console.log("exit code:", await proc.exitCode);
+```
+
+```python
+proc = await sandbox.exec_stream(
+    ["copilot", "-p", "Add a health check endpoint", "--allow-all-tools"],
+    cwd="/workspace",
+)
+async for chunk in proc.pipes:
+    if "stdout" in chunk:
+        sys.stdout.write(chunk["stdout"])
+print("exit code:", await proc.exit_code)
+```
+
+```go
+proc, _ := sandbox.ExecStream(ctx, client.ExecStreamRequest{
+    Command: []string{"copilot", "-p", "Add a health check endpoint", "--allow-all-tools"},
+    CWD:     "/workspace",
+})
+for chunk := range proc.Output {
+    fmt.Print(chunk.Stdout)
+}
+code, _ := proc.Wait()
+fmt.Println("exit code:", code)
+```
+
+The GitHub token you set at creation is inherited by every later `exec`. To drive Copilot's interactive UI from your terminal, attach over a PTY, see [Pseudo Terminals](/docs/pseudo-terminals).
+
+</Tab>
+<Tab label="OpenClaw">
+
+Run the open-source [OpenClaw](https://openclaw.ai) assistant (🦞) inside a sandbox. The `openclaw` image ships the CLI built in.
+
+`openclaw agent --local` runs a single task without the background daemon:
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("openclaw", {
+  image: "openclaw",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+});
+
+const result = await sandbox.exec(
+  ["openclaw", "agent", "--local", "--message", "Add tests for src/parser.ts", "--json"],
+  { cwd: "/workspace" },
+);
+console.log(result.stdout);` },
+  { label: "PY", lang: "python", code: `import os
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("openclaw", SandboxConfig(
+    image="openclaw",
+    env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+))
+
+result = await sandbox.exec(
+    ["openclaw", "agent", "--local", "--message", "Add tests for src/parser.ts", "--json"],
+    cwd="/workspace",
+)
+print(result["stdout"])` },
+  { label: "Go", lang: "go", code: `c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "openclaw", client.SandboxConfig{
+    Image: "openclaw",
+    Env:   map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")},
+})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"openclaw", "agent", "--local", "--message", "Add tests for src/parser.ts", "--json"},
+    CWD:     "/workspace",
+})
+fmt.Println(result.Stdout)` },
+  { label: "Command line", lang: "bash", icon: "bash", filename: "Terminal", code: `hiver start openclaw <<EOF
+{
+  "image": "openclaw",
+  "env": { "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY" }
+}
+EOF
+hiver shell openclaw --command "openclaw agent --local --message 'Add tests for src/parser.ts' --json"` },
+]} />
+
+<Callout>OpenClaw configures its model, agents, and credentials through an onboarding wizard, see the [OpenClaw docs](https://docs.openclaw.ai). Swap the model in the config (and the matching provider key in `env`) to run against any supported provider.</Callout>
+
+</Tab>
+<Tab label="Antigravity">
+
+Run [Google Antigravity](https://antigravity.google)'s terminal coding agent, `agy`, inside a sandbox. The `antigravity` image ships it ready to go.
+
+`agy -p` runs a single prompt non-interactively and prints the result:
+
+<CodeBlock tabs={[
+  { label: "TS", lang: "typescript", code: `import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("antigravity", {
+  image: "antigravity",
+  env: { ANTIGRAVITY_API_KEY: process.env.ANTIGRAVITY_API_KEY! },
+});
+
+const result = await sandbox.exec(["agy", "-p", "Add a health check endpoint to server.ts"], {
+  cwd: "/workspace",
+});
+console.log(result.stdout);` },
+  { label: "PY", lang: "python", code: `import os
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("antigravity", SandboxConfig(
+    image="antigravity",
+    env={"ANTIGRAVITY_API_KEY": os.environ["ANTIGRAVITY_API_KEY"]},
+))
+
+result = await sandbox.exec(["agy", "-p", "Add a health check endpoint to server.ts"], cwd="/workspace")
+print(result["stdout"])` },
+  { label: "Go", lang: "go", code: `c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "antigravity", client.SandboxConfig{
+    Image: "antigravity",
+    Env:   map[string]string{"ANTIGRAVITY_API_KEY": os.Getenv("ANTIGRAVITY_API_KEY")},
+})
+
+result, _ := sandbox.Exec(ctx, client.ExecRequest{
+    Command: []string{"agy", "-p", "Add a health check endpoint to server.ts"},
+    CWD:     "/workspace",
+})
+fmt.Println(result.Stdout)` },
+  { label: "Command line", lang: "bash", icon: "bash", filename: "Terminal", code: `hiver start antigravity <<EOF
+{
+  "image": "antigravity",
+  "env": { "ANTIGRAVITY_API_KEY": "$ANTIGRAVITY_API_KEY" }
+}
+EOF
+hiver shell antigravity --command "agy -p 'Add a health check endpoint to server.ts'"` },
+]} />
+
+Stream output live for longer runs with `execStream`, exactly as with the other CLIs.
+
+<Callout>By default `agy` authenticates with an interactive Google sign-in, which doesn't work in a headless sandbox. For automated runs, provide credentials non-interactively — pass your key in `env` and check the [Antigravity CLI docs](https://antigravity.google) for the exact variable and headless-auth flags, then keep it out of the agent's reach with an egress [override](/docs/network/overrides).</Callout>
+
+</Tab>
+</Tabs>
+
+---
+
+Next: [Claude Agent SDK](/docs/examples/agent-sdk-anthropic)

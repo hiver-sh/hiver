@@ -1,0 +1,244 @@
+export const metadata = { title: "Claude Agent SDK" }
+
+# Claude Agent SDK
+
+The [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) bundles a native Claude Code binary and drives it as a subprocess, giving your agent built-in `Bash`, `Read`, `Write`, `Edit`, `Glob`, and `Grep` tools. Claude's [sandbox-environments guide](https://code.claude.com/docs/en/sandbox-environments#choose-a-sandbox-environment) frames the choice as *where the whole agent process runs*: keep it on your host and only its Bash commands are sandboxed, or run it inside a container or VM that becomes the isolation boundary for every tool, MCP server, and hook. A Hiver sandbox is that container/VM boundary. Running the loop **inside** it is the preferred shape; keeping the loop outside is a fallback for when the credential must stay off the sandbox.
+
+## Run the loop inside the sandbox
+
+**This is the preferred shape.** Ship the agent as the sandbox's own service: wrap `query()` in an HTTP server that runs inside the sandbox. Because the whole process lives there, *every* built-in tool resolves against the sandbox filesystem, `Read`, `Write`, `Edit`, `Glob`, and `Grep` as well as `Bash`, so they all see one consistent view and there is nothing to register. The sandbox is also the isolation boundary the guide calls for, which is what makes `permissionMode: "bypassPermissions"` safe here: the whole agent, MCP servers and hooks included, is already confined to the sandbox, so you can run it unattended the way the guide reserves for a container or VM but never for your host.
+
+<Callout>This is safe to leave unattended because Hiver, not the agent, enforces the boundary. Each sandbox runs in its own [microVM](/docs/runtime/microvm) or [container](/docs/runtime/container) with its own network namespace, isolated from the host and every other sandbox at the kernel level, and it only ever sees its own filesystem. Set an [egress policy](/docs/network-policy) and that allow-list is enforced outside the guest, so even with `bypassPermissions` a prompt-injected agent reaches only the hosts you permit, everything else is denied. That infrastructure boundary, not the model's cooperation, is what `bypassPermissions` relies on.</Callout>
+
+```typescript agent/server.ts
+import http from "node:http";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+http.createServer(async (req, res) => {
+  if (req.method !== "POST" || req.url !== "/chat") return res.writeHead(404).end();
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const { prompt } = JSON.parse(Buffer.concat(chunks).toString());
+
+  let reply = "";
+  for await (const msg of query({
+    prompt,
+    options: {
+      model: "claude-opus-4-8",
+      cwd: "/workspace",
+      allowedTools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+      permissionMode: "bypassPermissions",
+    },
+  })) {
+    if (msg.type === "result" && msg.subtype === "success") reply = msg.result;
+  }
+
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ reply }));
+}).listen(3000, () => console.log("listening on :3000"));
+```
+
+```python agent/server.py
+import asyncio
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+
+async def run_agent(prompt: str) -> str:
+    reply = ""
+    async for message in query(
+        prompt=prompt,
+        options=ClaudeAgentOptions(
+            model="claude-opus-4-8",
+            cwd="/workspace",
+            allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+            permission_mode="bypassPermissions",
+        ),
+    ):
+        if isinstance(message, ResultMessage) and message.subtype == "success":
+            reply = message.result
+    return reply
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/chat":
+            return self.send_response(404) or self.end_headers()
+
+        length = int(self.headers["Content-Length"])
+        prompt = json.loads(self.rfile.read(length))["prompt"]
+        reply = asyncio.run(run_agent(prompt))
+
+        body = json.dumps({"reply": reply}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+HTTPServer(("", 3000), Handler).serve_forever()
+```
+
+Package the server as an image Hiver can run. Alongside the server file, declare its dependencies and a `Dockerfile` that installs them, `EXPOSE`s port 3000, and starts the server:
+
+```json agent/package.json
+{
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "tsx": "latest"
+  }
+}
+```
+
+```dockerfile agent/Dockerfile
+FROM node:22-slim
+
+ENV IS_SANDBOX=1
+WORKDIR /app
+
+COPY package.json .
+RUN npm install
+COPY server.ts .
+
+EXPOSE 3000
+CMD ["npx", "tsx", "server.ts"]
+```
+
+For Python, install `claude-agent-sdk` instead and swap the base image:
+
+```text agent/requirements.txt
+claude-agent-sdk
+```
+
+```dockerfile agent/Dockerfile
+FROM python:3.13-slim
+
+ENV IS_SANDBOX=1
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY server.py .
+
+EXPOSE 3000
+CMD ["python", "server.py"]
+```
+
+Bundle the `agent/` directory into a tagged image with the [CLI](/docs/cli) (see [Custom Docker image](/docs/examples/custom-docker-image) for more):
+
+```bash
+hiver bundle ./agent --tag my-agent
+```
+
+Now start a sandbox from that image and send it a prompt. `getOrCreateSandbox` boots the sandbox, `proxyUrl(3000)` builds a URL that routes to the server inside it:
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("my-agent", {
+  image: "my-agent",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY! },
+});
+
+const res = await fetch(`${sandbox.proxyUrl(3000)}/chat`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ prompt: "Create /workspace/fib.py and run it." }),
+});
+console.log((await res.json()).reply);
+```
+
+## Run the loop outside the sandbox
+
+Keep the loop, and your `ANTHROPIC_API_KEY`, on your host and register a tool whose handler calls `sandbox.exec`. This is the [security-boundary pattern](https://code.claude.com/docs/en/agent-sdk/secure-deployment#security-boundaries) from the guide: the credential stays outside the sandbox while everything the model runs lands inside it. The tradeoff is that only what you route through this tool reaches the sandbox, the SDK's built-in `Read`, `Write`, `Edit`, `Glob`, and `Grep` still run on your host, so expose only the sandbox `bash` tool (as `allowedTools` does below) and have the model read and write through it. The SDK registers tools through an in-process MCP server:
+
+```typescript
+import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { getOrCreateSandbox } from "@hiver.sh/client";
+import { z } from "zod";
+
+const sandbox = await getOrCreateSandbox("agent-tools", { image: "python" });
+
+const tools = createSdkMcpServer({
+  name: "sandbox",
+  tools: [
+    tool("bash", "Run a shell command in the sandbox.", { command: z.string() }, async ({ command }) => {
+      const { stdout, stderr } = await sandbox.exec(["bash", "-lc", command]);
+      return { content: [{ type: "text", text: stdout || stderr }] };
+    }),
+  ],
+});
+
+for await (const message of query({
+  prompt: "List the Python files under /workspace.",
+  options: { mcpServers: { sandbox: tools }, allowedTools: ["mcp__sandbox__bash"] },
+})) {
+  if (message.type === "result" && message.subtype === "success") console.log(message.result);
+}
+```
+
+```python
+from claude_agent_sdk import query, tool, create_sdk_mcp_server, ClaudeAgentOptions, ResultMessage
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("agent-tools", SandboxConfig(image="python"))
+
+@tool("bash", "Run a shell command in the sandbox.", {"command": str})
+async def bash(args):
+    result = await sandbox.exec(["bash", "-lc", args["command"]])
+    return {"content": [{"type": "text", "text": result["stdout"] or result["stderr"]}]}
+
+tools = create_sdk_mcp_server(name="sandbox", tools=[bash])
+
+async for message in query(
+    prompt="List the Python files under /workspace.",
+    options=ClaudeAgentOptions(
+        mcp_servers={"sandbox": tools},
+        allowed_tools=["mcp__sandbox__bash"],
+    ),
+):
+    if isinstance(message, ResultMessage) and message.subtype == "success":
+        print(message.result)
+```
+
+## Drive it from another language
+
+The in-sandbox server is just an HTTP service, so you can start and call it from any Hiver client. Provision the `my-agent` sandbox and POST to `proxyUrl(3000)/chat` (`proxy_url` / `ProxyURL`).
+
+```python
+import os, httpx
+from hiver import get_or_create_sandbox, SandboxConfig
+
+sandbox = await get_or_create_sandbox("my-agent", SandboxConfig(
+    image="my-agent",
+    env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+))
+
+async with httpx.AsyncClient() as http:
+    res = await http.post(
+        f"{sandbox.proxy_url(3000)}/chat",
+        json={"prompt": "Create /workspace/fib.py and run it."},
+    )
+    print(res.json()["reply"])
+```
+
+```go
+c := client.NewClient(client.DefaultGatewayURL)
+sandbox, _ := c.GetOrCreateSandbox(ctx, "my-agent", client.SandboxConfig{
+    Image: "my-agent",
+    Env:   map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")},
+})
+
+body, _ := json.Marshal(map[string]string{"prompt": "Create /workspace/fib.py and run it."})
+resp, _ := http.Post(sandbox.ProxyURL(3000)+"/chat", "application/json", bytes.NewReader(body))
+defer resp.Body.Close()
+
+var out struct{ Reply string }
+json.NewDecoder(resp.Body).Decode(&out)
+fmt.Println(out.Reply)
+```
+
+<Callout>Whichever shape you pick, your provider key stays where the loop runs. Run the loop outside and the key never enters the sandbox; run it inside and it lives only in the sandbox `env` (or inject it with an egress [override](/docs/network/overrides)). The sandbox reaches only the hosts your [egress policy](/docs/network-policy) allows.</Callout>
+
+---
+
+Next: [OpenAI Agents SDK](/docs/examples/agent-sdk-openai)
