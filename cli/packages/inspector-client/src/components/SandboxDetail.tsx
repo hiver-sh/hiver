@@ -325,7 +325,7 @@ export function SandboxDetail({
     const kind = searchParams.get("filter-kind") ?? "all";
     const access = searchParams.get("filter-access") ?? "all";
     return {
-      kind: (["all", "egress", "fs", "llm"] as FilterKind[]).includes(
+      kind: (["all", "egress", "ingress", "fs", "llm", "tools"] as FilterKind[]).includes(
         kind as FilterKind,
       )
         ? (kind as FilterKind)
@@ -1194,6 +1194,7 @@ export function SandboxDetail({
       </Dialog>
 
       <PortUsageDialog
+        sandboxId={sandbox.id}
         sandboxKey={sandbox.key}
         gatewayUrl={gatewayUrl}
         open={portDialog !== null}

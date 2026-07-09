@@ -63,9 +63,11 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         idPrefix: "openclaw",
         apply: () => ({
           image: "openclaw",
-          entrypoint: "openclaw",
           cwd: "/workspace",
-          tty: true,
+          env: {
+            ANTHROPIC_API_KEY: "<enter>",
+            OPENCLAW_GATEWAY_PASSWORD: "hiver-openclaw",
+          },
           snapshot: {
             vm: {
               key: "openclaw-vm",

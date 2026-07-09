@@ -23,7 +23,7 @@ const sandbox = await hiver.getOrCreateSandbox("hive-mcp-server", {
   fs: [{ backend: "local", mount: "/workspace" }],
 });
 
-const mcpURL = `${sandbox.proxyUrl(MCP_PORT)}/mcp`;
+const mcpURL = `${sandbox.proxyUrl(MCP_PORT)}mcp`;
 console.info(`> MCP inspector → ${mcpURL}`);
 
 const mcpInspector = spawn(

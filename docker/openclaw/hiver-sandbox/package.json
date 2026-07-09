@@ -1,0 +1,26 @@
+{
+  "name": "openclaw-hiver-sandbox",
+  "version": "0.1.0",
+  "description": "OpenClaw sandbox backend that routes exec and filesystem tools into a Hiver sandbox.",
+  "type": "module",
+  "private": true,
+  "files": [
+    "src",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "dependencies": {
+    "@hiver.sh/client": "^0.1.25"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": ["./src/index.mjs"]
+  }
+}

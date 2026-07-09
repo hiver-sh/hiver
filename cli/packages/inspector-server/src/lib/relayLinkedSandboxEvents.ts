@@ -24,6 +24,9 @@ export interface LinkedSandboxRelay {
  * linked sandbox's events to `onEvent` (with sandbox_id / sandbox_key set to the
  * linked identity, so the client can route policy edits back to it). Each linked
  * stream resumes from the last event already persisted for that sandbox.
+ *
+ * Detection is recursive: each linked sandbox's own stream is re-scanned for
+ * links, so a chain of nesting (a -> b -> c -> ...) is fully discovered.
  */
 export function makeLinkedSandboxRelay(
   gatewayUrl: string,
@@ -57,6 +60,11 @@ export function makeLinkedSandboxRelay(
           lastEventId: lastNestedEventId(sandboxId, sandboxKey) ?? 0,
         })) {
           onEvent({ ...e, sandbox_id: sandboxId, sandbox_key: sandboxKey });
+          // Nesting is recursive: a nested sandbox can itself spawn another
+          // (a -> b -> c). Re-scan its stream for linking egress.responses so
+          // deeper sandboxes are discovered too. The shared `seen` set stops
+          // re-opening ones already relayed (and breaks any link cycle).
+          relay(e);
         }
       } catch {
         // stream aborted or sandbox gone

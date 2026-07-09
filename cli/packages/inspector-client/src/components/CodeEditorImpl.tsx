@@ -116,6 +116,9 @@ export default function CodeEditor({
           folding: false,
           inlayHints: { enabled: "off" },
           breadcrumbs: { enabled: false },
+          // See CodeViewerImpl: prevents an uncaught CancellationError when the
+          // word highlighter's pending Delayer is disposed on unmount.
+          occurrencesHighlight: "off",
         }}
       />
       <button

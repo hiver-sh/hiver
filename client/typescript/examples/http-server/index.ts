@@ -39,7 +39,8 @@ async function request(
   path: string,
   body?: string,
 ): Promise<void> {
-  const url = `${sandbox.proxyUrl(port)}${path}`;
+  // proxyUrl already ends with a slash, so drop any leading slash on the path.
+  const url = `${sandbox.proxyUrl(port)}${path.replace(/^\//, "")}`;
   console.log(`\n> ${method} ${url}`);
 
   const res = await fetch(url, {

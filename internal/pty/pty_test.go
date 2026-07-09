@@ -1,6 +1,7 @@
 package pty
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -196,6 +197,66 @@ func TestSessionCloseSignalsDone(t *testing.T) {
 
 	if _, _, _, _, ok := sess.Attach(); ok {
 		t.Fatal("Attach returned ok=true after session close")
+	}
+}
+
+// TestSessionExitHookLingers: with an exit hook set, the session does not end
+// when its process exits — it appends the hook's banner to scrollback and stays
+// attachable until Close(), at which point Done fires.
+func TestSessionExitHookLingers(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "printf HELLO; exit 3")
+	master, err := Start(cmd)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	sess := NewSession(master, nil)
+	sess.SetExitHook(func() []byte {
+		_ = cmd.Wait()
+		code := -1
+		if cmd.ProcessState != nil {
+			code = cmd.ProcessState.ExitCode()
+		}
+		return []byte(fmt.Sprintf("[exited %d]", code))
+	})
+	t.Cleanup(func() { sess.Close() })
+
+	// Poll a fresh attach's scrollback until the exit banner appears — the process
+	// has exited and the session lingered rather than ending. Polling replay (not
+	// a live channel) avoids racing the process's exit against Attach.
+	deadline := time.After(2 * time.Second)
+	for {
+		replay, _, _, detach, ok := sess.Attach()
+		if !ok {
+			t.Fatal("session ended on process exit; it should linger")
+		}
+		var acc []byte
+		for _, c := range replay {
+			acc = append(acc, c...)
+		}
+		detach()
+		if strings.Contains(string(acc), "HELLO") && strings.Contains(string(acc), "[exited 3]") {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("exit banner not in scrollback; got %q", acc)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// The session lingers: Done must NOT have fired despite the process exiting.
+	select {
+	case <-sess.Done():
+		t.Fatal("Done fired on process exit; session should linger until Close")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Close finalizes the lingering session.
+	sess.Close()
+	select {
+	case <-sess.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done not closed after Close on a lingering session")
 	}
 }
 

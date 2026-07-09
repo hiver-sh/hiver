@@ -15,7 +15,7 @@ import { chromium } from "playwright-core";
 const sandbox = await hiver.getOrCreateSandbox("browser", { image: "browser" });
 
 // Build the CDP WebSocket URL: proxy URL for port 9223, http -> ws, + /cdp
-const wsEndpoint = sandbox.proxyUrl(9223).replace(/^http/, "ws") + "/cdp";
+const wsEndpoint = sandbox.proxyUrl(9223).replace(/^http/, "ws") + "cdp";
 
 const browser = await chromium.connectOverCDP(wsEndpoint);
 const context = browser.contexts()[0];
@@ -37,7 +37,7 @@ async def main():
     sandbox = await hiver.get_or_create_sandbox("browser", hiver.SandboxConfig(image="browser"))
 
     # Build the CDP WebSocket URL: proxy URL for port 9223, http -> ws, + /cdp
-    ws_endpoint = sandbox.proxy_url(9223).replace("http", "ws", 1) + "/cdp"
+    ws_endpoint = sandbox.proxy_url(9223).replace("http", "ws", 1) + "cdp"
 
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(ws_endpoint)

@@ -100,7 +100,7 @@ func TestMultiTenantIngressE2E(t *testing.T) {
 	// Fetch /id.txt through a sandbox's ingress proxy, polling until the freshly
 	// launched server answers (startup latency). Returns the response body.
 	fetch := func(sbx *hiverclient.Sandbox) (string, error) {
-		url := sbx.ProxyURL(port) + "/id.txt"
+		url := sbx.ProxyURL(port) + "id.txt"
 		deadline := time.Now().Add(30 * time.Second)
 		var lastErr error
 		for time.Now().Before(deadline) {

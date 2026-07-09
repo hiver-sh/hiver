@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Maximize2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   MosaicWithoutDragDropContext,
   type MosaicNode,
@@ -9,7 +10,13 @@ import "react-mosaic-component/react-mosaic-component.css";
 import type { SandboxEvent, SandboxTarget } from "@/types";
 import { humanDuration } from "@/lib/utils";
 import { useTransport } from "@/lib/transport";
-import { LLM_PROVIDERS } from "@/lib/llmProviders";
+import {
+  LLM_PROVIDERS,
+  extractLabelCached,
+  matchProvider,
+  parseSummaryCached,
+} from "@/lib/llmProviders";
+import type { LLMTool } from "@/lib/llmProviders";
 import { RowDetailPanel } from "./TimelineDetail";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
@@ -23,11 +30,27 @@ export interface TimelineBar {
   error?: string;
   pending: boolean;
   rawEvents: SandboxEvent[];
+  // Overrides the identity computed by barKey. Tool bars wrap the same LLM
+  // egress events as their host LLM bar, so they need an explicit, distinct
+  // key (keyed on the tool_use id) to avoid colliding with that LLM bar.
+  keyOverride?: string;
+  // Present on tool bars: the invocation extracted from an LLM tool_use →
+  // tool_result round-trip. Drives the tool row's label and detail rendering.
+  tool?: ToolInvocation;
+}
+
+export interface ToolInvocation {
+  toolId: string;
+  toolName: string;
+  toolInput: unknown;
+  toolResultContent?: unknown;
+  /** The tool's declared schema, pulled from the LLM request that offered it. */
+  definition?: LLMTool;
 }
 
 export interface TimelineRow {
   key: string;
-  type: "egress" | "ingress" | "fs" | "stdio" | "resource" | "exec";
+  type: "egress" | "ingress" | "fs" | "stdio" | "resource" | "exec" | "tool";
   label: string;
   method?: string;
   isPoint: boolean;
@@ -101,9 +124,9 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
         : 0;
       let label = event.host;
       let key: string;
-      const matchedProvider = LLM_PROVIDERS.find((p) => p.matches(event));
+      const matchedProvider = matchProvider(event);
       if (matchedProvider) {
-        label = matchedProvider.extractLabel(event) ?? event.host;
+        label = extractLabelCached(matchedProvider, event) ?? event.host;
         key = `llm:${label}`;
       } else {
         key = `egress:${event.host}`;
@@ -170,14 +193,13 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
       const res = execResMap.get(event.id);
       const startMs = new Date(event.timestamp).getTime();
       const durationMs = res ? new Date(res.timestamp).getTime() - startMs : 0;
-      const truncCmd =
-        event.command.length > 48
-          ? event.command.slice(0, 48) + "…"
-          : event.command;
+      // Group exec bars by working directory: one row per cwd, labeled with
+      // the cwd, with each command an individual bar (its command is shown in
+      // the detail panel on click). Mirrors how egress groups by host.
       const row = getOrCreateRow(
-        `exec:${event.id}`,
+        `exec:${event.cwd}`,
         "exec",
-        truncCmd,
+        event.cwd,
         "exec",
         false,
       );
@@ -214,6 +236,123 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
         true,
       ).bars.push({ ...bar });
     }
+  }
+
+  // ─── Tools: correlate LLM tool_use → tool_result ─────────────────────────
+  // A tool invocation spans from the moment the model emits a `tool_use` block
+  // (the end of an LLM response — this is the "request" that starts the bar) to
+  // the moment a later LLM request carries back the matching `tool_result` (the
+  // "response" that ends the bar). Each invocation becomes one bar; bars are
+  // grouped into rows by tool name, mirroring how egress groups by host.
+  interface PendingTool {
+    toolId: string;
+    toolName: string;
+    toolInput: unknown;
+    startTime: number;
+    endTime?: number;
+    toolResultContent?: unknown;
+    definition?: LLMTool;
+    useEvents: SandboxEvent[];
+    resultEvent?: SandboxEvent;
+  }
+  const toolsByStart = new Map<string, PendingTool>();
+  const toolOrder: string[] = [];
+  // Start times of every LLM request, in order — used by the fallback-close
+  // pass below to complete tools whose tool_result we couldn't parse.
+  const llmRequestTimes: number[] = [];
+
+  for (const event of events) {
+    if (event.type !== "egress.request") continue;
+    const provider = matchProvider(event);
+    if (!provider) continue;
+    const res = egressResMap.get(event.id);
+    const chunks = chunkMap.get(event.id) ?? [];
+    const summary = parseSummaryCached(provider, event, res, chunks);
+    if (!summary) continue;
+
+    // tool_result blocks in this request's messages CLOSE earlier invocations.
+    const reqTime = new Date(event.timestamp).getTime();
+    llmRequestTimes.push(reqTime);
+    for (const msg of summary.messages) {
+      for (const blk of msg.content) {
+        if (blk.type !== "tool_result" || !blk.toolId) continue;
+        const t = toolsByStart.get(blk.toolId);
+        if (t && t.endTime === undefined) {
+          t.endTime = reqTime;
+          t.toolResultContent = blk.toolResultContent;
+          t.resultEvent = event;
+        }
+      }
+    }
+
+    // tool_use blocks in this request's response OPEN invocations. Their start
+    // is the LLM response's completion time (last chunk, else response, else
+    // request time) — that's when the model actually asked for the tool.
+    const startMs = reqTime;
+    const lastChunk = chunks[chunks.length - 1];
+    const useStart = lastChunk
+      ? new Date(lastChunk.timestamp).getTime()
+      : res
+        ? new Date(res.timestamp).getTime()
+        : startMs;
+    for (const blk of summary.response?.blocks ?? []) {
+      if (blk.type !== "tool_use" || !blk.toolId) continue;
+      if (toolsByStart.has(blk.toolId)) continue;
+      const definition = summary.tools?.find((t) => t.name === blk.toolName);
+      toolsByStart.set(blk.toolId, {
+        toolId: blk.toolId,
+        toolName: blk.toolName ?? "tool",
+        toolInput: blk.toolInput,
+        startTime: useStart,
+        definition,
+        useEvents: res ? [event, res, ...chunks] : [event, ...chunks],
+      });
+      toolOrder.push(blk.toolId);
+    }
+  }
+
+  // Fallback close: a tool_use we couldn't pair with a tool_result — e.g. the
+  // next request's body was truncated and didn't parse, so its tool_result
+  // blocks were lost — but which is followed by another LLM request must have
+  // completed before that request (the agent only continues once it has the
+  // results). Close it at that next request's start. Tools from the final
+  // response have no following request, so a genuinely in-flight tool stays
+  // pending.
+  for (const t of toolsByStart.values()) {
+    if (t.endTime !== undefined) continue;
+    const next = llmRequestTimes.find((rt) => rt > t.startTime);
+    if (next !== undefined) t.endTime = next;
+  }
+
+  for (const toolId of toolOrder) {
+    const t = toolsByStart.get(toolId)!;
+    const row = getOrCreateRow(
+      `tool:${t.toolName}`,
+      "tool",
+      t.toolName,
+      undefined,
+      false,
+    );
+    row.bars.push({
+      id: t.useEvents[0]?.id ?? 0,
+      sandboxKey,
+      startTime: t.startTime,
+      durationMs:
+        t.endTime !== undefined ? Math.max(0, t.endTime - t.startTime) : 0,
+      access: "allowed",
+      pending: t.endTime === undefined,
+      keyOverride: `tool:${sandboxKey}:${toolId}`,
+      tool: {
+        toolId: t.toolId,
+        toolName: t.toolName,
+        toolInput: t.toolInput,
+        toolResultContent: t.toolResultContent,
+        definition: t.definition,
+      },
+      rawEvents: t.resultEvent
+        ? [...t.useEvents, t.resultEvent]
+        : t.useEvents,
+    });
   }
 
   const mountEarliestTime = new Map<string, number>();
@@ -304,9 +443,44 @@ function isLiveBar(bar: TimelineBar): boolean {
   return bar.rawEvents[0]?.type === "exec.request";
 }
 
+interface MergeGroup {
+  bars: TimelineBar[];
+  leftPx: number;
+  rightPx: number;
+}
+
+// Fold bars whose display footprints are within LANE_GAP_PX of each other into
+// merge groups (rightPx includes MIN_BAR_PX so zero-duration bars still have a
+// footprint). Shared by the bar render and the row-click handler so a row click
+// resolves to the exact same group the user sees under the cursor.
+function computeMergeGroups(
+  bars: TimelineBar[],
+  toDisplay: (t: number) => number,
+  effectiveDurFn: (b: TimelineBar) => number,
+): MergeGroup[] {
+  const groups: MergeGroup[] = [];
+  for (const bar of bars) {
+    const l = toDisplay(bar.startTime);
+    const r = Math.max(
+      l + MIN_BAR_PX,
+      toDisplay(bar.startTime + effectiveDurFn(bar)),
+    );
+    const last = groups[groups.length - 1];
+    if (last && l < last.rightPx + LANE_GAP_PX) {
+      last.bars.push(bar);
+      last.rightPx = Math.max(last.rightPx, r);
+    } else {
+      groups.push({ bars: [bar], leftPx: l, rightPx: r });
+    }
+  }
+  return groups;
+}
+
 function liveBarClass(row: TimelineRow): string {
   if (row.type === "exec")
     return "bg-emerald-500/50 border border-emerald-400/60";
+  if (row.type === "tool")
+    return "bg-indigo-500/50 border border-indigo-400/60";
   if (row.type === "ingress")
     return "bg-blue-500/50 border border-blue-400/60";
   return "bg-blue-500/50 border border-blue-400/60";
@@ -327,6 +501,7 @@ function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
       : "bg-blue-500/65";
   }
   if (type === "exec") return "bg-emerald-500/65";
+  if (type === "tool") return "bg-indigo-500/65";
   if (type === "stdio") {
     const ev = bar.rawEvents[0];
     return ev?.type === "stdio" && ev.stderr
@@ -342,6 +517,7 @@ function methodClass(row: TimelineRow): string {
       ? "text-red-600 dark:text-red-400"
       : "text-muted-foreground";
   if (row.type === "exec") return "text-emerald-500 dark:text-emerald-400";
+  if (row.type === "tool") return "text-indigo-600 dark:text-indigo-400";
   if (row.type === "fs") return "text-purple-600 dark:text-purple-400";
   if (row.type === "resource")
     return row.key === "resource:cpu"
@@ -363,7 +539,7 @@ function methodClass(row: TimelineRow): string {
   }
 }
 
-export type FilterKind = "all" | "egress" | "ingress" | "fs" | "llm";
+export type FilterKind = "all" | "egress" | "ingress" | "fs" | "llm" | "tools";
 export type FilterAccess = "all" | "allowed" | "denied";
 
 export const KIND_OPTIONS: { value: FilterKind; label: string }[] = [
@@ -372,6 +548,7 @@ export const KIND_OPTIONS: { value: FilterKind; label: string }[] = [
   { value: "ingress", label: "Ingress" },
   { value: "fs", label: "File system" },
   { value: "llm", label: "LLM" },
+  { value: "tools", label: "Tools" },
 ];
 
 export const ACCESS_OPTIONS: { value: FilterAccess; label: string }[] = [
@@ -401,8 +578,10 @@ export function applyFilter(
 ): TimelineRow[] {
   let out = rows;
   if (f.kind === "fs") out = out.filter((r) => r.type === "fs");
+  else if (f.kind === "tools") out = out.filter((r) => r.type === "tool");
   else if (f.kind === "llm")
     out = out.filter((r) => {
+      if (r.type !== "egress") return false;
       const e = r.bars[0]?.rawEvents[0];
       return (
         e?.type === "egress.request" && LLM_PROVIDERS.some((p) => p.matches(e))
@@ -429,8 +608,10 @@ export function filterEvents(
   let out = events;
 
   if (f.kind !== "all") {
+    // Tools are derived from the LLM egress traffic, so the raw feed shows the
+    // same underlying LLM events for both the "llm" and "tools" kinds.
     const llmIds =
-      f.kind === "llm"
+      f.kind === "llm" || f.kind === "tools"
         ? new Set(
             events
               .filter(
@@ -452,7 +633,7 @@ export function filterEvents(
         return e.type === "ingress.request" || e.type === "ingress.response";
       if (f.kind === "fs")
         return e.type === "fs.request" || e.type === "fs.response";
-      if (f.kind === "llm") {
+      if (f.kind === "llm" || f.kind === "tools") {
         if (e.type === "egress.request") return llmIds!.has(e.id);
         if (e.type === "egress.response" || e.type === "egress.chunk")
           return llmIds!.has(e.request_id);
@@ -498,11 +679,19 @@ export function filterEvents(
 
 const DEFAULT_labelW = 220;
 
-type Category = "llm" | "fs" | "egress" | "ingress" | "stdio" | "resource";
+type Category =
+  | "llm"
+  | "tools"
+  | "fs"
+  | "egress"
+  | "ingress"
+  | "stdio"
+  | "resource";
 
 const CATEGORY_ORDER: Category[] = [
   "resource",
   "llm",
+  "tools",
   "fs",
   "egress",
   "ingress",
@@ -510,6 +699,7 @@ const CATEGORY_ORDER: Category[] = [
 ];
 const CATEGORY_LABELS: Record<Category, string> = {
   llm: "LLM",
+  tools: "Tools",
   fs: "File System",
   egress: "Egress",
   ingress: "Ingress",
@@ -518,6 +708,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
 };
 
 function getRowCategory(row: TimelineRow): Category {
+  if (row.type === "tool") return "tools";
   if (row.type === "stdio" || row.type === "exec") return "stdio";
   if (row.type === "fs") return "fs";
   if (row.type === "resource") return "resource";
@@ -684,7 +875,14 @@ function ResourceLineChart({
   }
   if (pts.length === 0) return null;
 
-  const maxValue = isCPU ? 100 : Math.max(...pts.map((p) => p.value), 1);
+  let maxValue = 1;
+  if (isCPU) {
+    maxValue = 100;
+  } else {
+    // Single pass; a long session's resource feed makes `pts` large enough that
+    // Math.max(...spread) would overflow the call stack.
+    for (const p of pts) if (p.value > maxValue) maxValue = p.value;
+  }
   const pad = 2;
   const chartH = height - pad * 2;
   const toY = (v: number) => pad + chartH * (1 - Math.min(v / maxValue, 1));
@@ -802,6 +1000,7 @@ function ResourceLineChart({
 }
 
 function barKey(b: TimelineBar): string {
+  if (b.keyOverride) return b.keyOverride;
   return `${b.sandboxKey}:${b.rawEvents[0]?.type ?? ""}:${b.id}`;
 }
 
@@ -834,6 +1033,225 @@ function useStableBar(candidate: TimelineBar | null): TimelineBar | null {
       : candidate;
   ref.current = stable;
   return stable;
+}
+
+// Set-equality on bar keys, used to toggle a selected merge-group off when its
+// bar is clicked again (group membership is order-independent).
+function sameKeySet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const s = new Set(a);
+  return b.every((k) => s.has(k));
+}
+
+// Flatten a bar to the row shown in the grouped-events table.
+function groupRowSummary(bar: TimelineBar): {
+  time: string;
+  method: string;
+  primary: string;
+  status: string;
+  statusCls: string;
+  duration: string;
+} {
+  const req = bar.rawEvents[0];
+  const time = req ? new Date(req.timestamp).toISOString().slice(11, 23) : "";
+
+  // Tool bars wrap LLM egress events, so rawEvents[0] is the invoking LLM
+  // request — render the tool call itself (name / input / completion) instead
+  // of that underlying POST /v1/messages.
+  if (bar.tool) {
+    const input =
+      typeof bar.tool.toolInput === "string"
+        ? bar.tool.toolInput
+        : JSON.stringify(bar.tool.toolInput ?? {});
+    return {
+      time,
+      method: bar.tool.toolName,
+      primary: input.replace(/\s+/g, " ").trim(),
+      status: bar.pending ? "pending" : "done",
+      statusCls: bar.pending
+        ? "text-muted-foreground/60"
+        : "text-green-600 dark:text-green-400",
+      duration: bar.durationMs > 0 ? humanDuration(bar.durationMs) : "",
+    };
+  }
+
+  let method = "";
+  let primary = "";
+  if (req?.type === "egress.request" || req?.type === "ingress.request") {
+    method = req.method;
+    primary = req.query ? `${req.path}?${req.query}` : req.path;
+  } else if (req?.type === "fs.request") {
+    method = req.operation;
+    primary = req.path;
+  } else if (req?.type === "exec.request") {
+    method = "exec";
+    primary = req.command;
+  } else if (req?.type === "stdio") {
+    method = req.stderr ? "err" : "out";
+    primary = (req.stdout ?? req.stderr ?? "").trimEnd();
+  }
+
+  // Status carries meaning for egress and fs (HTTP status / ACL decision / fs
+  // error) and ingress (HTTP status of the served response); exec and stdio
+  // leave the column blank. Ingress has no access/error fields, so it falls
+  // through to the HTTP-status / pending branches below.
+  let status = "";
+  let statusCls = "text-muted-foreground";
+  if (
+    req?.type === "egress.request" ||
+    req?.type === "fs.request" ||
+    req?.type === "ingress.request"
+  ) {
+    if (bar.error) {
+      status = bar.error;
+      statusCls = "text-red-600 dark:text-red-400";
+    } else if (bar.access === "denied") {
+      status = "denied";
+      statusCls = "text-red-600 dark:text-red-400";
+    } else if (bar.status !== undefined) {
+      status = String(bar.status);
+      statusCls =
+        bar.status >= 400
+          ? "text-red-600 dark:text-red-400"
+          : "text-green-600 dark:text-green-400";
+    } else if (bar.pending) {
+      status = "pending";
+      statusCls = "text-muted-foreground/60";
+    } else if (bar.access === "allowed") {
+      status = "allowed";
+      statusCls = "text-green-600 dark:text-green-400";
+    }
+  }
+
+  // Duration is the request→response round-trip, meaningful for egress and
+  // ingress.
+  const duration =
+    (req?.type === "egress.request" || req?.type === "ingress.request") &&
+    bar.durationMs > 0
+      ? humanDuration(bar.durationMs)
+      : "";
+  return { time, method, primary, status, statusCls, duration };
+}
+
+// Shown in the detail pane when a merged (multi-event) bar is selected: a table
+// of every event folded into that bar. Clicking a row drills into that event's
+// normal detail view (via onSelect → the timeline's selectedId).
+function GroupEventsTable({
+  bars,
+  selectedId,
+  onSelect,
+  onExpand,
+  expandedView,
+}: {
+  bars: TimelineBar[];
+  selectedId: string | null;
+  onSelect: (key: string) => void;
+  onExpand?: () => void;
+  expandedView?: boolean;
+}) {
+  const sorted = useMemo(
+    () => [...bars].sort((a, b) => a.startTime - b.startTime),
+    [bars],
+  );
+  // Every event in a merge group shares the same row (and thus type), so the
+  // Status/Duration columns are either all-populated or all-empty. Drop them
+  // when empty (e.g. stdio) so Detail gets the full width instead of leaving a
+  // wasted gutter on the right.
+  const reqType = bars[0]?.rawEvents[0]?.type;
+  const showMethod =
+    reqType === "egress.request" || reqType === "ingress.request";
+  const showStatus =
+    reqType === "egress.request" ||
+    reqType === "fs.request" ||
+    reqType === "ingress.request";
+  const showDuration =
+    reqType === "egress.request" || reqType === "ingress.request";
+  return (
+    <div className="flex flex-col h-full text-xs">
+      <div className="relative shrink-0">
+        <div className="flex items-center gap-2 px-3 py-2">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+            {bars.length} events
+          </span>
+          {!expandedView && onExpand && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="ml-auto"
+              onClick={onExpand}
+              title="Expand"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
+      </div>
+      <div className="flex-1 min-h-0 overflow-auto mx-3 mb-3 rounded-md border border-border">
+        <table className="w-full table-fixed border-collapse font-mono">
+          <colgroup>
+            <col className="w-[104px]" />
+            {showMethod && <col className="w-[64px]" />}
+            <col />
+            {showStatus && <col className="w-[72px]" />}
+            {showDuration && <col className="w-[80px]" />}
+          </colgroup>
+          <thead className="sticky top-0 z-10 bg-background">
+            <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground/60">
+              <th className="px-2 py-1.5 font-medium">Time</th>
+              {showMethod && <th className="px-2 py-1.5 font-medium">Method</th>}
+              <th className="px-2 py-1.5 font-medium">Detail</th>
+              {showStatus && (
+                <th className="px-2 py-1.5 font-medium">Status</th>
+              )}
+              {showDuration && (
+                <th className="px-2 py-1.5 font-medium text-right">Duration</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((bar) => {
+              const s = groupRowSummary(bar);
+              const key = barKey(bar);
+              const isSel = key === selectedId;
+              return (
+                <tr
+                  key={key}
+                  onClick={() => onSelect(key)}
+                  className={`cursor-pointer border-t border-border/40 ${isSel ? "bg-indigo-100 dark:bg-[#1e1c50]" : "hover:bg-indigo-50 dark:hover:bg-[#16143a]"}`}
+                >
+                  <td className="px-2 py-1 text-muted-foreground whitespace-nowrap align-top">
+                    {s.time}
+                  </td>
+                  {showMethod && (
+                    <td className="px-2 py-1 text-muted-foreground truncate align-top">
+                      {s.method}
+                    </td>
+                  )}
+                  <td className="px-2 py-1 truncate align-top" title={s.primary}>
+                    {s.primary}
+                  </td>
+                  {showStatus && (
+                    <td
+                      className={`px-2 py-1 truncate align-top ${s.statusCls}`}
+                      title={s.status}
+                    >
+                      {s.status}
+                    </td>
+                  )}
+                  {showDuration && (
+                    <td className="px-2 py-1 text-right text-muted-foreground whitespace-nowrap align-top">
+                      {s.duration}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 // The two tiles of the timeline's internal mosaic split: the event rows and the
@@ -950,14 +1368,27 @@ function TimelineViewInner({
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     return searchParams.get("event");
   });
+  // When a merged (multi-event) bar is selected, the bar keys of every event
+  // folded into it. The detail pane then shows the grouped-events table instead
+  // of a single event's detail. Mutually exclusive with a non-null selectedId:
+  // drilling into a table row sets selectedId (see the effect below).
+  const [selectedGroupKeys, setSelectedGroupKeys] = useState<string[] | null>(
+    null,
+  );
   // Full-screen detail dialog. Lives here (not inside RowDetailPanel) so it stays
   // open while the user pages through events with prev/next.
   const [detailExpanded, setDetailExpanded] = useState(false);
 
-  // Closing the detail panel (deselecting) also closes the expanded dialog.
+  // Selecting an individual event closes the grouped-events table (drilling in).
   useEffect(() => {
-    if (selectedId === null) setDetailExpanded(false);
+    if (selectedId !== null) setSelectedGroupKeys(null);
   }, [selectedId]);
+
+  // Closing the detail pane (nothing selected) also closes the expanded dialog.
+  useEffect(() => {
+    if (selectedId === null && selectedGroupKeys === null)
+      setDetailExpanded(false);
+  }, [selectedId, selectedGroupKeys]);
 
   // Rows/detail split is resized by the mosaic splitter (a single, unified resize
   // mechanism across the whole inspector). `detailSplit` is the percentage of the
@@ -1243,10 +1674,24 @@ function TimelineViewInner({
       : null,
   );
 
+  // Resolve the selected merge-group's bar keys back to (freshly rebuilt) bars.
+  // Bars are recreated every render, so we key off the stable barKey. Null when
+  // nothing groupable is selected or the group's events were filtered away.
+  const selectedGroupBars = useMemo(() => {
+    if (selectedGroupKeys === null) return null;
+    const byKey = new Map<string, TimelineBar>();
+    for (const r of allRows) for (const b of r.bars) byKey.set(barKey(b), b);
+    const bars = selectedGroupKeys
+      .map((k) => byKey.get(k))
+      .filter((b): b is TimelineBar => !!b);
+    return bars.length > 0 ? bars : null;
+  }, [selectedGroupKeys, allRows]);
+
   const llmBars = useMemo(
     () =>
       allRows
         .filter((r) => {
+          if (r.type !== "egress") return false;
           const e = r.bars[0]?.rawEvents[0];
           return (
             e?.type === "egress.request" &&
@@ -1324,11 +1769,22 @@ function TimelineViewInner({
   prevBarIdRef.current = prevBarId;
   nextBarIdRef.current = nextBarId;
 
-  const minTime = Math.min(...filteredBars.map((b) => b.startTime));
-  const maxEventEnd = Math.max(
-    ...filteredBars.map((b) => b.startTime + b.durationMs),
-    minTime + 1,
-  );
+  // The horizontal time→px scale is anchored to *all* bars, not the filtered
+  // subset, so applying/clearing a filter only hides rows — it never rescales
+  // or shifts the bars that remain visible. (Nav still uses filteredBars below.)
+  const scaleBars = allRows.flatMap((r) => r.bars);
+  // Single pass rather than Math.min/max(...spread): spreading every bar as
+  // call args allocates two throwaway arrays each render and overflows the call
+  // stack once a session accumulates enough bars.
+  let minTime = Infinity;
+  let maxEventEnd = -Infinity;
+  for (const b of scaleBars) {
+    if (b.startTime < minTime) minTime = b.startTime;
+    const end = b.startTime + b.durationMs;
+    if (end > maxEventEnd) maxEventEnd = end;
+  }
+  if (!Number.isFinite(minTime)) minTime = 0;
+  maxEventEnd = Math.max(maxEventEnd, minTime + 1);
   // Extend the timeline to the latest event timestamp so live bars have room
   // to be drawn at their elapsed-so-far width (chunk/resource events advance
   // it past maxEventEnd, which only counts completed bar durations). The span
@@ -1365,8 +1821,10 @@ function TimelineViewInner({
 
   const pxPerMs = totalSpan > 0 && trackWidth > 0 ? trackWidth / totalSpan : 1;
 
+  // Built from all rows (not the filtered subset) so the gap/segment layout —
+  // and thus the scale — stays fixed as filters toggle rows in and out.
   const rawIntervals: [number, number][] = [];
-  for (const rows of filteredRowsByKey.values()) {
+  for (const rows of rowsByKey.values()) {
     for (const row of rows) {
       if (row.type === "resource") continue;
       for (const bar of row.bars) {
@@ -1754,6 +2212,30 @@ function TimelineViewInner({
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
+  // Bars belonging to the selected merge-group render as selected (its own bar
+  // highlighted, others dimmed) even though the group routes through
+  // selectedGroupKeys rather than selectedId. `hasSelection` unifies both.
+  const groupKeySet = selectedGroupKeys ? new Set(selectedGroupKeys) : null;
+  const hasSelection = selectedId !== null || groupKeySet !== null;
+  const isBarSelected = (b: TimelineBar) =>
+    barKey(b) === selectedId || (groupKeySet?.has(barKey(b)) ?? false);
+
+  // Apply a click on a rendered bar/row: a multi-event group opens the grouped
+  // events table (toggling off if already selected); a single event selects it.
+  const selectGroup = (bars: TimelineBar[]) => {
+    if (bars.length === 0) return;
+    if (bars.length > 1) {
+      const keys = bars.map(barKey);
+      setSelectedGroupKeys((prev) =>
+        prev && sameKeySet(prev, keys) ? null : keys,
+      );
+      setSelectedId(null);
+    } else {
+      const k = barKey(bars[0]);
+      setSelectedId(k === selectedId ? null : k);
+    }
+  };
+
   // The timeline rows and the event-detail view are the two tiles of a mosaic
   // split, so the whole inspector resizes through one mechanism (react-mosaic)
   // rather than a bespoke row-resize drag here.
@@ -1980,6 +2462,7 @@ function TimelineViewInner({
                         (() => {
                           const catColor = {
                             llm: "bg-blue-500/70",
+                            tools: "bg-indigo-500/70",
                             egress: "bg-blue-500/70",
                             ingress: "bg-blue-500/70",
                             fs: "bg-purple-500/70",
@@ -2047,8 +2530,7 @@ function TimelineViewInner({
                       {visLanes.map((vl) => {
                         const isResource = vl.row.type === "resource";
                         const isLaneSelected =
-                          !isResource &&
-                          vl.laneBars.some((b) => barKey(b) === selectedId);
+                          !isResource && vl.laneBars.some(isBarSelected);
                         return (
                           <div
                             key={`${vl.row.key}:${vl.laneIdx}`}
@@ -2073,8 +2555,21 @@ function TimelineViewInner({
                               if (isResource || dragHappenedRef.current) return;
                               const first = vl.laneBars[0];
                               if (!first) return;
-                              const k = barKey(first);
-                              setSelectedId(k === selectedId ? null : k);
+                              // Mirror the bar click: if the first bar merges
+                              // into a group, select that group (show the table)
+                              // rather than the lone event.
+                              if (!vl.row.isPoint && MERGE_OVERLAPS) {
+                                const groups = computeMergeGroups(
+                                  vl.laneBars,
+                                  toDisplay,
+                                  effectiveDur,
+                                );
+                                if (groups[0]) {
+                                  selectGroup(groups[0].bars);
+                                  return;
+                                }
+                              }
+                              selectGroup([first]);
                             }}
                           >
                             {/* Label cell — sticky horizontally */}
@@ -2088,7 +2583,7 @@ function TimelineViewInner({
                                 {vl.row.method?.toUpperCase()}
                               </span>
                               <span
-                                className={`truncate font-mono ${selectedId !== null && isLaneSelected ? "text-foreground" : "text-muted-foreground"}`}
+                                className={`truncate font-mono ${hasSelection && isLaneSelected ? "text-foreground" : "text-muted-foreground"}`}
                               >
                                 {vl.row.label}
                               </span>
@@ -2135,11 +2630,11 @@ function TimelineViewInner({
                                   if (vl.row.isPoint) {
                                     return visible.map((bar) => {
                                       const leftPx = toDisplay(bar.startTime);
-                                      const isSelected = barKey(bar) === selectedId;
+                                      const isSelected = isBarSelected(bar);
                                       return (
                                         <div
                                           key={bar.id}
-                                          className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                          className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 rounded-sm ${vl.row.method === "err" ? "bg-red-400/70" : "bg-zinc-500/70"} ${!isSelected && hasSelection ? "opacity-50" : ""}`}
                                           style={{
                                             left: leftPx,
                                             width: MIN_BAR_PX,
@@ -2175,12 +2670,12 @@ function TimelineViewInner({
                                           bar.startTime + effectiveDur(bar),
                                         ),
                                       );
-                                      const isSelected = barKey(bar) === selectedId;
+                                      const isSelected = isBarSelected(bar);
                                       const isLive = isLiveBar(bar);
                                       return (
                                         <div
                                           key={bar.id}
-                                          className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                          className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && hasSelection ? "opacity-50" : ""}`}
                                           style={{
                                             left: leftPx,
                                             width: rightPx - leftPx,
@@ -2223,42 +2718,15 @@ function TimelineViewInner({
                                       );
                                     });
                                   }
-                                  // Merge bars whose display footprints are within LANE_GAP_PX of each other.
-                                  // rightPx includes MIN_BAR_PX so zero-duration bars have a footprint too.
-                                  type Group = {
-                                    bars: TimelineBar[];
-                                    leftPx: number;
-                                    rightPx: number;
-                                  };
-                                  const groups: Group[] = [];
-                                  for (const bar of visible) {
-                                    const l = toDisplay(bar.startTime);
-                                    const r = Math.max(
-                                      l + MIN_BAR_PX,
-                                      toDisplay(
-                                        bar.startTime + effectiveDur(bar),
-                                      ),
-                                    );
-                                    const last = groups[groups.length - 1];
-                                    if (
-                                      last &&
-                                      l < last.rightPx + LANE_GAP_PX
-                                    ) {
-                                      last.bars.push(bar);
-                                      last.rightPx = Math.max(last.rightPx, r);
-                                    } else {
-                                      groups.push({
-                                        bars: [bar],
-                                        leftPx: l,
-                                        rightPx: r,
-                                      });
-                                    }
-                                  }
+                                  const groups = computeMergeGroups(
+                                    visible,
+                                    toDisplay,
+                                    effectiveDur,
+                                  );
                                   return groups.map((group) => {
                                     const first = group.bars[0];
-                                    const isSelected = group.bars.some(
-                                      (b) => barKey(b) === selectedId,
-                                    );
+                                    const isSelected =
+                                      group.bars.some(isBarSelected);
                                     const isLive = group.bars.some((b) =>
                                       isLiveBar(b),
                                     );
@@ -2266,7 +2734,7 @@ function TimelineViewInner({
                                     return (
                                       <div
                                         key={first.id}
-                                        className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && selectedId !== null ? "opacity-50" : ""}`}
+                                        className={`group/bar absolute top-1/2 -translate-y-1/2 h-4 ${!isSelected && hasSelection ? "opacity-50" : ""}`}
                                         style={{
                                           left: group.leftPx,
                                           width: w,
@@ -2302,8 +2770,9 @@ function TimelineViewInner({
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (dragHappenedRef.current) return;
-                                            const k = barKey(first);
-                                            setSelectedId(k === selectedId ? null : k);
+                                            // Multi-event bar → grouped events
+                                            // table; single event → its detail.
+                                            selectGroup(group.bars);
                                           }}
                                         />
                                       </div>
@@ -2357,10 +2826,19 @@ function TimelineViewInner({
       </div>
   );
 
-  const detailTile = selectedBar ? (
+  const detailTile = selectedGroupBars ? (
+    <div className="flex h-full flex-col overflow-hidden scroll-container detail-scroll">
+      <GroupEventsTable
+        bars={selectedGroupBars}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onExpand={expandDetail}
+      />
+    </div>
+  ) : selectedBar ? (
     <div className="flex h-full flex-col overflow-hidden scroll-container detail-scroll">
       <RowDetailPanel
-        key={selectedBar.id}
+        key={barKey(selectedBar)}
         bar={selectedBar}
         prevBar={prevAnthropicBar}
         onPrev={prevBarId !== null ? selectPrevBar : undefined}
@@ -2372,10 +2850,11 @@ function TimelineViewInner({
     </div>
   ) : null;
 
-  // Only split off the detail tile when an event is selected; otherwise the
-  // timeline rows fill the panel. (The single-column layout shows the detail in
-  // a dialog instead — `detailInDialog` — so it never splits here.)
-  const detailVisible = selectedBar !== null && !detailInDialog;
+  // Only split off the detail tile when an event (or merge-group) is selected;
+  // otherwise the timeline rows fill the panel. (The single-column layout shows
+  // the detail in a dialog instead — `detailInDialog` — so it never splits here.)
+  const detailVisible =
+    (selectedBar !== null || selectedGroupBars !== null) && !detailInDialog;
   const mosaicValue: MosaicNode<TimelinePane> = detailVisible
     ? {
         type: "split",
@@ -2418,29 +2897,40 @@ function TimelineViewInner({
         />
       </div>
 
-      {selectedBar && (
+      {(selectedBar || selectedGroupBars) && (
         <Dialog
           open={detailInDialog ? true : detailExpanded}
           onOpenChange={(open) => {
             if (open) return;
             // In single-column mode the dialog *is* the selection, so closing it
             // deselects the event; otherwise it just collapses the expanded view.
-            if (detailInDialog) setSelectedId(null);
-            else setDetailExpanded(false);
+            if (detailInDialog) {
+              setSelectedId(null);
+              setSelectedGroupKeys(null);
+            } else setDetailExpanded(false);
           }}
         >
           <DialogContent className="max-w-7xl p-0 flex flex-col overflow-hidden h-[80vh] scroll-container detail-scroll">
             <DialogTitle className="sr-only">Event detail</DialogTitle>
-            <RowDetailPanel
-              key={selectedBar.id}
-              bar={selectedBar}
-              prevBar={prevAnthropicBar}
-              onPrev={prevBarId !== null ? selectPrevBar : undefined}
-              onNext={nextBarId !== null ? selectNextBar : undefined}
-              applyConfig={applyConfig}
-              onOpenFile={onOpenFile}
-              expandedView
-            />
+            {selectedGroupBars ? (
+              <GroupEventsTable
+                bars={selectedGroupBars}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                expandedView
+              />
+            ) : selectedBar ? (
+              <RowDetailPanel
+                key={barKey(selectedBar)}
+                bar={selectedBar}
+                prevBar={prevAnthropicBar}
+                onPrev={prevBarId !== null ? selectPrevBar : undefined}
+                onNext={nextBarId !== null ? selectNextBar : undefined}
+                applyConfig={applyConfig}
+                onOpenFile={onOpenFile}
+                expandedView
+              />
+            ) : null}
           </DialogContent>
         </Dialog>
       )}

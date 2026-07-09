@@ -113,10 +113,11 @@ class Sandbox:
 
     def proxy_url(self, port: Union[int, str]) -> str:
         """
-        Base proxy URL for reaching a port inside the sandbox. Append the
-        path to get a full URL, e.g. ``sandbox.proxy_url(8080) + "/health"``.
+        Base proxy URL for reaching a port inside the sandbox. Ends with a
+        trailing slash, so it reaches the port's root as-is; append a path to
+        reach an endpoint, e.g. ``sandbox.proxy_url(8080) + "health"``.
         """
-        return f"{self.api_server_url}/v1/{self.key}/proxy/{port}"
+        return f"{self.api_server_url}/v1/{self.key}/proxy/{port}/"
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client if this sandbox owns it."""

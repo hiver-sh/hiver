@@ -10,12 +10,85 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/isolation"
 	"github.com/hiver-sh/hiver/internal/spec"
 )
+
+// resolveMount attributes an agent-visible path to the configured mount that
+// owns it, returning the mount point, its backend, and whether a mount matched.
+// Longest prefix wins so a nested mount beats its parent. ok is false when the
+// path falls outside every declared mount — callers skip fs events for those,
+// since the stream describes I/O against the sandbox's mounted filesystems.
+func (h *Sandbox) resolveMount(cfg gen.SandboxConfig, cleaned string) (mount string, backend gen.Backend, ok bool) {
+	for _, f := range cfg.Fs {
+		base := fsBase(f)
+		m := strings.TrimRight(base.Mount, "/")
+		if m == "" {
+			continue
+		}
+		if (cleaned == m || strings.HasPrefix(cleaned, m+"/")) && len(m) >= len(mount) {
+			mount, backend, ok = m, base.Backend, true
+		}
+	}
+	return mount, backend, ok
+}
+
+// emitFSEvent publishes the request phase of an fs.request/fs.response pair for
+// a file API operation and returns a closure that publishes the paired
+// response. The file API is a privileged control surface that bypasses the
+// FUSE layer (and its ACLs), so writes/reads made through it never cross
+// sbxfuse and would otherwise be invisible on GET /v1/events — unlike workload
+// I/O, which the sbxfuse audit translator surfaces. Emitting here gives the
+// event stream parity: access is always "allowed" (the API is trusted), and
+// the response carries the backend + wall-clock duration like the FUSE path.
+//
+// Only paths under a configured mount are surfaced — the stream describes I/O
+// against the sandbox's mounted filesystems, so an operation outside every
+// declared mount is a no-op (returns a no-op response closure).
+func (h *Sandbox) emitFSEvent(cfg gen.SandboxConfig, op gen.FSRequestEventOperation, cleaned string) func(err error) {
+	if h.broker == nil {
+		return func(error) {}
+	}
+	mount, backend, ok := h.resolveMount(cfg, cleaned)
+	if !ok {
+		return func(error) {}
+	}
+	start := time.Now()
+	reqID := h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromFSRequestEvent(gen.FSRequestEvent{
+			Id:        int(id),
+			Timestamp: ts,
+			Access:    gen.FSRequestEventAccessAllowed,
+			Mount:     mount,
+			Path:      cleaned,
+			Operation: op,
+		})
+		return ev
+	})
+	return func(err error) {
+		h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
+			out := gen.FSResponseEvent{
+				Id:         int(id),
+				Timestamp:  ts,
+				RequestId:  int(reqID),
+				Backend:    backend,
+				DurationMs: int(time.Since(start) / time.Millisecond),
+			}
+			if err != nil {
+				s := err.Error()
+				out.Error = &s
+			}
+			var ev gen.SandboxEvent
+			_ = ev.FromFSResponseEvent(out)
+			return ev
+		})
+	}
+}
 
 // mountRoutes returns the configured mounts and whether each is remote-backed,
 // which the backend's FileBridge uses to route an agent path to its backing
@@ -64,7 +137,9 @@ func (h *Sandbox) UploadFile(c *gin.Context, path string) {
 		return
 	}
 
+	done := h.emitFSEvent(cfg, gen.Write, cleaned)
 	n, err := h.iso.Files().Save(dir, name, h.mountRoutes(cfg), c.Request.Body)
+	done(err)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
 		return
@@ -93,7 +168,9 @@ func (h *Sandbox) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) 
 		return
 	}
 
+	done := h.emitFSEvent(cfg, gen.Read, cleaned)
 	entries, err := h.iso.Files().List(cleaned, h.mountRoutes(cfg))
+	done(err)
 	if err != nil {
 		c.JSON(fileErrStatus(err), gen.Error{Error: err.Error()})
 		return
@@ -155,7 +232,9 @@ func (h *Sandbox) GetFile(c *gin.Context, path string) {
 		return
 	}
 
+	done := h.emitFSEvent(cfg, gen.Read, cleaned)
 	rc, size, err := h.iso.Files().Open(cleaned, h.mountRoutes(cfg))
+	done(err)
 	if err != nil {
 		c.JSON(fileErrStatus(err), gen.Error{Error: err.Error()})
 		return
@@ -185,7 +264,10 @@ func (h *Sandbox) DeleteFile(c *gin.Context, path string) {
 		return
 	}
 
-	if err := h.iso.Files().Delete(cleaned, h.mountRoutes(cfg)); err != nil {
+	done := h.emitFSEvent(cfg, gen.Write, cleaned)
+	err = h.iso.Files().Delete(cleaned, h.mountRoutes(cfg))
+	done(err)
+	if err != nil {
 		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
 			c.JSON(http.StatusBadRequest, gen.Error{Error: "directory not empty"})
 			return

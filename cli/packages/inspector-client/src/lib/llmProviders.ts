@@ -57,3 +57,71 @@ export const LLM_PROVIDERS: LLMProvider[] = [
   chatgptProvider,
   geminiProvider,
 ];
+
+// ─── Per-event memoization ────────────────────────────────────────────────
+// `buildRows` re-runs over the entire accumulated event feed on every frame a
+// batch of events is appended, and for each LLM egress event it calls
+// extractLabel/parseSummary — both of which JSON.parse the (large, growing)
+// request body and re-parse every response chunk. Re-parsing every past event
+// on every frame makes the timeline cost grow quadratically with the session
+// length: that's the ~500ms render passes seen in profiles of long sessions.
+//
+// Events are immutable and referentially stable (the feed is append-only), so
+// results can be cached on the request event object. extractLabel depends only
+// on the (immutable) request body, so it caches unconditionally. parseSummary
+// also folds in the response + streamed chunks, so its cache is invalidated
+// while those are still growing (keyed on chunk count + response presence) and
+// only becomes a stable hit once the request completes.
+
+const labelCache = new WeakMap<EgressRequest, string | null>();
+
+export function extractLabelCached(
+  provider: LLMProvider,
+  event: EgressRequest,
+): string | null {
+  const hit = labelCache.get(event);
+  if (hit !== undefined || labelCache.has(event)) return hit ?? null;
+  const value = provider.extractLabel(event);
+  labelCache.set(event, value);
+  return value;
+}
+
+interface SummaryCacheEntry {
+  chunkLen: number;
+  hasResponse: boolean;
+  value: LLMSummaryData | null;
+}
+const summaryCache = new WeakMap<EgressRequest, SummaryCacheEntry>();
+
+export function parseSummaryCached(
+  provider: LLMProvider,
+  request: EgressRequest,
+  response: EgressResponse | undefined,
+  chunks: EgressChunk[],
+): LLMSummaryData | null {
+  const hasResponse = response !== undefined;
+  const cached = summaryCache.get(request);
+  if (
+    cached &&
+    cached.chunkLen === chunks.length &&
+    cached.hasResponse === hasResponse
+  ) {
+    return cached.value;
+  }
+  const value = provider.parseSummary(request, response, chunks);
+  summaryCache.set(request, { chunkLen: chunks.length, hasResponse, value });
+  return value;
+}
+
+// Which provider (if any) owns an egress request. `matches()` is a cheap
+// host/path check, but caching the resolved provider keeps the per-event
+// lookup in `buildRows` from scanning the provider list on every rebuild.
+const providerCache = new WeakMap<EgressRequest, LLMProvider | null>();
+
+export function matchProvider(event: EgressRequest): LLMProvider | null {
+  const cached = providerCache.get(event);
+  if (cached !== undefined) return cached;
+  const provider = LLM_PROVIDERS.find((p) => p.matches(event)) ?? null;
+  providerCache.set(event, provider);
+  return provider;
+}

@@ -1,0 +1,17 @@
+{
+  "id": "hiver-sandbox",
+  "name": "Hiver Sandbox",
+  "description": "Sandbox backend that runs OpenClaw exec and filesystem tools inside a Hiver sandbox.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": []
+  }
+}

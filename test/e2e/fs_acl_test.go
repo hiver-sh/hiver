@@ -41,7 +41,7 @@ func TestFSACLE2E(t *testing.T) {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
 
-	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"/mcp", &bytes.Buffer{})
+	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"mcp", &bytes.Buffer{})
 	defer session.Close()
 
 	initial, err := sbx.GetConfig(ctx)

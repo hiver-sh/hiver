@@ -15,7 +15,7 @@ async function main() {
     snapshot: { vm: { key: 'browser-vm' } }
   });
 
-  const wsUrl = sandbox.proxyUrl(9223).replace(/^http/, 'ws') + '/cdp';
+  const wsUrl = sandbox.proxyUrl(9223).replace(/^http/, 'ws') + 'cdp';
   process.stderr.write(`[cdp-bridge] connecting to ${wsUrl}\n`);
 
   async function connectWithRetry() {

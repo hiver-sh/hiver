@@ -101,7 +101,7 @@ Then provision from the tag and reach the service through the [proxy](/docs/ingr
 const sandbox = await getOrCreateSandbox("my-agent", { image: "my-agent" });
 
 console.log(await sandbox.getPorts()); // [3000]
-const res = await fetch(`${sandbox.proxyUrl(3000)}/health`);
+const res = await fetch(`${sandbox.proxyUrl(3000)}health`);
 console.log(await res.text());
 ```
 
@@ -110,7 +110,7 @@ sandbox = await get_or_create_sandbox("my-agent", SandboxConfig(image="my-agent"
 
 print(await sandbox.get_ports())  # [3000]
 async with httpx.AsyncClient() as http:
-    res = await http.get(sandbox.proxy_url(3000) + "/health")
+    res = await http.get(sandbox.proxy_url(3000) + "health")
     print(res.text)
 ```
 
@@ -118,7 +118,7 @@ async with httpx.AsyncClient() as http:
 sandbox, _ := c.GetOrCreateSandbox(ctx, "my-agent", client.SandboxConfig{Image: "my-agent"})
 
 fmt.Println(sandbox.GetPorts(ctx)) // [3000]
-resp, _ := http.Get(sandbox.ProxyURL(3000) + "/health")
+resp, _ := http.Get(sandbox.ProxyURL(3000) + "health")
 ```
 
 ## Multi-platform builds

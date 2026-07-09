@@ -150,7 +150,7 @@ const sandbox = await getOrCreateSandbox("my-agent", {
   env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY! },
 });
 
-const res = await fetch(`${sandbox.proxyUrl(3000)}/chat`, {
+const res = await fetch(`${sandbox.proxyUrl(3000)}chat`, {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ prompt: "Create /workspace/fib.py and run it." }),
@@ -338,7 +338,7 @@ sandbox = await get_or_create_sandbox("my-agent", SandboxConfig(
 
 async with httpx.AsyncClient() as http:
     res = await http.post(
-        f"{sandbox.proxy_url(3000)}/chat",
+        f"{sandbox.proxy_url(3000)}chat",
         json={"prompt": "Create /workspace/fib.py and run it."},
     )
     print(res.json()["reply"])
@@ -352,7 +352,7 @@ sandbox, _ := c.GetOrCreateSandbox(ctx, "my-agent", client.SandboxConfig{
 })
 
 body, _ := json.Marshal(map[string]string{"prompt": "Create /workspace/fib.py and run it."})
-resp, _ := http.Post(sandbox.ProxyURL(3000)+"/chat", "application/json", bytes.NewReader(body))
+resp, _ := http.Post(sandbox.ProxyURL(3000)+"chat", "application/json", bytes.NewReader(body))
 defer resp.Body.Close()
 
 var out struct{ Reply string }

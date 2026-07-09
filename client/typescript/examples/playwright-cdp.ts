@@ -34,8 +34,8 @@ console.info(`sandbox created in ${(performance.now() - tStart).toFixed(0)}ms`);
 // exposes a fixed /cdp alias and maps it onto Chrome's per-launch
 // /devtools/browser/<uuid> endpoint, so there's no /json/version discovery to do
 // here. connectOverCDP connects a ws:// url directly (no rewrite), so we just
-// point it at the proxy URL + /cdp (http→ws).
-const wsEndpoint = sandbox.proxyUrl(CDP_PORT).replace(/^http/, "ws") + "/cdp";
+// point it at the proxy URL + cdp (http→ws). proxyUrl already ends with a slash.
+const wsEndpoint = sandbox.proxyUrl(CDP_PORT).replace(/^http/, "ws") + "cdp";
 
 // Retry because the CDP endpoint may not be ready immediately after resume.
 async function connectWithRetry(url: string, retries = 5, delayMs = 1000) {

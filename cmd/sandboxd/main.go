@@ -512,7 +512,27 @@ func startAgentTTY(ctx context.Context, bin string, args []string) (*exec.Cmd, *
 	if err != nil {
 		return nil, nil, err
 	}
-	return cmd, pty.NewSession(master, nil), nil
+	sess := pty.NewSession(master, nil)
+	// A tty entrypoint holds its terminal open when it exits: instead of ending the
+	// session (and the sandbox), the session lingers and shows this banner until an
+	// explicit shutdown closes it. The hook reaps cmd, so its caller must not.
+	sess.SetExitHook(exitBanner(cmd))
+	return cmd, sess, nil
+}
+
+// exitBanner reaps cmd and returns a terminal line reporting its exit code, shown
+// when a lingering tty entrypoint session's process exits. runc (container) and
+// sbxvsock (microvm bridge) both exit with the workload's own exit code, so
+// ProcessState.ExitCode is the entrypoint's.
+func exitBanner(cmd *exec.Cmd) func() []byte {
+	return func() []byte {
+		_ = cmd.Wait()
+		code := -1
+		if cmd.ProcessState != nil {
+			code = cmd.ProcessState.ExitCode()
+		}
+		return []byte(fmt.Sprintf("\r\n\x1b[2m[process exited with code %d]\x1b[0m\r\n", code))
+	}
 }
 
 // streamLines forwards a child's stdio to sandboxd's stdout verbatim — no

@@ -112,8 +112,8 @@ func TestMultiTenantPackE2E(t *testing.T) {
 
 	// Real DNS resolves through the per-sandbox sink to the proxy placeholder,
 	// proving name resolution works inside a packed sandbox's own netns.
-	if got := strings.TrimSpace(exec(sbxA, "python3 -c \"import socket;print(socket.gethostbyname('example.com'))\"").Stdout); got != "192.0.2.1" {
-		t.Errorf("keyA DNS example.com = %q, want 192.0.2.1 (proxy placeholder)", got)
+	if got := strings.TrimSpace(exec(sbxA, "python3 -c \"import socket;print(socket.gethostbyname('example.com'))\"").Stdout); got != "11.0.0.1" {
+		t.Errorf("keyA DNS example.com = %q, want 11.0.0.1 (proxy placeholder)", got)
 	}
 
 	// --- egress isolation: each key's allowlist is enforced by source IP ---
@@ -124,7 +124,7 @@ func TestMultiTenantPackE2E(t *testing.T) {
 		py := fmt.Sprintf(
 			"import http.client as h\n"+
 				"try:\n"+
-				"  c=h.HTTPConnection('192.0.2.1',80,timeout=15)\n"+
+				"  c=h.HTTPConnection('11.0.0.1',80,timeout=15)\n"+
 				"  c.request('GET','/',headers={'Host':'%s'})\n"+
 				"  print('STATUS', c.getresponse().status)\n"+
 				"except Exception as e: print('ERR', type(e).__name__)",
@@ -489,7 +489,7 @@ func TestMultiTenantEgressEventsE2E(t *testing.T) {
 		py := fmt.Sprintf(
 			"import http.client as h\n"+
 				"try:\n"+
-				"  c=h.HTTPConnection('192.0.2.1',80,timeout=15)\n"+
+				"  c=h.HTTPConnection('11.0.0.1',80,timeout=15)\n"+
 				"  c.request('GET','/',headers={'Host':'%s'})\n"+
 				"  c.getresponse()\n"+
 				"except Exception: pass",

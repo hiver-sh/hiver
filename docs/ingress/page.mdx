@@ -35,7 +35,7 @@ const server = await sandbox.execStream(["python3", "/workspace/server.py"], { c
 // Give it a moment to bind, then send it a command through the proxy.
 await new Promise((r) => setTimeout(r, 500));
 
-const res = await fetch(`${sandbox.proxyUrl(8000)}/run`, {
+const res = await fetch(`${sandbox.proxyUrl(8000)}run`, {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ cmd: "build" }),
@@ -67,7 +67,7 @@ server = await sandbox.exec_stream(["python3", "/workspace/server.py"], cwd="/wo
 await asyncio.sleep(0.5)
 
 async with httpx.AsyncClient() as http:
-    res = await http.post(sandbox.proxy_url(8000) + "/run", json={"cmd": "build"})
+    res = await http.post(sandbox.proxy_url(8000) + "run", json={"cmd": "build"})
     print(res.json())  # {"ran": "build", "ok": True}
 ```
 
@@ -92,7 +92,7 @@ sandbox.ExecStream(ctx, client.ExecStreamRequest{Command: []string{"python3", "/
 time.Sleep(500 * time.Millisecond)
 
 body, _ := json.Marshal(map[string]string{"cmd": "build"})
-resp, _ := http.Post(sandbox.ProxyURL(8000)+"/run", "application/json", bytes.NewReader(body))
+resp, _ := http.Post(sandbox.ProxyURL(8000)+"run", "application/json", bytes.NewReader(body))
 defer resp.Body.Close()
 io.Copy(os.Stdout, resp.Body) // {"ran": "build", "ok": true}
 ```

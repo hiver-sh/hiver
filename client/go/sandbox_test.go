@@ -25,7 +25,7 @@ func writeSSEFrame(w http.ResponseWriter, v interface{}) {
 
 func TestSandbox_ProxyURL(t *testing.T) {
 	s := &Sandbox{apiURL: "http://gw/sandbox/k", Key: "mykey"}
-	if got := s.ProxyURL(8080); got != "http://gw/sandbox/k/v1/mykey/proxy/8080" {
+	if got := s.ProxyURL(8080); got != "http://gw/sandbox/k/v1/mykey/proxy/8080/" {
 		t.Errorf("got %q", got)
 	}
 }

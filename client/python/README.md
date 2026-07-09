@@ -192,13 +192,14 @@ ports = await sandbox.get_ports()  # e.g. [8080, 9000]
 
 #### `sandbox.proxy_url(port)`
 
-Returns the base proxy URL for a port inside the sandbox. Append a path to get a
-full URL.
+Returns the base proxy URL for a port inside the sandbox. It ends with a
+trailing slash, so it reaches the port's root as-is; append a path to reach an
+endpoint.
 
 ```python
 import httpx
 async with httpx.AsyncClient() as client:
-    res = await client.get(sandbox.proxy_url(8080) + "/health")
+    res = await client.get(sandbox.proxy_url(8080) + "health")
 ```
 
 #### `sandbox.get_config()`

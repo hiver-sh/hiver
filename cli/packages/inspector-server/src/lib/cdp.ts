@@ -19,7 +19,7 @@ const CDP_CONNECT_TIMEOUT_MS = 30_000;
 // alias on 0.0.0.0 (see docker/browser/chromehost). We reach it through the
 // gateway proxy, upgraded to a WebSocket, exactly like skills/browser/cdp-bridge.js.
 function cdpWsUrl(sandbox: Sandbox, port: number): string {
-  return sandbox.proxyUrl(port).replace(/^http/, "ws") + "/cdp";
+  return sandbox.proxyUrl(port).replace(/^http/, "ws") + "cdp";
 }
 
 // Cache of the detected CDP port per sandbox key so reconnects don't re-probe.
@@ -82,11 +82,12 @@ function probeCdp(sandbox: Sandbox, port: number): Promise<boolean> {
   });
 }
 
-// The sandbox's exposed ports, ordered so the conventional CDP port (9223) is
-// probed first and the rest follow. Re-read on every attempt because the ports
-// list itself fills in asynchronously as the browser image boots — 9223 may not
-// be there on the first look. A transient getPorts failure yields no candidates
-// (the retry loop simply tries again).
+// The sandbox's exposed CDP port. We only ever attempt CDP on the conventional
+// port (9223) — probing arbitrary exposed ports risks confusing an unrelated
+// service for a CDP relay. Re-read on every attempt because the ports list fills
+// in asynchronously as the browser image boots — 9223 may not be there on the
+// first look. A transient getPorts failure yields no candidates (the retry loop
+// simply tries again).
 async function orderedCdpPorts(sandbox: Sandbox): Promise<number[]> {
   let ports: number[];
   try {
@@ -94,10 +95,7 @@ async function orderedCdpPorts(sandbox: Sandbox): Promise<number[]> {
   } catch {
     return [];
   }
-  return [
-    ...ports.filter((p) => p === LIKELY_CDP_PORT),
-    ...ports.filter((p) => p !== LIKELY_CDP_PORT),
-  ];
+  return ports.filter((p) => p === LIKELY_CDP_PORT);
 }
 
 // Watch for a CDP endpoint on the sandbox and resolve with its port once one
@@ -129,7 +127,7 @@ export async function detectCdpPort(
 
   // Re-read the ports and probe CDP with exponential backoff on each attempt:
   // both the ports list and the CDP relay appear asynchronously, so a one-shot
-  // probe loses the race. Try 9223 first, then the rest. No deadline — we keep
+  // probe loses the race. Only 9223 is ever attempted. No deadline — we keep
   // watching until the browser shows up or the caller aborts.
   const port = await retryWithBackoff(
     async () => {

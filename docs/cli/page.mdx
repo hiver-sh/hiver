@@ -16,6 +16,7 @@ The `hiver` CLI runs the local stack, launches sandboxes, streams their events, 
     down     Bring down local stack
     connect  Connect to remote stack
     start    Start a sandbox
+    run      Build and launch a project directory as a sandbox
     stop     Stop a sandbox
     shell    Open an interactive shell in a sandbox
     list     List the sandboxes
@@ -74,6 +75,18 @@ EOF
 ```
 
 Flags and stdin can combine; flags win where both set the same field.
+
+## Run a project directory
+
+`run` bundles a directory's Dockerfile and launches it in one step, using the directory name as the image tag and, by default, the sandbox key. With no argument it uses the current directory; pass a second argument to override the key.
+
+```bash
+hiver run                  # build and launch the current directory
+hiver run ./my-app         # build and launch a specific directory
+hiver run ./my-app agent-1 # launch under a specific key
+```
+
+If the directory has no Dockerfile, `run` offers to scaffold a minimal one whose entrypoint is `tail -f /dev/null`, keeping the sandbox alive until you stop it. It also writes a `.hiver.json` holding the [`SandboxConfig`](/docs/getting-started#config-options) the sandbox is launched with; a later `hiver run` reuses that config and re-bundles the image from the directory. Edit `.hiver.json` to set `env`, `ttl`, `entrypoint`, and anything else the sandbox is launched with — including `image`, which becomes the tag the directory is bundled to (defaulting to the directory name).
 
 Stop, list, and open a shell:
 

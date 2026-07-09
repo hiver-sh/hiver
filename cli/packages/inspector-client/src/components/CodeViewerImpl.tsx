@@ -95,6 +95,10 @@ export default function CodeViewer({
     },
     inlayHints: { enabled: "off" },
     maxTokenizationLineLength: 400_000,
+    // Disable the word highlighter: on unmount it disposes a pending Delayer,
+    // rejecting its promise with an uncaught CancellationError (surfaces as a
+    // crash in the dev overlay). Occurrence highlighting is useless here anyway.
+    occurrencesHighlight: "off",
   };
 
   const monacoLang = LANG_MAP[lang ?? ""] ?? lang ?? "plaintext";

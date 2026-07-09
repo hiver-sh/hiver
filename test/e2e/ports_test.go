@@ -68,7 +68,7 @@ func TestPortsE2E(t *testing.T) {
 		// The agent-node server binds synchronously before the async probe
 		// loop, but sandbox startup latency means we poll until it responds.
 		// POST to a non-/exec path returns 200 "ok\n".
-		proxyURL := sbx.ProxyURL(18000) + "/hello"
+		proxyURL := sbx.ProxyURL(18000) + "hello"
 		deadline := time.Now().Add(30 * time.Second)
 		var (
 			lastErr    error

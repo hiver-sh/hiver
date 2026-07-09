@@ -26,10 +26,8 @@ try {
     );
     const pad = Math.max(...sandboxes.map((s) => s.key.length));
     sandboxes.forEach((s, i) => {
-      const exposed = ports[i].length
-        ? `  ${dim(ports[i].map((p) => `:${p}`).join(", "))}`
-        : "";
-      console.log(`${white(s.key.padEnd(pad))}${exposed}`);
+      const portList = ports[i].map((p) => dim(`:${p}`)).join(" ");
+      console.log(`${white(s.key.padEnd(pad))}${portList ? `  ${portList}` : ""}`);
     });
     console.log(
       `\n${dim(`${sandboxes.length} sandbox${sandboxes.length === 1 ? "" : "es"}`)}\n`,

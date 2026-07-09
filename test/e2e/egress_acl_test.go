@@ -51,7 +51,7 @@ func TestEgressACLE2E(t *testing.T) {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
 
-	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"/mcp", &bytes.Buffer{})
+	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"mcp", &bytes.Buffer{})
 	defer session.Close()
 
 	initial, err := sbx.GetConfig(ctx)
@@ -191,10 +191,10 @@ func TestEgressDNSSinkholeE2E(t *testing.T) {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
 
-	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"/mcp", &bytes.Buffer{})
+	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"mcp", &bytes.Buffer{})
 	defer session.Close()
 
-	const sinkIP = "192.0.2.1"
+	const sinkIP = "11.0.0.1"
 
 	// Every name resolves to the constant placeholder, regardless of whether it
 	// is on the allowlist: an allowlisted host (go.dev), an unlisted host, and

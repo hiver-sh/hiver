@@ -57,6 +57,21 @@ hiver shell claude --command "claude -p 'Fix the bug in src/main.ts'"` },
 
 The key is injected once at creation and is immutable, every later `exec` on this sandbox inherits it automatically, so you never pass it again.
 
+### Using your Claude subscription
+
+Instead of billing an `ANTHROPIC_API_KEY`, you can authenticate Claude Code with your Claude Pro or Max subscription. Start the sandbox without a key, then log in interactively from a shell:
+
+```bash
+hiver start claude-agent --image claude   # no API key needed
+hiver shell claude-agent                   # then run `claude` and complete the browser login
+```
+
+The login is stored in the sandbox, so subsequent commands reuse it:
+
+```bash
+hiver shell claude-agent --command "claude -p 'what skills do you have?'"
+```
+
 ### Streaming output
 
 Agents can run for a while and produce a lot of output. Use `execStream` to see stdout and stderr as they happen instead of waiting for the process to finish.
@@ -101,7 +116,13 @@ fmt.Println("exit code:", code)
 
 ### Interactive TUI
 
-To drive Claude Code's full-screen interface from your own terminal, attach over a PTY, see [Pseudo Terminals](/docs/pseudo-terminals) for a complete example.
+The quickest way to drive Claude Code's full-screen interface is `hiver shell`, which drops you into the sandbox with a live PTY attached:
+
+```bash
+hiver shell claude-agent   # then run `claude` for the interactive TUI
+```
+
+To build the same experience into your own tool, attach over a PTY yourself, see [Pseudo Terminals](/docs/pseudo-terminals) for a complete example.
 
 <Callout>Keep secrets out of the agent's reach: rather than giving Claude your third-party API keys, allow the hosts it needs and inject credentials with an egress [override](/docs/network/overrides), the agent uses them without ever seeing them.</Callout>
 

@@ -83,8 +83,9 @@ export class Sandbox {
   readonly apiServerUrl: string;
 
   /**
-   * Returns the base proxy URL for a specific port inside the sandbox.
-   * Append the path to get a full URL, e.g. `sandbox.proxyUrl(8080) + "/health"`.
+   * Returns the base proxy URL for a specific port inside the sandbox. Ends
+   * with a trailing slash, so it reaches the port's root as-is; append a path
+   * to reach an endpoint, e.g. `sandbox.proxyUrl(8080) + "health"`.
    */
   readonly proxyUrl: (port: number | string) => string;
 
@@ -96,7 +97,7 @@ export class Sandbox {
     this.id = ref.id;
     this.key = ref.key;
     this.apiServerUrl = `${opts.gatewayUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(ref.id)}`;
-    this.proxyUrl = (port) => `${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/proxy/${port}`;
+    this.proxyUrl = (port) => `${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/proxy/${port}/`;
     this.fetchImpl = opts.fetch ?? fetch;
   }
 

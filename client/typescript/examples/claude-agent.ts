@@ -109,7 +109,7 @@ const response = query({
     mcpServers: {
       sandbox: {
         type: "http",
-        url: `${sandbox.proxyUrl(3000)}/mcp`,
+        url: `${sandbox.proxyUrl(3000)}mcp`,
         alwaysLoad: true,
       },
     },

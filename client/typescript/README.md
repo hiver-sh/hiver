@@ -190,11 +190,12 @@ const ports = await sandbox.getPorts(); // e.g. [8080, 9000]
 
 #### `sandbox.proxyUrl(port)`
 
-Returns the base proxy URL for a port inside the sandbox. Append a path to get a
-full URL.
+Returns the base proxy URL for a port inside the sandbox. It ends with a
+trailing slash, so it reaches the port's root as-is; append a path to reach an
+endpoint.
 
 ```ts
-const res = await fetch(`${sandbox.proxyUrl(8080)}/health`);
+const res = await fetch(`${sandbox.proxyUrl(8080)}health`);
 ```
 
 #### `sandbox.getConfig()`

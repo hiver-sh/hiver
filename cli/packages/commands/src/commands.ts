@@ -45,6 +45,12 @@ export const COMMANDS: CommandSpec[] = [
     ],
   },
   {
+    name: "run",
+    summary: "Build and launch a project directory as a sandbox",
+    entry: "run/index.ts",
+    usage: ["hiver run", "hiver run <dir>", "hiver run <dir> <key>"],
+  },
+  {
     name: "stop",
     summary: "Stop a sandbox",
     entry: "stop/index.ts",

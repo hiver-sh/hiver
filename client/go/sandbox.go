@@ -103,10 +103,11 @@ func (s *Sandbox) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// ProxyURL returns the base URL for reaching port inside the sandbox.
-// Append a path to form a full URL, e.g. sandbox.ProxyURL(8080) + "/health".
+// ProxyURL returns the base URL for reaching port inside the sandbox. It ends
+// with a trailing slash, so it reaches the port's root as-is; append a path to
+// reach an endpoint, e.g. sandbox.ProxyURL(8080) + "health".
 func (s *Sandbox) ProxyURL(port int) string {
-	return s.keyed(fmt.Sprintf("/proxy/%d", port))
+	return s.keyed(fmt.Sprintf("/proxy/%d/", port))
 }
 
 // Ping keeps the sandbox alive by resetting its TTL countdown.

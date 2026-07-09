@@ -39,6 +39,23 @@ import (
 // The proxy's own resolver traffic carries OutboundMark and is excluded by the
 // iptables rule before reaching this listener, so it resolves truthfully.
 
+// DefaultDNSSink is the placeholder address every sinkholed DNS query resolves
+// to. Its only load-bearing property is that it is a single *constant* — a
+// constant function leaks zero bits, so DNS tunnelling stays structurally
+// impossible regardless of the value (see the package comment). The agent
+// connects to it and the dest-agnostic TCP REDIRECT funnels the connection to
+// sbxproxy, which recovers the real host from SNI; the placeholder itself is
+// never routed.
+//
+// It must be a *public unicast* address: clients increasingly run their own
+// SSRF guards that reject any hostname resolving to a private/reserved/
+// special-use IP (e.g. openclaw blocks TEST-NET, RFC1918, CGNAT, class E — every
+// non-unicast range), and such a guard fires before the connection is ever made.
+// 11.0.0.0/8 is globally unicast (so those guards pass) yet is not routed to
+// ordinary hosts, making it a recognisable, non-colliding marker in audit logs.
+// Override with a platform-owned /32 via sbxproxy's -dns-sink flag if preferred.
+const DefaultDNSSink = "11.0.0.1"
+
 // sinkTTL is 0 so resolvers don't cache the placeholder: every lookup is
 // re-asked, which keeps the audit stream honest about what the agent queried.
 const sinkTTL = 0

@@ -294,12 +294,14 @@ func (p *packState) setEgress(ip string, rules []proxy.EgressRule) uint64 {
 // config requested a tty override. The backend returns a host bridge command (the
 // microvm runs the override as a tty exec session in a guest pty; the container
 // backend returns nil, having wired its entrypoint pty at launch). The bridge is
-// wrapped in a pty.Session and published via SetEntrypointTTY so /v1/exec-stream
-// with an empty command attaches to it. When the session ends — the override
-// exited (pty EOF) or the sandbox was torn down — onExit cancels the lifecycle so
-// the override's exit ends the sandbox, mirroring an entrypoint exit. A no-op when
-// the backend returns no bridge (no tty override).
-func setupEntrypointTTY(ctx context.Context, key string, iso isolation.Isolation, sb *handlers.Sandbox, onExit context.CancelFunc) {
+// wrapped in a pty.Session (with an exit hook, so it lingers on override exit,
+// showing an exit banner rather than ending) and published via SetEntrypointTTY
+// so /v1/exec-stream with an empty command attaches to it. The override exiting
+// alone does NOT end the sandbox — a tty-launched sandbox holds its terminal open
+// for reattach — so the session is closed and the bridge cleaned up only on
+// teardown (ctx cancel: an explicit DELETE / TTL / pod shutdown). A no-op when the
+// backend returns no bridge (no tty override).
+func setupEntrypointTTY(ctx context.Context, key string, iso isolation.Isolation, sb *handlers.Sandbox) {
 	bridge, cleanup, err := iso.EntrypointTTYBridge(ctx)
 	if err != nil {
 		log.Printf("sandboxd: %s: entrypoint tty bridge: %v", key, err)
@@ -315,13 +317,18 @@ func setupEntrypointTTY(ctx context.Context, key string, iso isolation.Isolation
 		return
 	}
 	sess := pty.NewSession(master, nil)
+	// Like the container tty path, linger when the guest entrypoint exits: show the
+	// exit banner and keep the terminal attachable until teardown. exitBanner reaps
+	// the bridge (sbxvsock, which exits with the guest workload's code).
+	sess.SetExitHook(exitBanner(bridge))
 	sb.SetEntrypointTTY(sess)
 	log.Printf("sandboxd: %s: entrypoint attached to tty (microvm bridge)", key)
 	go func() {
-		<-sess.Done()
+		// The entrypoint exiting alone lingers the session; only sandbox teardown
+		// (ctx cancel) ends it. Close finalizes the (possibly lingering) session.
+		<-ctx.Done()
 		sess.Close()
 		cleanup()
-		onExit()
 	}()
 }
 
@@ -461,13 +468,13 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		// DNS sink bound directly to this sandbox's gateway:53 (the address its guest
 		// queries). Answering from the bound address avoids the fragile cross-netns
 		// conntrack un-NAT a DNAT'd sink would need. The guest then connects to the
-		// placeholder, which the TCP DNAT funnels to sbxproxy. dnsSinkIP matches
-		// sbxproxy's -dns-sink default (TEST-NET-1).
+		// placeholder, which the TCP DNAT funnels to sbxproxy. The sink IP matches
+		// sbxproxy's -dns-sink default (proxy.DefaultDNSSink).
 		gw := fmt.Sprintf("172.16.%d.1", octet)
 		if pc, err := net.ListenPacket("udp", gw+":53"); err != nil {
 			log.Printf("sandboxd: pack %q: dns sink on %s:53: %v", key, gw, err)
 		} else {
-			go proxy.ServeSink(sbCtx, pc, net.ParseIP("192.0.2.1"), nil)
+			go proxy.ServeSink(sbCtx, pc, net.ParseIP(proxy.DefaultDNSSink), nil)
 		}
 
 		// Bind the per-key host workspace dirs to their guest mount paths.
@@ -684,7 +691,15 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		_ = iso.StopAgent(stopCtx)
 		stopWorkload()
 		c()
-		if agentCmd != nil {
+		// A container tty entrypoint runs in a lingering pty session that stays open
+		// after the entrypoint exits (showing the exit banner); Close it here so it
+		// finalizes. Its exit hook already reaped the process, so don't Wait it again.
+		// For the microvm entrypointTTY is nil (its bridge session is closed via
+		// setupEntrypointTTY on ctx cancel) and agentCmd is the VMM, still reaped.
+		if entrypointTTY != nil {
+			_ = entrypointTTY.Close()
+		}
+		if agentCmd != nil && entrypointTTY == nil {
 			_ = agentCmd.Wait() // reap the launched workload process
 		}
 		// Capture snapshot before unmounting — mirrors finalizeShutdown for the
@@ -780,7 +795,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			return nil, fmt.Errorf("apply resume state: %w", err)
 		}
 		phase.mark("pack " + key + ": apply resume state")
-		setupEntrypointTTY(sbCtx, key, iso, sb, cancel)
+		setupEntrypointTTY(sbCtx, key, iso, sb)
 	} else {
 		if err := iso.WaitReady(sbCtx); err != nil {
 			cleanup()
@@ -796,7 +811,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 				envSlice = append(envSlice, k+"="+v)
 			}
 			iso.PrepareEntrypointTTY(sp.Entrypoint, sp.Cwd, envSlice)
-			setupEntrypointTTY(sbCtx, key, iso, sb, cancel)
+			setupEntrypointTTY(sbCtx, key, iso, sb)
 		}
 	}
 	// Gate readiness on the egress reload landing in sbxproxy. The reload was

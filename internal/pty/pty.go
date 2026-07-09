@@ -89,13 +89,18 @@ type Session struct {
 	master *os.File
 	stdin  *gatedWriter
 
-	mu     sync.Mutex
-	subs   map[int]*subscriber
-	nextID int
-	ring   [][]byte // recent output, replayed to new subscribers
-	ringSz int
-	closed bool
-	done   chan struct{}
+	mu       sync.Mutex
+	subs     map[int]*subscriber
+	nextID   int
+	ring     [][]byte // recent output, replayed to new subscribers
+	ringSz   int
+	closed   bool
+	done     chan struct{}
+	exitHook func() []byte // if set, linger on process exit (see SetExitHook)
+	// closeReq is signalled by Close; it releases a lingering session (one whose
+	// process exited with an exitHook set) so it can finalize.
+	closeReq  chan struct{}
+	closeOnce sync.Once
 }
 
 type subscriber struct {
@@ -109,10 +114,11 @@ type subscriber struct {
 // the master reaches EOF (the wrapped process exited or master was Closed).
 func NewSession(master *os.File, onOutput func([]byte)) *Session {
 	s := &Session{
-		master: master,
-		stdin:  &gatedWriter{w: master},
-		subs:   map[int]*subscriber{},
-		done:   make(chan struct{}),
+		master:   master,
+		stdin:    &gatedWriter{w: master},
+		subs:     map[int]*subscriber{},
+		done:     make(chan struct{}),
+		closeReq: make(chan struct{}),
 	}
 	relTimer := time.AfterFunc(stdinReleaseDelay, func() { _ = s.stdin.release() })
 	go s.readLoop(onOutput, relTimer)
@@ -139,12 +145,39 @@ func (s *Session) readLoop(onOutput func([]byte), relTimer *time.Timer) {
 			break
 		}
 	}
+	// The wrapped process exited (master EOF) or the master was Closed. With an
+	// exit hook set (a tty entrypoint), don't end the session: append the hook's
+	// banner — e.g. "[process exited with code N]" — and linger, keeping prior
+	// output and the banner attachable until Close(). This lets an interactive
+	// sandbox hold its terminal open when the entrypoint exits, tearing down only
+	// on an explicit shutdown. A Close() that raced ahead of the process's own
+	// exit (closeReq already signalled) skips the banner and finalizes.
+	if s.exitHook != nil {
+		select {
+		case <-s.closeReq:
+			// Force-closed by teardown; no exit banner, just finalize.
+		default:
+			if b := s.exitHook(); len(b) > 0 {
+				s.broadcast(b)
+			}
+			<-s.closeReq // linger until Close()
+		}
+	}
 	s.mu.Lock()
 	s.closed = true
 	s.subs = map[int]*subscriber{}
 	s.mu.Unlock()
 	close(s.done)
 }
+
+// SetExitHook makes the session linger when its process exits instead of ending:
+// on process EOF the returned banner is appended to the terminal (shown to
+// attached and later-attaching clients) and the session stays open — Done does
+// not fire — until Close() is called. The hook runs once, in the read-loop
+// goroutine, so it may block to reap the process and format its exit code. Call
+// it right after NewSession, before the process can exit. No-op behaviour (the
+// session ends on process exit, as usual) when never set.
+func (s *Session) SetExitHook(fn func() []byte) { s.exitHook = fn }
 
 // broadcast appends chunk to the ring and delivers it to every current
 // subscriber. Delivery is lossy and never blocks: if a subscriber is behind
@@ -250,7 +283,12 @@ func (s *Session) Resize(rows, cols uint16) error {
 func (s *Session) Done() <-chan struct{} { return s.done }
 
 // Close tears down the pty master, which ends the read loop and the session.
-func (s *Session) Close() error { return s.master.Close() }
+// It also releases a lingering session (one whose process already exited with an
+// exit hook set) so it finalizes and Done fires.
+func (s *Session) Close() error {
+	s.closeOnce.Do(func() { close(s.closeReq) })
+	return s.master.Close()
+}
 
 // gatedWriter buffers writes until release, then flushes them in order and
 // lets subsequent writes pass through to w. It gates client stdin against a

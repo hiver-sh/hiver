@@ -143,7 +143,7 @@ async function connectWithRetry(
   sandbox: hiver.Sandbox,
   label: string,
 ): Promise<Browser> {
-  const wsEndpoint = sandbox.proxyUrl(CDP_PORT).replace(/^http/, "ws") + "/cdp";
+  const wsEndpoint = sandbox.proxyUrl(CDP_PORT).replace(/^http/, "ws") + "cdp";
   const start = performance.now();
   // The resident browser is in the snapshot, so the relay is usually listening
   // the instant the sandbox is ready — but a just-resumed guest can refuse the

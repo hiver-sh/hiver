@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { z } from "zod";
 import { getOrCreateSandbox, SandboxConfig } from "@hiver.sh/client";
 import { white, bold, dim, red, accent } from "../theme.js";
 import { createLoader } from "../hive.js";
@@ -17,6 +18,35 @@ import { selectImage } from "./agent-cli.js";
 
 const DEFAULT_IMAGE = "agent-base";
 
+// Read a JSON `SandboxConfig` piped to stdin, for anything the flags don't cover
+// (most notably `env`). An interactive TTY carries no config, so it's skipped;
+// an empty pipe is treated as no config. A malformed body is a hard error so a
+// typo'd config can't be silently ignored.
+async function readStdinConfig(): Promise<SandboxConfig> {
+  if (process.stdin.isTTY) return {};
+  process.stdin.setEncoding("utf8");
+  let raw = "";
+  for await (const chunk of process.stdin) raw += chunk;
+  if (raw.trim() === "") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(
+      `\n  ${red("✖")} could not parse stdin as JSON: ${dim(err instanceof Error ? err.message : String(err))}\n`,
+    );
+    process.exit(1);
+  }
+  const result = SandboxConfig.safeParse(parsed);
+  if (!result.success) {
+    console.error(
+      `\n  ${red("✖")} invalid sandbox config from stdin:\n\n${z.prettifyError(result.error)}\n`,
+    );
+    process.exit(1);
+  }
+  return result.data;
+}
+
 const cmd = withGateway(subcommand("start", "Start a sandbox on the gateway."))
   .argument("[key]", "sandbox key (generated when omitted)")
   .option(
@@ -28,7 +58,13 @@ const cmd = withGateway(subcommand("start", "Start a sandbox on the gateway."))
   .option("--tty", "attach a pseudo-TTY to the entrypoint");
 run(cmd);
 
-const { gatewayUrl: gatewayFlag, image, entrypoint, ttl: ttlFlag, tty } = cmd.opts();
+const {
+  gatewayUrl: gatewayFlag,
+  image,
+  entrypoint,
+  ttl: ttlFlag,
+  tty,
+} = cmd.opts();
 let gatewayUrl = resolveGatewayUrl(gatewayFlag);
 const key = cmd.args[0] ?? `agent-${randomBytes(2).toString("hex")}`;
 
@@ -45,10 +81,20 @@ if (ttlFlag !== undefined) {
   }
 }
 
-// With no `--image` (and no `--entrypoint`), let the user pick an image to
-// launch; otherwise honour the flag, falling back to the base image.
-const pickImage = image === undefined && entrypoint === undefined;
-const imageArg = pickImage ? await selectImage() : (image ?? DEFAULT_IMAGE);
+// Read any piped config before resolving the image: stdin can supply the image
+// (as in the docs' `env` example) and provides fields flags don't cover.
+const stdinConfig = await readStdinConfig();
+
+// With no image from `--image`, stdin, or `--entrypoint`, let the user pick one
+// to launch; otherwise honour the flag, then stdin, falling back to the base
+// image. `--image` wins over stdin's `image` when both are set.
+const pickImage =
+  image === undefined &&
+  entrypoint === undefined &&
+  stdinConfig.image === undefined;
+const imageArg = pickImage
+  ? await selectImage()
+  : (image ?? stdinConfig.image ?? DEFAULT_IMAGE);
 
 const resolvedEntrypoint: string | undefined = entrypoint;
 
@@ -84,14 +130,16 @@ if (!isLocalGateway(gatewayUrl)) {
       // sandbox-images.json, matching the variant the local stack was brought up
       // with (container vs microvm). Raw refs and unknown names pass through.
       const ref =
-        resolveSandboxImage(imageArg, Boolean(readConfig().microvm)) ?? imageArg;
+        resolveSandboxImage(imageArg, Boolean(readConfig().microvm)) ??
+        imageArg;
       // Need it locally to inspect for the bundle markers; pull if absent.
       if (!imageExistsLocally(ref)) {
         const pull = createLoader(`Pulling ${ref}`).start();
         const { ok, output } = await pullImage(ref);
         if (!ok) {
           pull.fail(`could not pull ${ref}`);
-          if (output.trim()) process.stderr.write("\n" + output.trimEnd() + "\n");
+          if (output.trim())
+            process.stderr.write("\n" + output.trimEnd() + "\n");
           process.exit(1);
         }
         pull.succeed(`Pulled ${ref}`);
@@ -108,9 +156,14 @@ if (!isLocalGateway(gatewayUrl)) {
 
 // Start from the logical image's launch defaults from sandbox-images.json (e.g.
 // tty/cwd for the agent images); empty for raw refs / Dockerfile dirs. The
-// resolved ref and any flags the caller set are layered on top, so explicit
-// flags win and the controller's defaults apply to anything left unset.
-const config: SandboxConfig = { ...imageConfig(imageArg), image: resolvedImage };
+// stdin config, resolved ref, and any flags the caller set are layered on top,
+// so explicit flags win over stdin which wins over the image defaults, and the
+// controller's defaults apply to anything left unset.
+const config: SandboxConfig = {
+  ...imageConfig(imageArg),
+  ...stdinConfig,
+  image: resolvedImage,
+};
 // entrypoint accepts a string (the sandbox splits it on whitespace) or an
 // argv array; the flag and agent picker both yield a string, so pass it as-is.
 if (resolvedEntrypoint !== undefined) config.entrypoint = resolvedEntrypoint;
@@ -136,9 +189,9 @@ try {
   loader.succeed(`${white(sandbox.key)} ${dim("started")}${exposed}`);
   console.log(
     `\n  ${accent(`hiver shell ${sandbox.key}`)}    ${dim("open a shell")}` +
-    `\n  ${accent(`hiver inspect ${sandbox.key}`)}  ${dim("inspect this agent")}` +
-    `\n  ${accent(`hiver events ${sandbox.key}`)}   ${dim("stream events")}` +
-    `\n  ${accent(`hiver stop ${sandbox.key}`)}     ${dim("stop sandbox")}\n`,
+      `\n  ${accent(`hiver inspect ${sandbox.key}`)}  ${dim("inspect this agent")}` +
+      `\n  ${accent(`hiver events ${sandbox.key}`)}   ${dim("stream events")}` +
+      `\n  ${accent(`hiver stop ${sandbox.key}`)}     ${dim("stop sandbox")}\n`,
   );
   process.exit(0);
 } catch (err) {

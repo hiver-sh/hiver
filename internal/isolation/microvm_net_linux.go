@@ -122,7 +122,7 @@ func (m *microvm) setupPackedNetMicrovm(ctx context.Context, proxyPort, dnsPort,
 		<-ctx.Done()
 		_ = pc.Close()
 	}()
-	go proxy.ServeSink(ctx, pc, net.ParseIP("192.0.2.1"), nil)
+	go proxy.ServeSink(ctx, pc, net.ParseIP(proxy.DefaultDNSSink), nil)
 	return nil
 }
 

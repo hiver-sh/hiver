@@ -13,7 +13,7 @@ import type { TimelineBar } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
 import { SegmentedControl } from "./SegmentedControl";
 import { humanDuration } from "@/lib/utils";
-import { LLM_PROVIDERS } from "@/lib/llmProviders";
+import { matchProvider, parseSummaryCached } from "@/lib/llmProviders";
 import type { LLMSummaryData } from "@/lib/llmProviders";
 import { LLMSummary } from "./LLMSummary";
 import { tryPretty } from "@/lib/prettyBody";
@@ -329,6 +329,159 @@ function DetailNav({
   );
 }
 
+// Detail view for a Tools-group bar: a tool_use → tool_result round-trip. The
+// Invocation tab shows the model's call arguments, Result shows the tool_result
+// fed back on the next turn, Definition shows the tool's declared schema, and
+// LLM reuses the LLMSummary view of the originating request that invoked it.
+function ToolDetail({
+  bar,
+  ts,
+  containerRef,
+  onPrev,
+  onNext,
+  onExpand,
+  expandedView,
+}: {
+  bar: TimelineBar;
+  ts: string;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onPrev?: () => void;
+  onNext?: () => void;
+  onExpand?: () => void;
+  expandedView?: boolean;
+}) {
+  const tool = bar.tool!;
+  type ToolTab = "invocation" | "result" | "definition" | "llm";
+  const [tab, setTab] = useState<ToolTab>("invocation");
+
+  const inputStr =
+    typeof tool.toolInput === "string"
+      ? tool.toolInput
+      : JSON.stringify(tool.toolInput ?? null, null, 2);
+  const hasResult = tool.toolResultContent !== undefined;
+  const resultStr =
+    typeof tool.toolResultContent === "string"
+      ? tool.toolResultContent
+      : JSON.stringify(tool.toolResultContent ?? null, null, 2);
+  const hasDefinition = tool.definition !== undefined;
+  const schemaStr =
+    tool.definition?.inputSchema !== undefined
+      ? JSON.stringify(tool.definition.inputSchema, null, 2)
+      : null;
+
+  // The originating LLM request lives in this bar's rawEvents (rawEvents[0] is
+  // the request, followed by its response + chunks — see buildRows). Re-parse it
+  // so the LLM tab can render the full LLMSummary of the call that emitted the
+  // tool_use.
+  const llmSummary = useMemo((): LLMSummaryData | null => {
+    const req = bar.rawEvents[0];
+    if (req?.type !== "egress.request") return null;
+    const res = bar.rawEvents.find(
+      (e): e is Extract<SandboxEvent, { type: "egress.response" }> =>
+        e.type === "egress.response",
+    );
+    const chunks = bar.rawEvents.filter(
+      (e): e is Extract<SandboxEvent, { type: "egress.chunk" }> =>
+        e.type === "egress.chunk",
+    );
+    const provider = matchProvider(req);
+    return provider ? parseSummaryCached(provider, req, res, chunks) : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bar]);
+
+  const tabOptions: { value: ToolTab; label: string }[] = [
+    { value: "invocation", label: "Invocation" },
+    { value: "result", label: "Result" },
+    ...(hasDefinition
+      ? [{ value: "definition" as ToolTab, label: "Definition" }]
+      : []),
+    ...(llmSummary ? [{ value: "llm" as ToolTab, label: "LLM" }] : []),
+  ];
+
+  return (
+    <div ref={containerRef} className="flex flex-col h-full text-xs">
+      <div className="relative shrink-0">
+        <div className="detail-header-scroll overflow-x-auto">
+          <div className="flex items-center gap-2 px-3 py-2 min-w-max">
+            <SegmentedControl
+              options={tabOptions}
+              value={tab}
+              onChange={setTab}
+            />
+            <DetailNav
+              onPrev={onPrev}
+              onNext={onNext}
+              onExpand={onExpand}
+              expandedView={expandedView}
+            />
+          </div>
+        </div>
+        <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent" />
+      </div>
+
+      {tab === "invocation" && (
+        <div className="flex flex-col flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 overflow-hidden">
+          <div className="flex items-center gap-3 px-3 py-1.5 border-b border-border shrink-0 bg-background">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">
+              Input
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground/60">
+              {ts}
+            </span>
+          </div>
+          <CodeViewer content={inputStr} lang="json" className="flex-1 min-h-0" />
+        </div>
+      )}
+
+      {tab === "result" && (
+        <div className="flex flex-col flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 overflow-hidden">
+          <div className="flex items-center gap-3 px-3 py-1.5 border-b border-border shrink-0 bg-background">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">
+              Result
+            </span>
+            {bar.pending ? (
+              <span className="font-mono text-[10px] text-blue-600/70 dark:text-blue-400/70">
+                awaiting result…
+              </span>
+            ) : (
+              <span className="font-mono text-[10px] text-muted-foreground/60">
+                {humanDuration(bar.durationMs)}
+              </span>
+            )}
+          </div>
+          {hasResult ? (
+            <CodeViewer content={resultStr} lang="json" className="flex-1 min-h-0" />
+          ) : (
+            <div className="p-3 text-muted-foreground">
+              {bar.pending ? "awaiting result…" : "no result"}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "definition" && (
+        <div className="flex flex-col flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 overflow-hidden">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium border-b border-border shrink-0 bg-background">
+            {tool.toolName}
+          </div>
+          {tool.definition?.description && (
+            <div className="px-3 py-2 text-muted-foreground border-b border-border shrink-0 whitespace-pre-wrap select-text max-h-48 overflow-auto">
+              {tool.definition.description}
+            </div>
+          )}
+          {schemaStr ? (
+            <CodeViewer content={schemaStr} lang="json" className="flex-1 min-h-0" />
+          ) : (
+            <div className="p-3 text-muted-foreground">no input schema</div>
+          )}
+        </div>
+      )}
+
+      {tab === "llm" && llmSummary && <LLMSummary summary={llmSummary} />}
+    </div>
+  );
+}
+
 function RowDetailPanelInner({
   bar,
   prevBar,
@@ -401,11 +554,8 @@ function RowDetailPanelInner({
   const summaryData = useMemo((): LLMSummaryData | null => {
     if (req.type !== "egress.request") return null;
     const egressRes = res?.type === "egress.response" ? res : undefined;
-    for (const provider of LLM_PROVIDERS) {
-      const data = provider.parseSummary(req, egressRes, chunks);
-      if (data) return data;
-    }
-    return null;
+    const provider = matchProvider(req);
+    return provider ? parseSummaryCached(provider, req, egressRes, chunks) : null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bar]);
 
@@ -421,22 +571,23 @@ function RowDetailPanelInner({
       (e): e is Extract<SandboxEvent, { type: "egress.chunk" }> =>
         e.type === "egress.chunk",
     );
-    for (const provider of LLM_PROVIDERS) {
-      const data = provider.parseSummary(prevReq, prevRes, prevChunks);
-      if (data) {
-        // Inject the previous response as an assistant turn so shared-message
-        // detection correctly marks context carried forward into the current request.
-        if (data.response && data.response.blocks.length > 0) {
-          return {
-            ...data,
-            messages: [
-              ...data.messages,
-              { role: "assistant", content: data.response.blocks },
-            ],
-          };
-        }
-        return data;
+    const provider = matchProvider(prevReq);
+    const data = provider
+      ? parseSummaryCached(provider, prevReq, prevRes, prevChunks)
+      : null;
+    if (data) {
+      // Inject the previous response as an assistant turn so shared-message
+      // detection correctly marks context carried forward into the current request.
+      if (data.response && data.response.blocks.length > 0) {
+        return {
+          ...data,
+          messages: [
+            ...data.messages,
+            { role: "assistant", content: data.response.blocks },
+          ],
+        };
       }
+      return data;
     }
     return null;
   }, [prevBar]);
@@ -477,6 +628,20 @@ function RowDetailPanelInner({
   }, []);
 
   const ts = new Date(req.timestamp).toISOString().slice(11, 23);
+
+  if (bar.tool) {
+    return (
+      <ToolDetail
+        bar={bar}
+        ts={ts}
+        containerRef={containerRef}
+        onPrev={onPrev}
+        onNext={onNext}
+        onExpand={onExpand}
+        expandedView={expandedView}
+      />
+    );
+  }
 
   if (req.type === "stdio") {
     const text = (req.stdout ?? req.stderr ?? "").trimEnd();
