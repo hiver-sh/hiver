@@ -110,7 +110,7 @@ function mergeExpanded(newNodes: TreeNode[], oldNodes: TreeNode[]): TreeNode[] {
 }
 
 function FileExplorerInner({ sandboxId, sandboxKey, serverUrl, events, refreshRef, treeCacheRef }: Props) {
-  const { transport } = useTransport();
+  const { transport, seekNonce } = useTransport();
   const { prefs, toggleExpandedPath } = useUserPreferences();
   // Seed from the parent-owned cache so a remount (see Props.treeCacheRef)
   // restores the loaded tree immediately rather than flashing empty.
@@ -245,6 +245,17 @@ function FileExplorerInner({ sandboxId, sandboxKey, serverUrl, events, refreshRe
   useEffect(() => {
     loadMounts();
   }, [loadMounts]);
+
+  // Reload the tree whenever the replay clock jumps (any seek). The trace
+  // transport now resolves /directories & /file to the snapshot at the seeked
+  // time, so loadMounts rebuilds from that snapshot — files that only existed
+  // later drop out (t1 → t0), and files created earlier reappear. Skips the
+  // initial mount (seekNonce 0), which the effect above already covers.
+  useEffect(() => {
+    if (seekNonce === 0) return;
+    loadMounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekNonce]);
 
   useEffect(() => {
     if (refreshRef) refreshRef.current = loadMounts;

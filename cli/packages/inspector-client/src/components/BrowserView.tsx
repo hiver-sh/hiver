@@ -88,7 +88,7 @@ function BrowserViewInner({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  const { transport } = useTransport();
+  const { transport, seekEpoch } = useTransport();
 
   // Latest viewport size (CSS px) reported with each frame, read by the input
   // handlers via a ref so they don't need to re-bind on every frame.
@@ -98,6 +98,16 @@ function BrowserViewInner({
   // primary; updated to the nested sandbox once we know which one has CDP). All
   // input/control/selection requests target this, so they hit the right one.
   const targetRef = useRef({ id: sandboxId, key: sandboxKey });
+
+  // A backward scrub (which bumps seekEpoch) re-pumps the recorded stream from
+  // the start. Drop the currently-painted frame so a stale future frame can't
+  // linger if the seek lands before the next recorded frame — the re-pump then
+  // repaints to the correct frame for the seeked position. No-op on mount and
+  // in live sessions, where seekEpoch never changes after 0.
+  useEffect(() => {
+    imgRef.current?.removeAttribute("src");
+    frameSizeRef.current = { width: 0, height: 0 };
+  }, [seekEpoch]);
 
   // Address-bar value. While the user is editing it we stop mirroring the
   // page's live URL into it (tracked by urlFocusedRef) so their typing isn't
@@ -364,10 +374,29 @@ function BrowserViewInner({
     container.addEventListener("keydown", onKeyDown);
     container.addEventListener("keyup", onKeyUp);
 
+    // Coalesce frames to the latest one per animation frame. During a seek
+    // catch-up the recorded stream re-pumps hundreds of frames back-to-back,
+    // but only the last is ever visible — decoding a base64 JPEG into `img.src`
+    // for every intermediate frame was a top cost in the seek profile. Live
+    // playback (frames slower than the display) is unaffected: each still paints.
+    let pendingFrame: { data: string; width: number; height: number } | null =
+      null;
+    let frameRaf = 0;
+    const applyFrame = () => {
+      frameRaf = 0;
+      if (!pendingFrame) return;
+      frameSizeRef.current = {
+        width: pendingFrame.width,
+        height: pendingFrame.height,
+      };
+      img.src = `data:image/jpeg;base64,${pendingFrame.data}`;
+      pendingFrame = null;
+    };
+
     const unsubscribe = subscribe({
       onFrame: (frame) => {
-        frameSizeRef.current = { width: frame.width, height: frame.height };
-        img.src = `data:image/jpeg;base64,${frame.data}`;
+        pendingFrame = frame;
+        if (frameRaf === 0) frameRaf = requestAnimationFrame(applyFrame);
       },
       onConnected: (target) => {
         connectedRef.current = true;
@@ -397,6 +426,7 @@ function BrowserViewInner({
       // Drop any in-flight drag listeners if we unmount mid-selection.
       window.removeEventListener("mousemove", onDragMove);
       window.removeEventListener("mouseup", endDrag);
+      if (frameRaf !== 0) cancelAnimationFrame(frameRaf);
       unsubscribe();
     };
   }, [sandboxId, sandboxKey, serverUrl, transport, subscribe]);

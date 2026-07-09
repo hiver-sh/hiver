@@ -39,6 +39,9 @@ export class EventStore {
   private _pending: SandboxEvent[] = [];
   private listeners = new Set<() => void>();
   private flushHandle: number | null = null;
+  // Wall-clock time (ms) the current pending batch started accumulating, for the
+  // burst coalescing in flush().
+  private _pendingSince = 0;
 
   getEvents = (): SandboxEvent[] => this._events;
 
@@ -50,6 +53,7 @@ export class EventStore {
   };
 
   append(event: SandboxEvent): void {
+    if (this._pending.length === 0) this._pendingSince = Date.now();
     this._pending.push(event);
     if (this.flushHandle === null) {
       this.flushHandle = scheduleFrame(this.flush);
@@ -58,6 +62,7 @@ export class EventStore {
 
   reset(): void {
     this._pending = [];
+    this._pendingSince = 0;
     if (this.flushHandle !== null) {
       cancelFrame(this.flushHandle);
       this.flushHandle = null;
@@ -67,11 +72,28 @@ export class EventStore {
     this.emit();
   }
 
+  // Coalesce sustained bursts (a seek catch-up or the initial load re-pumps
+  // thousands of events back-to-back) into far fewer publishes: while events are
+  // still pouring in — a large batch that hasn't been held too long — defer one
+  // more frame instead of publishing, so the timeline re-renders on the order of
+  // once per BURST_MAX_HOLD_MS rather than once per animation frame. An isolated
+  // append (live playback) never trips the threshold, so it still flushes on the
+  // next frame.
+  private static readonly BURST_MIN = 150;
+  private static readonly BURST_MAX_HOLD_MS = 200;
   private flush = (): void => {
     this.flushHandle = null;
     if (this._pending.length === 0) return;
+    if (
+      this._pending.length >= EventStore.BURST_MIN &&
+      Date.now() - this._pendingSince < EventStore.BURST_MAX_HOLD_MS
+    ) {
+      this.flushHandle = scheduleFrame(this.flush);
+      return;
+    }
     this._events = this._events.concat(this._pending);
     this._pending = [];
+    this._pendingSince = 0;
     this.emit();
   };
 

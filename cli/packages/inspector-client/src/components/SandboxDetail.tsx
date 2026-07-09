@@ -45,6 +45,7 @@ import {
   type BrowserTab,
 } from "@/components/BrowserView";
 import { PortUsageDialog } from "@/components/PortUsageDialog";
+import { PlaybackControls } from "@/components/PlaybackControls";
 import { SnapshotDialog } from "@/components/SnapshotDialog";
 import { FileExplorer, type TreeNode } from "@/components/FileExplorer";
 import {
@@ -287,7 +288,8 @@ export function SandboxDetail({
   // so the hover-reveal also works when SandboxDetail is consumed via the
   // exported library (e.g. the embed), where App never mounts.
   useScrollbarVisibility();
-  const { transport, player, gatewayUrl, notifyFirstEvent } = useTransport();
+  const { transport, player, gatewayUrl, notifyFirstEvent, seekEpoch } =
+    useTransport();
   const { prefs, setPref, showHeader } = useUserPreferences();
   // The event feed lives in an external store, not React state, so appending an
   // event re-renders only the components that subscribe to it (timeline, file
@@ -770,11 +772,17 @@ export function SandboxDetail({
       });
       void run();
     },
-    [eventStore, sandbox.id, sandbox.key, serverUrl, transport, player],
+    // seekEpoch is not read in the body but is an intentional dependency: a
+    // backward scrub can't rewind an open recorded stream, so bumping it re-
+    // creates startStream, which re-opens the stream from the start and lets the
+    // (reset) feed re-pump. eslint sees it as unused.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [eventStore, sandbox.id, sandbox.key, serverUrl, transport, player, seekEpoch],
   );
 
   // Reset the accumulated feed only when the sandbox or the trace player itself
-  // changes (a genuinely new stream) — NOT on every transport-identity change.
+  // changes (a genuinely new stream), or on a backward seek (seekEpoch) — NOT on
+  // every transport-identity change.
   // During trace replay the transport identity is bumped ~every 250ms (see
   // traceVersion in transport.tsx) purely so lazy data consumers re-query as the
   // recorded feed streams in. Resetting the event list on that churn wiped the
@@ -784,7 +792,8 @@ export function SandboxDetail({
   useEffect(() => {
     eventStore.reset();
     seenEventKeysRef.current = new Set();
-  }, [eventStore, sandbox.id, sandbox.key, player]);
+  }, [eventStore, sandbox.id, sandbox.key, player, seekEpoch]);
+
 
   // (Re)open the stream. This still re-runs when the transport identity changes
   // (startStream closes over it), so a replay stream that drained and closed
@@ -956,14 +965,23 @@ export function SandboxDetail({
 
   const panelBody: Record<PanelId, React.ReactNode> = {
     timeline: timelineBody,
+    // The terminal accumulates scrollback, so a backward scrub (which bumps
+    // seekEpoch) remounts it fresh — the re-pumped recorded stream then rebuilds
+    // the buffer from the start instead of appending on top of future output.
+    // seekEpoch never changes outside replay, so live sessions never remount.
     terminal: (
       <Terminal
+        key={`${sandbox.key}:${seekEpoch}`}
         sandboxId={sandbox.id}
         sandboxKey={sandbox.key}
         serverUrl={serverUrl}
         subscribe={subscribeTerminal}
       />
     ),
+    // The browser view is a screencast that only ever shows the latest frame —
+    // it doesn't accumulate, so it needs no remount. The re-pump replays its
+    // frames/chrome in order up to the seek target, and the view lands on that
+    // target frame on its own (remounting it would only flash it blank first).
     browser: (
       <BrowserView
         sandboxId={sandbox.id}
@@ -1169,6 +1187,10 @@ export function SandboxDetail({
           }
         />
       </div>
+
+      {/* Replay transport bar — a full-width strip below the whole mosaic (not
+          inside the timeline panel), shown only when a trace is being replayed. */}
+      {player && <PlaybackControls />}
 
       <Dialog
         open={filePreview !== null}

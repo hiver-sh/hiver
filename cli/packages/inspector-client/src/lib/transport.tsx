@@ -191,6 +191,16 @@ export class TracePlayer {
   private _listeners = new Set<() => void>();
   private _loadComplete: boolean;
   private _recordWaiters = new Set<() => void>();
+  // Playback transport state (see the playback-control section below).
+  private _paused = false;
+  private _epoch = 0;
+  private _durationMs = 0;
+  private _timeWaiters: { target: number; resolve: () => void }[] = [];
+  private _tickHandle: ReturnType<typeof setTimeout> | null = null;
+  // Replay time the pending tick is scheduled to fire at. Tracked so a newly
+  // registered, sooner waiter can pull the tick earlier instead of being stuck
+  // behind a stale, later one (e.g. a waiter left by a stream aborted on seek).
+  private _tickTarget = Infinity;
 
   // `streaming: true` marks a player that starts (near-)empty and fills in as
   // the trace loads (the tracePath flow) — callers must invoke finishLoading()
@@ -201,6 +211,11 @@ export class TracePlayer {
     this._speed = speed;
     this._baseWallMs = Date.now();
     this._loadComplete = !streaming;
+    // Total replay length = the latest recorded record time. Grows as a
+    // streaming trace fills in (see addRecord).
+    for (const records of Object.values(trace))
+      for (const r of records)
+        if (r.time > this._durationMs) this._durationMs = r.time;
   }
 
   // Notified whenever records are added (e.g. while a trace streams in), so
@@ -262,22 +277,138 @@ export class TracePlayer {
     return this._speed;
   }
 
-  setSpeed(newSpeed: number) {
-    this._baseReplayMs = this.elapsedReplayMs;
-    this._baseWallMs = Date.now();
-    this._speed = newSpeed;
+  get paused(): boolean {
+    return this._paused;
+  }
+
+  // Total replay length in replay-ms (latest recorded record time).
+  get durationMs(): number {
+    return this._durationMs;
+  }
+
+  // Bumped by a backward seek. Consumers key their feed reset on this so they
+  // re-pump the recorded streams from the start (see SandboxDetail).
+  get epoch(): number {
+    return this._epoch;
   }
 
   get elapsedReplayMs(): number {
+    // While paused the clock is frozen at the value captured when we paused.
+    if (this._paused) return this._baseReplayMs;
     return this._baseReplayMs + (Date.now() - this._baseWallMs) * this._speed;
   }
 
+  // Fold the elapsed replay time into the base so a following speed/pause change
+  // doesn't retroactively rescale the time already played.
+  private _rebase(): void {
+    this._baseReplayMs = this.elapsedReplayMs;
+    this._baseWallMs = Date.now();
+  }
+
+  setSpeed(newSpeed: number): void {
+    this._rebase();
+    this._speed = newSpeed;
+    this._reschedule();
+    this._emitState();
+  }
+
+  pause(): void {
+    if (this._paused) return;
+    this._rebase();
+    this._paused = true;
+    this._clearTick();
+    this._emitState();
+  }
+
+  resume(): void {
+    if (!this._paused) return;
+    this._baseWallMs = Date.now();
+    this._paused = false;
+    this._reschedule();
+    this._emitState();
+  }
+
+  // Jump the replay clock to `replayMs`. A forward jump fast-forwards the open
+  // recorded streams in place: their pending waits fire as the clock passes
+  // them (see _reschedule). A backward jump can't rewind an already-advanced
+  // stream, so we bump `epoch` to signal consumers to reset their feed and
+  // re-pump from the start. Returns true when such a re-pump is required.
+  seek(replayMs: number): boolean {
+    const target = Math.max(0, replayMs);
+    const backward = target < this.elapsedReplayMs;
+    this._baseReplayMs = target;
+    this._baseWallMs = Date.now();
+    if (backward) this._epoch++;
+    this._reschedule();
+    this._emitState();
+    return backward;
+  }
+
+  // Resolves once the replay clock reaches `traceTimeMs`. Driven by a single
+  // internal ticker (not a per-wait setTimeout) so pause/resume/seek/speed
+  // changes re-evaluate every in-flight wait at once — a raw setTimeout would
+  // bake in a stale delay that a later pause or speed change couldn't revoke.
   waitUntil(traceTimeMs: number): Promise<void> {
-    const remaining = traceTimeMs - this.elapsedReplayMs;
-    if (remaining <= 0) return Promise.resolve();
-    return new Promise((resolve) =>
-      setTimeout(resolve, remaining / this._speed),
-    );
+    if (this.elapsedReplayMs >= traceTimeMs) return Promise.resolve();
+    return new Promise((resolve) => {
+      this._timeWaiters.push({ target: traceTimeMs, resolve });
+      this._scheduleTick();
+    });
+  }
+
+  private _fireDueWaiters(): void {
+    if (this._timeWaiters.length === 0) return;
+    const now = this.elapsedReplayMs;
+    const due: (() => void)[] = [];
+    const still: { target: number; resolve: () => void }[] = [];
+    for (const w of this._timeWaiters) {
+      if (w.target <= now) due.push(w.resolve);
+      else still.push(w);
+    }
+    this._timeWaiters = still;
+    for (const r of due) r();
+  }
+
+  private _clearTick(): void {
+    if (this._tickHandle !== null) {
+      clearTimeout(this._tickHandle);
+      this._tickHandle = null;
+    }
+    this._tickTarget = Infinity;
+  }
+
+  // Schedule a single wake-up for the soonest pending waiter, timed against the
+  // current speed. No-op while paused, with no waiters, or at speed ≤ 0. If a
+  // tick is already pending, only reschedule when the soonest waiter is now
+  // EARLIER than what that tick targets — otherwise the existing tick already
+  // covers it (its _fireDueWaiters sweeps every due waiter, not just one).
+  private _scheduleTick(): void {
+    if (this._paused || this._speed <= 0 || this._timeWaiters.length === 0)
+      return;
+    let soonest = Infinity;
+    for (const w of this._timeWaiters)
+      if (w.target < soonest) soonest = w.target;
+    if (this._tickHandle !== null && this._tickTarget <= soonest) return;
+    this._clearTick();
+    this._tickTarget = soonest;
+    const wallDelay = (soonest - this.elapsedReplayMs) / this._speed;
+    this._tickHandle = setTimeout(() => {
+      this._tickHandle = null;
+      this._tickTarget = Infinity;
+      this._fireDueWaiters();
+      this._scheduleTick();
+    }, Math.max(0, wallDelay));
+  }
+
+  // Re-evaluate all waits against the (just-changed) clock, then reschedule.
+  private _reschedule(): void {
+    this._clearTick();
+    this._fireDueWaiters();
+    this._scheduleTick();
+  }
+
+  private _emitState(): void {
+    for (const fn of this._listeners) fn();
   }
 
   addRecord(endpoint: string, record: TraceRecord): void {
@@ -295,6 +426,7 @@ export class TracePlayer {
       this._index.set(pathname + (qs ? `?${qs}` : ""), records);
     }
     records.push(record);
+    if (record.time > this._durationMs) this._durationMs = record.time;
     this._wakeRecordWaiters();
     for (const fn of this._listeners) fn();
   }
@@ -548,6 +680,19 @@ export interface TransportContextValue {
   player: TracePlayer | null;
   playbackSpeed: number;
   setPlaybackSpeed: (speed: number) => void;
+  // Replay is paused (clock frozen). Toggled via togglePaused. Meaningful only
+  // while `player` is non-null.
+  paused: boolean;
+  togglePaused: () => void;
+  // Jump the replay clock to a position in replay-ms (0…player.durationMs).
+  seek: (replayMs: number) => void;
+  // Bumps on a backward seek — a change signal consumers include in their feed-
+  // reset dependencies so they re-pump the recorded streams from the start.
+  seekEpoch: number;
+  // Bumps on EVERY seek (forward or backward). Fetch-based panels (e.g. the file
+  // tree, which pulls /directories on demand rather than off the stream) key a
+  // reload on this so they re-resolve to the snapshot at the seeked time.
+  seekNonce: number;
   loadTraceFromData: (data: TraceData) => void;
   clearTrace: () => void;
   gatewayUrl: string;
@@ -563,6 +708,11 @@ export const TransportContext = createContext<TransportContextValue>({
   player: null,
   playbackSpeed: 1,
   setPlaybackSpeed: () => {},
+  paused: false,
+  togglePaused: () => {},
+  seek: () => {},
+  seekEpoch: 0,
+  seekNonce: 0,
   loadTraceFromData: () => {},
   clearTrace: () => {},
   gatewayUrl: DEFAULT_GATEWAY_URL,
@@ -606,6 +756,13 @@ export function TransportProvider({
     onFirstEventRef.current?.();
   }, []);
   const [playbackSpeed, setPlaybackSpeedState] = useState(speed);
+  const [paused, setPaused] = useState(false);
+  const [seekEpoch, setSeekEpoch] = useState(0);
+  const [seekNonce, setSeekNonce] = useState(0);
+  // A freshly loaded/cleared trace player is never paused.
+  useEffect(() => {
+    setPaused(false);
+  }, [player]);
   const [gatewayUrl, setGatewayUrlState] = useState(() => {
     // The server injects the CLI-resolved gateway as a global on every page
     // load (from its GATEWAY_URL, set by `hiver inspect` to the gateway you
@@ -668,6 +825,27 @@ export function TransportProvider({
     (speed: number) => {
       setPlaybackSpeedState(speed);
       player?.setSpeed(speed);
+    },
+    [player],
+  );
+
+  const togglePaused = useCallback(() => {
+    if (!player) return;
+    if (player.paused) player.resume();
+    else player.pause();
+    setPaused(player.paused);
+  }, [player]);
+
+  const seek = useCallback(
+    (replayMs: number) => {
+      if (!player) return;
+      // player.seek returns true for a backward jump, which can't fast-forward
+      // an open stream in place — bump seekEpoch so consumers re-pump the feed.
+      const needsReplay = player.seek(replayMs);
+      setPaused(player.paused);
+      if (needsReplay) setSeekEpoch((e) => e + 1);
+      // Every seek (either direction) re-resolves fetch-based snapshots.
+      setSeekNonce((n) => n + 1);
     },
     [player],
   );
@@ -755,6 +933,11 @@ export function TransportProvider({
       player,
       playbackSpeed,
       setPlaybackSpeed,
+      paused,
+      togglePaused,
+      seek,
+      seekEpoch,
+      seekNonce,
       loadTraceFromData,
       clearTrace,
       gatewayUrl,
@@ -766,6 +949,11 @@ export function TransportProvider({
       player,
       playbackSpeed,
       setPlaybackSpeed,
+      paused,
+      togglePaused,
+      seek,
+      seekEpoch,
+      seekNonce,
       loadTraceFromData,
       clearTrace,
       gatewayUrl,
