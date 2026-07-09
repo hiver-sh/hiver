@@ -10,22 +10,44 @@ The [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) runs the age
 
 <Callout>The server's `bash` tool runs arbitrary commands, but exposing it is safe because Hiver, not the agent, enforces the boundary. Each sandbox runs in its own [microVM](/docs/runtime/microvm) or [container](/docs/runtime/container) with its own network namespace, isolated from the host and every other sandbox at the kernel level, and it only ever sees its own filesystem. Set an [egress policy](/docs/network-policy) and that allow-list is enforced outside the guest, so even a prompt-injected agent reaches only the hosts you permit, everything else is denied.</Callout>
 
-```typescript agent/server.ts
-import http from "node:http";
+```typescript agent/index.ts
+import express from "express";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { Agent, run, tool } from "@openai/agents";
 import { z } from "zod";
 
 const sh = promisify(execFile);
 
+// The SDK ships no local file tools, so define them as function tools. The
+// agent runs inside the sandbox, so they resolve against its filesystem.
 const bash = tool({
   name: "bash",
   description: "Run a shell command in /workspace and return its output.",
   parameters: z.object({ command: z.string() }),
   execute: async ({ command }) => {
-    const { stdout, stderr } = await sh("bash", ["-lc", command], { cwd: "/workspace" });
+    const { stdout, stderr } = await sh("bash", ["-lc", command], {
+      cwd: "/workspace",
+    });
     return stdout || stderr;
+  },
+});
+
+const readFileTool = tool({
+  name: "read_file",
+  description: "Read a file from /workspace.",
+  parameters: z.object({ path: z.string() }),
+  execute: ({ path }) => readFile(`/workspace/${path}`, "utf8"),
+});
+
+const writeFileTool = tool({
+  name: "write_file",
+  description: "Write content to a file in /workspace.",
+  parameters: z.object({ path: z.string(), content: z.string() }),
+  execute: async ({ path, content }) => {
+    await writeFile(`/workspace/${path}`, content);
+    return `wrote ${path}`;
   },
 });
 
@@ -33,68 +55,87 @@ const agent = new Agent({
   name: "coder",
   model: "gpt-5",
   instructions: "You are a coding agent working in /workspace.",
-  tools: [bash],
+  tools: [bash, readFileTool, writeFileTool],
 });
 
-http.createServer(async (req, res) => {
-  if (req.method !== "POST" || req.url !== "/chat") return res.writeHead(404).end();
+const app = express();
+app.use(express.json());
 
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const { prompt } = JSON.parse(Buffer.concat(chunks).toString());
+app.post("/chat", async (req, res) => {
+  const result = await run(agent, req.body.prompt);
+  res.json({ reply: result.finalOutput });
+});
 
-  const result = await run(agent, prompt);
-
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ reply: result.finalOutput }));
-}).listen(3000, () => console.log("listening on :3000"));
+app.listen(3000, () => console.log("listening on :3000"));
 ```
 
-```python agent/server.py
-import asyncio
-import json
+```python agent/main.py
 import subprocess
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from flask import Flask, request, jsonify
 from agents import Agent, Runner, function_tool
 
+
+# The SDK ships no local file tools, so define them as function tools. The
+# agent runs inside the sandbox, so they resolve against its filesystem.
 @function_tool
 def bash(command: str) -> str:
     """Run a shell command in /workspace and return its output."""
-    result = subprocess.run(["bash", "-lc", command], cwd="/workspace", capture_output=True, text=True)
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        cwd="/workspace",
+        capture_output=True,
+        text=True,
+    )
     return result.stdout or result.stderr
+
+
+@function_tool
+def read_file(path: str) -> str:
+    """Read a file from /workspace."""
+    return (Path("/workspace") / path).read_text()
+
+
+@function_tool
+def write_file(path: str, content: str) -> str:
+    """Write content to a file in /workspace."""
+    (Path("/workspace") / path).write_text(content)
+    return f"wrote {path}"
+
 
 agent = Agent(
     name="coder",
     model="gpt-5",
     instructions="You are a coding agent working in /workspace.",
-    tools=[bash],
+    tools=[bash, read_file, write_file],
 )
 
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/chat":
-            return self.send_response(404) or self.end_headers()
+app = Flask(__name__)
 
-        length = int(self.headers["Content-Length"])
-        prompt = json.loads(self.rfile.read(length))["prompt"]
-        result = asyncio.run(Runner.run(agent, prompt))
 
-        body = json.dumps({"reply": result.final_output}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(body)
+@app.post("/chat")
+async def chat():
+    result = await Runner.run(agent, request.json["prompt"])
+    return jsonify(reply=result.final_output)
 
-HTTPServer(("", 3000), Handler).serve_forever()
+
+app.run(host="0.0.0.0", port=3000)
 ```
 
 Package the server as an image Hiver can run. Alongside the server file, declare its dependencies and a `Dockerfile` that installs them, `EXPOSE`s port 3000, and starts the server:
 
 ```json agent/package.json
 {
+  "name": "openai-agents-sdk-example",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
   "dependencies": {
     "@openai/agents": "latest",
-    "zod": "latest",
+    "express": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
     "tsx": "latest"
   }
 }
@@ -108,16 +149,17 @@ WORKDIR /app
 
 COPY package.json .
 RUN npm install
-COPY server.ts .
+COPY index.ts .
 
 EXPOSE 3000
-CMD ["npx", "tsx", "server.ts"]
+CMD ["npx", "tsx", "index.ts"]
 ```
 
 For Python, install `openai-agents` instead and swap the base image:
 
 ```text agent/requirements.txt
 openai-agents
+flask[async]
 ```
 
 ```dockerfile agent/Dockerfile
@@ -128,10 +170,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY server.py .
+COPY main.py .
 
 EXPOSE 3000
-CMD ["python", "server.py"]
+CMD ["python", "main.py"]
 ```
 
 Bundle the `agent/` directory into a tagged image with the [CLI](/docs/cli) (see [Custom Docker image](/docs/examples/custom-docker-image) for more):

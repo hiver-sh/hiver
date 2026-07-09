@@ -1,0 +1,21 @@
+{
+  "name": "browser-use-example",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@hiver.sh/client": "latest",
+    "playwright-core": "latest"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@types/node": "latest",
+    "eslint": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "typescript-eslint": "latest"
+  }
+}

@@ -122,12 +122,15 @@ hiver inspect --record
 ```bash
 hiver bundle python:3.13-alpine --tag python
 hiver bundle ./my-agent --tag my-agent
+hiver bundle ./my-agent                    # tag comes from ./my-agent/.hiver.json
 hiver bundle ./my-agent --tag my-agent --platform linux/amd64,linux/arm64
 ```
 
+When bundling a directory that has a [`.hiver.json`](/docs/getting-started#config-options), `--tag` defaults to its `image` field — the same tag [`hiver run`](#run-a-project-directory) bundles to — so `hiver bundle ./my-agent` and `hiver run ./my-agent` stay in sync without repeating the tag.
+
 | Flag | Description |
 |------|-------------|
-| `--tag <tag>` | Tag for the produced Hiver runtime image (used as `image` when provisioning). |
+| `--tag <tag>` | Tag for the produced Hiver runtime image (used as `image` when provisioning). Defaults to the `image` in the directory's `.hiver.json`, else `<image>-bundled`. |
 | `--platform <list>` | Comma-separated target platforms, e.g. `linux/amd64,linux/arm64`. |
 | `--microvm` | Build a [microVM](/docs/runtime/microvm)-isolation image (bakes a guest kernel + rootfs). |
 

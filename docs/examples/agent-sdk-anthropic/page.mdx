@@ -10,80 +10,94 @@ The [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-
 
 <Callout>This is safe to leave unattended because Hiver, not the agent, enforces the boundary. Each sandbox runs in its own [microVM](/docs/runtime/microvm) or [container](/docs/runtime/container) with its own network namespace, isolated from the host and every other sandbox at the kernel level, and it only ever sees its own filesystem. Set an [egress policy](/docs/network-policy) and that allow-list is enforced outside the guest, so even with `bypassPermissions` a prompt-injected agent reaches only the hosts you permit, everything else is denied. That infrastructure boundary, not the model's cooperation, is what `bypassPermissions` relies on.</Callout>
 
-```typescript agent/server.ts
-import http from "node:http";
+```typescript agent/index.ts
+import express from "express";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-http.createServer(async (req, res) => {
-  if (req.method !== "POST" || req.url !== "/chat") return res.writeHead(404).end();
+const app = express();
+app.use(express.json());
 
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const { prompt } = JSON.parse(Buffer.concat(chunks).toString());
-
+app.post("/chat", async (req, res) => {
   let reply = "";
   for await (const msg of query({
-    prompt,
+    prompt: req.body.prompt,
     options: {
       model: "claude-opus-4-8",
       cwd: "/workspace",
-      allowedTools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+      allowedTools: [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "WebSearch",
+      ],
       permissionMode: "bypassPermissions",
     },
   })) {
-    if (msg.type === "result" && msg.subtype === "success") reply = msg.result;
+    if (msg.type === "result" && msg.subtype === "success") {
+      reply = msg.result;
+    }
   }
 
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ reply }));
-}).listen(3000, () => console.log("listening on :3000"));
+  res.json({ reply });
+});
+
+app.listen(3000, () => console.log("listening on :3000"));
 ```
 
-```python agent/server.py
-import asyncio
-import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
+```python agent/main.py
+from flask import Flask, request, jsonify
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 
-async def run_agent(prompt: str) -> str:
+app = Flask(__name__)
+
+
+@app.post("/chat")
+async def chat():
     reply = ""
     async for message in query(
-        prompt=prompt,
+        prompt=request.json["prompt"],
         options=ClaudeAgentOptions(
             model="claude-opus-4-8",
             cwd="/workspace",
-            allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+            allowed_tools=[
+                "Bash",
+                "Read",
+                "Write",
+                "Edit",
+                "Glob",
+                "Grep",
+                "WebSearch",
+            ],
             permission_mode="bypassPermissions",
         ),
     ):
-        if isinstance(message, ResultMessage) and message.subtype == "success":
+        if (
+            isinstance(message, ResultMessage)
+            and message.subtype == "success"
+        ):
             reply = message.result
-    return reply
+    return jsonify(reply=reply)
 
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/chat":
-            return self.send_response(404) or self.end_headers()
 
-        length = int(self.headers["Content-Length"])
-        prompt = json.loads(self.rfile.read(length))["prompt"]
-        reply = asyncio.run(run_agent(prompt))
-
-        body = json.dumps({"reply": reply}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(body)
-
-HTTPServer(("", 3000), Handler).serve_forever()
+app.run(host="0.0.0.0", port=3000)
 ```
 
 Package the server as an image Hiver can run. Alongside the server file, declare its dependencies and a `Dockerfile` that installs them, `EXPOSE`s port 3000, and starts the server:
 
 ```json agent/package.json
 {
+  "name": "claude-agent-sdk-example",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
+    "express": "latest"
+  },
+  "devDependencies": {
     "tsx": "latest"
   }
 }
@@ -97,16 +111,17 @@ WORKDIR /app
 
 COPY package.json .
 RUN npm install
-COPY server.ts .
+COPY index.ts .
 
 EXPOSE 3000
-CMD ["npx", "tsx", "server.ts"]
+CMD ["npx", "tsx", "index.ts"]
 ```
 
 For Python, install `claude-agent-sdk` instead and swap the base image:
 
 ```text agent/requirements.txt
 claude-agent-sdk
+flask[async]
 ```
 
 ```dockerfile agent/Dockerfile
@@ -117,10 +132,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY server.py .
+COPY main.py .
 
 EXPOSE 3000
-CMD ["python", "server.py"]
+CMD ["python", "main.py"]
 ```
 
 Bundle the `agent/` directory into a tagged image with the [CLI](/docs/cli) (see [Custom Docker image](/docs/examples/custom-docker-image) for more):

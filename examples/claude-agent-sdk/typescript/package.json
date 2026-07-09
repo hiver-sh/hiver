@@ -1,0 +1,21 @@
+{
+  "name": "claude-agent-sdk-client",
+  "type": "module",
+  "scripts": {
+    "build": "hiver bundle ./agent",
+    "start": "tsx client.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@hiver.sh/client": "latest"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@types/node": "latest",
+    "eslint": "latest",
+    "tsx": "latest",
+    "typescript": "latest",
+    "typescript-eslint": "latest"
+  }
+}

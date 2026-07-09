@@ -1,0 +1,11 @@
+{
+  "image": "google-adk-py",
+  "egress": [
+    {
+      "access": "allow",
+      "host": "generativelanguage.googleapis.com",
+      "override": { "headers": { "x-goog-api-key": "AIza..." } }
+    },
+    { "access": "deny", "host": "*" }
+  ]
+}

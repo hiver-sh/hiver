@@ -1,0 +1,11 @@
+{
+  "image": "openai-agents-sdk-ts",
+  "egress": [
+    {
+      "access": "allow",
+      "host": "api.openai.com",
+      "override": { "headers": { "Authorization": "Bearer sk-..." } }
+    },
+    { "access": "deny", "host": "*" }
+  ]
+}

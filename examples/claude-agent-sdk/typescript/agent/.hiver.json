@@ -1,0 +1,11 @@
+{
+  "image": "claude-agent-sdk-ts",
+  "egress": [
+    {
+      "access": "allow",
+      "host": "api.anthropic.com",
+      "override": { "headers": { "x-api-key": "sk-ant-..." } }
+    },
+    { "access": "deny", "host": "*" }
+  ]
+}
