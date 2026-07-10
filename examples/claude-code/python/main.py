@@ -4,9 +4,13 @@ from hiver import get_or_create_sandbox, SandboxConfig
 
 
 async def main():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise SystemExit("Set ANTHROPIC_API_KEY to run this example.")
+
     sandbox = await get_or_create_sandbox("claude-code", SandboxConfig(
         image="claude",
-        env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+        env={"ANTHROPIC_API_KEY": api_key},
     ))
 
     # `claude -p` runs a single prompt non-interactively and prints the result.

@@ -1,5 +1,6 @@
 {
   "image": "claude-agent-sdk-ts",
+  "env": { "ANTHROPIC_API_KEY": "placeholder" },
   "egress": [
     {
       "access": "allow",

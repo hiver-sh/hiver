@@ -7,7 +7,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@hiver.sh/client": "latest"
+    "@hiver.sh/client": "^0.1.26"
   },
   "devDependencies": {
     "@eslint/js": "latest",

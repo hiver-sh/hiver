@@ -2,17 +2,25 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
+
+// proxyDialHold bounds how long the ingress dialer waits for the workload to
+// start listening on an exposed port before giving up.
+const proxyDialHold = 60 * time.Second
 
 // maxBodyCapture is the per-direction body capture limit (512 KB).
 const maxBodyCapture = 512 * 1024
@@ -107,13 +115,17 @@ func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
 // request. Returns nil when no SO_MARK is set, so the proxy falls back to
 // http.DefaultTransport (also pooled), preserving the unmarked behavior.
 func (h *Sandbox) proxyRoundTripper() http.RoundTripper {
-	dialFn := markedDialContext(h.netMark)
-	if dialFn == nil {
-		return nil
+	// Base dialer: the SO_MARK dialer when set (bypasses the egress REDIRECT),
+	// otherwise a plain one. Either way it's wrapped in holdUntilReady so a
+	// request that arrives before the workload is listening waits for the port
+	// instead of failing with a 502.
+	base := markedDialContext(h.netMark)
+	if base == nil {
+		base = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
 	}
 	h.proxyTransportOnce.Do(func() {
 		h.proxyTransport = &http.Transport{
-			DialContext:           dialFn,
+			DialContext:           holdUntilReadyDial(base),
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
@@ -123,6 +135,38 @@ func (h *Sandbox) proxyRoundTripper() http.RoundTripper {
 		}
 	})
 	return h.proxyTransport
+}
+
+// holdUntilReadyDial wraps a dial function so a connection to an exposed port
+// that isn't accepting connections yet — the workload server is still starting —
+// is retried until it succeeds, the request is canceled, or proxyDialHold
+// elapses, instead of failing immediately with a 502. A TCP dial to an unbound
+// port returns ECONNREFUSED right away (a dial timeout alone never waits), so we
+// poll until the server binds the port, then hand back the connection for the
+// keep-alive transport to reuse.
+func holdUntilReadyDial(
+	base func(context.Context, string, string) (net.Conn, error),
+) func(context.Context, string, string) (net.Conn, error) {
+	const interval = 100 * time.Millisecond
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		deadline := time.Now().Add(proxyDialHold)
+		for {
+			conn, err := base(ctx, network, addr)
+			if err == nil {
+				return conn, nil
+			}
+			// Only hold while the port is refusing connections (not up yet).
+			// Any other error, or exceeding the hold window, surfaces normally.
+			if !errors.Is(err, syscall.ECONNREFUSED) || time.Now().After(deadline) {
+				return nil, err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(interval):
+			}
+		}
+	}
 }
 
 // isReservedAgentPort reports whether port is one of the in-guest agent's

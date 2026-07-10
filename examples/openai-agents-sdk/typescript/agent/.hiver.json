@@ -1,5 +1,6 @@
 {
   "image": "openai-agents-sdk-ts",
+  "env": { "OPENAI_API_KEY": "placeholder" },
   "egress": [
     {
       "access": "allow",

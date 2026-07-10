@@ -1,5 +1,6 @@
 {
   "image": "google-adk-py",
+  "env": { "GOOGLE_API_KEY": "placeholder" },
   "egress": [
     {
       "access": "allow",
