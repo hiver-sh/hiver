@@ -57,6 +57,21 @@ export interface TimelineRow {
   bars: TimelineBar[];
 }
 
+// Orders the fs operation rows within a mount: read, then write, then
+// delete (destructive last). Unknown ops sort after, alphabetically.
+function fsMethodRank(method?: string): number {
+  switch (method) {
+    case "read":
+      return 0;
+    case "write":
+      return 1;
+    case "delete":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
 export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[] {
   const chunkMap = new Map<
     number,
@@ -378,7 +393,7 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
           : (b.bars[0]?.startTime ?? 0);
       if (aTime !== bTime) return aTime - bTime;
       if (a.type === "fs" && b.type === "fs" && a.label === b.label)
-        return (a.method ?? "").localeCompare(b.method ?? "");
+        return fsMethodRank(a.method) - fsMethodRank(b.method);
       return 0;
     });
 }
@@ -518,10 +533,7 @@ function methodClass(row: TimelineRow): string {
       : "text-muted-foreground";
   if (row.type === "exec") return "text-emerald-500 dark:text-emerald-400";
   if (row.type === "tool") return "text-indigo-600 dark:text-indigo-400";
-  if (row.type === "fs")
-    return row.method === "delete"
-      ? "text-red-600 dark:text-red-400"
-      : "text-purple-600 dark:text-purple-400";
+  if (row.type === "fs") return "text-purple-600 dark:text-purple-400";
   if (row.type === "resource")
     return row.key === "resource:cpu"
       ? "text-sky-600 dark:text-sky-400"
