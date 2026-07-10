@@ -49,13 +49,16 @@ func (e FSRequestEventAccess) Valid() bool {
 
 // Defines values for FSRequestEventOperation.
 const (
-	Read  FSRequestEventOperation = "read"
-	Write FSRequestEventOperation = "write"
+	Delete FSRequestEventOperation = "delete"
+	Read   FSRequestEventOperation = "read"
+	Write  FSRequestEventOperation = "write"
 )
 
 // Valid indicates whether the value is a known member of the FSRequestEventOperation enum.
 func (e FSRequestEventOperation) Valid() bool {
 	switch e {
+	case Delete:
+		return true
 	case Read:
 		return true
 	case Write:

@@ -63,7 +63,7 @@ type SandboxEventVariant =
       access: "allowed" | "denied";
       mount: string;
       path: string;
-      operation: "read" | "write";
+      operation: "read" | "write" | "delete";
     }
   | {
       id: number;

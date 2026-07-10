@@ -659,14 +659,14 @@ export interface FSRequestEvent extends SandboxEventBase {
   access: "allowed" | "denied";
   mount: string;
   path: string;
-  operation: "read" | "write";
+  operation: "read" | "write" | "delete";
 }
 export const FSRequestEvent = SandboxEventBase.extend({
   type: z.literal("fs.request"),
   access: z.enum(["allowed", "denied"]),
   mount: z.string(),
   path: z.string(),
-  operation: z.enum(["read", "write"]),
+  operation: z.enum(["read", "write", "delete"]),
 });
 type _AssertFSRequestEvent = Expect<
   Equal<z.infer<typeof FSRequestEvent>, FSRequestEvent>

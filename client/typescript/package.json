@@ -22,7 +22,6 @@
   "files": [
     "dist",
     "src",
-    "examples",
     "README.md"
   ],
   "scripts": {

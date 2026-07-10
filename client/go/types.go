@@ -413,7 +413,7 @@ type SandboxEvent struct {
 
 	// fs.request
 	Mount     string `json:"mount,omitempty"`
-	Operation string `json:"operation,omitempty"` // "read" or "write"
+	Operation string `json:"operation,omitempty"` // "read", "write", or "delete"
 
 	// fs.response
 	Backend string `json:"backend,omitempty"`

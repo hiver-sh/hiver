@@ -634,40 +634,16 @@ for await (const pipe of exec.pipes) {
 }
 ```
 
-Same idea, bigger payoff: [`examples/playwright-exec-stream.ts`](examples/playwright-exec-stream.ts)
-launches Chromium once and reuses that one browser to scrape multiple pages,
-instead of paying the browser startup cost per scrape. Pass `tty: true` for a
-real PTY (stderr merges into stdout, and a `CSI 8` sequence on stdin resizes it)
-— see [`examples/terminal-attach.ts`](examples/terminal-attach.ts).
+Same idea, bigger payoff: the [`browser-cdp`](../../examples/browser-cdp/typescript/)
+example attaches to a resident Chromium once and reuses that one browser to scrape
+multiple pages, instead of paying the browser startup cost per scrape. Pass
+`tty: true` for a real PTY (stderr merges into stdout, and a `CSI 8` sequence on
+stdin resizes it) — see [`terminal-attach`](../../examples/terminal-attach/typescript/).
 
 See [`sandbox.exec()`](#sandboxexeccommand-opts) and
 [`sandbox.execStream()`](#sandboxexecstreamcommand-opts) for the full options.
 
 ---
-
-## 🧪 Examples
-
-Run any example with `npx tsx examples/<name>`.
-
-| Example                                         | What it shows                                                        |
-| ----------------------------------------------- | -------------------------------------------------------------------- |
-| `quickstart.ts`                                 | Provision a sandbox, stream events, keep it alive with pings.        |
-| `apply-config.ts`                               | Read the config, add an egress rule, apply the update.               |
-| `files.ts`                                      | Upload a file into a mount and read it back out.                     |
-| `list-directory.ts`                             | List the contents of a sandbox mount.                                |
-| `node-exec.ts` / `python-exec.ts`               | Run a command and read the buffered result.                          |
-| `node-exec-stream.ts` / `python-exec-stream.ts` | Stream command output over SSE.                                      |
-| `node-exec-tty.ts` / `python-exec-tty.ts`       | Drive an interactive REPL over a TTY exec stream.                    |
-| `playwright-exec-stream.ts`                     | Launch Chromium once in a REPL session and reuse it across scrapes.  |
-| `terminal-attach.ts`                            | Attach your local terminal to an interactive shell in the sandbox.   |
-| `node-internal-service.ts`                      | Start deny-all, then `applyConfig` to allow an internal host.        |
-| `http-server`                                   | Proxy HTTP requests to a service running inside the sandbox.         |
-| `snapshot.ts`                                   | Persist a sandbox's filesystem across a full shutdown via snapshots. |
-| `custom-image`                                  | Build a Docker image, provision from it, consume events until exit.  |
-| `local-filesystem-mount`                        | Mount a local directory into the sandbox during development.         |
-| `mcp-server`                                    | Run an MCP server inside the sandbox.                                |
-| `gdrive-filesystem.ts`                          | Persist files to a Google Drive mount.                               |
-| `claude-agent.ts`                               | A Claude agent that uses the sandbox to fetch data and run code.     |
 
 ### Claude agent with a Google Drive filesystem
 
@@ -679,18 +655,5 @@ Hiver keeps the API tokens secure and the generated files persisted to Google
 Drive — all while the agent only uses basic Bash commands. The next time the
 agent runs, the files are already there to be reused, saving tokens.
 
-```sh
-ANTHROPIC_API_KEY='<token>' \
-FINNHUB_API_KEY='<token>' \
-GOOGLE_CLIENT_ID='<client-id>' \
-GOOGLE_CLIENT_SECRET='<client-secret>' \
-npx tsx examples/claude-agent-gdrive-filesystem.ts
-```
-
-There's also a version of this agent backed by a local filesystem:
-
-```sh
-ANTHROPIC_API_KEY='<token>' \
-FINNHUB_API_KEY='<token>' \
-npx tsx examples/claude-agent.ts
-```
+See [`claude-agent-gdrive-filesystem`](../../examples/claude-agent-gdrive-filesystem/typescript/)
+(and the local-filesystem variant, [`claude-agent`](../../examples/claude-agent/typescript/)).

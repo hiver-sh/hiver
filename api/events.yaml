@@ -252,7 +252,7 @@ components:
               type: string
             operation:
               type: string
-              enum: [read, write]
+              enum: [read, write, delete]
       example:
         type: fs.request
         id: 187

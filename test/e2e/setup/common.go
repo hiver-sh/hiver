@@ -164,11 +164,11 @@ func BuildAgentNodeBundle(t *testing.T) string {
 }
 
 // BuildTSMCPServerBundle builds the TypeScript MCP server image from
-// client/typescript/examples/mcp-server/image/ and bundles it into a
+// examples/mcp-server/typescript/image/ and bundles it into a
 // sandbox-ready image. Returns the bundle image tag.
 func BuildTSMCPServerBundle(t *testing.T) string {
 	t.Helper()
-	imageDir, err := filepath.Abs(filepath.Join(moduleRoot, "client/typescript/examples/mcp-server/image"))
+	imageDir, err := filepath.Abs(filepath.Join(moduleRoot, "examples/mcp-server/typescript/image"))
 	if err != nil {
 		t.Fatalf("abs ts mcp-server image dir: %v", err)
 	}

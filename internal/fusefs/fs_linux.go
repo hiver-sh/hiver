@@ -946,25 +946,46 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	}
 	oldAbs := n.childAbs(req.OldName)
 	newAbs := dst.childAbs(req.NewName)
-	ac := n.s.beginAudit("rename", oldAbs+" → "+newAbs)
+	// A rename has no first-class representation on the audit stream. For
+	// "what changed" consumers it is exactly its net effect: a write of
+	// the destination and a delete of the source. Emitting it as two
+	// single-path events (rather than one "old → new" string) also keeps
+	// the pod-wide host→guest path rewrite unambiguous — the combined
+	// string only had its leading path rewritten, leaking the raw host
+	// path of the destination. Both endpoints are still ACL-gated up
+	// front, independent of how the effect is logged, so a rename can't
+	// move a deny-listed file past its policy.
+	writeAC := n.s.beginAudit("write", newAbs)
+	delAC := n.s.beginAudit("remove", oldAbs)
 	if n.s.currentACLs().Eval(oldAbs) != AccessRW || n.s.currentACLs().Eval(newAbs) != AccessRW {
-		ac.deny()
+		writeAC.deny()
+		delAC.deny()
 		return syscall.EROFS
 	}
-	ac.allow()
+	writeAC.allow()
+	delAC.allow()
+	// fail reports the error on both synthetic events and returns ret.
+	fail := func(err error, ret error) error {
+		writeAC.responseError(err)
+		delAC.responseError(err)
+		return ret
+	}
+	// done closes out both events after the rename succeeds.
+	done := func() {
+		writeAC.response()
+		delAC.response()
+	}
 	oldHost := filepath.Join(n.hostPath(), req.OldName)
 	newHost := filepath.Join(dst.hostPath(), req.NewName)
 	// Make sure the destination's parent dir exists locally — needed
 	// when the destination is a remote-only path (Bootstrap is gone,
 	// so subdirs only materialize on demand).
 	if err := os.MkdirAll(filepath.Dir(newHost), 0o755); err != nil {
-		ac.responseError(err)
-		return mapErr(err)
+		return fail(err, mapErr(err))
 	}
 	localErr := os.Rename(oldHost, newHost)
 	if localErr != nil && !os.IsNotExist(localErr) {
-		ac.responseError(localErr)
-		return mapErr(localErr)
+		return fail(localErr, mapErr(localErr))
 	}
 	localRenamed := localErr == nil
 	// Drop both ends from the stat cache: the old name is gone, the
@@ -1012,7 +1033,7 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 	if n.s.cfg.Remote != nil {
 		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(oldVirt)
 		if dirty {
-			ac.response()
+			done()
 			n.s.enqueueMove(oldVirt, newVirt)
 			return nil
 		}
@@ -1023,17 +1044,14 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 				_ = os.Rename(newHost, oldHost)
 			}
 			if errors.Is(err, remotefs.ErrNotExist) && !localRenamed {
-				ac.responseError(errors.New("source not found"))
-				return syscall.ENOENT
+				return fail(errors.New("source not found"), syscall.ENOENT)
 			}
-			ac.responseError(err)
-			return mapErr(err)
+			return fail(err, mapErr(err))
 		}
 	} else if !localRenamed {
-		ac.responseError(errors.New("not found"))
-		return syscall.ENOENT
+		return fail(errors.New("not found"), syscall.ENOENT)
 	}
-	ac.response()
+	done()
 	return nil
 }
 

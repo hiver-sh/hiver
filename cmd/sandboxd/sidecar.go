@@ -619,8 +619,10 @@ func fuseOpKind(op string) gen.FSRequestEventOperation {
 	switch op {
 	case "attr", "lookup", "readdir", "open", "read":
 		return gen.Read
-	case "open-write", "write", "create", "mkdir", "remove", "rename", "truncate":
+	case "open-write", "write", "create", "mkdir", "truncate":
 		return gen.Write
+	case "remove":
+		return gen.Delete
 	}
 	return ""
 }
