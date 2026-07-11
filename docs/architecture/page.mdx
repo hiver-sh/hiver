@@ -40,6 +40,10 @@ That introduces an obvious problem: unconstrained access to data and systems is 
 
 Each sandbox runs as a container or microVM, so workloads stay fully isolated at the kernel level even when they share a physical node. Within that boundary, every agent operation is intercepted transparently, so the agent is never aware it's being observed or constrained. Access controls are enforced underneath through policies defined at instantiation time.
 
+The runtime itself is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together, serving the client API, reconciling sidecar policy, and streaming telemetry events. The root filesystem is assembled with overlayfs, layering the agent's writes over the read-only base image for efficient snapshotting.
+
+A typical deployment also includes a controller for sandbox lifecycle management and an Envoy gateway for external network access. All components ship out of the box but can be swapped for custom implementations. Hiver is unopinionated about orchestration: the agent CLI or SDK can run entirely inside the sandbox or in a separate deployment. Because everything inside the sandbox is treated as untrusted, agents can call private APIs and access files without ever seeing auth tokens or secrets.
+
 Developers configure all of this through a simple API: policies, mounts, and network rules, with no operational overhead and no dependency on infra teams.
 
 The file system itself is designed to act as the database, holding structured, semi-structured, and unstructured data side by side. Agents read and write files the way they already do, and that same surface becomes the durable store for everything they learn. Access is governed by ACLs, so each agent only sees and acts on the data it's permitted to.
