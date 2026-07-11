@@ -3,7 +3,7 @@ CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 # JS/TS subprojects with their own format/lint npm scripts
 JS_DIRS := cli client/typescript
 
-.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images build-agent-base buildx-builder up down test e2e test-e2e test-unit gen fmt format lint $(CMDS)
+.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images build-agent-base buildx-builder up down test e2e test-e2e test-unit gen fmt format lint lint-go staticcheck $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -128,8 +128,21 @@ format: fmt ## Format Go and all TypeScript subprojects
 		(cd $$d && npm run format --if-present) || exit 1; \
 	done
 
-lint: ## Lint Go (go vet) and all TypeScript subprojects
+# The linux target every sandbox binary ships on. staticcheck evaluates
+# build-tagged code for one GOOS/GOARCH at a time, so we pin the production
+# target — dead code behind //go:build linux is checked, and a dev running this
+# on macOS gets the same result as CI.
+STATICCHECK_OS ?= linux
+STATICCHECK_ARCH ?= amd64
+
+staticcheck: ## Check for dead code (staticcheck U1000) that `go vet` misses
+	@go build -o bin/staticcheck honnef.co/go/tools/cmd/staticcheck
+	GOOS=$(STATICCHECK_OS) GOARCH=$(STATICCHECK_ARCH) bin/staticcheck -checks U1000 ./...
+
+lint-go: staticcheck ## Lint Go (go vet + staticcheck)
 	go vet ./...
+
+lint: lint-go ## Lint Go and all TypeScript subprojects
 	@for d in $(JS_DIRS); do \
 		echo "==> lint $$d"; \
 		(cd $$d && npm run lint --if-present) || exit 1; \

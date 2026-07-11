@@ -4,6 +4,19 @@ on:
   push:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # go vet + staticcheck's unused (U1000) check. Fails the build on dead code
+      # (unused consts/funcs/vars) that `go vet` alone doesn't catch.
+      - run: make lint-go
+
   test:
     runs-on: ubuntu-latest
     steps:

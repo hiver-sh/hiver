@@ -46,21 +46,6 @@ const (
 
 	mountReadTimout = 35 * time.Second
 
-	// eventDrainTimeout caps how long we'll wait for /v1/events subscribers
-	// to consume trailing events after the agent exits; drainQuietFor
-	// is the publish-quiet window the broker must see before declaring
-	// itself drained, sized to cover the sidecar→translator hop for
-	// last-moment audit events.
-	eventDrainTimeout = 5 * time.Second
-	drainQuietFor     = 500 * time.Millisecond
-
-	// httpShutdownTimeout caps how long http.Server.Shutdown will
-	// wait for SSE handlers (and any other in-flight requests) to
-	// return after the broker has been closed. Generous because the
-	// kernel needs a moment to flush the trailing bytes + FIN to
-	// every subscriber over the docker bridge.
-	httpShutdownTimeout = 3 * time.Second
-
 	// fsDrainTimeout caps how long we'll wait for the workload filesystem
 	// flush (microvm guest `sync`) on shutdown before stopping the workload
 	// anyway, so a wedged guest can't block teardown past the controller's

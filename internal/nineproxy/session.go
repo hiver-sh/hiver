@@ -117,15 +117,6 @@ type cursor struct {
 	err error
 }
 
-func (c *cursor) u8() uint8 {
-	if c.err != nil || c.off+1 > len(c.b) {
-		c.err = io.ErrUnexpectedEOF
-		return 0
-	}
-	v := c.b[c.off]
-	c.off++
-	return v
-}
 func (c *cursor) u16() uint16 {
 	if c.err != nil || c.off+2 > len(c.b) {
 		c.err = io.ErrUnexpectedEOF

@@ -1070,17 +1070,6 @@ func (m *microvm) applyCgroupLimits() {
 	}
 }
 
-// cgroupUnshareWrap is the pack-resume variant of cgroupWrap: in addition to the
-// cgroup and netns it enters a private mount namespace and bind-mounts each (src→dst)
-// pair, so the VMM sees this VM's private overlay at the canonical path the base
-// snapshot recorded. make-rprivate keeps the binds from propagating back to the host
-// (and to other VMs); the ns and its binds are torn down automatically when the VMM
-// exits. Like cgroupWrap, it's a single fork via the namespace-launch helper, which
-// does the unshare + binds itself before exec'ing firecracker in place.
-func (m *microvm) cgroupUnshareWrap(bin string, args []string, binds [][2]string) (string, []string) {
-	return m.nsExecArgs(bin, args, binds)
-}
-
 // nsExecArg is argv[1] for the namespace-launch helper re-exec (see MaybeRunNSExec).
 const nsExecArg = "__nsexec"
 

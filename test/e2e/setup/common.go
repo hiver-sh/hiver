@@ -8,7 +8,6 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -50,11 +49,6 @@ func SummarizeEvents(events []map[string]any) string {
 	}
 	return b.String()
 }
-
-// redactSecrets masks token-like values in YAML so the rendered-spec
-// debug log doesn't leak credentials. We only need the structure +
-// presence/absence of fields when debugging the gdrive path.
-var secretFieldRE = regexp.MustCompile(`(?m)^(\s*(?:gdrive_access_token|gdrive_refresh_token|gdrive_client_secret|gdrive_service_account_json)\s*:\s*).+$`)
 
 // RequireDocker skips the test if no Docker daemon is reachable.
 func RequireDocker(t *testing.T) {

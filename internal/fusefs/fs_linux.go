@@ -1206,16 +1206,13 @@ func fillAttrFromRemote(a *fuse.Attr, info remotefs.FileInfo) {
 		a.Mode = 0o644
 	}
 	a.Nlink = 1
-	a.Valid = 0 // see noKernelAttrCache below
+	// Attr.Valid = 0 (no kernel attr cache): tell bazilfs (and the kernel) that
+	// the returned attributes / entry are valid only for this one call —
+	// subsequent stats, lookups, and opens must call back into our handlers
+	// rather than serve from the kernel dcache. This is what's needed for the
+	// "always sees latest from upstream" invariant: without it the kernel would
+	// happily serve a stale dentry across an out-of-band Drive change OR across
+	// our own Rename (the kernel's cached old-name dentry still points at the
+	// source node, whose virtPath we no longer mutate after rename).
+	a.Valid = 0
 }
-
-// noKernelAttrCache: setting Attr.Valid = 0 tells bazilfs (and the
-// kernel) that the returned attributes / entry are valid only for this
-// one call — subsequent stats, lookups, and opens must call back into
-// our handlers rather than serve from the kernel dcache. This is
-// what's needed for the "always sees latest from upstream" invariant:
-// without it the kernel would happily serve a stale dentry across an
-// out-of-band Drive change OR across our own Rename (the kernel's
-// cached old-name dentry still points at the source node, whose
-// virtPath we no longer mutate after rename).
-const noKernelAttrCache = 0

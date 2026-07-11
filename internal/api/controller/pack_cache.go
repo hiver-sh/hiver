@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"hash/fnv"
 	"log"
 	"sort"
 	"sync"
@@ -31,31 +30,6 @@ func (c *packCache) set(byImage map[string][]string) {
 	c.mu.Lock()
 	c.byImage = byImage
 	c.mu.Unlock()
-}
-
-// candidates returns the cached host IPs serving image, ordered so the
-// deterministically-chosen host for key comes first and the rest follow as
-// fallbacks (a fresh slice the caller may iterate freely). Hashing the key to the
-// primary spreads keys across same-image hosts while always mapping a given key
-// to the same host first, so a repeated getOrCreate routes to the same host (the
-// POST is idempotent) and doesn't double-pack. The fallbacks let getOrCreate fail
-// over to another host when the primary is a stale entry that has died. Returns
-// nil when no host is cached for the image.
-func (c *packCache) candidates(image, key string) []string {
-	c.mu.RLock()
-	ips := c.byImage[image]
-	c.mu.RUnlock()
-	if len(ips) == 0 {
-		return nil
-	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	start := int(h.Sum32()) % len(ips)
-	out := make([]string, 0, len(ips))
-	for i := range ips {
-		out = append(out, ips[(start+i)%len(ips)])
-	}
-	return out
 }
 
 // ips returns the IPs of every cached host across all images, for the events
