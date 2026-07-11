@@ -24,7 +24,7 @@ const catalog: Record<string, ImageEntry> = JSON.parse(
 );
 
 // logical name → ref maps for each variant, derived from the catalog. `up` reads
-// these to build the controller's image config (HIVE_IMAGES_CONFIG).
+// these to build the controller's image config (HIVER_IMAGES_CONFIG).
 export const sandboxImages: Record<string, string> = Object.fromEntries(
   Object.entries(catalog).map(([name, e]) => [name, e.image]),
 );

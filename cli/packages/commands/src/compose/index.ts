@@ -76,7 +76,7 @@ if (action === "up") {
 
   // Build the images config (logical name → ref) straight from the bundled
   // catalog (sandbox-images.json) and inject it into the controller as inline
-  // JSON (HIVE_IMAGES_CONFIG). Reading the catalog directly means new bundled
+  // JSON (HIVER_IMAGES_CONFIG). Reading the catalog directly means new bundled
   // images (e.g. a new default) always reach the controller without depending on
   // a previously-seeded ~/.hiver/config.json. Packing: --no-pack sets the
   // file-wide pack default to false; otherwise the controller's default (true)
@@ -86,7 +86,7 @@ if (action === "up") {
   for (const [name, ref] of Object.entries(catalog)) images[name] = { ref };
   const imagesEnv: { pack?: boolean; images: typeof images } = { images };
   if (!pack) imagesEnv.pack = false;
-  env.HIVE_IMAGES_CONFIG = JSON.stringify(imagesEnv);
+  env.HIVER_IMAGES_CONFIG = JSON.stringify(imagesEnv);
 
   // The stack images must be present locally; pull any that are missing.
   for (const image of missingImages(composeFile)) {

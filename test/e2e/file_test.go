@@ -22,7 +22,7 @@ func TestFileE2E(t *testing.T) {
 
 	key := fmt.Sprintf("e2e-file-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
-		Image:      "hiversh/python:3.13-alpine",
+		Image:      "python",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		FS: []hiverclient.FileSystem{
 			{Mount: "/workspace", Backend: "local", ACLs: []hiverclient.ACLRule{{Path: "/**", Access: "rw"}}},
@@ -30,8 +30,6 @@ func TestFileE2E(t *testing.T) {
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -39,6 +37,8 @@ func TestFileE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	t.Run("upload_then_download", func(t *testing.T) {
 		content := []byte("hello from upload")

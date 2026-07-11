@@ -30,15 +30,16 @@ func TestSandboxCreationE2E(t *testing.T) {
 	t.Run("entrypoint", func(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-ep-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
-			Image:      "hiversh/python:3.13-alpine",
+			Image:      "python",
 			Entrypoint: []string{"sleep", "3600"},
 		}
-		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 		sbx, err := c.GetOrCreateSandbox(ctx, key, config)
 		if err != nil {
 			t.Fatalf("GetOrCreateSandbox: %v", err)
 		}
+		// Tear the sandbox down via its own API (no controller involvement).
+		t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 		// /proc/1/cmdline is NUL-separated; tr converts it to spaces.
 		res, err := sbx.Exec(ctx, hiverclient.ExecRequest{
@@ -62,16 +63,17 @@ func TestSandboxCreationE2E(t *testing.T) {
 	t.Run("cwd", func(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-cwd-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
-			Image:      "hiversh/python:3.13-alpine",
+			Image:      "python",
 			Entrypoint: []string{"tail", "-f", "/dev/null"},
 			CWD:        "/tmp",
 		}
-		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 		sbx, err := c.GetOrCreateSandbox(ctx, key, config)
 		if err != nil {
 			t.Fatalf("GetOrCreateSandbox: %v", err)
 		}
+		// Tear the sandbox down via its own API (no controller involvement).
+		t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 		res, err := sbx.Exec(ctx, hiverclient.ExecRequest{Command: "readlink /proc/1/cwd"})
 		if err != nil {
@@ -91,19 +93,20 @@ func TestSandboxCreationE2E(t *testing.T) {
 	t.Run("env", func(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-env-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
-			Image:      "hiversh/python:3.13-alpine",
+			Image:      "python",
 			Entrypoint: []string{"tail", "-f", "/dev/null"},
 			Env: map[string]string{
 				"MY_VAR":    "hello",
 				"OTHER_VAR": "world",
 			},
 		}
-		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 		sbx, err := c.GetOrCreateSandbox(ctx, key, config)
 		if err != nil {
 			t.Fatalf("GetOrCreateSandbox: %v", err)
 		}
+		// Tear the sandbox down via its own API (no controller involvement).
+		t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 		for varName, want := range config.Env {
 			res, err := sbx.Exec(ctx, hiverclient.ExecRequest{
@@ -130,16 +133,17 @@ func TestSandboxCreationE2E(t *testing.T) {
 	t.Run("tty", func(t *testing.T) {
 		key := fmt.Sprintf("e2e-create-tty-%d", time.Now().UnixNano())
 		config := hiverclient.SandboxConfig{
-			Image:      "hiversh/python:3.13-alpine",
+			Image:      "python",
 			Entrypoint: []string{"sleep", "3600"},
 			TTY:        true,
 		}
-		t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 		sbx, err := c.GetOrCreateSandbox(ctx, key, config)
 		if err != nil {
 			t.Fatalf("GetOrCreateSandbox: %v", err)
 		}
+		// Tear the sandbox down via its own API (no controller involvement).
+		t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 		// A 5-second timeout gives the server time to start streaming;
 		// we cancel immediately after the connection is established.

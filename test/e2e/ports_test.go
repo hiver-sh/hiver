@@ -24,7 +24,6 @@ func TestPortsE2E(t *testing.T) {
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(5*time.Minute))
 	key := fmt.Sprintf("e2e-ports-%d", time.Now().UnixNano())
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 	// Use context.Background() so the client's own Ping-wait applies
 	// fresh after the Docker build finishes (build time must not eat into
@@ -44,6 +43,8 @@ func TestPortsE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

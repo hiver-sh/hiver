@@ -33,17 +33,13 @@ func TestMultiTenantIngressE2E(t *testing.T) {
 	setup.RequireStack(t)
 	setup.RequireHiverCLI(t)
 
-	const image = "hiversh/python:3.13-alpine"
+	const image = "python"
 	const port = 9000 // both tenants bind the SAME port on purpose
 	ts := time.Now().UnixNano()
 	keyA := fmt.Sprintf("packing-a-%d", ts)
 	keyB := fmt.Sprintf("packing-b-%d", ts)
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(3*time.Minute))
-	t.Cleanup(func() {
-		_ = c.Shutdown(context.Background(), keyA)
-		_ = c.Shutdown(context.Background(), keyB)
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -64,6 +60,11 @@ func TestMultiTenantIngressE2E(t *testing.T) {
 
 	sbxA := mk(keyA)
 	sbxB := mk(keyB)
+	// Tear each sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() {
+		_ = sbxA.Shutdown(context.Background())
+		_ = sbxB.Shutdown(context.Background())
+	})
 
 	// Both same-image keys must share ONE pod for the shared-container case to hold.
 	if sbxA.ID != sbxB.ID {

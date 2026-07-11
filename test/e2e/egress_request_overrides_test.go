@@ -66,7 +66,7 @@ func TestEgressRequestOverridesE2E(t *testing.T) {
 	const hostAlias = "upstream-override"
 	key := fmt.Sprintf("e2e-egress-overrides-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
-		Image:      "hiversh/python:3.13-alpine",
+		Image:      "python",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		// Expose the host-side capture server hostname inside the Docker network.
 		ExtraHosts: []string{
@@ -86,7 +86,6 @@ func TestEgressRequestOverridesE2E(t *testing.T) {
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -95,6 +94,8 @@ func TestEgressRequestOverridesE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	// A bare GET with no special headers or query params. The proxy should
 	// inject the Override before forwarding to the capture server.
@@ -186,7 +187,7 @@ func TestEgressOverrideHostE2E(t *testing.T) {
 	const redirectAlias = "upstream-redirect"
 	key := fmt.Sprintf("e2e-egress-override-host-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
-		Image:      "hiversh/python:3.13-alpine",
+		Image:      "python",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		// The redirect alias is for the proxy's own resolution of the
 		// override target; the agent never sees it. The agent host maps to
@@ -212,7 +213,6 @@ func TestEgressOverrideHostE2E(t *testing.T) {
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -221,6 +221,8 @@ func TestEgressOverrideHostE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	cmd := fmt.Sprintf(
 		`python3 -c "import urllib.request; print(urllib.request.urlopen('http://%s/probe', timeout=10).read().decode())"`,

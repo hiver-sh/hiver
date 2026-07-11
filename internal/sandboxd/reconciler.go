@@ -149,10 +149,12 @@ func (m *mountManager) maybeRestore(sp *spec.Spec) {
 	f := sp.Snapshot.Files
 	// snapshot.files.mount points the tarball at a FUSE drive (e.g. an internal
 	// remote-backed mount started just above); otherwise fall back to the
-	// host's local snapshot directory.
+	// host's local snapshot directory. The mount path is agent-visible
+	// (e.g. /snapshot-drive) — resolve it to sandboxd's own view of that FUSE
+	// mount (keyPrefix/mnt/<slug>), since that's where sandboxd reads/writes.
 	dir := m.snapshotDir
 	if f.Mount != "" {
-		dir = f.Mount
+		dir = m.hostMountPath(f.Mount)
 	}
 	if dir == "" {
 		return

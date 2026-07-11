@@ -31,8 +31,6 @@ func TestFSACLE2E(t *testing.T) {
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -40,6 +38,8 @@ func TestFSACLE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	session := setup.ConnectMCP(t, ctx, sbx.ProxyURL(3000)+"mcp", &bytes.Buffer{})
 	defer session.Close()

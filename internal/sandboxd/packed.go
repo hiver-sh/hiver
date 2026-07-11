@@ -711,7 +711,10 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			if f.Key != "" && f.WriteOnShutdown != nil && *f.WriteOnShutdown {
 				dir := p.snapshotDir
 				if f.Mount != nil && *f.Mount != "" {
-					dir = *f.Mount
+					// The mount is agent-visible (e.g. /snapshot-drive); resolve it to
+					// sandboxd's view of that FUSE mount (keyPrefix/mnt/<slug>), which is
+					// where the tarball must be written for the FUSE drive to see it.
+					dir = mountMgr.hostMountPath(*f.Mount)
 				}
 				if dir != "" {
 					var include []string

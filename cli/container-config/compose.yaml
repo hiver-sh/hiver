@@ -12,17 +12,24 @@ services:
     # The controller spawns sandbox containers via the host docker daemon.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    # HIVE_IMAGES_CONFIG carries the images config as inline JSON (logical name →
+    # HIVER_IMAGES_CONFIG carries the images config as inline JSON (logical name →
     # ref/pack, design §11), injected by `hiver up` from ~/.hiver/config.json.
     # Packing is config-driven (file-wide pack default true); there is no global
     # pack switch.
     environment:
-      HIVE_IMAGES_CONFIG: ${HIVE_IMAGES_CONFIG:-}
+      HIVER_IMAGES_CONFIG: ${HIVER_IMAGES_CONFIG:-}
       # Forwarded by the controller into every sandbox pod, which injects it into
       # the workload so an agent inside the sandbox can reach the gateway (e.g. to
       # create nested sandboxes). `gateway` is the compose service below; pods on
       # the same network reach it on its container port 10000.
       HIVER_GATEWAY_URL: ${HIVER_GATEWAY_URL:-http://gateway:10000}
+      # The host directory the controller bind-mounts into every sandbox pod at
+      # /snapshots (where local files snapshots are written/read). A direct bind
+      # to the host path — the daemon creates it if absent — keeps snapshots on
+      # the host where the CLI (and e2e tests) read them. Without this the
+      # controller falls back to a named volume under /var/lib/docker, invisible
+      # to the host.
+      HIVER_SNAPSHOT_DIR: ${HOME}/.hive/snapshots
     restart: unless-stopped
 
   gateway:
@@ -31,13 +38,4 @@ services:
     ports:
       - "${GATEWAY_PORT:-10000}:10000"
     restart: unless-stopped
-
-volumes:
-  snapshots:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${HOME}/.hive/snapshots
-
 

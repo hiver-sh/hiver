@@ -32,16 +32,12 @@ func TestMultiTenantPackE2E(t *testing.T) {
 	setup.RequireStack(t)
 	setup.RequireHiverCLI(t)
 
-	const image = "hiversh/python:3.13-alpine"
+	const image = "python"
 	ts := time.Now().UnixNano()
 	keyA := fmt.Sprintf("packa-%d", ts)
 	keyB := fmt.Sprintf("packb-%d", ts)
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(3*time.Minute))
-	t.Cleanup(func() {
-		_ = c.Shutdown(context.Background(), keyA)
-		_ = c.Shutdown(context.Background(), keyB)
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -65,6 +61,11 @@ func TestMultiTenantPackE2E(t *testing.T) {
 
 	sbxA := mk(keyA, "example.com")
 	sbxB := mk(keyB, "example.org")
+	// Tear each sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() {
+		_ = sbxA.Shutdown(context.Background())
+		_ = sbxB.Shutdown(context.Background())
+	})
 
 	// --- placement: both same-image keys must share ONE pod (one routing id) ---
 	if sbxA.ID != sbxB.ID {
@@ -164,16 +165,12 @@ func TestMultiTenantApplyConfigMountE2E(t *testing.T) {
 	setup.RequireStack(t)
 	setup.RequireHiverCLI(t)
 
-	const image = "hiversh/python:3.13-alpine"
+	const image = "python"
 	ts := time.Now().UnixNano()
 	keyA := fmt.Sprintf("packcfg-a-%d", ts)
 	keyB := fmt.Sprintf("packcfg-b-%d", ts)
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(3*time.Minute))
-	t.Cleanup(func() {
-		_ = c.Shutdown(context.Background(), keyA)
-		_ = c.Shutdown(context.Background(), keyB)
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -195,6 +192,11 @@ func TestMultiTenantApplyConfigMountE2E(t *testing.T) {
 
 	sbxA := mk(keyA)
 	sbxB := mk(keyB)
+	// Tear each sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() {
+		_ = sbxA.Shutdown(context.Background())
+		_ = sbxB.Shutdown(context.Background())
+	})
 
 	if sbxA.ID != sbxB.ID {
 		t.Skipf("keys landed in different pods (%s vs %s) — controller not in pack mode (HIVE_PACK=1)", sbxA.ID, sbxB.ID)
@@ -299,7 +301,7 @@ func TestMultiTenantSnapshotE2E(t *testing.T) {
 	setup.RequireStack(t)
 	setup.RequireHiverCLI(t)
 
-	const image = "hiversh/python:3.13-alpine"
+	const image = "python"
 	ts := time.Now().UnixNano()
 
 	// Each sandbox gets a unique snapshot key; the write and restore sandboxes
@@ -312,12 +314,6 @@ func TestMultiTenantSnapshotE2E(t *testing.T) {
 	restoreKeyB := "r" + snapKeyB
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(3*time.Minute))
-	t.Cleanup(func() {
-		_ = c.Shutdown(context.Background(), writeKeyA)
-		_ = c.Shutdown(context.Background(), writeKeyB)
-		_ = c.Shutdown(context.Background(), restoreKeyA)
-		_ = c.Shutdown(context.Background(), restoreKeyB)
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -336,6 +332,11 @@ func TestMultiTenantSnapshotE2E(t *testing.T) {
 	// ── Phase 1: write ───────────────────────────────────────────────────────
 	wA := mkWriter(writeKeyA, snapKeyA)
 	wB := mkWriter(writeKeyB, snapKeyB)
+	// Tear each sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() {
+		_ = wA.Shutdown(context.Background())
+		_ = wB.Shutdown(context.Background())
+	})
 
 	if wA.ID != wB.ID {
 		t.Skipf("write sandboxes landed in different pods (%s vs %s) — controller not in pack mode (HIVE_PACK=1)", wA.ID, wB.ID)
@@ -398,6 +399,11 @@ func TestMultiTenantSnapshotE2E(t *testing.T) {
 
 	rA := mkRestore(restoreKeyA, snapKeyA)
 	rB := mkRestore(restoreKeyB, snapKeyB)
+	// Tear each sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() {
+		_ = rA.Shutdown(context.Background())
+		_ = rB.Shutdown(context.Background())
+	})
 
 	if rA.ID != rB.ID {
 		t.Skipf("restore sandboxes landed in different pods (%s vs %s) — controller not in pack mode (HIVE_PACK=1)", rA.ID, rB.ID)
@@ -437,16 +443,12 @@ func TestMultiTenantEgressEventsE2E(t *testing.T) {
 	setup.RequireStack(t)
 	setup.RequireHiverCLI(t)
 
-	const image = "hiversh/python:3.13-alpine"
+	const image = "python"
 	ts := time.Now().UnixNano()
 	keyA := fmt.Sprintf("packev-a-%d", ts)
 	keyB := fmt.Sprintf("packev-b-%d", ts)
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(3*time.Minute))
-	t.Cleanup(func() {
-		_ = c.Shutdown(context.Background(), keyA)
-		_ = c.Shutdown(context.Background(), keyB)
-	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -468,6 +470,11 @@ func TestMultiTenantEgressEventsE2E(t *testing.T) {
 
 	sbxA := mk(keyA, "example.com")
 	sbxB := mk(keyB, "example.org")
+	// Tear each sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() {
+		_ = sbxA.Shutdown(context.Background())
+		_ = sbxB.Shutdown(context.Background())
+	})
 
 	// Both sandboxes must land in the same pod for proxyRouter routing to be exercised.
 	if sbxA.ID != sbxB.ID {

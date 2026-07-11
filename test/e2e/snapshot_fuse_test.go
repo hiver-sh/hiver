@@ -69,10 +69,9 @@ func TestSnapshotFuseE2E(t *testing.T) {
 	defer cancel()
 
 	wKey := "w" + key
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), wKey) })
 
 	writer, err := c.GetOrCreateSandbox(ctx, wKey, hiverclient.SandboxConfig{
-		Image:      "hiversh/node:alpine",
+		Image:      "node",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		ExtraHosts: []string{"external-fs:host-gateway"},
 		FS:         []hiverclient.FileSystem{snapshotDrive},
@@ -88,6 +87,8 @@ func TestSnapshotFuseE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write: GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = writer.Shutdown(context.Background()) })
 
 	res, err := writer.Exec(ctx, hiverclient.ExecRequest{
 		Command: fmt.Sprintf("mkdir -p /workspace && echo %s > %s", content, file),
@@ -108,7 +109,7 @@ func TestSnapshotFuseE2E(t *testing.T) {
 		t.Errorf("internal mount /snapshot-drive must not be visible to the agent")
 	}
 
-	if err := c.Shutdown(ctx, wKey); err != nil {
+	if err := writer.Shutdown(ctx); err != nil {
 		t.Fatalf("write: Shutdown: %v", err)
 	}
 
@@ -134,10 +135,9 @@ func TestSnapshotFuseE2E(t *testing.T) {
 	}
 
 	rKey := "r" + key
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), rKey) })
 
 	reader, err := c.GetOrCreateSandbox(ctx, rKey, hiverclient.SandboxConfig{
-		Image:      "hiversh/node:alpine",
+		Image:      "node",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		ExtraHosts: []string{"external-fs:host-gateway"},
 		FS:         []hiverclient.FileSystem{snapshotDrive},
@@ -151,6 +151,8 @@ func TestSnapshotFuseE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore: GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = reader.Shutdown(context.Background()) })
 
 	res, err = reader.Exec(ctx, hiverclient.ExecRequest{Command: "cat " + file})
 	if err != nil {

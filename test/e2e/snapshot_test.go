@@ -3,6 +3,8 @@ package e2e_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,23 +60,49 @@ func TestSnapshotE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
+	// waitSnapshot blocks until the local snapshot tarball for key lands on the
+	// host-side snapshot dir. Shutdown is asynchronous (the teardown goroutine
+	// captures /workspace after DELETE returns), so the restore phase must wait
+	// for the tarball rather than assume it is already on disk.
+	waitSnapshot := func(key string) {
+		t.Helper()
+		path := filepath.Join(os.Getenv("HOME"), ".hive", "snapshots", "snapshot-"+key+".tar.gz")
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("snapshot for key %q not found at %s after 30s", key, path)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
 	// ── Phase 1: write snapshots ─────────────────────────────────────────────
 	// Start each sandbox, write a unique file, then shut it down so sandboxd
-	// captures the /workspace contents into a snapshot tarball.
-	// Shutdown blocks until the container exits, guaranteeing the tarball is
-	// on disk before the restore phase begins.
+	// captures the /workspace contents into a snapshot tarball, and wait for that
+	// tarball before moving on to the restore phase.
 	for _, tc := range cases {
 		wKey := "w" + tc.key
-		t.Cleanup(func() { _ = c.Shutdown(context.Background(), wKey) })
 
 		sbx, err := c.GetOrCreateSandbox(ctx, wKey, hiverclient.SandboxConfig{
-			Image:      "hiversh/python:3.13-alpine",
+			Image:      "python",
 			Entrypoint: []string{"tail", "-f", "/dev/null"},
-			Snapshot:   &hiverclient.Snapshot{Files: &hiverclient.SnapshotFiles{Key: tc.key, WriteOnShutdown: true}},
+			// Include /workspace explicitly: an empty include captures only the
+			// container's overlay upper, not FUSE-mounted paths like /workspace,
+			// so the files written below would otherwise be left out of the tarball.
+			Snapshot: &hiverclient.Snapshot{Files: &hiverclient.SnapshotFiles{
+				Key:             tc.key,
+				WriteOnShutdown: true,
+				Include:         []string{"/workspace/**"},
+			}},
 		})
 		if err != nil {
 			t.Fatalf("[%s] write: GetOrCreateSandbox: %v", tc.name, err)
 		}
+		// Tear the sandbox down via its own API (no controller involvement).
+		t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 		res, err := sbx.Exec(ctx, hiverclient.ExecRequest{
 			Command: fmt.Sprintf("echo %s > %s", tc.content, tc.file),
@@ -86,9 +114,10 @@ func TestSnapshotE2E(t *testing.T) {
 			t.Fatalf("[%s] write: echo failed (exit=%d stderr=%q)", tc.name, res.ExitCode, res.Stderr)
 		}
 
-		if err := c.Shutdown(ctx, wKey); err != nil {
+		if err := sbx.Shutdown(ctx); err != nil {
 			t.Fatalf("[%s] write: Shutdown: %v", tc.name, err)
 		}
+		waitSnapshot(tc.key)
 	}
 
 	// ── Phase 2: restore snapshots ───────────────────────────────────────────
@@ -100,16 +129,17 @@ func TestSnapshotE2E(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			rKey := "r" + tc.key
-			t.Cleanup(func() { _ = c.Shutdown(context.Background(), rKey) })
 
 			sbx, err := c.GetOrCreateSandbox(ctx, rKey, hiverclient.SandboxConfig{
-				Image:      "hiversh/python:3.13-alpine",
+				Image:      "python",
 				Entrypoint: []string{"tail", "-f", "/dev/null"},
 				Snapshot:   &hiverclient.Snapshot{Files: &hiverclient.SnapshotFiles{Key: tc.key}},
 			})
 			if err != nil {
 				t.Fatalf("GetOrCreateSandbox: %v", err)
 			}
+			// Tear the sandbox down via its own API (no controller involvement).
+			t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 			// (a) The written file must be restored with the correct content.
 			res, err := sbx.Exec(ctx, hiverclient.ExecRequest{

@@ -6,14 +6,14 @@ services:
     build:
       context: ..
       dockerfile: docker/controller.Dockerfile
-    # HIVE_IMAGES_CONFIG carries the images config as inline JSON (logical name →
+    # HIVER_IMAGES_CONFIG carries the images config as inline JSON (logical name →
     # ref/pack, design §11). Packing is config-driven (file-wide pack default
     # true), so the multi-sandbox-pod placement (design §6, §10) is the default
     # with no global switch; unset here means "no logical mapping" (full refs
     # still work and default to packed).
     environment:
-      HIVE_IMAGES_CONFIG: ${HIVE_IMAGES_CONFIG:-}
-      HIVE_SNAPSHOT_DIR: ${HOME}/.hive/snapshots
+      HIVER_IMAGES_CONFIG: ${HIVER_IMAGES_CONFIG:-}
+      HIVER_SNAPSHOT_DIR: ${HOME}/.hive/snapshots
       # Forwarded by the controller into every sandbox pod, which in turn injects
       # it into the workload so an agent inside the sandbox can reach the gateway
       # (e.g. to create nested sandboxes). `gateway` is the compose service below.

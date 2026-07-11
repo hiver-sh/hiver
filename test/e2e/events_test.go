@@ -63,7 +63,7 @@ func TestEventsLastEventIdE2E(t *testing.T) {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = c.Shutdown(context.Background(), key)
+		_ = sbx.Shutdown(context.Background())
 	})
 
 	// Subscribe to events via the gateway's /sandbox/{id}/ route, which

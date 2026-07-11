@@ -47,7 +47,7 @@ type mountManager struct {
 	children    *sync.WaitGroup
 	broker      *events.Broker
 	iso         isolation.Isolation
-	isoMu       *sync.Mutex // serializes isolation-backend mutations (Export/Unexport)
+	isoMu       *sync.Mutex  // serializes isolation-backend mutations (Export/Unexport)
 	fuse        *fuseControl // pod-wide shared sbxfuse process (mount/unmount/reacl)
 	workDir     string
 	snapshotDir string
@@ -99,6 +99,13 @@ func (m *mountManager) hostMount(f spec.FS) string {
 		return f.Mount
 	}
 	return filepath.Join(m.keyPrefix, "mnt", f.Slug())
+}
+
+// hostMountPath resolves an agent-visible mount path (e.g. /snapshot-drive) to
+// sandboxd's own view of that FUSE mount (keyPrefix/mnt/<slug>) — the path
+// sandboxd reads and writes, as opposed to the path the agent sees.
+func (m *mountManager) hostMountPath(agentMount string) string {
+	return m.hostMount(spec.FS{Mount: agentMount})
 }
 
 // hostBackend is the host directory sbxfuse writes through to for f.

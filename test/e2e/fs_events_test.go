@@ -14,7 +14,7 @@ import (
 // TestFSEventsE2E verifies the fs.request / fs.response event pair emitted
 // by sbxfuse. Two operations are triggered via Exec:
 //   - an ALLOWED write to /workspace/fsevents-write.txt → fs.request(allowed,write)
-//     + fs.response(backend:local)
+//   - fs.response(backend:local)
 //   - a DENIED read from /workspace/secret/keys.txt → fs.request(denied,read),
 //     no paired response (ACL deny short-circuits before the backend is contacted)
 //
@@ -26,7 +26,7 @@ func TestFSEventsE2E(t *testing.T) {
 
 	key := fmt.Sprintf("e2e-fs-events-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
-		Image:      "hiversh/python:3.13-alpine",
+		Image:      "python",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		FS: []hiverclient.FileSystem{{
 			Mount:   "/workspace",
@@ -40,8 +40,6 @@ func TestFSEventsE2E(t *testing.T) {
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -49,6 +47,8 @@ func TestFSEventsE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	const writePath = "/workspace/fsevents-write.txt"
 	const secretPath = "/workspace/secret/keys.txt"

@@ -19,6 +19,55 @@ jobs:
   build-cli:
     uses: ./.github/workflows/build-cli.yaml
 
+  # Rebundle the sandbox images the tests use from THIS run's freshly-built
+  # `core` — once — and hand them to every e2e leg as an artifact (mirroring
+  # hiver-images). Doing it here rather than per-leg avoids re-pulling the base
+  # images and re-baking sandboxd 25 times, and it exercises this run's sandboxd
+  # rather than the last-published sandbox images.
+  bundle-sandbox-images:
+    needs: [build-images, build-cli]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Load the built docker images
+        uses: actions/download-artifact@v4
+        with:
+          name: hiver-images
+      - run: docker load -i images.tar
+
+      - name: Install the built CLI as `hiver`
+        uses: actions/download-artifact@v4
+        with:
+          name: hiver-cli
+      - name: Put `hiver` on PATH
+        run: |
+          tar xzf hiver-cli.tgz
+          chmod +x cli/packages/commands/bin.js
+          sudo ln -sf "$PWD/cli/packages/commands/bin.js" /usr/local/bin/hiver
+          hiver --help >/dev/null
+
+      # `hiver bundle` (no --push/--platform) builds single-arch and loads into the
+      # local docker store, baking THIS run's sandboxd (hiversh/core, loaded above)
+      # into each sandbox image.
+      - name: Bundle sandbox images from this run's core
+        run: |
+          hiver bundle python:3.13-alpine --entrypoint="tail -f /dev/null" --tag hiversh/python:3.13-alpine
+          hiver bundle node:alpine --entrypoint="tail -f /dev/null" --tag hiversh/node:alpine
+
+      - name: Save sandbox images as artifact
+        run: docker save hiversh/python:3.13-alpine hiversh/node:alpine -o sandbox-images.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-images
+          path: sandbox-images.tar
+          retention-days: 1
+
   # Load this run's images + CLI and run the e2e tests in parallel — one test
   # per matrix leg, each bringing up its own isolated stack. `fail-fast: false`
   # lets every leg report independently. Add more tests by extending
@@ -30,7 +79,7 @@ jobs:
   # a runner standing up a stack to immediately skip. Add them back (with the
   # matching secrets wired into the env) when those backends are covered in CI.
   e2e:
-    needs: [build-images, build-cli]
+    needs: [build-images, build-cli, bundle-sandbox-images]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -78,6 +127,14 @@ jobs:
         with:
           name: hiver-images
       - run: docker load -i images.tar
+
+      # The sandbox images (python/node) rebundled from this run's core, so the
+      # controller uses them instead of pulling the last-published copies.
+      - name: Load the rebundled sandbox images
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-images
+      - run: docker load -i sandbox-images.tar
 
       - name: Install the built CLI as `hiver`
         uses: actions/download-artifact@v4

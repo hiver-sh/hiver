@@ -42,8 +42,6 @@ func TestWebSocketE2E(t *testing.T) {
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -51,6 +49,8 @@ func TestWebSocketE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	// Collect all sandbox events via the Go client. Once the agent prints
 	// DONE (after which it enters an infinite sleep loop) we give the proxy a

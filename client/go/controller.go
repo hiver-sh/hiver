@@ -177,30 +177,6 @@ func (c *Client) ListSandboxes(ctx context.Context) ([]*Sandbox, error) {
 	return sandboxes, nil
 }
 
-// Shutdown permanently stops and removes the sandbox identified by key. It is
-// idempotent for already-stopped sandboxes; unknown keys return an error.
-func (c *Client) Shutdown(ctx context.Context, key string) error {
-	ctx, cancel := c.withTimeout(ctx)
-	defer cancel()
-
-	url := fmt.Sprintf("%s/controller/v1/shutdown/%s", c.baseURL, key)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	if err != nil {
-		return err
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("Shutdown: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNoContent {
-		return nil
-	}
-	return fmt.Errorf("Shutdown: %w", readAPIError(resp))
-}
-
 // WatchEvents streams sandbox lifecycle events (start/stop/die/destroy) from
 // the controller. The returned channel is closed when ctx is done or the
 // server closes the stream. Any final error is sent on errc.

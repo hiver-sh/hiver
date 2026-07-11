@@ -25,16 +25,12 @@ func TestControllerEventsMultiTenantE2E(t *testing.T) {
 	setup.RequireStack(t)
 	setup.RequireHiverCLI(t)
 
-	const image = "hiversh/python:3.13-alpine"
+	const image = "python"
 	ts := time.Now().UnixNano()
 	keyA := fmt.Sprintf("evta-%d", ts)
 	keyB := fmt.Sprintf("evtb-%d", ts)
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(3*time.Minute))
-	t.Cleanup(func() {
-		_ = c.Shutdown(context.Background(), keyA)
-		_ = c.Shutdown(context.Background(), keyB)
-	})
 
 	// Subscribe to the controller's lifecycle stream BEFORE creating anything, so
 	// the create transitions are observed live. Collect, per key, the set of
@@ -112,6 +108,11 @@ func TestControllerEventsMultiTenantE2E(t *testing.T) {
 
 	sbxA := mk(keyA)
 	sbxB := mk(keyB)
+	// Tear each sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() {
+		_ = sbxA.Shutdown(context.Background())
+		_ = sbxB.Shutdown(context.Background())
+	})
 
 	// Two same-image keys must share ONE pod (one routing id) for this to be a
 	// multi-tenant test.
@@ -139,7 +140,7 @@ func TestControllerEventsMultiTenantE2E(t *testing.T) {
 
 	// Tear down keyA only: it must surface stop, and keyB (its co-tenant in the
 	// same pod) must NOT — the per-key teardown is isolated.
-	if err := c.Shutdown(ctx, keyA); err != nil {
+	if err := sbxA.Shutdown(ctx); err != nil {
 		t.Fatalf("shutdown %s: %v", keyA, err)
 	}
 	if !waitFor(keyA, "stop", 45*time.Second) {

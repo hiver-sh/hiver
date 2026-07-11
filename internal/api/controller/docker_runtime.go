@@ -51,7 +51,7 @@ func hostHasKVM() bool {
 
 // DockerRuntime implements SandboxRuntime using local Docker commands.
 type DockerRuntime struct {
-	// images is the logical-name → ref/pack mapping from HIVE_IMAGES_CONFIG
+	// images is the logical-name → ref/pack mapping from HIVER_IMAGES_CONFIG
 	// (design §11), plus its file-wide pack default (true unless disabled). A
 	// create's image name is resolved through it (resolveImage); an unmapped name
 	// is treated as a full ref. When packing, keys of the same image are packed
@@ -59,7 +59,7 @@ type DockerRuntime struct {
 	// §10); otherwise each key gets its own (single-key pack-host) container.
 	images config
 	// snapshotHostDir is the host path bind-mounted as /snapshots in sandbox
-	// containers. Set from HIVE_SNAPSHOT_DIR env var. When empty, the named
+	// containers. Set from HIVER_SNAPSHOT_DIR env var. When empty, the named
 	// docker volume hiver_snapshots is used as a fallback (no-op on macOS Docker
 	// Desktop where named volumes don't surface to the host filesystem).
 	snapshotHostDir string
@@ -68,7 +68,7 @@ type DockerRuntime struct {
 func newDockerRuntime() *DockerRuntime {
 	return &DockerRuntime{
 		images:          loadImagesConfig(),
-		snapshotHostDir: os.Getenv("HIVE_SNAPSHOT_DIR"),
+		snapshotHostDir: os.Getenv("HIVER_SNAPSHOT_DIR"),
 	}
 }
 
@@ -282,6 +282,34 @@ func podSandboxes(ctx context.Context, host string) ([]sandboxgen.SandboxSummary
 	return list.Sandboxes, nil
 }
 
+// hasExtraHosts reports whether cfg carries any custom /etc/hosts entries. Such
+// sandboxes take the single-container path (see Start): extra hosts are a per-key
+// network customization applied at container-create time via `--add-host`, which
+// docker only honors at creation. A pack pod is created once and shared by later
+// keys, so per-key hosts can't be injected without racing the pod-side sbxproxy's
+// resolver cache — and would leak one tenant's aliases to its co-tenants.
+func hasExtraHosts(cfg sandboxgen.SandboxConfig) bool {
+	return cfg.ExtraHosts != nil && len(*cfg.ExtraHosts) > 0
+}
+
+// extraHostArgs renders cfg.ExtraHosts (each "hostname:ip", where ip may be the
+// docker-special "host-gateway") into `docker create --add-host` flags. The
+// entries land in the container's /etc/hosts, and because sbxproxy runs in the
+// container's netns off that same /etc/hosts — and re-resolves upstream names
+// itself, since the agent's DNS is sinkholed — the alias resolves for both the
+// agent and the proxy's egress dial. Docker resolves the host-gateway magic value
+// at create time, so this only applies on the single-container path.
+func extraHostArgs(cfg sandboxgen.SandboxConfig) []string {
+	if cfg.ExtraHosts == nil {
+		return nil
+	}
+	var args []string
+	for _, h := range *cfg.ExtraHosts {
+		args = append(args, "--add-host", h)
+	}
+	return args
+}
+
 func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.SandboxConfig) (gen.Sandbox, error) {
 	// Resolve the logical image name (or full ref) to the Docker ref to run and
 	// whether to pack it (design §11). cfg.Image is intentionally NOT overwritten
@@ -296,6 +324,14 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// path whenever an origin is present so the mount is honored rather than
 	// silently dropped.
 	if pack && hasLocalOrigin(cfg) {
+		pack = false
+	}
+	// Extra /etc/hosts entries are a per-key network customization applied via
+	// `--add-host` at container-create time (docker honors it only then). A shared
+	// pack pod is created once, so injecting per-key hosts later races the pod-side
+	// sbxproxy's resolver cache and leaks aliases across co-tenants; take the
+	// single-container path instead, where each key gets its own /etc/hosts.
+	if pack && hasExtraHosts(cfg) {
 		pack = false
 	}
 	if pack {
@@ -414,6 +450,9 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 		backend := packedBackendDir(key, local.Mount)
 		createArgs = append(createArgs, "-v", *local.Origin+":"+backend)
 	}
+	// Inject the config's extra /etc/hosts entries (e.g. an `external-fs:host-gateway`
+	// alias the agent and sbxproxy resolve) before the image arg.
+	createArgs = append(createArgs, extraHostArgs(cfg)...)
 	// Mount the snapshot volume so this sandbox can write and restore local
 	// snapshots. sandboxd brings the sandbox up on the POST /v1/<key> below, which
 	// carries the config. --pack is intentionally omitted: this container hosts a

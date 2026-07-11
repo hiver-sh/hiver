@@ -19,7 +19,7 @@ func TestShutdownE2E(t *testing.T) {
 
 	key := fmt.Sprintf("e2e-shutdown-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
-		Image:      "hiversh/python:3.13-alpine",
+		Image:      "python",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 	}
 
@@ -38,13 +38,24 @@ func TestShutdownE2E(t *testing.T) {
 		t.Fatalf("Ping before shutdown: %v", err)
 	}
 
-	if err := c.Shutdown(ctx, key); err != nil {
+	if err := sbx.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	// After shutdown the container is removed and the gateway no longer
-	// routes to it. Ping must fail.
-	if err := sbx.Ping(ctx); err == nil {
-		t.Error("Ping after shutdown: expected error, got nil")
+	// Shutdown is asynchronous: DELETE returns as soon as teardown is scheduled
+	// (the supervisor cancels the sandbox's context and frees the slot in a
+	// background goroutine), so the container may stay briefly reachable. Poll
+	// until Ping fails, proving the container is gone and the gateway no longer
+	// routes to it.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if err := sbx.Ping(ctx); err != nil {
+			break // torn down — expected
+		}
+		if time.Now().After(deadline) {
+			t.Error("Ping after shutdown: still reachable after 30s, expected teardown")
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }

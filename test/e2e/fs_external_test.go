@@ -34,7 +34,7 @@ func TestFSExternalE2E(t *testing.T) {
 
 	key := fmt.Sprintf("e2e-fs-external-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
-		Image:      "hiversh/python:3.13-alpine",
+		Image:      "python",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		ExtraHosts: []string{"external-fs:host-gateway"},
 		FS: []hiverclient.FileSystem{{
@@ -46,7 +46,6 @@ func TestFSExternalE2E(t *testing.T) {
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -55,6 +54,8 @@ func TestFSExternalE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
 	// exec runs a command inside the sandbox, fails the test on any error or
 	// non-zero exit code, and returns trimmed stdout.

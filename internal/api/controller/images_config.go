@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-const envImagesConfig = "HIVE_IMAGES_CONFIG"
+const envImagesConfig = "HIVER_IMAGES_CONFIG"
 
 // imageEntry maps a logical image name to a Docker image reference and, when
 // set, whether the host runs in pack/prewarm mode for it. When pack is omitted,
@@ -17,7 +17,7 @@ type imageEntry struct {
 	Pack *bool  `json:"pack"`
 }
 
-// config is the images config carried in HIVE_IMAGES_CONFIG. Pack is the
+// config is the images config carried in HIVER_IMAGES_CONFIG. Pack is the
 // file-wide pack default (true when omitted); Images maps logical names to refs.
 type config struct {
 	Pack   *bool                 `json:"pack"`
@@ -38,7 +38,7 @@ func (c config) packFor(e imageEntry) bool {
 	return c.packDefault()
 }
 
-// loadImagesConfig parses the images config JSON in HIVE_IMAGES_CONFIG. An
+// loadImagesConfig parses the images config JSON in HIVER_IMAGES_CONFIG. An
 // unset/empty value yields an empty config (not an error): the docker runtime
 // then falls back to treating image names as full refs and to the default image.
 // A malformed value is logged and treated as empty so a typo can't take the

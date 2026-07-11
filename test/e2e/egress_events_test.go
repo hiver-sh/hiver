@@ -12,10 +12,15 @@ import (
 
 // TestEgressEventsE2E verifies the egress.request / egress.response event
 // pair emitted by sbxproxy. Two requests are triggered via Exec:
-//   - an ALLOWED GET to 127.0.0.1:8099 (sandboxd's own API, explicitly
-//     permitted in the egress rules) → egress.request(allowed) + egress.response
+//   - an ALLOWED GET to the hive gateway (a routed, plain-HTTP endpoint
+//     explicitly permitted in the egress rules) → egress.request(allowed) +
+//     egress.response
 //   - a DENIED GET to 1.1.1.1 (not on the allowlist) → egress.request(denied),
 //     no paired response
+//
+// The gateway is used rather than a sandbox-loopback address because a packed
+// sandbox's loopback traffic stays in its own netns and is never redirected to
+// sbxproxy, so loopback egress emits no events.
 //
 // All events are collected via WatchEvents after the Exec calls complete;
 // the broker replays every past event when the subscription is opened with
@@ -26,18 +31,17 @@ func TestEgressEventsE2E(t *testing.T) {
 
 	key := fmt.Sprintf("e2e-egress-events-%d", time.Now().UnixNano())
 	config := hiverclient.SandboxConfig{
-		Image:      "hiversh/python:3.13-alpine",
+		Image:      "python",
 		Entrypoint: []string{"tail", "-f", "/dev/null"},
 		FS: []hiverclient.FileSystem{
 			{Mount: "/workspace", Backend: "local", ACLs: []hiverclient.ACLRule{{Path: "/**", Access: "rw"}}},
 		},
 		Egress: []hiverclient.EgressRule{
-			{Access: "allow", Host: "127.0.0.1", Ports: []int{8099}},
+			{Access: "allow", Host: agentGatewayHost, Ports: []int{agentGatewayPort}},
 		},
 	}
 
 	c := hiverclient.NewClient(setup.GatewayURL, hiverclient.WithTimeout(2*time.Minute))
-	t.Cleanup(func() { _ = c.Shutdown(context.Background(), key) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -46,13 +50,14 @@ func TestEgressEventsE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateSandbox: %v", err)
 	}
+	// Tear the sandbox down via its own API (no controller involvement).
+	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
-	// Trigger an ALLOWED egress: GET /v1/<key>/ping on 127.0.0.1:8099 (sandboxd's
-	// keyed API). iptables redirects this outbound TCP connection through sbxproxy,
+	// Trigger an ALLOWED egress: GET the gateway (a routed host on the Docker
+	// network). iptables redirects this outbound TCP connection through sbxproxy,
 	// which permits it, forwards the request, and emits egress.request + response.
-	pingPath := "/v1/" + key + "/ping"
 	if _, err := sbx.Exec(ctx, hiverclient.ExecRequest{
-		Command: fmt.Sprintf(`python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099%s')"`, pingPath),
+		Command: fmt.Sprintf(`python3 -c "import urllib.request; urllib.request.urlopen('%s')"`, agentGatewayURL),
 	}); err != nil {
 		t.Fatalf("Exec allowed request: %v", err)
 	}
@@ -84,12 +89,12 @@ except Exception:
 
 	t.Run("allowed_request_fields", func(t *testing.T) {
 		ev := findEvent(egressReqs, func(e hiverclient.SandboxEvent) bool {
-			return e.Access == "allowed" && e.Host == "127.0.0.1" &&
-				e.Method == "GET" && e.Path == pingPath
+			return e.Access == "allowed" && e.Host == agentGatewayHost &&
+				e.Method == "GET" && e.Path == agentGatewayPath
 		})
 		if ev == nil {
-			t.Fatalf("no egress.request{access:allowed, host:127.0.0.1, method:GET, path:%s}; events:\n%s",
-				pingPath, summarizeEgressReqs(egressReqs))
+			t.Fatalf("no egress.request{access:allowed, host:%s, method:GET, path:%s}; events:\n%s",
+				agentGatewayHost, agentGatewayPath, summarizeEgressReqs(egressReqs))
 		}
 		if ev.ID == 0 {
 			t.Errorf("allowed egress.request: id=0, want >0")
@@ -101,7 +106,7 @@ except Exception:
 
 	t.Run("allowed_response_paired", func(t *testing.T) {
 		allowed := findEvent(egressReqs, func(e hiverclient.SandboxEvent) bool {
-			return e.Access == "allowed" && e.Host == "127.0.0.1" && e.Path == pingPath
+			return e.Access == "allowed" && e.Host == agentGatewayHost && e.Path == agentGatewayPath
 		})
 		if allowed == nil {
 			t.Skip("allowed egress.request not found; skipping response pairing check")
