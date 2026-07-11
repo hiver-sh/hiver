@@ -26,8 +26,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npm run build:client && npm run build:server && npm run build:commands",
+    "build": "npm run build:client && npm run build:server && npm run build:commands && npm run build:skill",
     "clean": "rm -rf packages/commands/dist packages/inspector-server/dist packages/inspector-client/dist",
+    "build:skill": "node scripts/generate-skill.mjs",
     "build:inspector-client": "cd packages/inspector-client && vite build --config vite.lib.config.ts",
     "build:client": "cd packages/inspector-client && vite build",
     "build:server": "tsc -p packages/inspector-server/tsconfig.build.json",

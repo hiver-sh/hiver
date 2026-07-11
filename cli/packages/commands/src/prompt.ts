@@ -59,6 +59,9 @@ export async function select<T extends string>(
       }
     };
 
+    // Blank line above the menu, printed once so the redraw (which only rewinds
+    // over the question + options) leaves it in place.
+    process.stdout.write("\n");
     render(true);
 
     emitKeypressEvents(process.stdin);

@@ -12,17 +12,18 @@ The `hiver` CLI runs the local stack, launches sandboxes, streams their events, 
   Usage: hiver <command> [options]
 
   Commands
-    up       Bring up local stack
-    down     Bring down local stack
-    connect  Connect to remote stack
-    start    Start a sandbox
-    run      Build and launch a project directory as a sandbox
-    stop     Stop a sandbox
-    shell    Open an interactive shell in a sandbox
-    list     List the sandboxes
-    events   Stream a sandbox's events live as they happen
-    inspect  Launch the inspector
-    bundle   Bundle a Docker image into a Hiver runtime image
+    up             Bring up local stack
+    down           Bring down local stack
+    connect        Connect to remote stack
+    start          Start a sandbox
+    run            Build and launch a project directory as a sandbox
+    stop           Stop a sandbox
+    shell          Open an interactive shell in a sandbox
+    list           List the sandboxes
+    events         Stream a sandbox's events live as they happen
+    inspect        Launch the inspector
+    bundle         Bundle a Docker image into a Hiver runtime image
+    install-skill  Install the Hiver skill into your coding agents
 
   Run hiver <command> --help for command details.
 ```
@@ -135,6 +136,21 @@ When bundling a directory that has a [`.hiver.json`](/docs/getting-started#confi
 | `--microvm` | Build a [microVM](/docs/runtime/microvm)-isolation image (bakes a guest kernel + rootfs). |
 
 The resulting tag is what you pass as `image` in `SandboxConfig`. See [Custom Docker image](/docs/examples/custom-docker-image) for a full walkthrough.
+
+## Install the skill
+
+The Hiver Agent Skill — the full documentation as an on-disk skill — ships bundled with the CLI. `install-skill` detects the coding agents on your machine (Claude Code, Codex, Antigravity, and GitHub Copilot CLI) and symlinks the skill into each one's skills directory, so they can pull the pages they need into context. The first run of `hiver` also offers to do this.
+
+```bash
+hiver install-skill                # all detected agents
+hiver install-skill claude codex   # only specific agents
+hiver install-skill --project      # into ./<agent>/skills in the current dir
+```
+
+| Flag | Description |
+|------|-------------|
+| `--project` | Link into `./<agent>/skills` in the current directory instead of `$HOME`. |
+| `--force` | Replace a non-symlink file or directory already sitting at the skill path. |
 
 ---
 

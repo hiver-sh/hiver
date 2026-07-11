@@ -7,6 +7,8 @@ import { COMMANDS } from "./commands.js";
 import { HIVER_DIR } from "./config.js";
 import { bold, dim, red, white } from "./theme.js";
 import { playIntro, staticLogo, type HiveLogo } from "./hive.js";
+import { confirm } from "./prompt.js";
+import { detectAgents, installForAgents, resolveSkillSrc } from "./install-skill/install.js";
 
 // The `hiver` entry, for spawning subcommands (e.g. `start`). One level up from
 // both src/ and dist/.
@@ -24,6 +26,25 @@ function runStart(key: string): Promise<boolean> {
     child.on("error", () => res(false));
     child.on("exit", (code) => res(code === 0));
   });
+}
+
+// First-run offer: if any coding agents are installed, ask whether to symlink
+// the bundled Hiver skill into them. Best-effort — declining (or no agents /
+// no bundled skill) just skips it.
+async function offerSkillInstall(): Promise<void> {
+  const src = resolveSkillSrc();
+  if (!src) return;
+  const agents = detectAgents();
+  if (agents.length === 0) return;
+
+  console.log();
+  const yes = await confirm(
+    `  ${white("Install the Hiver skill")} into ${bold(agents.map((a) => a.name).join(", "))}?`,
+  );
+  if (!yes) return;
+
+  console.log();
+  installForAgents(src, agents, {});
 }
 
 /**
@@ -91,6 +112,9 @@ printCommands(unknown);
 // `--intro` plays the logo, shows the help, starts an example agent, then
 // launches the inspector so the devtools open with something to show.
 if (intro) {
+  // Offer to wire the bundled skill into the user's coding agents first.
+  await offerSkillInstall();
+
   // Pick the key here so we can both start under it and point the inspector at
   // it. Matches `start`'s own `agent-<hex>` default for an omitted key.
   const exampleKey = `agent-${randomBytes(2).toString("hex")}`;

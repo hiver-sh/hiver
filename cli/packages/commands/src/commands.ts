@@ -100,6 +100,16 @@ export const COMMANDS: CommandSpec[] = [
       "hiver bundle <image> --tag <runtime-tag> --platform linux/amd64,linux/arm64",
     ],
   },
+  {
+    name: "install-skill",
+    summary: "Install the Hiver skill into your coding agents",
+    entry: "install-skill/index.ts",
+    usage: [
+      "hiver install-skill",
+      "hiver install-skill claude codex",
+      "hiver install-skill --project",
+    ],
+  },
 ];
 
 export function findCommand(name: string | undefined): CommandSpec | undefined {
