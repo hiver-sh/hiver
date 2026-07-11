@@ -27,13 +27,13 @@ Add the Hiver client to your project to provision and control sandboxes from cod
 
 ## Agent skill
 
-The Hiver [Agent Skill](/docs/cli#install-the-skill) — the full documentation as an on-disk skill — ships inside the CLI. Wire it into the coding agents on your machine so they can pull these docs into context on demand:
+The CLI ships with a skill file containing all the documentation about the CLI and the client libraries for TypeScript, Python and Golang. You can install it, so your coding agent can use it:
 
 <CodeBlock tabs={[
   { label: "Bash", lang: "sh", icon: "bash", filename: "Run", code: "hiver install-skill" },
 ]} />
 
-It detects Claude Code, Codex, Antigravity, and GitHub Copilot CLI. The first run of `hiver` also offers to install it.
+It supports Claude Code, Codex, Antigravity, and GitHub Copilot CLI.
 
 ---
 
