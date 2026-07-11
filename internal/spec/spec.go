@@ -152,6 +152,17 @@ type FS struct {
 	GcsPrefix             string `json:"gcs_prefix,omitempty"`
 	GcsServiceAccountJSON string `json:"gcs_service_account_json,omitempty"`
 
+	// s3 only — bucket, region, optional key prefix, static credentials, and
+	// optional endpoint/path-style overrides for S3-compatible services.
+	S3Bucket          string `json:"s3_bucket,omitempty"`
+	S3Region          string `json:"s3_region,omitempty"`
+	S3Prefix          string `json:"s3_prefix,omitempty"`
+	S3AccessKeyID     string `json:"s3_access_key_id,omitempty"`
+	S3SecretAccessKey string `json:"s3_secret_access_key,omitempty"`
+	S3SessionToken    string `json:"s3_session_token,omitempty"`
+	S3Endpoint        string `json:"s3_endpoint,omitempty"`
+	S3UsePathStyle    bool   `json:"s3_use_path_style,omitempty"`
+
 	// external only — base URL of the HTTP host backing the file system.
 	Host string `json:"host,omitempty"`
 }
@@ -182,13 +193,14 @@ const (
 	BackendLocal              Backend = "local"
 	BackendGoogleDrive        Backend = "gdrive"
 	BackendGoogleCloudStorage Backend = "gcs"
+	BackendS3                 Backend = "s3"
 	BackendExternal           Backend = "external"
 )
 
 // Valid reports whether the backend is one sandboxd knows how to wire up.
 func (b Backend) Valid() bool {
 	switch b {
-	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendExternal:
+	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendExternal:
 		return true
 	}
 	return false
@@ -198,7 +210,7 @@ func (b Backend) Valid() bool {
 // store via the oplog. Local is the only non-remote backend today.
 func (b Backend) IsRemote() bool {
 	switch b {
-	case BackendGoogleDrive, BackendGoogleCloudStorage, BackendExternal:
+	case BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendExternal:
 		return true
 	}
 	return false
@@ -242,6 +254,17 @@ const (
 	envGcsServiceAccountJSON = "HIVE_GCS_SERVICE_ACCOUNT_JSON"
 )
 
+// Env-var fallbacks for s3 credentials.
+const (
+	envS3Bucket          = "HIVE_S3_BUCKET"
+	envS3Region          = "HIVE_S3_REGION"
+	envS3Prefix          = "HIVE_S3_PREFIX"
+	envS3AccessKeyID     = "HIVE_S3_ACCESS_KEY_ID"
+	envS3SecretAccessKey = "HIVE_S3_SECRET_ACCESS_KEY"
+	envS3SessionToken    = "HIVE_S3_SESSION_TOKEN"
+	envS3Endpoint        = "HIVE_S3_ENDPOINT"
+)
+
 // Env-var fallback for the external backend host.
 const envExternalHost = "HIVE_EXTERNAL_HOST"
 
@@ -271,6 +294,20 @@ func (f *FS) gcsResolved() (bucket, prefix, serviceAccountJSON string) {
 	return or(f.GcsBucket, envGcsBucket),
 		or(f.GcsPrefix, envGcsPrefix),
 		or(f.GcsServiceAccountJSON, envGcsServiceAccountJSON)
+}
+
+// s3Resolved returns the effective s3 config — spec fields with env-var
+// fallback. The endpoint/path-style knobs have no env fallback (they are
+// deployment-static, set on the spec).
+func (f *FS) s3Resolved() (bucket, region, prefix, accessKeyID, secretAccessKey, sessionToken, endpoint string, usePathStyle bool) {
+	return or(f.S3Bucket, envS3Bucket),
+		or(f.S3Region, envS3Region),
+		or(f.S3Prefix, envS3Prefix),
+		or(f.S3AccessKeyID, envS3AccessKeyID),
+		or(f.S3SecretAccessKey, envS3SecretAccessKey),
+		or(f.S3SessionToken, envS3SessionToken),
+		or(f.S3Endpoint, envS3Endpoint),
+		f.S3UsePathStyle
 }
 
 // externalResolved returns the effective external host — spec field with
@@ -315,6 +352,27 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			Bucket:             bucket,
 			Prefix:             prefix,
 			ServiceAccountJSON: sa,
+		})
+	case BackendS3:
+		bucket, region, prefix, accessKeyID, secretAccessKey, sessionToken, endpoint, usePathStyle := f.s3Resolved()
+		return json.Marshal(struct {
+			Bucket          string `json:"bucket"`
+			Region          string `json:"region,omitempty"`
+			Prefix          string `json:"prefix,omitempty"`
+			AccessKeyID     string `json:"access_key_id,omitempty"`
+			SecretAccessKey string `json:"secret_access_key,omitempty"`
+			SessionToken    string `json:"session_token,omitempty"`
+			Endpoint        string `json:"endpoint,omitempty"`
+			UsePathStyle    bool   `json:"use_path_style,omitempty"`
+		}{
+			Bucket:          bucket,
+			Region:          region,
+			Prefix:          prefix,
+			AccessKeyID:     accessKeyID,
+			SecretAccessKey: secretAccessKey,
+			SessionToken:    sessionToken,
+			Endpoint:        endpoint,
+			UsePathStyle:    usePathStyle,
 		})
 	case BackendExternal:
 		return json.Marshal(struct {
@@ -380,7 +438,7 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("%s.backend is required", ctx)
 		}
 		if !f.Backend.Valid() {
-			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendExternal)
+			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendExternal)
 		}
 		if f.Backend == BackendGoogleDrive {
 			access, _, _, _, sa, _, _ := f.gdriveResolved()
@@ -395,6 +453,15 @@ func (s *Spec) Validate() error {
 			}
 			if sa == "" {
 				return fmt.Errorf("%s.backend gcs: gcs_service_account_json is required (or env %s)", ctx, envGcsServiceAccountJSON)
+			}
+		}
+		if f.Backend == BackendS3 {
+			bucket, _, _, accessKeyID, secretAccessKey, _, _, _ := f.s3Resolved()
+			if bucket == "" {
+				return fmt.Errorf("%s.backend s3: s3_bucket is required (or env %s)", ctx, envS3Bucket)
+			}
+			if accessKeyID == "" || secretAccessKey == "" {
+				return fmt.Errorf("%s.backend s3: s3_access_key_id and s3_secret_access_key are required (or env %s / %s)", ctx, envS3AccessKeyID, envS3SecretAccessKey)
 			}
 		}
 		if f.Backend == BackendExternal {

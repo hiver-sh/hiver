@@ -1,0 +1,153 @@
+export const metadata = { title: "S3" }
+
+# S3
+
+Mount an S3 bucket, or a prefix within one, into a sandbox with the `s3` backend, so files persist beyond the sandbox's lifetime. It also works with S3-compatible services (MinIO, Cloudflare R2, Backblaze B2, …) via `s3_endpoint`. Configure it as an entry in [`SandboxConfig.fs`](/docs/remote-file-systems); access under the mount is governed by [ACLs](/docs/file-policy).
+
+## Mount a bucket
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("s3", {
+  fs: [{
+    backend: "s3",
+    mount: "/storage",
+    s3_bucket: "my-bucket",
+    s3_region: "us-east-1",
+    s3_prefix: "workspace/session-1", // optional prefix within the bucket
+    s3_access_key_id: process.env.AWS_ACCESS_KEY_ID!,
+    s3_secret_access_key: process.env.AWS_SECRET_ACCESS_KEY!,
+    acls: [{ path: "/storage/**", access: "rw" }],
+  }],
+});
+```
+
+```python
+import os
+from hiver import get_or_create_sandbox, SandboxConfig, S3FileSystem, ACLRule
+
+sandbox = await get_or_create_sandbox("s3", SandboxConfig(
+    fs=[S3FileSystem(
+        backend="s3",
+        mount="/storage",
+        s3_bucket="my-bucket",
+        s3_region="us-east-1",
+        s3_prefix="workspace/session-1",  # optional prefix within the bucket
+        s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+        acls=[ACLRule(path="/storage/**", access="rw")],
+    )],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "s3", client.SandboxConfig{
+    FS: []client.FileSystem{{
+        Backend:           "s3",
+        Mount:             "/storage",
+        S3Bucket:          "my-bucket",
+        S3Region:          "us-east-1",
+        S3Prefix:          "workspace/session-1", // optional prefix within the bucket
+        S3AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+        S3SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+        ACLs:              []client.ACLRule{{Path: "/storage/**", Access: "rw"}},
+    }},
+})
+```
+
+## Fields
+
+| Field | Description |
+|-------|-------------|
+| `s3_bucket` | Bucket name. Required. |
+| `s3_region` | AWS region of the bucket (e.g. `us-east-1`). Required for AWS; some S3-compatible services accept `auto`. |
+| `s3_prefix` | Optional key prefix. Only objects under it are visible, mapped to paths under `mount`. |
+| `s3_access_key_id` | Access key ID for the credentials. Required. |
+| `s3_secret_access_key` | Secret access key for the credentials. Required. |
+| `s3_session_token` | Optional session token, for temporary (STS) credentials. |
+| `s3_endpoint` | Optional custom endpoint URL for S3-compatible services. |
+| `s3_use_path_style` | Use path-style addressing instead of virtual-hosted. Most S3-compatible services require this. |
+
+## How keys map to paths
+
+Object keys under the prefix appear as files under `mount`. With `s3_prefix: "workspace/session-1"`, the object `workspace/session-1/notes.txt` shows up as `/storage/notes.txt` inside the sandbox. Writes go back to the bucket under the same mapping.
+
+## S3-compatible services
+
+Point `s3_endpoint` at any S3-compatible service and set `s3_use_path_style: true`, which those services usually require:
+
+```typescript
+fs: [{
+  backend: "s3",
+  mount: "/storage",
+  s3_bucket: "my-bucket",
+  s3_region: "auto",
+  s3_endpoint: "https://<account>.r2.cloudflarestorage.com", // Cloudflare R2
+  s3_use_path_style: true,
+  s3_access_key_id: process.env.R2_ACCESS_KEY_ID!,
+  s3_secret_access_key: process.env.R2_SECRET_ACCESS_KEY!,
+  acls: [{ path: "/storage/**", access: "rw" }],
+}]
+```
+
+```go
+FS: []client.FileSystem{{
+    Backend:           "s3",
+    Mount:             "/storage",
+    S3Bucket:          "my-bucket",
+    S3Region:          "auto",
+    S3Endpoint:        "https://<account>.r2.cloudflarestorage.com", // Cloudflare R2
+    S3UsePathStyle:    true,
+    S3AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+    S3SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+    ACLs:              []client.ACLRule{{Path: "/storage/**", Access: "rw"}},
+}},
+```
+
+## Read-only datasets
+
+Mount a shared dataset read-only by scoping its ACL to `ro`, and combine it with a writable scratch mount:
+
+```typescript
+fs: [
+  { backend: "local", mount: "/workspace", acls: [{ path: "/workspace/**", access: "rw" }] },
+  {
+    backend: "s3",
+    mount: "/data",
+    s3_bucket: "my-data",
+    s3_region: "us-east-1",
+    s3_access_key_id: process.env.AWS_ACCESS_KEY_ID!,
+    s3_secret_access_key: process.env.AWS_SECRET_ACCESS_KEY!,
+    acls: [{ path: "/data/**", access: "ro" }], // read-only dataset
+  },
+]
+```
+
+```python
+fs=[
+    LocalFileSystem(backend="local", mount="/workspace",
+                    acls=[ACLRule(path="/workspace/**", access="rw")]),
+    S3FileSystem(backend="s3", mount="/data", s3_bucket="my-data", s3_region="us-east-1",
+                 s3_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+                 s3_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+                 acls=[ACLRule(path="/data/**", access="ro")]),  # read-only dataset
+]
+```
+
+```go
+FS: []client.FileSystem{
+    {Backend: "local", Mount: "/workspace",
+        ACLs: []client.ACLRule{{Path: "/workspace/**", Access: "rw"}}},
+    {Backend: "s3", Mount: "/data", S3Bucket: "my-data", S3Region: "us-east-1",
+        S3AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"),
+        S3SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+        ACLs: []client.ACLRule{{Path: "/data/**", Access: "ro"}}}, // read-only dataset
+},
+```
+
+Mount paths must be unique and non-overlapping. See [Local Files](/docs/remote-file-systems), [GCS](/docs/gcs), and [Google Drive](/docs/google-drive) for the other backends.
+
+---
+
+Next: [Google Drive](/docs/google-drive)

@@ -9,9 +9,10 @@ Mount storage into a sandbox with `SandboxConfig.fs`. Each entry defines a **bac
 | `local` | No (unless snapshotted) | Ephemeral scratch space. The default. |
 | [`gdrive`](/docs/google-drive) | Yes | Files that should land in a user's Google Drive. |
 | [`gcs`](/docs/gcs) | Yes | Durable object storage / shared datasets. |
+| [`s3`](/docs/s3) | Yes | Amazon S3 or an S3-compatible object store. |
 | `external` | Yes | A file system you back with your own HTTP host. |
 
-This page covers the `local` and `external` backends. For the cloud backends see [GCS](/docs/gcs) and [Google Drive](/docs/google-drive).
+This page covers the `local` and `external` backends. For the cloud backends see [GCS](/docs/gcs), [S3](/docs/s3), and [Google Drive](/docs/google-drive).
 
 ## Local
 

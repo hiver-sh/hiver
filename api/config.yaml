@@ -268,6 +268,7 @@ components:
         - $ref: '#/components/schemas/LocalFileSystem'
         - $ref: '#/components/schemas/GDriveFileSystem'
         - $ref: '#/components/schemas/GCSFileSystem'
+        - $ref: '#/components/schemas/S3FileSystem'
         - $ref: '#/components/schemas/ExternalFileSystem'
 
     FileSystemBase:
@@ -386,6 +387,58 @@ components:
                 env var, gcloud user credentials, or the GCE/GKE metadata
                 server).
 
+    S3FileSystem:
+      description: A file system backed by Amazon S3 or an S3-compatible service.
+      allOf:
+        - $ref: '#/components/schemas/FileSystemBase'
+        - type: object
+          required: [s3_bucket, s3_access_key_id, s3_secret_access_key]
+          properties:
+            backend:
+              type: string
+              enum: [s3]
+            s3_bucket:
+              type: string
+              description: S3 bucket name.
+            s3_region:
+              type: string
+              description: |
+                AWS region of the bucket (e.g. `us-east-1`). Required for AWS;
+                for some S3-compatible services a placeholder like `auto` works.
+              example: us-east-1
+            s3_prefix:
+              type: string
+              description: |
+                Optional key prefix within the bucket that the file system
+                is scoped to (e.g. `workspace/session-42`). When omitted,
+                the bucket root is used.
+            s3_access_key_id:
+              type: string
+              description: Access key ID for the S3 credentials.
+            s3_secret_access_key:
+              type: string
+              format: password
+              description: Secret access key for the S3 credentials.
+            s3_session_token:
+              type: string
+              format: password
+              description: |
+                Optional session token, for temporary (STS) credentials.
+            s3_endpoint:
+              type: string
+              description: |
+                Optional custom endpoint URL for S3-compatible services such
+                as MinIO, Cloudflare R2, or Backblaze B2. When omitted, the
+                standard AWS endpoint for `s3_region` is used.
+              example: https://s3.us-west-002.backblazeb2.com
+            s3_use_path_style:
+              type: boolean
+              default: false
+              description: |
+                Use path-style addressing (`endpoint/bucket/key`) instead of
+                virtual-hosted (`bucket.endpoint/key`). Most S3-compatible
+                services (MinIO, localstack) require this.
+
     ExternalFileSystem:
       description: |
         A file system backed by an external HTTP host. The host
@@ -414,12 +467,13 @@ components:
 
     Backend:
       type: string
-      enum: [local, gdrive, gcs, external]
+      enum: [local, gdrive, gcs, s3, external]
       description: |
         Storage type for a file system.
           * `local`    — sandbox-local storage with no external dependency.
           * `gdrive`   — backed by Google Drive.
           * `gcs`      — backed by Google Cloud Storage.
+          * `s3`       — backed by Amazon S3 or an S3-compatible service.
           * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 
     ACLRule:

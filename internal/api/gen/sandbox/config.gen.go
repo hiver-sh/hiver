@@ -36,6 +36,7 @@ const (
 	BackendGcs      Backend = "gcs"
 	BackendGdrive   Backend = "gdrive"
 	BackendLocal    Backend = "local"
+	BackendS3       Backend = "s3"
 )
 
 // Valid indicates whether the value is a known member of the Backend enum.
@@ -48,6 +49,8 @@ func (e Backend) Valid() bool {
 	case BackendGdrive:
 		return true
 	case BackendLocal:
+		return true
+	case BackendS3:
 		return true
 	default:
 		return false
@@ -183,6 +186,21 @@ func (e LocalFileSystemBackend) Valid() bool {
 	}
 }
 
+// Defines values for S3FileSystemBackend.
+const (
+	S3 S3FileSystemBackend = "s3"
+)
+
+// Valid indicates whether the value is a known member of the S3FileSystemBackend enum.
+func (e S3FileSystemBackend) Valid() bool {
+	switch e {
+	case S3:
+		return true
+	default:
+		return false
+	}
+}
+
 // ACLRule One access control rule.
 type ACLRule struct {
 	// Access Read-write, read-only, or fully denied.
@@ -222,6 +240,7 @@ type ApplyResult struct {
 //   - `local`    — sandbox-local storage with no external dependency.
 //   - `gdrive`   — backed by Google Drive.
 //   - `gcs`      — backed by Google Cloud Storage.
+//   - `s3`       — backed by Amazon S3 or an S3-compatible service.
 //   - `external` — backed by an HTTP host (see `external_file_system.yaml`).
 type Backend string
 
@@ -434,6 +453,7 @@ type FileSystemBase struct {
 	//   * `local`    — sandbox-local storage with no external dependency.
 	//   * `gdrive`   — backed by Google Drive.
 	//   * `gcs`      — backed by Google Cloud Storage.
+	//   * `s3`       — backed by Amazon S3 or an S3-compatible service.
 	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 	Backend Backend `json:"backend"`
 
@@ -563,6 +583,60 @@ type LocalFileSystem struct {
 
 // LocalFileSystemBackend defines model for LocalFileSystem.Backend.
 type LocalFileSystemBackend string
+
+// S3FileSystem defines model for S3FileSystem.
+type S3FileSystem struct {
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
+	Acls    *[]ACLRule          `json:"acls,omitempty"`
+	Backend S3FileSystemBackend `json:"backend"`
+
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
+
+	// Mount Absolute path at which the file system appears to the agent.
+	Mount string `json:"mount"`
+
+	// S3AccessKeyId Access key ID for the S3 credentials.
+	S3AccessKeyId string `json:"s3_access_key_id"`
+
+	// S3Bucket S3 bucket name.
+	S3Bucket string `json:"s3_bucket"`
+
+	// S3Endpoint Optional custom endpoint URL for S3-compatible services such
+	// as MinIO, Cloudflare R2, or Backblaze B2. When omitted, the
+	// standard AWS endpoint for `s3_region` is used.
+	S3Endpoint *string `json:"s3_endpoint,omitempty"`
+
+	// S3Prefix Optional key prefix within the bucket that the file system
+	// is scoped to (e.g. `workspace/session-42`). When omitted,
+	// the bucket root is used.
+	S3Prefix *string `json:"s3_prefix,omitempty"`
+
+	// S3Region AWS region of the bucket (e.g. `us-east-1`). Required for AWS;
+	// for some S3-compatible services a placeholder like `auto` works.
+	S3Region *string `json:"s3_region,omitempty"`
+
+	// S3SecretAccessKey Secret access key for the S3 credentials.
+	S3SecretAccessKey string `json:"s3_secret_access_key"`
+
+	// S3SessionToken Optional session token, for temporary (STS) credentials.
+	S3SessionToken *string `json:"s3_session_token,omitempty"`
+
+	// S3UsePathStyle Use path-style addressing (`endpoint/bucket/key`) instead of
+	// virtual-hosted (`bucket.endpoint/key`). Most S3-compatible
+	// services (MinIO, localstack) require this.
+	S3UsePathStyle *bool `json:"s3_use_path_style,omitempty"`
+}
+
+// S3FileSystemBackend defines model for S3FileSystem.Backend.
+type S3FileSystemBackend string
 
 // SandboxConfig Hive sandbox configuration.
 type SandboxConfig struct {
@@ -839,6 +913,32 @@ func (t *FileSystem) FromGCSFileSystem(v GCSFileSystem) error {
 
 // MergeGCSFileSystem performs a merge with any union data inside the FileSystem, using the provided GCSFileSystem
 func (t *FileSystem) MergeGCSFileSystem(v GCSFileSystem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsS3FileSystem returns the union data inside the FileSystem as a S3FileSystem
+func (t FileSystem) AsS3FileSystem() (S3FileSystem, error) {
+	var body S3FileSystem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromS3FileSystem overwrites any union data inside the FileSystem as the provided S3FileSystem
+func (t *FileSystem) FromS3FileSystem(v S3FileSystem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeS3FileSystem performs a merge with any union data inside the FileSystem, using the provided S3FileSystem
+func (t *FileSystem) MergeS3FileSystem(v S3FileSystem) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

@@ -83,7 +83,7 @@ type EgressRule struct {
 type FileSystem struct {
 	// Mount is the absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
-	// Backend is "local", "gdrive", "gcs", or "external".
+	// Backend is "local", "gdrive", "gcs", "s3", or "external".
 	Backend string `json:"backend"`
 	// ACLs are access control rules for paths under Mount.
 	ACLs []ACLRule `json:"acls,omitempty"`
@@ -125,6 +125,27 @@ type FileSystem struct {
 	// GCSServiceAccountJSON (gcs backend) is service account credential JSON.
 	// When omitted, Application Default Credentials are used.
 	GCSServiceAccountJSON string `json:"gcs_service_account_json,omitempty"`
+
+	// S3Bucket (s3 backend) is the bucket name.
+	S3Bucket string `json:"s3_bucket,omitempty"`
+	// S3Region (s3 backend) is the AWS region of the bucket (e.g. "us-east-1").
+	S3Region string `json:"s3_region,omitempty"`
+	// S3Prefix (s3 backend) is an optional key prefix within the bucket
+	// (e.g. "workspace/session-42"). When omitted, the bucket root is used.
+	S3Prefix string `json:"s3_prefix,omitempty"`
+	// S3AccessKeyID (s3 backend) is the access key ID for the credentials.
+	S3AccessKeyID string `json:"s3_access_key_id,omitempty"`
+	// S3SecretAccessKey (s3 backend) is the secret access key for the credentials.
+	S3SecretAccessKey string `json:"s3_secret_access_key,omitempty"`
+	// S3SessionToken (s3 backend) is an optional session token for temporary
+	// (STS) credentials.
+	S3SessionToken string `json:"s3_session_token,omitempty"`
+	// S3Endpoint (s3 backend) is an optional custom endpoint URL for
+	// S3-compatible services such as MinIO, Cloudflare R2, or Backblaze B2.
+	S3Endpoint string `json:"s3_endpoint,omitempty"`
+	// S3UsePathStyle (s3 backend) uses path-style addressing instead of
+	// virtual-hosted. Most S3-compatible services require this.
+	S3UsePathStyle bool `json:"s3_use_path_style,omitempty"`
 
 	// Host (external backend) is the base URL of the host you implement to back
 	// this file system. A trailing slash is ignored.

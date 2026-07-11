@@ -160,6 +160,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
         { $ref: "#/definitions/LocalFileSystem" },
         { $ref: "#/definitions/GDriveFileSystem" },
         { $ref: "#/definitions/GCSFileSystem" },
+        { $ref: "#/definitions/S3FileSystem" },
         { $ref: "#/definitions/ExternalFileSystem" },
       ],
     },
@@ -278,6 +279,57 @@ export const SANDBOX_CONFIG_SCHEMA = {
       ],
     },
 
+    S3FileSystem: {
+      description:
+        "A file system backed by Amazon S3 or an S3-compatible service.",
+      allOf: [
+        { $ref: "#/definitions/FileSystemBase" },
+        {
+          type: "object",
+          required: ["s3_bucket", "s3_access_key_id", "s3_secret_access_key"],
+          properties: {
+            backend: { type: "string", enum: ["s3"] },
+            s3_bucket: { type: "string", description: "S3 bucket name." },
+            s3_region: {
+              type: "string",
+              description:
+                "AWS region of the bucket (e.g. us-east-1). Required for AWS; some S3-compatible services accept 'auto'.",
+              examples: ["us-east-1"],
+            },
+            s3_prefix: {
+              type: "string",
+              description:
+                "Optional key prefix within the bucket (e.g. workspace/session-42). Defaults to the bucket root.",
+            },
+            s3_access_key_id: {
+              type: "string",
+              description: "Access key ID for the S3 credentials.",
+            },
+            s3_secret_access_key: {
+              type: "string",
+              description: "Secret access key for the S3 credentials.",
+            },
+            s3_session_token: {
+              type: "string",
+              description: "Optional session token, for temporary (STS) credentials.",
+            },
+            s3_endpoint: {
+              type: "string",
+              description:
+                "Optional custom endpoint URL for S3-compatible services such as MinIO, Cloudflare R2, or Backblaze B2.",
+              examples: ["https://s3.us-west-002.backblazeb2.com"],
+            },
+            s3_use_path_style: {
+              type: "boolean",
+              default: false,
+              description:
+                "Use path-style addressing instead of virtual-hosted. Most S3-compatible services require this.",
+            },
+          },
+        },
+      ],
+    },
+
     ExternalFileSystem: {
       description:
         "A file system backed by an external HTTP host implementing the external file system interface.",
@@ -301,9 +353,9 @@ export const SANDBOX_CONFIG_SCHEMA = {
 
     Backend: {
       type: "string",
-      enum: ["local", "gdrive", "gcs", "external"],
+      enum: ["local", "gdrive", "gcs", "s3", "external"],
       description:
-        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage), external (HTTP host).",
+        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage), s3 (Amazon S3 or S3-compatible), external (HTTP host).",
     },
 
     ACLRule: {

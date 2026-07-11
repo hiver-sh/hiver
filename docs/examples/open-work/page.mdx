@@ -1,0 +1,49 @@
+export const metadata = { title: "Open Work" }
+
+# Open Work
+
+**Open Work** is a complete, open-source app: a Next.js (App Router) + [shadcn/ui](https://ui.shadcn.com) chat interface that drives a full worker agent, [Claude Code](https://docs.claude.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex), running **inside** the Hiver runtime. It's the best place to start if you want to see everything in these guides working together: a persistent in-sandbox agent, [egress overrides](/docs/network/overrides) that keep provider keys out of the agent, a driveable [remote browser](/docs/examples/browser-use), live [file events](/docs/events), and [snapshots](/docs/snapshots), all wired into one live UI.
+
+<img
+  src="/static/open-work-light.png"
+  alt="Open Work: a chat driving an agent, with a live browser viewer streaming Gmail, a network access-approval card, and a workspace panel"
+  className="my-12 block w-full rounded-xl border border-black/10 shadow-xl dark:hidden"
+/>
+<img
+  src="/static/open-work.png"
+  alt="Open Work: a chat driving an agent, with a live browser viewer streaming Gmail, a network access-approval card, and a workspace panel"
+  className="my-12 hidden w-full rounded-xl border border-white/10 shadow-xl dark:block"
+/>
+
+The full source is in the [`examples/open-work`](https://github.com/hiver-sh/hiver/tree/main/examples/open-work) directory of the repo.
+
+## What it is
+
+Each task gets its own persistent agent process and its own sandbox. Files you attach or reference land in `/workspace`, the agent's replies stream back over a single shared SSE connection, and everything survives a page refresh or a server restart, because the conversation is rebuilt from the sandbox's own transcript rather than the browser tab.
+
+- **Persistent, resumable sessions.** Sending a task starts one long-lived `claude -p --input-format stream-json` (or `codex proto`) process per task, fed over stdin. Refresh the page and the conversation is rebuilt from the sandbox, so nothing lives only in the tab.
+- **Any model, either provider.** The composer's model picker lists Claude and OpenAI models side by side; picking one switches both the engine and the sandbox image for that task.
+- **Keys never touch the agent.** Provider API keys are set once in Settings and injected via an egress [override](/docs/network/overrides) directly on the provider's API host, never placed in the agent's environment or context.
+- **Files in and out.** Attach files, `@`-reference a local folder with fuzzy search, or let the agent write results. Everything under `/workspace/input` and `/workspace/output` shows live in the Workspace panel as the sandbox emits [filesystem events](/docs/events).
+- **A real, driveable browser.** When the agent uses its browser skill, Open Work detects the nested [browser sandbox](/docs/examples/browser-use), connects over CDP, and streams the live page as video, screencast frames in, mouse/keyboard/clipboard events out.
+- **You stay in control of network access.** If the agent (or its browser) tries to reach a host that isn't pre-approved, a card appears asking you to allow it, batched into one prompt per burst. Approving retries the blocked request automatically.
+- **Sandbox lifecycle, visible.** Settings shows the active sandbox's status, deep-links into the [Inspector](/docs/inspector), and adjusts its idle TTL, all applied live via `applyConfig`.
+
+## Supported models
+
+Open Work drives two worker orchestrators, each with its own sandbox image and set of selectable models. Picking a model in the composer switches both.
+
+| Orchestrator | Image | Provider key | Models |
+| --- | --- | --- | --- |
+| [Claude Code](https://docs.claude.com/en/docs/claude-code) | `claude` | Anthropic API key | Sonnet 5, Opus 4.8, Fable 5 |
+| [Codex](https://github.com/openai/codex) | `codex` | OpenAI API key | GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.1 Codex, GPT-5.1, GPT-5 Codex, GPT-5 |
+
+## Run it
+
+You'll need a running [Hiver gateway](/docs/installation) (`hiver up`, defaults to `http://localhost:10000`) and at least one provider API key (Anthropic and/or OpenAI), entered once in Settings, stored in your browser's local storage.
+
+```bash
+cd examples/open-work
+npm install
+npm run dev   # http://localhost:3000
+```

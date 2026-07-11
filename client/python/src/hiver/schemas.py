@@ -69,6 +69,28 @@ class GCSFileSystem(_FileSystemBase):
     """Service account credential JSON. When omitted, Application Default Credentials are used (the ``GOOGLE_APPLICATION_CREDENTIALS`` env var, gcloud user credentials, or the GCE/GKE metadata server)."""
 
 
+class S3FileSystem(_FileSystemBase):
+    """A file system backed by Amazon S3 or an S3-compatible service."""
+
+    backend: Literal["s3"]
+    s3_bucket: str
+    """S3 bucket name."""
+    s3_region: Optional[str] = None
+    """AWS region of the bucket (e.g. ``us-east-1``). Required for AWS; some S3-compatible services accept ``auto``."""
+    s3_prefix: Optional[str] = None
+    """Optional key prefix within the bucket (e.g. ``workspace/session-42``). When omitted, the bucket root is used."""
+    s3_access_key_id: str
+    """Access key ID for the S3 credentials."""
+    s3_secret_access_key: str
+    """Secret access key for the S3 credentials."""
+    s3_session_token: Optional[str] = None
+    """Optional session token, for temporary (STS) credentials."""
+    s3_endpoint: Optional[str] = None
+    """Optional custom endpoint URL for S3-compatible services such as MinIO, Cloudflare R2, or Backblaze B2. When omitted, the standard AWS endpoint for ``s3_region`` is used."""
+    s3_use_path_style: Optional[bool] = None
+    """Use path-style addressing instead of virtual-hosted. Most S3-compatible services (MinIO, localstack) require this."""
+
+
 class ExternalFileSystem(_FileSystemBase):
     """A file system backed by an external HTTP host. Each agent file operation becomes one call against ``host``."""
 
@@ -78,7 +100,7 @@ class ExternalFileSystem(_FileSystemBase):
 
 
 FileSystem = Annotated[
-    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, ExternalFileSystem],
+    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, S3FileSystem, ExternalFileSystem],
     Field(discriminator="backend"),
 ]
 """A file system exposed to the agent at ``mount``. ``backend`` selects the storage type. Access is governed by ``acls``, evaluated longest-prefix-first with deny as the default."""
@@ -328,7 +350,7 @@ class FSResponseEvent(_SandboxEventBase):
     """The outcome of an earlier file operation."""
 
     type: Literal["fs.response"]
-    backend: Literal["local", "gdrive", "gcs", "external"]
+    backend: Literal["local", "gdrive", "gcs", "s3", "external"]
     request_id: int
     duration_ms: int
     error: Optional[str] = None

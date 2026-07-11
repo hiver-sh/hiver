@@ -17,10 +17,11 @@ type Expect<T extends true> = T;
  * - `local`    — sandbox-local storage with no external dependency.
  * - `gdrive`   — backed by Google Drive.
  * - `gcs`      — backed by Google Cloud Storage.
+ * - `s3`       — backed by Amazon S3 or an S3-compatible service.
  * - `external` — backed by an HTTP host you implement.
  */
-export type Backend = "local" | "gdrive" | "gcs" | "external";
-export const Backend = z.enum(["local", "gdrive", "gcs", "external"]);
+export type Backend = "local" | "gdrive" | "gcs" | "s3" | "external";
+export const Backend = z.enum(["local", "gdrive", "gcs", "s3", "external"]);
 type _AssertBackend = Expect<Equal<z.infer<typeof Backend>, Backend>>;
 
 /** One access control rule. */
@@ -130,6 +131,41 @@ type _AssertGCSFileSystem = Expect<
   Equal<z.infer<typeof GCSFileSystem>, GCSFileSystem>
 >;
 
+/** A file system backed by Amazon S3 or an S3-compatible service. */
+export interface S3FileSystem extends FileSystemBase {
+  backend: "s3";
+  /** S3 bucket name. */
+  s3_bucket: string;
+  /** AWS region of the bucket (e.g. `us-east-1`). Required for AWS; some S3-compatible services accept `auto`. */
+  s3_region?: string;
+  /** Optional key prefix within the bucket (e.g. `workspace/session-42`). When omitted, the bucket root is used. */
+  s3_prefix?: string;
+  /** Access key ID for the S3 credentials. */
+  s3_access_key_id: string;
+  /** Secret access key for the S3 credentials. */
+  s3_secret_access_key: string;
+  /** Optional session token, for temporary (STS) credentials. */
+  s3_session_token?: string;
+  /** Optional custom endpoint URL for S3-compatible services (MinIO, Cloudflare R2, Backblaze B2). */
+  s3_endpoint?: string;
+  /** Use path-style addressing instead of virtual-hosted. Most S3-compatible services require this. */
+  s3_use_path_style?: boolean;
+}
+export const S3FileSystem = FileSystemBase.extend({
+  backend: z.literal("s3"),
+  s3_bucket: z.string(),
+  s3_region: z.string().optional(),
+  s3_prefix: z.string().optional(),
+  s3_access_key_id: z.string(),
+  s3_secret_access_key: z.string(),
+  s3_session_token: z.string().optional(),
+  s3_endpoint: z.string().optional(),
+  s3_use_path_style: z.boolean().optional(),
+});
+type _AssertS3FileSystem = Expect<
+  Equal<z.infer<typeof S3FileSystem>, S3FileSystem>
+>;
+
 /**
  * A file system backed by an external HTTP host you implement. Each agent file
  * operation becomes one call against `host`.
@@ -159,11 +195,13 @@ export type FileSystem =
   | LocalFileSystem
   | GDriveFileSystem
   | GCSFileSystem
+  | S3FileSystem
   | ExternalFileSystem;
 export const FileSystem = z.discriminatedUnion("backend", [
   LocalFileSystem,
   GDriveFileSystem,
   GCSFileSystem,
+  S3FileSystem,
   ExternalFileSystem,
 ]);
 type _AssertFileSystem = Expect<Equal<z.infer<typeof FileSystem>, FileSystem>>;

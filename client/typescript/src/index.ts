@@ -17,6 +17,8 @@ export {
   FSResponseEvent,
   ResourceUsageEvent,
   GDriveFileSystem,
+  GCSFileSystem,
+  S3FileSystem,
   HttpMethod,
   LocalFileSystem,
   SandboxConfig,
