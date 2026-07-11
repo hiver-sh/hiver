@@ -35,22 +35,23 @@ curl -fsSL https://hiver.sh/install | sh
 Use the CLI to manage sandboxes, stream live events, and launch the inspector:
 
 ```sh
-⬢ Hiver · Agent Runtime v0.1.26
+⬢ Hiver · Agent Runtime v0.1.29
 
   Usage: hiver <command> [options]
 
   Commands
-    up       Bring up local stack
-    down     Bring down local stack
-    connect  Connect to remote stack
-    start    Start a sandbox
-    run      Build and launch a project directory as a sandbox
-    stop     Stop a sandbox
-    shell    Open an interactive shell in a sandbox
-    list     List the sandboxes
-    events   Stream a sandbox's events live as they happen
-    inspect  Launch the inspector
-    bundle   Bundle a Docker image into a Hiver runtime image
+    up             Bring up local stack
+    down           Bring down local stack
+    connect        Connect to remote stack
+    start          Start a sandbox
+    run            Build and launch a project directory as a sandbox
+    stop           Stop a sandbox
+    shell          Open an interactive shell in a sandbox
+    list           List the sandboxes
+    events         Stream a sandbox's events live as they happen
+    inspect        Launch the inspector
+    bundle         Bundle a Docker image into a Hiver runtime image
+    install-skill  Install the Hiver skill into your coding agents
 
   Run hiver <command> --help for command details.
 ```
