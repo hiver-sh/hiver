@@ -113,6 +113,12 @@ export function PlaybackControls() {
 
   if (!player) return null;
 
+  // The scrubber is only trustworthy once the trace has fully loaded: while it
+  // streams, duration keeps growing, so a fixed elapsed maps to an ever-smaller
+  // fraction and the playhead visibly slides backward. Don't let the user seek
+  // (or highlight the track) against a moving target — enable it when stable.
+  const seekable = player.loadComplete && duration > 0;
+
   const onPlayPause = () => {
     if (ended) {
       // Rewind to the start and (re)start playing.
@@ -145,20 +151,25 @@ export function PlaybackControls() {
 
       <div
         ref={trackRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        className="relative h-4 flex-1 cursor-pointer touch-none"
+        onPointerDown={seekable ? onPointerDown : undefined}
+        onPointerMove={seekable ? onPointerMove : undefined}
+        onPointerUp={seekable ? onPointerUp : undefined}
+        className={cn(
+          "relative h-4 flex-1 touch-none",
+          seekable ? "group cursor-pointer" : "cursor-default",
+        )}
       >
-        <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-muted" />
+        <div className="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-border transition-colors group-hover:bg-muted-foreground" />
         <div
-          className="absolute left-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-muted-foreground"
+          className="absolute left-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-muted-foreground transition-colors group-hover:bg-foreground"
           style={{ width: `${frac * 100}%` }}
         />
-        <div
-          className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted-foreground shadow ring-2 ring-background"
-          style={{ left: `${frac * 100}%` }}
-        />
+        {seekable && (
+          <div
+            className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 scale-0 rounded-full bg-foreground ring-2 ring-background transition-transform group-hover:scale-100"
+            style={{ left: `${frac * 100}%` }}
+          />
+        )}
       </div>
 
       <span className="shrink-0 tabular-nums text-muted-foreground/70 select-none">
