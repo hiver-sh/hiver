@@ -5,19 +5,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Stage 1 ──────────────────────────────────────────────────────────────
   build-images:
     uses: ./.github/workflows/build-runtime-images.yaml
     secrets: inherit
 
-  # ── Stage 2 ──────────────────────────────────────────────────────────────
   build-cli:
     uses: ./.github/workflows/build-cli.yaml
 
-  # ── Stage 3 ──────────────────────────────────────────────────────────────
   # Load this run's images + CLI and run the e2e tests in parallel — one test
-  # per matrix leg, each bringing up its own isolated stack. Add more tests by
-  # extending `matrix.test`.
+  # per matrix leg, each bringing up its own isolated stack. `fail-fast: false`
+  # lets every leg report independently. Add more tests by extending
+  # `matrix.test`.
+  #
+  # The cloud-backed FS tests (TestFSAzureE2E, TestFSGCSE2E, TestFSGDriveE2E,
+  # TestFSS3E2E) and the GDrive-gated TestMcpServerE2E are intentionally omitted:
+  # they self-skip without provider credentials, so a matrix leg would only burn
+  # a runner standing up a stack to immediately skip. Add them back (with the
+  # matching secrets wired into the env) when those backends are covered in CI.
   e2e:
     needs: [build-images, build-cli]
     runs-on: ubuntu-latest
@@ -25,7 +29,31 @@ jobs:
       fail-fast: false
       matrix:
         test:
+          - TestControllerEventsMultiTenantE2E
+          - TestEgressACLE2E
+          - TestEgressDNSSinkholeE2E
+          - TestEgressEventsE2E
+          - TestEgressNonTCPBlockedE2E
+          - TestEgressOverrideHostE2E
+          - TestEgressRequestOverridesE2E
+          - TestEventsLastEventIdE2E
+          - TestExecE2E
+          - TestFSACLE2E
+          - TestFSEventsE2E
+          - TestFSExternalE2E
+          - TestFileE2E
+          - TestMultiTenantApplyConfigMountE2E
+          - TestMultiTenantEgressEventsE2E
+          - TestMultiTenantIngressE2E
+          - TestMultiTenantPackE2E
+          - TestMultiTenantSnapshotE2E
+          - TestPortsE2E
+          - TestSandboxCreationE2E
+          - TestShutdownE2E
+          - TestSnapshotE2E
+          - TestSnapshotFuseE2E
           - TestTTLE2E
+          - TestWebSocketE2E
     steps:
       - uses: actions/checkout@v4
 
