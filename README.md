@@ -79,6 +79,8 @@ Bring your own image too — bundle any Docker image with `hiver bundle` (see [I
 
 Find [`examples`](examples/README.md) in TypeScript, Python and Go.
 
+**⭐ [`examples/open-work`](examples/open-work/)** — Open Work, a full Next.js app demonstrating a complete agent with security, elicitation, content collaboration with AI and a Web browser.
+
 ### Run a project directory
 
 `hiver run` bundles a directory that contains a `Dockerfile` and a `.hiver.json`, then launches it as a sandbox in one step — no separate `hiver bundle`. This is the pattern for **Agent SDK servers**, where the agent loop runs _inside_ the sandbox as an HTTP service.

@@ -25,3 +25,38 @@ Google ADK is Python-first (and Java), so it has no TypeScript example.
 | [Codex](codex/) | [`typescript/`](codex/typescript/) | [`python/`](codex/python/) |
 | [GitHub Copilot CLI](copilot/) | [`typescript/`](copilot/typescript/) | [`python/`](copilot/python/) |
 | [Browser Use](browser-use/) | [`typescript/`](browser-use/typescript/) | [`python/`](browser-use/python/) |
+
+## Client SDK examples (`hiver up`, then run locally)
+
+Lower-level examples that drive the sandbox directly with the [`@hiver.sh/client`](../client/typescript/) SDK — `exec`, config, egress, snapshots, mounts, proxied services, and agents. TypeScript only. Each is standalone (`npm install` in its `typescript/` directory, then `npm start`).
+
+| Example | What it shows |
+| --- | --- |
+| [`apply-config`](apply-config/typescript/) | Read the config, add an egress rule, apply the update. |
+| [`egress-events`](egress-events/typescript/) | Observe `egress.request` / `egress.response` events for allowed vs blocked hosts. |
+| [`node-internal-service`](node-internal-service/typescript/) | Start deny-all, then `applyConfig` to allow an internal host. |
+| [`node-exec`](node-exec/typescript/) / [`python-exec`](python-exec/typescript/) | Run a command and read the buffered result. |
+| [`node-exec-stream`](node-exec-stream/typescript/) / [`python-exec-stream`](python-exec-stream/typescript/) | Stream command output over SSE. |
+| [`node-exec-tty`](node-exec-tty/typescript/) / [`python-exec-tty`](python-exec-tty/typescript/) | Drive an interactive REPL over a TTY exec stream. |
+| [`claude-exec`](claude-exec/typescript/) | Run Claude inside the `claude` image and print the result. |
+| [`files`](files/typescript/) | Upload a file into a mount and read it back out. |
+| [`list-directory`](list-directory/typescript/) | List the contents of a sandbox mount. |
+| [`terminal-attach`](terminal-attach/typescript/) | Attach your local terminal to an interactive shell in the sandbox. |
+| [`snapshot`](snapshot/typescript/) | Persist a sandbox's filesystem across a full shutdown via snapshots. |
+| [`snapshot-fuse`](snapshot-fuse/typescript/) | Route the snapshot through an internal GCS-backed FUSE drive. |
+| [`local-filesystem-mount`](local-filesystem-mount/typescript/) | Mount a local directory into the sandbox during development. |
+| [`gdrive-filesystem`](gdrive-filesystem/typescript/) | Mount a Google Drive folder over a FUSE mount. |
+| [`http-server`](http-server/typescript/) | Proxy HTTP requests to a service running inside the sandbox. |
+| [`mcp-server`](mcp-server/typescript/) | Bundle and run an MCP server inside the sandbox. |
+| [`browser-cdp`](browser-cdp/typescript/) | Drive the sandbox's resident Chromium with Playwright over CDP. |
+| [`claude-agent`](claude-agent/typescript/) | A Claude agent that drives the sandbox through an in-sandbox MCP server. |
+| [`claude-agent-gdrive-filesystem`](claude-agent-gdrive-filesystem/typescript/) | The Claude agent, with generated files persisted to Google Drive. |
+
+## Web app examples (`npm run dev`)
+
+Full-stack apps that wrap the client SDK in a UI. Run `npm install` then
+`npm run dev` in the example's directory.
+
+| Example | What it shows |
+| --- | --- |
+| [`next.js`](next.js/) | A Next.js + shadcn task chat: start tasks, attach files or a local folder, `@`-reference folder files, and stream markdown responses over SSE while uploading the files into the sandbox. Supports light/dark mode. |

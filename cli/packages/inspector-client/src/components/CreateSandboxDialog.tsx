@@ -101,7 +101,11 @@ export function CreateSandboxDialog({
             <Plus className="h-4 w-4" />
           </Button>
         ) : (
-          <Button size="sm" className="gap-1.5 flex-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="flex-1 justify-start gap-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+          >
             <Plus className="h-4 w-4" />
             New Sandbox
           </Button>

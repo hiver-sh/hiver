@@ -84,7 +84,7 @@ export const TEMPLATE_GROUPS: { group: string; templates: Template[] }[] = [
         label: "GitHub Copilot",
         idPrefix: "copilot",
         apply: () => ({
-          image: "github",
+          image: "copilot",
           entrypoint: "copilot",
           cwd: "/workspace",
           tty: true,

@@ -1,0 +1,19 @@
+{
+  "name": "claude-agent-example",
+  "type": "module",
+  "scripts": {
+    "build": "hiver bundle ./image --tag mcp-server-image-bundle",
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hiver.sh/client": "^0.1.26",
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

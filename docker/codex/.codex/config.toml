@@ -1,0 +1,30 @@
+# Equivalent of Claude Code's --dangerously-skip-permissions: never stop to
+# ask for approval, and don't apply Codex's own command sandbox on top of the
+# one the Hiver sandbox already provides.
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+# Codex defaults the built-in "openai" provider to the Responses API over
+# WebSocket when the provider supports it. The sandbox's egress proxy doesn't
+# handle the WS upgrade, so force plain HTTP/SSE instead. Built-in provider
+# IDs can't be overridden (there's no `[model_providers.openai]`), so this
+# defines an equivalent custom provider with `supports_websockets = false`
+# and switches to it.
+#
+# `base_url` is left unset on purpose: Codex picks the right default
+# (chatgpt.com/backend-api/codex for ChatGPT-login sessions vs
+# api.openai.com/v1 for API-key auth) based on the active auth mode, and a
+# fixed base_url here would override that and break whichever mode isn't
+# baked in. `requires_openai_auth = true` reuses that same existing-auth
+# resolution (ChatGPT subscription login or OPENAI_API_KEY, whichever is
+# configured) instead of requiring its own env_key.
+model_provider = "openai-http"
+
+[projects."/workspace"]
+trust_level = "trusted"
+
+[model_providers.openai-http]
+name = "OpenAI (HTTP only)"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = false

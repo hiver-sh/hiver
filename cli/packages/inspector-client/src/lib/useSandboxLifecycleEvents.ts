@@ -16,10 +16,17 @@ import { useUserPreferences } from "@/lib/userPreferences";
  * event feed and terminal share a single connection (see SandboxDetail's
  * `/stream`), so an open sandbox view holds 2 connections (lifecycle + stream)
  * rather than 3 — comfortably under the browser's ~6-per-origin HTTP/1.1 cap.
+ *
+ * The stream carries deltas, not snapshots: any create/destroy that happens
+ * while the connection is down (e.g. a gateway watch expiry, see `onerror`
+ * below) would otherwise be lost. To keep the list authoritative without ever
+ * polling, `onResync` fires on every (re)connect so the caller can pull a fresh
+ * full snapshot; the live deltas then keep it current until the next drop.
  */
 export function useSandboxLifecycleEvents(
   serverUrl: string,
   setSandboxes: Dispatch<SetStateAction<SandboxRef[]>>,
+  onResync?: () => void,
 ): void {
   const { transport, gatewayUrl } = useTransport();
   const { forgetSandbox } = useUserPreferences();
@@ -31,6 +38,15 @@ export function useSandboxLifecycleEvents(
     const connect = () => {
       const url = new URL(`${serverUrl}/api/sandboxes/events`);
       es = transport.openEventSource(url);
+
+      // Every (re)connect re-syncs the full list from server truth, so any
+      // create/destroy missed while the stream was down is reconciled. This
+      // fires on the first connect too (harmless: it just reconfirms the list
+      // the initial fetch already loaded). No polling — driven purely by the
+      // stream opening.
+      es.onopen = () => {
+        if (!closed) onResync?.();
+      };
 
       es.onmessage = (e) => {
         try {
@@ -92,5 +108,5 @@ export function useSandboxLifecycleEvents(
     };
     // gatewayUrl is included so the stream reconnects when the upstream
     // gateway changes (the transport stamps it as a request header).
-  }, [serverUrl, gatewayUrl, transport, forgetSandbox, setSandboxes]);
+  }, [serverUrl, gatewayUrl, transport, forgetSandbox, setSandboxes, onResync]);
 }

@@ -322,7 +322,7 @@ key exists; now it requires the explicit `write_on_shutdown` flag.
    - **TypeScript** — the zod schema + interface in
      [client/typescript/src/schemas.ts](../../client/typescript/src/schemas.ts#L252)
      and a `snapshot()` method on `Sandbox` ([sandbox.ts](../../client/typescript/src/sandbox.ts));
-     refresh the [snapshot examples](../../client/typescript/examples/snapshot.ts).
+     refresh the [snapshot examples](../../examples/snapshot/typescript/index.ts).
    - **Python** — the pydantic model in
      [client/python/src/hiver/schemas.py](../../client/python/src/hiver/schemas.py#L120)
      and a `snapshot()` method on the sandbox client

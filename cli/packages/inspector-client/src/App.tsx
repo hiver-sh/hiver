@@ -239,7 +239,10 @@ function AppContent() {
   }, [fetchSandboxes]);
 
   // Subscribe to sandbox lifecycle events and keep the list in sync.
-  useSandboxLifecycleEvents(serverUrl, setSandboxes);
+  // Pass fetchSandboxes as the resync callback: on every (re)connect of the
+  // lifecycle stream the full list is refetched, so sandboxes created/destroyed
+  // while the stream was briefly down still show up — no page refresh needed.
+  useSandboxLifecycleEvents(serverUrl, setSandboxes, fetchSandboxes);
 
   useScrollbarVisibility();
 
@@ -320,31 +323,33 @@ function AppContent() {
             {sandboxes.map((sb) => {
               const selected = selectedId === sb.id && selectedKey === sb.key;
               return (
-              <button
-                key={sb.key}
-                onClick={() =>
-                  navigate(`/sandboxes/${sb.id}/${encodeURIComponent(sb.key)}`)
-                }
-                title={sb.key}
-                className={cn(
-                  "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent",
-                  selected && "bg-sidebar-accent",
-                )}
-              >
-                <span
+                <button
+                  key={sb.key}
+                  onClick={() =>
+                    navigate(
+                      `/sandboxes/${sb.id}/${encodeURIComponent(sb.key)}`,
+                    )
+                  }
+                  title={sb.key}
                   className={cn(
-                    "block rounded-full transition-all",
-                    selected ? "h-2.5 w-2.5" : "h-2 w-2",
-                    connectedKey === sb.key
-                      ? "bg-green-400"
-                      : sb.status === "start"
-                        ? "bg-green-400/50"
-                        : sb.status === "stop" || sb.status === "die"
-                          ? "bg-yellow-400/70"
-                          : "bg-muted-foreground/40",
+                    "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-sidebar-accent",
+                    selected && "bg-sidebar-accent",
                   )}
-                />
-              </button>
+                >
+                  <span
+                    className={cn(
+                      "block rounded-full transition-all",
+                      selected ? "h-2.5 w-2.5" : "h-2 w-2",
+                      connectedKey === sb.key
+                        ? "bg-green-400"
+                        : sb.status === "start"
+                          ? "bg-green-400/50"
+                          : sb.status === "stop" || sb.status === "die"
+                            ? "bg-yellow-400/70"
+                            : "bg-muted-foreground/40",
+                    )}
+                  />
+                </button>
               );
             })}
           </div>
@@ -366,7 +371,7 @@ function AppContent() {
                   alt=""
                   className="h-4 w-4 invert dark:invert-0"
                 />
-                Inspector
+                Hiver Inspector
               </button>
               <button
                 onClick={() => setSidebarCollapsed(true)}
@@ -377,15 +382,11 @@ function AppContent() {
             </div>
             <div
               onClick={() => setSettingsOpen(true)}
-              className="flex items-center gap-2 px-1.5 py-1 ml-4 mb-2 cursor-pointer group w-fit rounded-md hover:bg-foreground/10 transition-colors"
+              className="flex items-center gap-2 px-1.5 py-1 ml-9 mb-2 cursor-pointer group w-fit rounded-md hover:bg-foreground/10 transition-colors"
             >
               <span className="font-mono text-[11px] text-muted-foreground leading-none group-hover:text-foreground transition-colors">
                 {gatewayUrl}
               </span>
-              <Pencil
-                style={{ width: 12, height: 12 }}
-                className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors"
-              />
             </div>
           </div>
 
@@ -396,11 +397,9 @@ function AppContent() {
             selectedId={selectedId ?? null}
             selectedKey={selectedKey ?? null}
             connectedKey={connectedKey}
-            loading={loading}
             onSelect={(id, key) =>
               navigate(`/sandboxes/${id}/${encodeURIComponent(key)}`)
             }
-            onRefresh={fetchSandboxes}
             onCreated={(id, key) => {
               fetchSandboxes();
               navigate(`/sandboxes/${id}/${encodeURIComponent(key)}`);
@@ -416,10 +415,7 @@ function AppContent() {
       {/* Main */}
       <main className="min-w-0 flex-1">
         <Routes>
-          <Route
-            path="/"
-            element={<GettingStarted />}
-          />
+          <Route path="/" element={<GettingStarted />} />
           <Route
             path="/sandboxes/:id/:key"
             element={<SandboxDetailRoute {...layoutProps} />}
