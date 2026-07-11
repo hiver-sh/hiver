@@ -252,8 +252,20 @@ func TestRestore_BadTar(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("not gzip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Restore(bad, t.TempDir(), nil, nil); err == nil {
-		t.Fatal("expected error for bad gzip")
+	// A corrupt/unreadable snapshot must not brick the start: Restore logs and
+	// continues without restoring rather than returning an error, so the sandbox
+	// boots on the base image's state.
+	dst := t.TempDir()
+	if err := Restore(bad, dst, nil, nil); err != nil {
+		t.Fatalf("expected no error for bad gzip, got %v", err)
+	}
+	// Nothing should have been restored.
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected empty dst, got %d entries", len(entries))
 	}
 }
 
