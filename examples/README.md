@@ -1,5 +1,15 @@
 # Examples
 
+## ⭐ Start here: full agent with browser use
+
+**[`Open Work`](./open-work/)** is the best place to start if you want to see everything working together: a complete Next.js app that runs a full agent inside the sandbox with browser use, driving a real Chromium and streaming the work back to a live chat UI. Start a task, attach files or a local folder, `@`-reference folder files, and watch file edits.
+
+```sh
+cd next.js && npm install && npm run dev   # http://localhost:3000
+```
+
+---
+
 Runnable agent examples for Hiver, in TypeScript and Python. They come in two shapes:
 
 - **Agent SDK servers** — a self-contained project (agent server + `Dockerfile` + `.hiver.json`) that runs the agent loop **inside** the sandbox as an HTTP service. You launch it with `hiver run . <key>`, which bundles the directory into an image and starts it. The `.hiver.json` locks egress to the model provider and injects the API key via an `override`, so the key is applied by the proxy after the request leaves the sandbox and never lives in the sandbox's env or context.
@@ -51,12 +61,3 @@ Lower-level examples that drive the sandbox directly with the [`@hiver.sh/client
 | [`browser-cdp`](browser-cdp/typescript/) | Drive the sandbox's resident Chromium with Playwright over CDP. |
 | [`claude-agent`](claude-agent/typescript/) | A Claude agent that drives the sandbox through an in-sandbox MCP server. |
 | [`claude-agent-gdrive-filesystem`](claude-agent-gdrive-filesystem/typescript/) | The Claude agent, with generated files persisted to Google Drive. |
-
-## Web app examples (`npm run dev`)
-
-Full-stack apps that wrap the client SDK in a UI. Run `npm install` then
-`npm run dev` in the example's directory.
-
-| Example | What it shows |
-| --- | --- |
-| [`next.js`](next.js/) | A Next.js + shadcn task chat: start tasks, attach files or a local folder, `@`-reference folder files, and stream markdown responses over SSE while uploading the files into the sandbox. Supports light/dark mode. |
