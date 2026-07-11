@@ -2,6 +2,13 @@ name: Unit tests
 
 on:
   push:
+    # Only run lint + tests when code that can affect them changes.
+    paths:
+      - '**/*.go'
+      - '**/*.ts'
+      - '**/*.json'
+      - '**/*.py'
+  workflow_dispatch:
 
 jobs:
   lint:

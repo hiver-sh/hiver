@@ -2,6 +2,13 @@ name: E2E
 
 on:
   push:
+    # Only build + run e2e when code that can affect behavior changes. Docs,
+    # workflow-adjacent assets, etc. don't warrant standing up the full stack.
+    paths:
+      - '**/*.go'
+      - '**/*.ts'
+      - '**/*.json'
+      - '**/*.py'
   workflow_dispatch:
 
 jobs:
