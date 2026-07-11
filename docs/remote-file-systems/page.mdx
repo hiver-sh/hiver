@@ -279,6 +279,8 @@ FS: []client.FileSystem{{
 }},
 ```
 
+An external host that serves fixtures from memory is the easy way to hand an agent **canned files** for tests and evals, see [Mocking](/docs/mocking#mock-a-file-system).
+
 ## Hiding a mount from the agent
 
 Set `internal: true` on any file system to mount it for the sandbox runtime but hide it from the agent. ACLs are ignored (the agent can't reach it at all). This is used for storage the sandbox needs but the agent must not see, for example, a remote-backed [snapshot store](/docs/snapshots#store-snapshots-in-a-remote-drive).

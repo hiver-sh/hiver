@@ -240,6 +240,8 @@ override=EgressOverride(host="localhost:8080")
 Override: &client.EgressOverride{Host: "localhost:8080"}
 ```
 
+Re-routing the host is also how you point an agent at a **mock API**: match the real host and override it to a stub you run. See [Mocking](/docs/mocking#mock-an-api) for a complete example.
+
 ## Update overrides at runtime
 
 Rotate a token or change routing on a running sandbox with `applyConfig`:

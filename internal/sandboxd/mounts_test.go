@@ -1,4 +1,4 @@
-package main
+package sandboxd
 
 import (
 	"sort"

@@ -1,0 +1,340 @@
+export const metadata = { title: "Mocking" }
+
+# Mocking
+
+Give an agent **fake data** in place of a real dependency and it can't tell the difference. Hiver lets you mock at two layers, both transparent to the code running in the sandbox:
+
+- **[Mock a file system](#mock-a-file-system)** — back a mount with a small HTTP host that serves canned files.
+- **[Mock an API](#mock-an-api)** — re-route the agent's outbound requests to a stub that returns canned responses.
+
+Both are ideal for tests, offline development, and giving an agent deterministic inputs without provisioning real storage or paying for real API calls. They're especially useful for **evals**: pin the agent's inputs and API responses so every run starts from the same fixed environment, then grade the agent's behavior against a known-correct outcome, reproducibly and without real-world side effects.
+
+## Mock a file system
+
+The [`external`](/docs/remote-file-systems#external) backend is the easy way to hand an agent canned files: point the mount at a small HTTP host that serves fixtures from memory instead of a real store. The agent reads deterministic data as ordinary files.
+
+The host answers a handful of endpoints keyed by a `path` (or `prefix`) query parameter. A read-only mock only needs the read side:
+
+| Request | Returns |
+|---------|---------|
+| `GET /v1/stat?path=` | `{ path, size, mtime, is_dir }` for one entry, or `404` if it's absent. |
+| `GET /v1/file?path=` | The file's raw bytes (`application/octet-stream`). |
+| `GET /v1/directory?path=` | `{ entries: [{ path, size, mtime, is_dir }] }`, a directory's immediate children. |
+| `GET /v1/list?prefix=` | `{ paths: [...] }`, every path under a prefix. |
+
+A writable mock also handles `PUT /v1/file?path=`, `DELETE /v1/file?path=`, and `POST /v1/move` (`{ src, dst }`); reply `404` with a `{ "error": "..." }` body for anything missing. Here's a complete read-only mock serving two fixtures:
+
+```typescript mock_fs.ts
+import { createServer, type ServerResponse } from "node:http";
+
+// Canned files the agent will see under the mount, keyed by mount-relative path.
+const files: Record<string, Buffer> = {
+  "/pricing.json": Buffer.from(JSON.stringify({ plan: "pro", price: 20 })),
+  "/regions.txt": Buffer.from("us-east\nus-west\neu-central\n"),
+};
+
+const send = (res: ServerResponse, code: number, body: unknown) => {
+  res.writeHead(code, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+};
+const info = (p: string) => ({ path: p, size: files[p].length, mtime: new Date().toISOString(), is_dir: false });
+
+createServer((req, res) => {
+  const url = new URL(req.url!, "http://localhost");
+  const p = url.searchParams.get("path") ?? "/";
+
+  if (url.pathname === "/v1/file" && files[p]) {
+    res.writeHead(200, { "content-type": "application/octet-stream" });
+    return res.end(files[p]);
+  }
+  if (url.pathname === "/v1/stat") {
+    if (files[p]) return send(res, 200, info(p));
+    if (p === "/") return send(res, 200, { path: "/", size: 0, mtime: new Date().toISOString(), is_dir: true });
+  }
+  if (url.pathname === "/v1/directory") return send(res, 200, { entries: Object.keys(files).map(info) });
+  if (url.pathname === "/v1/list") return send(res, 200, { paths: Object.keys(files) });
+
+  send(res, 404, { error: "not found" }); // read-only: no PUT/DELETE/move
+}).listen(7070, () => console.log("mock fs on :7070"));
+```
+
+```python mock_fs.py
+import json
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
+
+# Canned files the agent will see under the mount, keyed by mount-relative path.
+files = {
+    "/pricing.json": json.dumps({"plan": "pro", "price": 20}).encode(),
+    "/regions.txt": b"us-east\nus-west\neu-central\n",
+}
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+def info(p):
+    return {"path": p, "size": len(files[p]), "mtime": now(), "is_dir": False}
+
+class Handler(BaseHTTPRequestHandler):
+    def send_json(self, code, body):
+        self.send_response(code)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        p = (parse_qs(u.query).get("path") or ["/"])[0]
+        if u.path == "/v1/file" and p in files:
+            self.send_response(200)
+            self.send_header("content-type", "application/octet-stream")
+            self.end_headers()
+            self.wfile.write(files[p])
+        elif u.path == "/v1/stat" and p in files:
+            self.send_json(200, info(p))
+        elif u.path == "/v1/stat" and p == "/":
+            self.send_json(200, {"path": "/", "size": 0, "mtime": now(), "is_dir": True})
+        elif u.path == "/v1/directory":
+            self.send_json(200, {"entries": [info(k) for k in files]})
+        elif u.path == "/v1/list":
+            self.send_json(200, {"paths": list(files)})
+        else:
+            self.send_json(404, {"error": "not found"})  # read-only: no PUT/DELETE/move
+
+print("mock fs on :7070")
+HTTPServer(("0.0.0.0", 7070), Handler).serve_forever()
+```
+
+```go mock_fs.go
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+)
+
+// Canned files the agent will see under the mount, keyed by mount-relative path.
+var files = map[string][]byte{
+	"/pricing.json": []byte(`{"plan":"pro","price":20}`),
+	"/regions.txt":  []byte("us-east\nus-west\neu-central\n"),
+}
+
+func info(p string) map[string]any {
+	return map[string]any{"path": p, "size": len(files[p]), "mtime": time.Now().UTC().Format(time.RFC3339), "is_dir": false}
+}
+
+func sendJSON(w http.ResponseWriter, code int, body any) {
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Query().Get("path")
+		if p == "" {
+			p = "/"
+		}
+		body, ok := files[p]
+		switch {
+		case r.URL.Path == "/v1/file" && ok:
+			w.Header().Set("content-type", "application/octet-stream")
+			_, _ = w.Write(body)
+		case r.URL.Path == "/v1/stat" && ok:
+			sendJSON(w, 200, info(p))
+		case r.URL.Path == "/v1/stat" && p == "/":
+			sendJSON(w, 200, map[string]any{"path": "/", "size": 0, "mtime": time.Now().UTC().Format(time.RFC3339), "is_dir": true})
+		case r.URL.Path == "/v1/directory":
+			entries := []map[string]any{}
+			for k := range files {
+				entries = append(entries, info(k))
+			}
+			sendJSON(w, 200, map[string]any{"entries": entries})
+		case r.URL.Path == "/v1/list":
+			paths := []string{}
+			for k := range files {
+				paths = append(paths, k)
+			}
+			sendJSON(w, 200, map[string]any{"paths": paths})
+		default:
+			sendJSON(w, 404, map[string]string{"error": "not found"}) // read-only: no PUT/DELETE/move
+		}
+	})
+	println("mock fs on :7070")
+	_ = http.ListenAndServe("0.0.0.0:7070", nil)
+}
+```
+
+Mount it **read-only** and the agent reads the fixtures as ordinary files. On the local Docker runtime, run the mock on your host and add an `extra_hosts` entry so the sandbox can resolve it, `host-gateway` resolves to the Docker host:
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("mock-demo", {
+  image: "python",
+  fs: [{
+    backend: "external",
+    mount: "/fixtures",
+    host: "http://mock-fs:7070",
+    acls: [{ path: "/fixtures/**", access: "ro" }],
+  }],
+  extra_hosts: ["mock-fs:host-gateway"], // reach the mock running on your host
+});
+
+const { stdout } = await sandbox.exec(["cat", "/fixtures/pricing.json"]);
+console.log(stdout); // {"plan":"pro","price":20}
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, ExternalFileSystem, ACLRule
+
+sandbox = await get_or_create_sandbox("mock-demo", SandboxConfig(
+    image="python",
+    fs=[ExternalFileSystem(
+        backend="external",
+        mount="/fixtures",
+        host="http://mock-fs:7070",
+        acls=[ACLRule(path="/fixtures/**", access="ro")],
+    )],
+    extra_hosts=["mock-fs:host-gateway"],  # reach the mock running on your host
+))
+
+out = await sandbox.exec(["cat", "/fixtures/pricing.json"])
+print(out["stdout"])  # {"plan":"pro","price":20}
+```
+
+```go
+sandbox, _ := c.GetOrCreateSandbox(ctx, "mock-demo", client.SandboxConfig{
+    Image: "python",
+    FS: []client.FileSystem{{
+        Backend: "external",
+        Mount:   "/fixtures",
+        Host:    "http://mock-fs:7070",
+        ACLs:    []client.ACLRule{{Path: "/fixtures/**", Access: "ro"}},
+    }},
+    ExtraHosts: []string{"mock-fs:host-gateway"}, // reach the mock running on your host
+})
+
+out, _ := sandbox.Exec(ctx, client.ExecRequest{Command: []string{"cat", "/fixtures/pricing.json"}})
+fmt.Println(out.Stdout) // {"plan":"pro","price":20}
+```
+
+Because the mount is just HTTP, the same host can grow into a real backend later, swap the in-memory map for a database or object store and the sandbox side doesn't change.
+
+## Mock an API
+
+Re-routing a host with a network [override](/docs/network/overrides#re-route-the-upstream) points an agent at a **mock API**. The agent calls the real service by name; the proxy quietly sends every matching request to a stub you control, which returns canned responses. The agent's code is unchanged and it never learns it's talking to a mock.
+
+Run a small stub that answers with fixed data:
+
+```typescript mock_api.ts
+import { createServer } from "node:http";
+
+// Canned response for every request, regardless of path.
+createServer((_req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ USD: 1, EUR: 0.92 }));
+}).listen(8080, () => console.log("mock api on :8080"));
+```
+
+```python mock_api.py
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    # Canned response for every request, regardless of path.
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"USD": 1, "EUR": 0.92}).encode())
+
+print("mock api on :8080")
+HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+```
+
+```go mock_api.go
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+func main() {
+	// Canned response for every request, regardless of path.
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"USD": 1, "EUR": 0.92})
+	})
+	println("mock api on :8080")
+	_ = http.ListenAndServe("0.0.0.0:8080", nil)
+}
+```
+
+Allow the real host and override its `host` to your stub. As above, add an `extra_hosts` entry so the proxy can resolve the stub on the local Docker runtime:
+
+```typescript
+const sandbox = await getOrCreateSandbox("mock-demo", {
+  image: "python",
+  egress: [{
+    access: "allow",
+    host: "rates.example.com",
+    override: { host: "mock-api:8080" }, // re-route matching requests to the stub
+  }],
+  extra_hosts: ["mock-api:host-gateway"], // reach the stub running on your host
+});
+
+// The agent calls the real host; the proxy answers from the stub.
+const { stdout } = await sandbox.exec([
+  "python3", "-c",
+  "import urllib.request as u; print(u.urlopen('http://rates.example.com/latest').read().decode())",
+]);
+console.log(stdout); // {"USD":1,"EUR":0.92}
+```
+
+```python
+from hiver import get_or_create_sandbox, SandboxConfig, EgressRule, EgressOverride
+
+sandbox = await get_or_create_sandbox("mock-demo", SandboxConfig(
+    image="python",
+    egress=[EgressRule(
+        access="allow",
+        host="rates.example.com",
+        override=EgressOverride(host="mock-api:8080"),  # re-route matching requests to the stub
+    )],
+    extra_hosts=["mock-api:host-gateway"],  # reach the stub running on your host
+))
+
+out = await sandbox.exec([
+    "python3", "-c",
+    "import urllib.request as u; print(u.urlopen('http://rates.example.com/latest').read().decode())",
+])
+print(out["stdout"])  # {"USD":1,"EUR":0.92}
+```
+
+```go
+sandbox, _ := c.GetOrCreateSandbox(ctx, "mock-demo", client.SandboxConfig{
+    Image: "python",
+    Egress: []client.EgressRule{{
+        Access:   "allow",
+        Host:     "rates.example.com",
+        Override: &client.EgressOverride{Host: "mock-api:8080"}, // re-route matching requests to the stub
+    }},
+    ExtraHosts: []string{"mock-api:host-gateway"}, // reach the stub running on your host
+})
+
+out, _ := sandbox.Exec(ctx, client.ExecRequest{Command: []string{
+    "python3", "-c",
+    "import urllib.request as u; print(u.urlopen('http://rates.example.com/latest').read().decode())",
+}})
+fmt.Println(out.Stdout) // {"USD":1,"EUR":0.92}
+```
+
+<Callout>The example calls the API over **HTTP**, so the proxy forwards it straight to the stub. For an **HTTPS** destination the proxy intercepts the request and then re-establishes TLS to the upstream, still validating the certificate against the *original* hostname, so a plaintext stub won't match. Either target an HTTP endpoint as above, or give the stub a certificate valid for the original host.</Callout>
+
+---
+
+Next: [Execution](/docs/execution)

@@ -12,6 +12,7 @@ export {
   EgressRule,
   ExecRequestEvent,
   ExecResponseEvent,
+  ExternalFileSystem,
   FileSystem,
   FSRequestEvent,
   FSResponseEvent,

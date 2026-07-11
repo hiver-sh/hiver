@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package sandboxd
 
 import (
 	"context"
