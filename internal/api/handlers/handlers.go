@@ -363,6 +363,11 @@ func normalizeConfig(cfg gen.SandboxConfig) gen.SandboxConfig {
 				v.Acls = acls
 				_ = cfg.Fs[i].FromS3FileSystem(v)
 			}
+		case gen.BackendAzure:
+			if v, err := fs.AsAzureBlobFileSystem(); err == nil {
+				v.Acls = acls
+				_ = cfg.Fs[i].FromAzureBlobFileSystem(v)
+			}
 		case gen.BackendExternal:
 			if v, err := fs.AsExternalFileSystem(); err == nil {
 				v.Acls = acls

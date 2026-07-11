@@ -91,6 +91,26 @@ class S3FileSystem(_FileSystemBase):
     """Use path-style addressing instead of virtual-hosted. Most S3-compatible services (MinIO, localstack) require this."""
 
 
+class AzureBlobFileSystem(_FileSystemBase):
+    """A file system backed by Azure Blob Storage."""
+
+    backend: Literal["azure"]
+    azure_container: str
+    """Blob container name (the Azure equivalent of a bucket)."""
+    azure_account: Optional[str] = None
+    """Storage account name. Required unless ``azure_connection_string`` or ``azure_endpoint`` is set."""
+    azure_prefix: Optional[str] = None
+    """Optional key prefix within the container (e.g. ``workspace/session-42``). When omitted, the container root is used."""
+    azure_account_key: Optional[str] = None
+    """Storage account access key (shared-key auth). One of ``azure_account_key``, ``azure_connection_string``, or ``azure_sas_token`` is required."""
+    azure_connection_string: Optional[str] = None
+    """Full connection string (account, key, and endpoint). Takes precedence over the other credential fields."""
+    azure_sas_token: Optional[str] = None
+    """Shared access signature token authorizing the container. A leading ``?`` is optional."""
+    azure_endpoint: Optional[str] = None
+    """Optional custom blob service endpoint (e.g. the Azurite emulator). When omitted, ``https://{azure_account}.blob.core.windows.net`` is used."""
+
+
 class ExternalFileSystem(_FileSystemBase):
     """A file system backed by an external HTTP host. Each agent file operation becomes one call against ``host``."""
 
@@ -100,7 +120,7 @@ class ExternalFileSystem(_FileSystemBase):
 
 
 FileSystem = Annotated[
-    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, S3FileSystem, ExternalFileSystem],
+    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, S3FileSystem, AzureBlobFileSystem, ExternalFileSystem],
     Field(discriminator="backend"),
 ]
 """A file system exposed to the agent at ``mount``. ``backend`` selects the storage type. Access is governed by ``acls``, evaluated longest-prefix-first with deny as the default."""
@@ -350,7 +370,7 @@ class FSResponseEvent(_SandboxEventBase):
     """The outcome of an earlier file operation."""
 
     type: Literal["fs.response"]
-    backend: Literal["local", "gdrive", "gcs", "s3", "external"]
+    backend: Literal["local", "gdrive", "gcs", "s3", "azure", "external"]
     request_id: int
     duration_ms: int
     error: Optional[str] = None

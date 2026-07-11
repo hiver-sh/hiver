@@ -161,6 +161,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
         { $ref: "#/definitions/GDriveFileSystem" },
         { $ref: "#/definitions/GCSFileSystem" },
         { $ref: "#/definitions/S3FileSystem" },
+        { $ref: "#/definitions/AzureBlobFileSystem" },
         { $ref: "#/definitions/ExternalFileSystem" },
       ],
     },
@@ -330,6 +331,55 @@ export const SANDBOX_CONFIG_SCHEMA = {
       ],
     },
 
+    AzureBlobFileSystem: {
+      description: "A file system backed by Azure Blob Storage.",
+      allOf: [
+        { $ref: "#/definitions/FileSystemBase" },
+        {
+          type: "object",
+          required: ["azure_container"],
+          properties: {
+            backend: { type: "string", enum: ["azure"] },
+            azure_account: {
+              type: "string",
+              description:
+                "Storage account name. Required unless azure_connection_string or azure_endpoint is set.",
+              examples: ["mystorageaccount"],
+            },
+            azure_container: {
+              type: "string",
+              description: "Blob container name (the Azure equivalent of a bucket).",
+            },
+            azure_prefix: {
+              type: "string",
+              description:
+                "Optional key prefix within the container (e.g. workspace/session-42). Defaults to the container root.",
+            },
+            azure_account_key: {
+              type: "string",
+              description:
+                "Storage account access key (shared-key auth). One of key / connection string / SAS token is required.",
+            },
+            azure_connection_string: {
+              type: "string",
+              description:
+                "Full connection string (account, key, endpoint). Takes precedence over the other credential fields.",
+            },
+            azure_sas_token: {
+              type: "string",
+              description:
+                "Shared access signature token authorizing the container. A leading '?' is optional.",
+            },
+            azure_endpoint: {
+              type: "string",
+              description:
+                "Optional custom blob service endpoint (e.g. the Azurite emulator). Defaults to https://{account}.blob.core.windows.net.",
+            },
+          },
+        },
+      ],
+    },
+
     ExternalFileSystem: {
       description:
         "A file system backed by an external HTTP host implementing the external file system interface.",
@@ -353,9 +403,9 @@ export const SANDBOX_CONFIG_SCHEMA = {
 
     Backend: {
       type: "string",
-      enum: ["local", "gdrive", "gcs", "s3", "external"],
+      enum: ["local", "gdrive", "gcs", "s3", "azure", "external"],
       description:
-        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage), s3 (Amazon S3 or S3-compatible), external (HTTP host).",
+        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage), s3 (Amazon S3 or S3-compatible), azure (Azure Blob Storage), external (HTTP host).",
     },
 
     ACLRule: {

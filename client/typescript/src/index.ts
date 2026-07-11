@@ -20,6 +20,7 @@ export {
   GDriveFileSystem,
   GCSFileSystem,
   S3FileSystem,
+  AzureBlobFileSystem,
   HttpMethod,
   LocalFileSystem,
   SandboxConfig,

@@ -30,8 +30,24 @@ func (e ACLRuleAccess) Valid() bool {
 	}
 }
 
+// Defines values for AzureBlobFileSystemBackend.
+const (
+	AzureBlobFileSystemBackendAzure AzureBlobFileSystemBackend = "azure"
+)
+
+// Valid indicates whether the value is a known member of the AzureBlobFileSystemBackend enum.
+func (e AzureBlobFileSystemBackend) Valid() bool {
+	switch e {
+	case AzureBlobFileSystemBackendAzure:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Backend.
 const (
+	BackendAzure    Backend = "azure"
 	BackendExternal Backend = "external"
 	BackendGcs      Backend = "gcs"
 	BackendGdrive   Backend = "gdrive"
@@ -42,6 +58,8 @@ const (
 // Valid indicates whether the value is a known member of the Backend enum.
 func (e Backend) Valid() bool {
 	switch e {
+	case BackendAzure:
+		return true
 	case BackendExternal:
 		return true
 	case BackendGcs:
@@ -95,13 +113,13 @@ func (e EgressRuleOverrideBodyStrategy) Valid() bool {
 
 // Defines values for ExternalFileSystemBackend.
 const (
-	ExternalFileSystemBackendExternal ExternalFileSystemBackend = "external"
+	External ExternalFileSystemBackend = "external"
 )
 
 // Valid indicates whether the value is a known member of the ExternalFileSystemBackend enum.
 func (e ExternalFileSystemBackend) Valid() bool {
 	switch e {
-	case ExternalFileSystemBackendExternal:
+	case External:
 		return true
 	default:
 		return false
@@ -236,11 +254,65 @@ type ApplyResult struct {
 	Error *string `json:"error,omitempty"`
 }
 
+// AzureBlobFileSystem defines model for AzureBlobFileSystem.
+type AzureBlobFileSystem struct {
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
+	Acls *[]ACLRule `json:"acls,omitempty"`
+
+	// AzureAccount Storage account name. Required unless `azure_connection_string`
+	// or `azure_endpoint` is set (both carry the account).
+	AzureAccount *string `json:"azure_account,omitempty"`
+
+	// AzureAccountKey Storage account access key (shared-key auth). One of
+	// `azure_account_key`, `azure_connection_string`, or
+	// `azure_sas_token` is required.
+	AzureAccountKey *string `json:"azure_account_key,omitempty"`
+
+	// AzureConnectionString Full connection string (self-contained: account, key, and
+	// endpoint). Takes precedence over the other credential fields.
+	AzureConnectionString *string `json:"azure_connection_string,omitempty"`
+
+	// AzureContainer Blob container name (the Azure equivalent of a bucket).
+	AzureContainer string `json:"azure_container"`
+
+	// AzureEndpoint Optional custom blob service endpoint (e.g. the Azurite
+	// emulator or a custom domain). When omitted,
+	// `https://{azure_account}.blob.core.windows.net` is used.
+	AzureEndpoint *string `json:"azure_endpoint,omitempty"`
+
+	// AzurePrefix Optional key prefix within the container that the file system
+	// is scoped to (e.g. `workspace/session-42`). When omitted, the
+	// container root is used.
+	AzurePrefix *string `json:"azure_prefix,omitempty"`
+
+	// AzureSasToken Shared access signature token authorizing the container. A
+	// leading `?` is optional.
+	AzureSasToken *string                    `json:"azure_sas_token,omitempty"`
+	Backend       AzureBlobFileSystemBackend `json:"backend"`
+
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
+
+	// Mount Absolute path at which the file system appears to the agent.
+	Mount string `json:"mount"`
+}
+
+// AzureBlobFileSystemBackend defines model for AzureBlobFileSystem.Backend.
+type AzureBlobFileSystemBackend string
+
 // Backend Storage type for a file system.
 //   - `local`    — sandbox-local storage with no external dependency.
 //   - `gdrive`   — backed by Google Drive.
 //   - `gcs`      — backed by Google Cloud Storage.
 //   - `s3`       — backed by Amazon S3 or an S3-compatible service.
+//   - `azure`    — backed by Azure Blob Storage.
 //   - `external` — backed by an HTTP host (see `external_file_system.yaml`).
 type Backend string
 
@@ -454,6 +526,7 @@ type FileSystemBase struct {
 	//   * `gdrive`   — backed by Google Drive.
 	//   * `gcs`      — backed by Google Cloud Storage.
 	//   * `s3`       — backed by Amazon S3 or an S3-compatible service.
+	//   * `azure`    — backed by Azure Blob Storage.
 	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 	Backend Backend `json:"backend"`
 
@@ -939,6 +1012,32 @@ func (t *FileSystem) FromS3FileSystem(v S3FileSystem) error {
 
 // MergeS3FileSystem performs a merge with any union data inside the FileSystem, using the provided S3FileSystem
 func (t *FileSystem) MergeS3FileSystem(v S3FileSystem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsAzureBlobFileSystem returns the union data inside the FileSystem as a AzureBlobFileSystem
+func (t FileSystem) AsAzureBlobFileSystem() (AzureBlobFileSystem, error) {
+	var body AzureBlobFileSystem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAzureBlobFileSystem overwrites any union data inside the FileSystem as the provided AzureBlobFileSystem
+func (t *FileSystem) FromAzureBlobFileSystem(v AzureBlobFileSystem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAzureBlobFileSystem performs a merge with any union data inside the FileSystem, using the provided AzureBlobFileSystem
+func (t *FileSystem) MergeAzureBlobFileSystem(v AzureBlobFileSystem) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

@@ -163,6 +163,16 @@ type FS struct {
 	S3Endpoint        string `json:"s3_endpoint,omitempty"`
 	S3UsePathStyle    bool   `json:"s3_use_path_style,omitempty"`
 
+	// azure only — Azure Blob Storage account, container, optional key prefix,
+	// and one of the credential forms (account key, connection string, SAS).
+	AzureAccount          string `json:"azure_account,omitempty"`
+	AzureContainer        string `json:"azure_container,omitempty"`
+	AzurePrefix           string `json:"azure_prefix,omitempty"`
+	AzureAccountKey       string `json:"azure_account_key,omitempty"`
+	AzureConnectionString string `json:"azure_connection_string,omitempty"`
+	AzureSASToken         string `json:"azure_sas_token,omitempty"`
+	AzureEndpoint         string `json:"azure_endpoint,omitempty"`
+
 	// external only — base URL of the HTTP host backing the file system.
 	Host string `json:"host,omitempty"`
 }
@@ -194,13 +204,14 @@ const (
 	BackendGoogleDrive        Backend = "gdrive"
 	BackendGoogleCloudStorage Backend = "gcs"
 	BackendS3                 Backend = "s3"
+	BackendAzureBlob          Backend = "azure"
 	BackendExternal           Backend = "external"
 )
 
 // Valid reports whether the backend is one sandboxd knows how to wire up.
 func (b Backend) Valid() bool {
 	switch b {
-	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendExternal:
+	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendExternal:
 		return true
 	}
 	return false
@@ -210,7 +221,7 @@ func (b Backend) Valid() bool {
 // store via the oplog. Local is the only non-remote backend today.
 func (b Backend) IsRemote() bool {
 	switch b {
-	case BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendExternal:
+	case BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendExternal:
 		return true
 	}
 	return false
@@ -265,6 +276,17 @@ const (
 	envS3Endpoint        = "HIVE_S3_ENDPOINT"
 )
 
+// Env-var fallbacks for azure blob credentials.
+const (
+	envAzureAccount          = "HIVE_AZURE_ACCOUNT"
+	envAzureContainer        = "HIVE_AZURE_CONTAINER"
+	envAzurePrefix           = "HIVE_AZURE_PREFIX"
+	envAzureAccountKey       = "HIVE_AZURE_ACCOUNT_KEY"
+	envAzureConnectionString = "HIVE_AZURE_CONNECTION_STRING"
+	envAzureSASToken         = "HIVE_AZURE_SAS_TOKEN"
+	envAzureEndpoint         = "HIVE_AZURE_ENDPOINT"
+)
+
 // Env-var fallback for the external backend host.
 const envExternalHost = "HIVE_EXTERNAL_HOST"
 
@@ -308,6 +330,18 @@ func (f *FS) s3Resolved() (bucket, region, prefix, accessKeyID, secretAccessKey,
 		or(f.S3SessionToken, envS3SessionToken),
 		or(f.S3Endpoint, envS3Endpoint),
 		f.S3UsePathStyle
+}
+
+// azureResolved returns the effective azure blob config — spec fields with
+// env-var fallback.
+func (f *FS) azureResolved() (account, cont, prefix, accountKey, connectionString, sasToken, endpoint string) {
+	return or(f.AzureAccount, envAzureAccount),
+		or(f.AzureContainer, envAzureContainer),
+		or(f.AzurePrefix, envAzurePrefix),
+		or(f.AzureAccountKey, envAzureAccountKey),
+		or(f.AzureConnectionString, envAzureConnectionString),
+		or(f.AzureSASToken, envAzureSASToken),
+		or(f.AzureEndpoint, envAzureEndpoint)
 }
 
 // externalResolved returns the effective external host — spec field with
@@ -374,6 +408,25 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			Endpoint:        endpoint,
 			UsePathStyle:    usePathStyle,
 		})
+	case BackendAzureBlob:
+		account, cont, prefix, accountKey, connStr, sas, endpoint := f.azureResolved()
+		return json.Marshal(struct {
+			Account          string `json:"account,omitempty"`
+			Container        string `json:"container"`
+			Prefix           string `json:"prefix,omitempty"`
+			AccountKey       string `json:"account_key,omitempty"`
+			ConnectionString string `json:"connection_string,omitempty"`
+			SASToken         string `json:"sas_token,omitempty"`
+			Endpoint         string `json:"endpoint,omitempty"`
+		}{
+			Account:          account,
+			Container:        cont,
+			Prefix:           prefix,
+			AccountKey:       accountKey,
+			ConnectionString: connStr,
+			SASToken:         sas,
+			Endpoint:         endpoint,
+		})
 	case BackendExternal:
 		return json.Marshal(struct {
 			Host string `json:"host"`
@@ -438,7 +491,7 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("%s.backend is required", ctx)
 		}
 		if !f.Backend.Valid() {
-			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendExternal)
+			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q, %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendExternal)
 		}
 		if f.Backend == BackendGoogleDrive {
 			access, _, _, _, sa, _, _ := f.gdriveResolved()
@@ -462,6 +515,20 @@ func (s *Spec) Validate() error {
 			}
 			if accessKeyID == "" || secretAccessKey == "" {
 				return fmt.Errorf("%s.backend s3: s3_access_key_id and s3_secret_access_key are required (or env %s / %s)", ctx, envS3AccessKeyID, envS3SecretAccessKey)
+			}
+		}
+		if f.Backend == BackendAzureBlob {
+			account, cont, _, accountKey, connStr, sas, endpoint := f.azureResolved()
+			if cont == "" {
+				return fmt.Errorf("%s.backend azure: azure_container is required (or env %s)", ctx, envAzureContainer)
+			}
+			if connStr == "" && sas == "" && accountKey == "" {
+				return fmt.Errorf("%s.backend azure: one of azure_connection_string / azure_sas_token / azure_account_key is required (or env %s / %s / %s)", ctx, envAzureConnectionString, envAzureSASToken, envAzureAccountKey)
+			}
+			// Shared-key and the default endpoint both need the account name;
+			// only a connection string or an explicit endpoint can supply it.
+			if account == "" && connStr == "" && endpoint == "" {
+				return fmt.Errorf("%s.backend azure: azure_account is required unless azure_connection_string or azure_endpoint is set (or env %s)", ctx, envAzureAccount)
 			}
 		}
 		if f.Backend == BackendExternal {

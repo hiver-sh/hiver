@@ -9,6 +9,7 @@ from .sandbox import ExecProcess, Sandbox, SandboxError
 from .schemas import (
     ACLRule,
     ApplyResult,
+    AzureBlobFileSystem,
     Changes,
     ConfigApplyEvent,
     EgressChunkEvent,
@@ -55,6 +56,7 @@ __all__ = [
     # schemas
     "ACLRule",
     "ApplyResult",
+    "AzureBlobFileSystem",
     "Changes",
     "ConfigApplyEvent",
     "EgressChunkEvent",

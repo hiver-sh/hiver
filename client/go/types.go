@@ -83,7 +83,7 @@ type EgressRule struct {
 type FileSystem struct {
 	// Mount is the absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
-	// Backend is "local", "gdrive", "gcs", "s3", or "external".
+	// Backend is "local", "gdrive", "gcs", "s3", "azure", or "external".
 	Backend string `json:"backend"`
 	// ACLs are access control rules for paths under Mount.
 	ACLs []ACLRule `json:"acls,omitempty"`
@@ -146,6 +146,32 @@ type FileSystem struct {
 	// S3UsePathStyle (s3 backend) uses path-style addressing instead of
 	// virtual-hosted. Most S3-compatible services require this.
 	S3UsePathStyle bool `json:"s3_use_path_style,omitempty"`
+
+	// AzureAccount (azure backend) is the storage account name. Required
+	// unless AzureConnectionString or AzureEndpoint is set.
+	AzureAccount string `json:"azure_account,omitempty"`
+	// AzureContainer (azure backend) is the blob container name (the Azure
+	// equivalent of a bucket).
+	AzureContainer string `json:"azure_container,omitempty"`
+	// AzurePrefix (azure backend) is an optional key prefix within the
+	// container (e.g. "workspace/session-42"). When omitted, the container
+	// root is used.
+	AzurePrefix string `json:"azure_prefix,omitempty"`
+	// AzureAccountKey (azure backend) is the storage account access key
+	// (shared-key auth). One of AzureAccountKey, AzureConnectionString, or
+	// AzureSASToken is required.
+	AzureAccountKey string `json:"azure_account_key,omitempty"`
+	// AzureConnectionString (azure backend) is a full connection string
+	// (account, key, and endpoint). Takes precedence over the other
+	// credential fields.
+	AzureConnectionString string `json:"azure_connection_string,omitempty"`
+	// AzureSASToken (azure backend) is a shared access signature token
+	// authorizing the container. A leading "?" is optional.
+	AzureSASToken string `json:"azure_sas_token,omitempty"`
+	// AzureEndpoint (azure backend) is an optional custom blob service
+	// endpoint (e.g. the Azurite emulator). When omitted,
+	// "https://{account}.blob.core.windows.net" is used.
+	AzureEndpoint string `json:"azure_endpoint,omitempty"`
 
 	// Host (external backend) is the base URL of the host you implement to back
 	// this file system. A trailing slash is ignored.

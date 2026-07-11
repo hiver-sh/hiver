@@ -269,6 +269,7 @@ components:
         - $ref: '#/components/schemas/GDriveFileSystem'
         - $ref: '#/components/schemas/GCSFileSystem'
         - $ref: '#/components/schemas/S3FileSystem'
+        - $ref: '#/components/schemas/AzureBlobFileSystem'
         - $ref: '#/components/schemas/ExternalFileSystem'
 
     FileSystemBase:
@@ -439,6 +440,58 @@ components:
                 virtual-hosted (`bucket.endpoint/key`). Most S3-compatible
                 services (MinIO, localstack) require this.
 
+    AzureBlobFileSystem:
+      description: A file system backed by Azure Blob Storage.
+      allOf:
+        - $ref: '#/components/schemas/FileSystemBase'
+        - type: object
+          required: [azure_container]
+          properties:
+            backend:
+              type: string
+              enum: [azure]
+            azure_account:
+              type: string
+              description: |
+                Storage account name. Required unless `azure_connection_string`
+                or `azure_endpoint` is set (both carry the account).
+              example: mystorageaccount
+            azure_container:
+              type: string
+              description: Blob container name (the Azure equivalent of a bucket).
+            azure_prefix:
+              type: string
+              description: |
+                Optional key prefix within the container that the file system
+                is scoped to (e.g. `workspace/session-42`). When omitted, the
+                container root is used.
+            azure_account_key:
+              type: string
+              format: password
+              description: |
+                Storage account access key (shared-key auth). One of
+                `azure_account_key`, `azure_connection_string`, or
+                `azure_sas_token` is required.
+            azure_connection_string:
+              type: string
+              format: password
+              description: |
+                Full connection string (self-contained: account, key, and
+                endpoint). Takes precedence over the other credential fields.
+            azure_sas_token:
+              type: string
+              format: password
+              description: |
+                Shared access signature token authorizing the container. A
+                leading `?` is optional.
+            azure_endpoint:
+              type: string
+              description: |
+                Optional custom blob service endpoint (e.g. the Azurite
+                emulator or a custom domain). When omitted,
+                `https://{azure_account}.blob.core.windows.net` is used.
+              example: https://mystorageaccount.blob.core.windows.net
+
     ExternalFileSystem:
       description: |
         A file system backed by an external HTTP host. The host
@@ -467,13 +520,14 @@ components:
 
     Backend:
       type: string
-      enum: [local, gdrive, gcs, s3, external]
+      enum: [local, gdrive, gcs, s3, azure, external]
       description: |
         Storage type for a file system.
           * `local`    — sandbox-local storage with no external dependency.
           * `gdrive`   — backed by Google Drive.
           * `gcs`      — backed by Google Cloud Storage.
           * `s3`       — backed by Amazon S3 or an S3-compatible service.
+          * `azure`    — backed by Azure Blob Storage.
           * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 
     ACLRule:

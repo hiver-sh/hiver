@@ -39,7 +39,7 @@ func main() {
 		backendDir   = flag.String("backend", "", "host directory backing the workspace (required)")
 		aclPath      = flag.String("acls", "", "path to JSON file containing ACL rules")
 		eventsFD     = flag.Int("events-fd", 0, "inherited fd for streaming audit events; overrides -audit when >0 (set by sandboxd)")
-		remoteName   = flag.String("remote", "", "remote backend name; blank = local-only. Supported: gdrive, gcs, s3, external. Unimplemented: onedrive.")
+		remoteName   = flag.String("remote", "", "remote backend name; blank = local-only. Supported: gdrive, gcs, s3, azure, external. Unimplemented: onedrive.")
 		remoteConfig = flag.String("remote-config", "", "JSON config consumed by the remote backend (per-impl schema; see remotefs.GoogleDriveConfig).")
 		oplogDepth   = flag.Int("oplog-depth", 1024, "oplog queue size; Enqueue blocks when full")
 		outboundMark = flag.Int("mark", 0, "SO_MARK to stamp on outbound TCP from the remote backend's HTTP client; needed inside the sandbox-pod to escape iptables OUTPUT REDIRECT.")
@@ -319,6 +319,12 @@ func buildStore(ctx context.Context, name string, configJSON []byte, outboundMar
 			return nil, err
 		}
 		return remotefs.NewS3(ctx, cfg, outboundMark, requestLog)
+	case "azure":
+		cfg, err := remotefs.ParseAzureBlobConfig(configJSON)
+		if err != nil {
+			return nil, err
+		}
+		return remotefs.NewAzureBlob(ctx, cfg, outboundMark, requestLog)
 	case "external":
 		cfg, err := remotefs.ParseExternalConfig(configJSON)
 		if err != nil {

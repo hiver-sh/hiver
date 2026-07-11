@@ -18,10 +18,11 @@ type Expect<T extends true> = T;
  * - `gdrive`   — backed by Google Drive.
  * - `gcs`      — backed by Google Cloud Storage.
  * - `s3`       — backed by Amazon S3 or an S3-compatible service.
+ * - `azure`    — backed by Azure Blob Storage.
  * - `external` — backed by an HTTP host you implement.
  */
-export type Backend = "local" | "gdrive" | "gcs" | "s3" | "external";
-export const Backend = z.enum(["local", "gdrive", "gcs", "s3", "external"]);
+export type Backend = "local" | "gdrive" | "gcs" | "s3" | "azure" | "external";
+export const Backend = z.enum(["local", "gdrive", "gcs", "s3", "azure", "external"]);
 type _AssertBackend = Expect<Equal<z.infer<typeof Backend>, Backend>>;
 
 /** One access control rule. */
@@ -166,6 +167,38 @@ type _AssertS3FileSystem = Expect<
   Equal<z.infer<typeof S3FileSystem>, S3FileSystem>
 >;
 
+/** A file system backed by Azure Blob Storage. */
+export interface AzureBlobFileSystem extends FileSystemBase {
+  backend: "azure";
+  /** Storage account name. Required unless `azure_connection_string` or `azure_endpoint` is set. */
+  azure_account?: string;
+  /** Blob container name (the Azure equivalent of a bucket). */
+  azure_container: string;
+  /** Optional key prefix within the container (e.g. `workspace/session-42`). When omitted, the container root is used. */
+  azure_prefix?: string;
+  /** Storage account access key (shared-key auth). One of key / connection string / SAS token is required. */
+  azure_account_key?: string;
+  /** Full connection string (account, key, endpoint). Takes precedence over the other credential fields. */
+  azure_connection_string?: string;
+  /** Shared access signature token authorizing the container. A leading `?` is optional. */
+  azure_sas_token?: string;
+  /** Optional custom blob service endpoint (e.g. the Azurite emulator). Defaults to `https://{account}.blob.core.windows.net`. */
+  azure_endpoint?: string;
+}
+export const AzureBlobFileSystem = FileSystemBase.extend({
+  backend: z.literal("azure"),
+  azure_account: z.string().optional(),
+  azure_container: z.string(),
+  azure_prefix: z.string().optional(),
+  azure_account_key: z.string().optional(),
+  azure_connection_string: z.string().optional(),
+  azure_sas_token: z.string().optional(),
+  azure_endpoint: z.string().optional(),
+});
+type _AssertAzureBlobFileSystem = Expect<
+  Equal<z.infer<typeof AzureBlobFileSystem>, AzureBlobFileSystem>
+>;
+
 /**
  * A file system backed by an external HTTP host you implement. Each agent file
  * operation becomes one call against `host`.
@@ -196,12 +229,14 @@ export type FileSystem =
   | GDriveFileSystem
   | GCSFileSystem
   | S3FileSystem
+  | AzureBlobFileSystem
   | ExternalFileSystem;
 export const FileSystem = z.discriminatedUnion("backend", [
   LocalFileSystem,
   GDriveFileSystem,
   GCSFileSystem,
   S3FileSystem,
+  AzureBlobFileSystem,
   ExternalFileSystem,
 ]);
 type _AssertFileSystem = Expect<Equal<z.infer<typeof FileSystem>, FileSystem>>;
