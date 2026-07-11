@@ -115,13 +115,42 @@ func (r *DockerRuntime) snapshotVolumeArg() string {
 	return composeProject + "_snapshots:/snapshots"
 }
 
-// labelImageHash records which image a pack pod hosts, so getOrCreate can find an
-// existing pod for the image.
+// labelImageHash marks a container as a pack pod (packPodIDs filters on its
+// presence) and records the image-hash the pod is keyed by.
 const labelImageHash = "hiver.image.hash"
 
-// podNameForImage is the (atomic) name of the pack pod hosting image.
-func podNameForImage(image string) string {
-	return "hiver-pod-" + shortHash(image)
+// labelImageRef records the logical image ref a pack pod hosts. The hash label
+// folds in the image ID so it can't be reversed to a ref; this plain-ref label
+// lets startPacked find sibling pods of the same ref (older builds) and supersede
+// them, keeping at most one pod per image ref.
+const labelImageRef = "hiver.image.ref"
+
+// imageHash keys a pack pod by both the image ref and the concrete image that ref
+// currently resolves to (its docker image ID / content digest). Rebuilding an
+// image under the same ref changes its ID, so the hash — and therefore the pod
+// name — changes with it: a new sandbox lands on a fresh pod running the new
+// image, while the old pod keeps serving the sandboxes already packed into it.
+// An empty id (image ID unavailable) falls back to hashing the ref alone.
+func imageHash(ref, id string) string {
+	if id == "" {
+		return shortHash(ref)
+	}
+	return shortHash(ref + "@" + id)
+}
+
+// podNameForImage is the (atomic) name of the pack pod hosting the ref/id image.
+func podNameForImage(ref, id string) string {
+	return "hiver-pod-" + imageHash(ref, id)
+}
+
+// imageID returns the local docker image ID (content digest, e.g. "sha256:…") of
+// ref. The image must be present locally first (see ensureImage).
+func imageID(ctx context.Context, ref string) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "-f", "{{.Id}}", ref).Output()
+	if err != nil {
+		return "", fmt.Errorf("docker image inspect %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // shortHash is a stable 12-hex-char digest of s, for image-keyed names/labels.
@@ -392,11 +421,18 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 	// it's shut down or killed (rather than parking as a multi-tenant pack host).
 	createArgs = append(createArgs, "-v", r.snapshotVolumeArg())
 	createArgs = append(createArgs, image, "--snapshot-dir", "/snapshots")
+	// Make sure the image is on this host before creating the container, pulling
+	// it if absent (docker create would pull implicitly, but the explicit step
+	// keeps the pull separable from create failures and is the runtime's job now
+	// that the CLI no longer pre-pulls).
+	if err := ensureImage(ctx, image); err != nil {
+		return gen.Sandbox{}, err
+	}
 	createStart := time.Now()
 	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return gen.Sandbox{}, fmt.Errorf("docker create %s: %v: %s", image, err, out)
 	}
-	log.Printf("sandbox %s: container created (image pulled if absent) in %s", containerName, time.Since(createStart).Round(time.Millisecond))
+	log.Printf("sandbox %s: container created in %s", containerName, time.Since(createStart).Round(time.Millisecond))
 
 	if out, err := exec.CommandContext(ctx, "docker", "start", containerName).CombinedOutput(); err != nil {
 		startErr := withContainerLogs(ctx, fmt.Errorf("docker start %s: %v: %s", image, err, out), containerName)
@@ -422,7 +458,16 @@ func (r *DockerRuntime) Start(ctx context.Context, key string, cfg sandboxgen.Sa
 // one pod (and one routing id), so the returned id is the pod's.
 func (r *DockerRuntime) startPacked(ctx context.Context, key string, cfg sandboxgen.SandboxConfig, ref string) (gen.Sandbox, error) {
 	image := ref
-	podName := podNameForImage(image)
+	// Make sure the image is on this host and read the concrete image ID we key
+	// the pod by: a rebuilt image (same ref, new content) resolves to a new hash
+	// and thus a new pod, so this sandbox runs the new image instead of reusing the
+	// pod still running the old one.
+	imgID, err := ensureImageID(ctx, image)
+	if err != nil {
+		return gen.Sandbox{}, err
+	}
+	hash := imageHash(image, imgID)
+	podName := podNameForImage(image, imgID)
 
 	exists, running, err := containerState(ctx, podName)
 	if err != nil {
@@ -440,9 +485,16 @@ func (r *DockerRuntime) startPacked(ctx context.Context, key string, cfg sandbox
 		}
 		id := uuid.New()
 		podID = id.String()
-		if err := r.createPackPod(ctx, podName, id, image); err != nil {
+		if err := r.createPackPod(ctx, podName, id, image, hash); err != nil {
 			return gen.Sandbox{}, err
 		}
+		// This is a freshly-created pod for image — either the first for this ref or
+		// a rebuild's new version. Retire any pod still running an older build of the
+		// same ref so packed mode keeps one pod per ref. Done asynchronously on a
+		// background context (not this request's, which ends when the start returns):
+		// the new pod is already up and new requests route to it, while the old pod
+		// drains gracefully in the background (see supersedeOldImagePods).
+		go r.supersedeOldImagePods(context.Background(), image, podName)
 	}
 
 	podHost := containerNameFor(podID)
@@ -460,13 +512,14 @@ func (r *DockerRuntime) startPacked(ctx context.Context, key string, cfg sandbox
 // createPackPod creates+starts a sandboxd pack host for image and waits for
 // its API to listen. The pod bridge needs ip_forward + route_localnet so the
 // host REDIRECT can funnel packed-sandbox egress to sbxproxy.
-func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uuid.UUID, image string) error {
+func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uuid.UUID, image, hash string) error {
 	createArgs := []string{
 		"create",
 		"--name", podName,
 		"--label", "com.docker.compose.project=" + composeProject,
-		"--label", "com.docker.compose.service=pod-" + shortHash(image),
-		"--label", labelImageHash + "=" + shortHash(image),
+		"--label", "com.docker.compose.service=pod-" + hash,
+		"--label", labelImageHash + "=" + hash,
+		"--label", labelImageRef + "=" + image,
 		"--label", labelSandboxID + "=" + id.String(),
 		"--network", composeProject + "_default",
 		"--network-alias", containerNameFor(id.String()),
@@ -504,6 +557,8 @@ func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uu
 	// to its one sandbox). --snapshot-dir overrides the image's default `--help`
 	// CMD so sandboxd boots as a pod host with no boot workload.
 	createArgs = append(createArgs, image, "--pack", "--snapshot-dir", "/snapshots")
+	// The image is already present: startPacked runs ensureImageID (which pulls if
+	// absent and reads the image ID it keys the pod by) before calling here.
 	if out, err := exec.CommandContext(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker create pod %s: %v: %s", image, err, out)
 	}
@@ -513,6 +568,71 @@ func (r *DockerRuntime) createPackPod(ctx context.Context, podName string, id uu
 		return startErr
 	}
 	return nil
+}
+
+// podSupersedeGrace bounds the graceful shutdown of a superseded pod: SIGTERM is
+// sent, and the pod's sandboxd has this long to cancel each packed sandbox's
+// lifecycle and capture its snapshot-on-shutdown (which may upload to a remote
+// backend) before docker's SIGKILL fallback. Generous because losing the window
+// means losing snapshot writes.
+const podSupersedeGrace = 120 * time.Second
+
+// supersedeOldImagePods gracefully retires every pack pod for image ref except
+// keepPod. When an image is rebuilt, its new content hashes to a new pod (keepPod);
+// packed mode keeps one pod per ref, so the pods running older builds of the same
+// ref are torn down once keepPod is serving.
+//
+// Runs on its own background context (not the request's, which ends when the start
+// returns), so it's non-blocking: the new sandbox is already up and new requests
+// route to keepPod while the old pod drains here. Eviction is graceful — `docker
+// stop` sends SIGTERM, and the pod's sandboxd cancels each packed sandbox's
+// lifecycle and writes its snapshot-on-shutdown (see internal/sandboxd/packed.go)
+// before exiting — so in-flight state is preserved rather than SIGKILLed. Best
+// effort: a failed stop/rm is logged, not retried.
+func (r *DockerRuntime) supersedeOldImagePods(ctx context.Context, ref, keepPod string) {
+	ctx, cancel := context.WithTimeout(ctx, podSupersedeGrace+30*time.Second)
+	defer cancel()
+	// Establish keepPod's age up front: only pods created strictly before it are
+	// retired, never one created after. Supersession is async, so a burst of
+	// rebuilds can leave several of these goroutines running at once — without the
+	// age guard an earlier one could stop the pod a later rebuild just created (the
+	// newest, which must survive). If keepPod is already gone (a newer rebuild
+	// superseded it), we can't establish a cutoff, so we stop nothing.
+	keepCreated, err := containerCreated(ctx, keepPod)
+	if err != nil {
+		log.Printf("image %s: supersede: read %s created time: %v", ref, keepPod, err)
+		return
+	}
+	out, err := exec.CommandContext(ctx, "docker", "ps",
+		"--filter", "label="+labelImageRef+"="+ref,
+		"--format", "{{.Names}}").Output()
+	if err != nil {
+		log.Printf("image %s: list pods to supersede: %v", ref, err)
+		return
+	}
+	grace := fmt.Sprintf("%d", int(podSupersedeGrace/time.Second))
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || name == keepPod {
+			continue
+		}
+		created, err := containerCreated(ctx, name)
+		if err != nil {
+			continue // gone or unreadable: nothing to retire
+		}
+		if !created.Before(keepCreated) {
+			continue // same age or newer than keepPod: must never be stopped
+		}
+		// SIGTERM + wait so sandboxd captures snapshots; then remove the stopped pod.
+		if out, err := exec.CommandContext(ctx, "docker", "stop", "--time", grace, name).CombinedOutput(); err != nil {
+			log.Printf("image %s: graceful stop of superseded pod %s: %v: %s", ref, name, err, out)
+		}
+		if out, err := exec.CommandContext(ctx, "docker", "rm", "-f", name).CombinedOutput(); err != nil {
+			log.Printf("image %s: removing superseded pod %s: %v: %s", ref, name, err, out)
+		} else {
+			log.Printf("image %s: superseded old pod %s (replaced by %s)", ref, name, keepPod)
+		}
+	}
 }
 
 // postSandboxOnce makes one POST /v1/<key> attempt against host. done is true on
@@ -598,6 +718,17 @@ func containerNameFor(segment string) string {
 	return composeProject + "-sandbox-" + segment
 }
 
+// containerCreated returns the creation time of the named container. Used by
+// supersession to compare pod ages so only pods older than the new one are
+// retired (never a newer one).
+func containerCreated(ctx context.Context, name string) (time.Time, error) {
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.Created}}", name).Output()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("docker inspect %s created: %w", name, err)
+	}
+	return time.Parse(time.RFC3339Nano, strings.TrimSpace(string(out)))
+}
+
 // containerLabel returns the value of a single label on the named container.
 func containerLabel(ctx context.Context, name, label string) (string, error) {
 	out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", `{{index .Config.Labels "`+label+`"}}`, name).Output()
@@ -605,6 +736,53 @@ func containerLabel(ctx context.Context, name, label string) (string, error) {
 		return "", fmt.Errorf("docker inspect %s label %s: %w", name, label, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// ensureImage makes sure ref is present in the local docker image store before a
+// container is created from it, pulling it if absent. The CLI used to do this
+// check-and-pull itself before starting an agent; it's the runtime's job now, so
+// the same preparation happens no matter who drives the controller.
+//
+// An image that's already local (a locally-built bundle the CLI handed us, or one
+// pulled by an earlier start) is left untouched — critically, we never `docker
+// pull` a local-only tag that exists in no registry. Only a genuinely-absent ref
+// is fetched, and a pull failure surfaces with the pull output attached so the
+// cause (bad ref, auth, network) is visible rather than hidden inside a later
+// `docker create` error.
+func ensureImage(ctx context.Context, ref string) error {
+	if err := exec.CommandContext(ctx, "docker", "image", "inspect", ref).Run(); err == nil {
+		return nil // already present locally
+	}
+	return pullImageRef(ctx, ref)
+}
+
+// ensureImageID makes ref present (like ensureImage) and returns its docker image
+// ID. startPacked keys the pack pod by this ID and runs on every packed start, so
+// it folds the presence check and the ID read into a single `docker image
+// inspect` on the hot path: when the image is already local (the common case)
+// imageID succeeds and no pull — nor a second inspect — is attempted.
+func ensureImageID(ctx context.Context, ref string) (string, error) {
+	if id, err := imageID(ctx, ref); err == nil {
+		return id, nil // present locally: one inspect, no pull
+	}
+	// Absent locally: pull, then read the ID it resolved to. A local-only tag that
+	// isn't present can't be pulled, so this correctly errors on a truly-missing
+	// image rather than masking it.
+	if err := pullImageRef(ctx, ref); err != nil {
+		return "", err
+	}
+	return imageID(ctx, ref)
+}
+
+// pullImageRef pulls ref, timing it and surfacing the pull output on failure so
+// the cause (bad ref, auth, network) is visible.
+func pullImageRef(ctx context.Context, ref string) error {
+	pullStart := time.Now()
+	if out, err := exec.CommandContext(ctx, "docker", "pull", ref).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker pull %s: %v: %s", ref, err, out)
+	}
+	log.Printf("image %s: pulled in %s", ref, time.Since(pullStart).Round(time.Millisecond))
+	return nil
 }
 
 // containerState returns whether the named container exists and whether it is

@@ -51,11 +51,27 @@ type MountSource struct {
 // entry itself). Local-backend FS mounts are not included automatically;
 // use explicit include patterns to capture those.
 func Capture(dst, upperDir string, mounts []MountSource, include []string) error {
-	f, err := os.Create(dst)
+	// Capture atomically: write into a temp file in the destination directory and
+	// rename it over dst only after the tar is fully written and fsync'd. A capture
+	// interrupted partway (SIGKILL when a shutdown grace expires, OOM, host crash)
+	// then leaves only the temp file — never a truncated dst — so the previous good
+	// snapshot stays intact and the next start's Restore never reads a half-written
+	// tarball (which surfaces as "unexpected EOF" mid-file). Writing in place, as
+	// this did before, clobbered the good snapshot the instant capture began.
+	f, err := os.CreateTemp(filepath.Dir(dst), ".snapshot-*.tar.gz.tmp")
 	if err != nil {
-		return fmt.Errorf("create %s: %w", dst, err)
+		return fmt.Errorf("create temp for %s: %w", dst, err)
 	}
-	defer f.Close()
+	tmp := f.Name()
+	committed := false
+	// Clean up on any early return; after a successful rename the temp no longer
+	// exists, so Remove is a harmless no-op and the second Close returns ErrClosed.
+	defer func() {
+		f.Close()
+		if !committed {
+			_ = os.Remove(tmp)
+		}
+	}()
 
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
@@ -68,8 +84,6 @@ func Capture(dst, upperDir string, mounts []MountSource, include []string) error
 		// overlay, not the container's data).
 		if _, err := os.Lstat(upperDir); err == nil {
 			if err := walkUpperIntoTar(tw, upperDir); err != nil {
-				_ = tw.Close()
-				_ = gz.Close()
 				return fmt.Errorf("walk upper: %w", err)
 			}
 			written++
@@ -83,8 +97,6 @@ func Capture(dst, upperDir string, mounts []MountSource, include []string) error
 			continue
 		}
 		if err := walkIntoTar(tw, hostRoot, tarPrefix); err != nil {
-			_ = tw.Close()
-			_ = gz.Close()
 			return fmt.Errorf("walk %s: %w", hostRoot, err)
 		}
 		written++
@@ -97,6 +109,18 @@ func Capture(dst, upperDir string, mounts []MountSource, include []string) error
 	if err := gz.Close(); err != nil {
 		return fmt.Errorf("close gzip: %w", err)
 	}
+	// Flush to disk before the rename so a crash right after can't leave the
+	// renamed dst pointing at unwritten (zero/partial) blocks.
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmp, dst, err)
+	}
+	committed = true
 	log.Printf("snapshot: capture: wrote %s (%d path(s))", dst, written)
 	return nil
 }
@@ -120,7 +144,11 @@ func Restore(src, upperDir string, mounts []MountSource, include []string) error
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
+		// A corrupt/truncated snapshot (e.g. a capture interrupted before the fix
+		// that made writes atomic) must not brick the start: log and continue
+		// without restoring, so the sandbox boots on the base image's state.
+		log.Printf("snapshot: restore: %s unreadable (%v); continuing without restore", src, err)
+		return nil
 	}
 	defer gz.Close()
 
@@ -134,7 +162,11 @@ func Restore(src, upperDir string, mounts []MountSource, include []string) error
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read tar: %w", err)
+			// Truncated/corrupt tarball. Keep the entries already restored and
+			// continue the start rather than failing it — a bad snapshot costs some
+			// restored state, not the whole sandbox.
+			log.Printf("snapshot: restore: %s truncated/corrupt after %d entries (%v); continuing", src, count, err)
+			return nil
 		}
 		if !matchesInclude(hdr.Name, bases) {
 			continue
@@ -176,7 +208,12 @@ func Restore(src, upperDir string, mounts []MountSource, include []string) error
 			}
 			if _, err := io.Copy(fh, tr); err != nil {
 				fh.Close()
-				return fmt.Errorf("write %s: %w", target, err)
+				// The tarball ended mid-file (truncated/corrupt snapshot). Drop the
+				// partial file and continue the start without the rest rather than
+				// failing — this is the "unexpected EOF" that used to abort the boot.
+				_ = os.Remove(target)
+				log.Printf("snapshot: restore: %s truncated writing %s after %d entries (%v); continuing", src, target, count, err)
+				return nil
 			}
 			fh.Close()
 			if err := os.Chmod(target, hdr.FileInfo().Mode()); err != nil {

@@ -4,11 +4,7 @@ import { getOrCreateSandbox, SandboxConfig } from "@hiver.sh/client";
 import { white, bold, dim, red, accent } from "../theme.js";
 import { createLoader } from "../hive.js";
 import { requireDocker } from "../docker.js";
-import {
-  imageExistsLocally,
-  pullImage,
-  isHiverBundle,
-} from "../compose/images.js";
+import { isHiverBundle } from "../compose/images.js";
 import { bundleImage, isDirectory } from "../bundle/bundle.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
 import { ensureGateway, isLocalGateway } from "../gateway.js";
@@ -132,18 +128,12 @@ if (!isLocalGateway(gatewayUrl)) {
       const ref =
         resolveSandboxImage(imageArg, Boolean(readConfig().microvm)) ??
         imageArg;
-      // Need it locally to inspect for the bundle markers; pull if absent.
-      if (!imageExistsLocally(ref)) {
-        const pull = createLoader(`Pulling ${ref}`).start();
-        const { ok, output } = await pullImage(ref);
-        if (!ok) {
-          pull.fail(`could not pull ${ref}`);
-          if (output.trim())
-            process.stderr.write("\n" + output.trimEnd() + "\n");
-          process.exit(1);
-        }
-        pull.succeed(`Pulled ${ref}`);
-      }
+      // A ref that's already a bundle (a local build, or a catalog image the
+      // stack pulled at `up`) is used as-is; anything else is bundled, which
+      // pulls the source image first when it isn't already local. Getting the
+      // final runtime image onto the host for `docker create` is the
+      // controller's job (see the docker runtime's ensureImage), so this path
+      // no longer pre-pulls before starting.
       resolvedImage = isHiverBundle(ref) ? ref : await bundleImage(ref);
     }
   } catch (err) {
