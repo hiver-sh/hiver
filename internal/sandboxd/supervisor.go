@@ -25,7 +25,13 @@ type supervisor struct {
 	image     string                       // the pod's fixed image; set when the sandbox registers
 	sandboxes map[string]*handlers.Sandbox // key → sandbox
 	cancels   map[string]context.CancelFunc
-	pack      *packState // POST /v1/<key> packs a new sandbox into this pod
+	// snapFlushed[key] closes once that sandbox's teardown has captured its
+	// write-on-shutdown snapshot and drained the FUSE oplog (past stopAll), so
+	// the tarball is durable on its remote backend. Delete waits on it, making a
+	// DELETE (client Shutdown) a durability barrier rather than a fire-and-forget
+	// cancel that returns before the async teardown has flushed anything.
+	snapFlushed map[string]chan struct{}
+	pack        *packState // POST /v1/<key> packs a new sandbox into this pod
 
 	// bootDone closes once main has set up the pack state. The API serves before
 	// that — GET /v1 answers immediately — so Create waits on this first to avoid
@@ -47,10 +53,11 @@ type supervisor struct {
 
 func newSupervisor() *supervisor {
 	s := &supervisor{
-		sandboxes: map[string]*handlers.Sandbox{},
-		cancels:   map[string]context.CancelFunc{},
-		bootDone:  make(chan struct{}),
-		lifecycle: newLifecycleBroker(),
+		sandboxes:   map[string]*handlers.Sandbox{},
+		cancels:     map[string]context.CancelFunc{},
+		snapFlushed: map[string]chan struct{}{},
+		bootDone:    make(chan struct{}),
+		lifecycle:   newLifecycleBroker(),
 	}
 	if ip := os.Getenv("POD_IP"); ip != "" {
 		if id, err := podid.FromIP(ip); err != nil {
@@ -132,11 +139,17 @@ func (s *supervisor) Create(ctx context.Context, key string, cfg gen.SandboxConf
 	return nil, handlers.ErrPodOccupied
 }
 
-// Delete tears the sandbox for key down by cancelling its lifecycle context.
-func (s *supervisor) Delete(_ context.Context, key string) error {
+// Delete tears the sandbox for key down by cancelling its lifecycle context and
+// waits until the teardown has captured its write-on-shutdown snapshot and
+// flushed it to the remote backend (snapFlushed), so a returning DELETE means
+// the snapshot is durable — not merely that teardown was kicked off. The wait is
+// bounded by ctx (the client's request timeout); the rest of teardown (slot
+// release, unmount) continues asynchronously regardless.
+func (s *supervisor) Delete(ctx context.Context, key string) error {
 	s.mu.Lock()
 	sb, ok := s.sandboxes[key]
 	cancel := s.cancels[key]
+	flushed := s.snapFlushed[key]
 	s.mu.Unlock()
 	if !ok {
 		return handlers.ErrSandboxNotFound
@@ -146,6 +159,13 @@ func (s *supervisor) Delete(_ context.Context, key string) error {
 	sb.SetStopping()
 	if cancel != nil {
 		cancel()
+	}
+	if flushed != nil {
+		select {
+		case <-flushed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }

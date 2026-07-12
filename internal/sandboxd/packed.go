@@ -661,9 +661,14 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	sb.SetLifetime(lifetime)
 	broker.SetActivityHook(lifetime.Reset)
 
+	// Closed by the teardown goroutine once the write-on-shutdown snapshot has
+	// been captured and its FUSE oplog drained (past stopAll), so Delete can block
+	// until the snapshot is durable on the remote backend.
+	snapFlushed := make(chan struct{})
 	s.mu.Lock()
 	s.sandboxes[key] = sb
 	s.cancels[key] = cancel
+	s.snapFlushed[key] = snapFlushed
 	if s.image == "" {
 		s.image = specImage(sp)
 	}
@@ -730,6 +735,11 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			}
 		}
 		mountMgr.stopAll()
+		// The snapshot capture above wrote through the FUSE drive and stopAll drained
+		// its oplog, so the tarball is now durable on the remote backend. Unblock any
+		// Delete (client Shutdown) waiting on this barrier before the rest of teardown
+		// (slot release, single-mode process shutdown) proceeds.
+		close(snapFlushed)
 		// Free the reusable network slot + overlay/netns/IP *before* clearing the
 		// per-key workspace tree below, so a still-wedged sbxfuse mountpoint can never
 		// leak them. A leaked pool slot is the costly failure here: it permanently
@@ -757,6 +767,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		s.mu.Lock()
 		delete(s.sandboxes, key)
 		delete(s.cancels, key)
+		delete(s.snapFlushed, key)
 		s.mu.Unlock()
 		s.lifecycle.publish(key, gen.PodEventStatusStopped)
 		log.Printf("sandboxd: pack %q: torn down (ip=%s)", key, ip)
