@@ -2,7 +2,9 @@ export const metadata = { title: "Deploy on Kubernetes" }
 
 # Deploy on Kubernetes
 
-Run Hiver on any Kubernetes cluster.
+Run Hiver on any Kubernetes cluster with the official Helm chart. The chart
+deploys the control plane (controller + Envoy gateway) and a pool per sandbox
+image, all generated from a single `images` list.
 
 ## Prerequisites
 
@@ -10,97 +12,125 @@ Run Hiver on any Kubernetes cluster.
 - `kubectl` configured to target your cluster
 - `helm` (v3+) installed
 
-## Deploy with Helm
+> **MicroVM images** (the default) require nested virtualization on the nodes.
+> See [MicroVM runtime](/docs/runtime/microvm). Use the plain container images if
+> your nodes don't support it.
 
-Add the Hiver Helm repository and install the chart:
+## Install with Helm
+
+Add the Hiver chart repository and install the chart:
 
 ```bash
-helm repo add hiver https://hiver.sh/charts
+helm repo add hiver https://hiver-sh.github.io/hiver
 helm repo update
+helm install hiver hiver/hiver
 ```
+
+The chart creates its own `hiver` and `hiver-sandbox` namespaces, so you don't
+need `--namespace` or `--create-namespace`. Every image is pinned to an immutable
+digest, so a chart version always installs the exact images it shipped with.
+
+Pin a specific version (chart versions track the CLI/client version):
 
 ```bash
-helm install hiver hiver/hiver \
-  --namespace hiver \
-  --create-namespace
+helm search repo hiver/hiver --versions
+helm install hiver hiver/hiver --version <x.y.z>
 ```
 
-## Available Images
+## Available images
+
+Each entry becomes a sandbox pool addressable by its **name** (e.g.
+`image: "claude"`). Both a container and a microVM variant are published.
 
 | Name | Description | Container | MicroVM |
 |------|-------------|-----------|---------|
-| `claude-code` | Claude Code | `hiversh/claude-code:latest` | `hiversh/claude-code:latest-microvm` |
+| `claude` | Claude Code | `hiversh/claude:latest` | `hiversh/claude:latest-microvm` |
 | `codex` | OpenAI Codex | `hiversh/codex:latest` | `hiversh/codex:latest-microvm` |
 | `copilot` | GitHub Copilot | `hiversh/copilot:latest` | `hiversh/copilot:latest-microvm` |
 | `openclaw` | OpenClaw | `hiversh/openclaw:latest` | `hiversh/openclaw:latest-microvm` |
-| `playwright` | Playwright browser automation | `hiversh/playwright:latest` | `hiversh/playwright:latest-microvm` |
+| `antigravity` | Antigravity | `hiversh/antigravity:latest` | `hiversh/antigravity:latest-microvm` |
+| `browser` | Resident Chrome, driven over CDP | `hiversh/browser:latest` | `hiversh/browser:latest-microvm` |
 | `python` | Python 3.13 on Alpine | `hiversh/python:3.13-alpine` | `hiversh/python:3.13-alpine-microvm` |
 | `node` | Node.js on Alpine | `hiversh/node:alpine` | `hiversh/node:alpine-microvm` |
 
-> **MicroVM images** require nested virtualization to be enabled on the host node.
-
 ## Configuration
 
-Create a `values.yaml` file:
+Override the defaults with your own `values.yaml`. The key knob is the `images`
+list — each entry generates a Deployment + Service for the pool **and** the
+gateway's Envoy route to it.
 
 ```yaml values.yaml
+# Warm-pool size per image. replicas: 0 keeps a pool defined but scales its
+# prewarmed pods to zero (sandboxes still launch on demand); raise it to keep
+# hot pods ready.
 images:
-  python:
-    source: hiversh/python:3.13-alpine-microvm
-    sandbox:
-      cpu: 1
-      memory: 1024
+  - name: python
+    image: hiversh/python:3.13-alpine-microvm
+    replicas: 2
+    maxConcurrentLaunches: 4
     resources:
       requests:
         cpu: "1"
-        memory: 1Gi
+        memory: 512Mi
       limits:
         cpu: "4"
-        memory: 13Gi
-    replicaCount: 2
-    autoscaling:
-      enabled: true
-      minReplicas: 1
-      maxReplicas: 10
-      targetCPUUtilizationPercentage: 80
-
+        memory: 4Gi
 ```
+
+> The `images` value **replaces** the chart's default list rather than merging
+> into it — include every pool you want deployed. Run
+> `helm show values hiver/hiver` to see the full defaults to copy from.
 
 Apply it with:
 
 ```bash
-helm upgrade hiver hiver/hiver \
-  --namespace hiver \
-  --values values.yaml
+helm upgrade hiver hiver/hiver --values values.yaml
 ```
+
+Other common overrides: `controller.image` / `gateway.image` (pin different
+control-plane images), `gatewayUrl` (the callback URL injected into sandboxes),
+and `proxyPassthroughAll` (disable TLS MITM in the egress proxy).
 
 ## Verify
 
 Hiver uses two namespaces:
 
-- `hiver`, control-plane services: the controller and gateway
-- `hiver-sandbox`, pods for running sandboxes
+- `hiver` — control-plane services: the controller and gateway
+- `hiver-sandbox` — pods for running sandboxes
 
 ```bash
 kubectl get pods -n hiver
-# NAME                                READY   STATUS    AGE
-# hiver-controller-7d9f6b8c4-xkqzp   1/1     Running   2m
-# hiver-gateway-5b8f9d6c3-rplwk      1/1     Running   2m
-
-kubectl get pods -n hiver-sandbox
-# NAME                                READY   STATUS    AGE
-# sandbox-python-6d4b8f7c2-tnxqp     1/1     Running   30s
+# NAME                          READY   STATUS    AGE
+# controller-7d9f6b8c4-xkqzp    1/1     Running   2m
+# gateway-5b8f9d6c3-rplwk       1/1     Running   2m
 ```
 
-## Connect the TypeScript client
+Sandbox pools scale from their configured `replicas` (0 by default for most, so
+sandboxes launch on demand); any pool with `replicas > 0` shows prewarmed pods:
 
-Pass `gatewayUrl` to point the SDK at your deployed controller:
+```bash
+kubectl get pods -n hiver-sandbox
+```
+
+## Get the gateway address
+
+The gateway is a `LoadBalancer` Service; the cloud assigns it an external IP
+(a `<pending>` value just means it's still provisioning):
+
+```bash
+kubectl get svc gateway -n hiver \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+```
+
+## Connect a client
+
+Point the SDK at the gateway address:
 
 ```typescript
-import { getOrCreateSandbox } from "hiver";
+import { getOrCreateSandbox } from "@hiver.sh/client";
 
 const sandbox = await getOrCreateSandbox("my-sandbox", { image: "python" }, {
-  gatewayUrl: "https://hiver.internal.example",
+  gatewayUrl: "http://<gateway-ip>",
 });
 ```
 
@@ -109,7 +139,7 @@ from hiver import get_or_create_sandbox, SandboxConfig, ClientConfig
 
 sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
     image="python",
-), ClientConfig(gateway_url="https://hiver.internal.example"))
+), ClientConfig(gateway_url="http://<gateway-ip>"))
 ```
 
 ```go
@@ -118,11 +148,14 @@ import (
     client "github.com/hiver-sh/hiver/client"
 )
 
-c := client.NewClient("https://hiver.internal.example")
+c := client.NewClient("http://<gateway-ip>")
 sandbox, err := c.GetOrCreateSandbox(context.Background(), "my-sandbox", client.SandboxConfig{
     Image: "python",
 })
 ```
+
+The clients also read `HIVER_GATEWAY_URL` from the environment, so you can leave
+the URL out of code and set it once instead.
 
 ---
 
