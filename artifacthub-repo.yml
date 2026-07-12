@@ -1,13 +1,4 @@
-# Artifact Hub repository metadata. The Release workflow publishes this to the
-# ROOT of the gh-pages branch (next to index.yaml), where Artifact Hub reads it
-# to verify ownership of the chart repo and grant the Verified Publisher badge.
-#
-# repositoryID is issued by Artifact Hub when you add the repository in the
-# control panel (https://artifacthub.io/control-panel → Repositories → Add):
-#   Kind: Helm charts, URL: https://hiver-sh.github.io/hiver
-# Paste the generated ID below and merge; the next release republishes this file
-# and the ownership claim is verified.
-repositoryID: ""
+repositoryID: "3e6924b8-26c5-487b-8756-620de9a19574"
 owners:
   - name: Emmanuel Garcia
     email: emmanuel@hiver.sh
