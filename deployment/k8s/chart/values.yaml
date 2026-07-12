@@ -37,7 +37,7 @@ proxyPassthroughAll: false
 controller:
   # Pinned by digest — see the mirror.gcr.io stale-tag hazard note on images
   # below. Overridable at deploy time with --set controller.image=...
-  image: hiversh/controller@sha256:ea64e0f3d0cb559e39b55d45e82b92983d26ef9ea1b453a0b60b1bf0c60457e9
+  image: hiversh/controller@sha256:453ee9c07ee9cf102e78c8668915a37e242074fd66a693f8cbd75238da7b3242
   port: 9000
   env:
     # Selects the Kubernetes backend in NewControllerHandlers(); anything else
@@ -65,7 +65,7 @@ gateway:
   # Envoy image from docker/gateway. The baked /etc/envoy/envoy.yaml is
   # overridden by the generated gateway-envoy ConfigMap mounted into the pod so
   # sandboxes resolve across namespaces. Pinned by digest.
-  image: hiversh/gateway@sha256:3c2d9277acd16672ae083cb295ba4ebb7874e15c116cf5afbede73de51cb3dd2
+  image: hiversh/gateway@sha256:0f251e79e152ffc70d0e9c666af5654cfa9fee5a623853a25d1c86ae9ff96fbc
   # Envoy listener port (container) and the external LoadBalancer service port.
   listenPort: 10000
   servicePort: 80
@@ -79,7 +79,7 @@ gateway:
 
 images:
   - name: claude
-    image: hiversh/claude:latest-microvm@sha256:4f2c6c810fdd25d5c7a672d158d69e8a7d7fe8181520e562a6085122c9b4d728
+    image: hiversh/claude:latest-microvm@sha256:b45386482ca9110ff0eeeb83d530ef77987ad88264bf0739060b0eb4cceae6ce
     replicas: 0
     maxConcurrentLaunches: 4
     resources:
@@ -91,7 +91,7 @@ images:
         memory: 4Gi
 
   - name: codex
-    image: hiversh/codex:latest-microvm@sha256:305087d20e674996d304b150c3a46eb968adde29e514268dafe967290539e3e3
+    image: hiversh/codex:latest-microvm@sha256:0ff9ba6ca4fdf70d982f5f9784eb5a1073c25d1f7f79d28c83a84920a7a35006
     replicas: 0
     maxConcurrentLaunches: 4
     resources:
@@ -103,7 +103,7 @@ images:
         memory: 4Gi
 
   - name: copilot
-    image: hiversh/copilot:latest-microvm@sha256:1e068fc9b197418dbf050cc27ae2f42d19f87176fd13e813abb480bd7c58827a
+    image: hiversh/copilot:latest-microvm@sha256:2f27ef738952c21bebd1a9b634f7fc64e584aafd72b5be313c7782ca629af1cd
     replicas: 0
     maxConcurrentLaunches: 4
     resources:
@@ -115,7 +115,7 @@ images:
         memory: 4Gi
 
   - name: openclaw
-    image: hiversh/openclaw:latest-microvm@sha256:e3e85d21922b60c9f13b74bf52f33cdcc28e5dbbdf6c8d4fba39808db18ae537
+    image: hiversh/openclaw:latest-microvm@sha256:7b1270fcfb66c5932f5720b442b0360554b45aa3eca85d0bcf7dc184b5905a23
     replicas: 0
     maxConcurrentLaunches: 4
     resources:
@@ -127,7 +127,7 @@ images:
         memory: 4Gi
 
   - name: antigravity
-    image: hiversh/antigravity:latest-microvm@sha256:fc8bd26c78455d09a8d37abf7759c0a5294152b5a98cc0eaac73ccf2942575f5
+    image: hiversh/antigravity:latest-microvm@sha256:ade41c75f0d0387d9506906dc859f4d5b3d5a46400ec4e0610a8cf8220d52ba4
     replicas: 0
     maxConcurrentLaunches: 4
     resources:
@@ -139,7 +139,7 @@ images:
         memory: 4Gi
 
   - name: browser
-    image: hiversh/browser:latest-microvm@sha256:36d1e7efd9bf76136f7052a4127033cee36b3b7f15e5879e279bc85e6e9a4bd4
+    image: hiversh/browser:latest-microvm@sha256:1e21bfc4fc1880ba8053f1aae02360e1837a73fd76d3e193d152a62bf63f74bd
     replicas: 1
     maxConcurrentLaunches: 4
     # Share warm upstream connections across all sandboxes in the pod: a freshly
@@ -158,7 +158,7 @@ images:
         memory: 13Gi
 
   - name: python
-    image: hiversh/python:3.13-alpine-microvm@sha256:7a3ba6a2fdf3fe37ef7a2b0be0805854497dfc3c365ac038591cc96d0f5e220b
+    image: hiversh/python:3.13-alpine-microvm@sha256:9d7b47622c59cac937ca31dc8ebcd187a2df4f762c767b30200f16b2a22d38a2
     replicas: 0
     maxConcurrentLaunches: 4
     resources:
@@ -170,7 +170,7 @@ images:
         memory: 4Gi
 
   - name: node
-    image: hiversh/node:alpine-microvm@sha256:992dc3a8370ee78661ff5c3dbac28de7148a4489529d5f49021961dc21c5f598
+    image: hiversh/node:alpine-microvm@sha256:f282711472f92d146b2ea8abcd412c469d853c282088d810f54c96c4999d25fd
     replicas: 0
     maxConcurrentLaunches: 4
     resources:
