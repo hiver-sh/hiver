@@ -173,6 +173,15 @@ type FS struct {
 	AzureSASToken         string `json:"azure_sas_token,omitempty"`
 	AzureEndpoint         string `json:"azure_endpoint,omitempty"`
 
+	// onedrive only — OAuth credentials, optional tenant/drive, and prefix.
+	OneDriveAccessToken  string `json:"onedrive_access_token,omitempty"`
+	OneDriveRefreshToken string `json:"onedrive_refresh_token,omitempty"`
+	OneDriveClientID     string `json:"onedrive_client_id,omitempty"`
+	OneDriveClientSecret string `json:"onedrive_client_secret,omitempty"`
+	OneDriveTenant       string `json:"onedrive_tenant,omitempty"`
+	OneDriveDriveID      string `json:"onedrive_drive_id,omitempty"`
+	OneDrivePrefix       string `json:"onedrive_prefix,omitempty"`
+
 	// external only — base URL of the HTTP host backing the file system.
 	Host string `json:"host,omitempty"`
 }
@@ -205,13 +214,14 @@ const (
 	BackendGoogleCloudStorage Backend = "gcs"
 	BackendS3                 Backend = "s3"
 	BackendAzureBlob          Backend = "azure"
+	BackendOneDrive           Backend = "onedrive"
 	BackendExternal           Backend = "external"
 )
 
 // Valid reports whether the backend is one sandboxd knows how to wire up.
 func (b Backend) Valid() bool {
 	switch b {
-	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendExternal:
+	case BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendOneDrive, BackendExternal:
 		return true
 	}
 	return false
@@ -221,7 +231,7 @@ func (b Backend) Valid() bool {
 // store via the oplog. Local is the only non-remote backend today.
 func (b Backend) IsRemote() bool {
 	switch b {
-	case BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendExternal:
+	case BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendOneDrive, BackendExternal:
 		return true
 	}
 	return false
@@ -287,6 +297,17 @@ const (
 	envAzureEndpoint         = "HIVE_AZURE_ENDPOINT"
 )
 
+// Env-var fallbacks for onedrive credentials.
+const (
+	envOneDriveAccessToken  = "HIVE_ONEDRIVE_ACCESS_TOKEN"
+	envOneDriveRefreshToken = "HIVE_ONEDRIVE_REFRESH_TOKEN"
+	envOneDriveClientID     = "HIVE_ONEDRIVE_CLIENT_ID"
+	envOneDriveClientSecret = "HIVE_ONEDRIVE_CLIENT_SECRET"
+	envOneDriveTenant       = "HIVE_ONEDRIVE_TENANT"
+	envOneDriveDriveID      = "HIVE_ONEDRIVE_DRIVE_ID"
+	envOneDrivePrefix       = "HIVE_ONEDRIVE_PREFIX"
+)
+
 // Env-var fallback for the external backend host.
 const envExternalHost = "HIVE_EXTERNAL_HOST"
 
@@ -342,6 +363,18 @@ func (f *FS) azureResolved() (account, cont, prefix, accountKey, connectionStrin
 		or(f.AzureConnectionString, envAzureConnectionString),
 		or(f.AzureSASToken, envAzureSASToken),
 		or(f.AzureEndpoint, envAzureEndpoint)
+}
+
+// onedriveResolved returns the effective onedrive config — spec fields with
+// env-var fallback.
+func (f *FS) onedriveResolved() (accessToken, refreshToken, clientID, clientSecret, tenant, driveID, prefix string) {
+	return or(f.OneDriveAccessToken, envOneDriveAccessToken),
+		or(f.OneDriveRefreshToken, envOneDriveRefreshToken),
+		or(f.OneDriveClientID, envOneDriveClientID),
+		or(f.OneDriveClientSecret, envOneDriveClientSecret),
+		or(f.OneDriveTenant, envOneDriveTenant),
+		or(f.OneDriveDriveID, envOneDriveDriveID),
+		or(f.OneDrivePrefix, envOneDrivePrefix)
 }
 
 // externalResolved returns the effective external host — spec field with
@@ -427,6 +460,25 @@ func (f *FS) BackendConfigJSON() ([]byte, error) {
 			SASToken:         sas,
 			Endpoint:         endpoint,
 		})
+	case BackendOneDrive:
+		access, refresh, clientID, clientSecret, tenant, driveID, prefix := f.onedriveResolved()
+		return json.Marshal(struct {
+			AccessToken  string `json:"access_token,omitempty"`
+			RefreshToken string `json:"refresh_token,omitempty"`
+			ClientID     string `json:"client_id,omitempty"`
+			ClientSecret string `json:"client_secret,omitempty"`
+			Tenant       string `json:"tenant,omitempty"`
+			DriveID      string `json:"drive_id,omitempty"`
+			Prefix       string `json:"prefix,omitempty"`
+		}{
+			AccessToken:  access,
+			RefreshToken: refresh,
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			Tenant:       tenant,
+			DriveID:      driveID,
+			Prefix:       prefix,
+		})
 	case BackendExternal:
 		return json.Marshal(struct {
 			Host string `json:"host"`
@@ -491,7 +543,7 @@ func (s *Spec) Validate() error {
 			return fmt.Errorf("%s.backend is required", ctx)
 		}
 		if !f.Backend.Valid() {
-			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q, %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendExternal)
+			return fmt.Errorf("%s.backend: unknown value %q (supported: %q, %q, %q, %q, %q, %q, %q)", ctx, f.Backend, BackendLocal, BackendGoogleDrive, BackendGoogleCloudStorage, BackendS3, BackendAzureBlob, BackendOneDrive, BackendExternal)
 		}
 		if f.Backend == BackendGoogleDrive {
 			access, _, _, _, sa, _, _ := f.gdriveResolved()
@@ -529,6 +581,12 @@ func (s *Spec) Validate() error {
 			// only a connection string or an explicit endpoint can supply it.
 			if account == "" && connStr == "" && endpoint == "" {
 				return fmt.Errorf("%s.backend azure: azure_account is required unless azure_connection_string or azure_endpoint is set (or env %s)", ctx, envAzureAccount)
+			}
+		}
+		if f.Backend == BackendOneDrive {
+			access, _, _, _, _, _, _ := f.onedriveResolved()
+			if access == "" {
+				return fmt.Errorf("%s.backend onedrive: onedrive_access_token is required (or env %s)", ctx, envOneDriveAccessToken)
 			}
 		}
 		if f.Backend == BackendExternal {

@@ -19,10 +19,11 @@ type Expect<T extends true> = T;
  * - `gcs`      — backed by Google Cloud Storage.
  * - `s3`       — backed by Amazon S3 or an S3-compatible service.
  * - `azure`    — backed by Azure Blob Storage.
+ * - `onedrive` — backed by Microsoft OneDrive.
  * - `external` — backed by an HTTP host you implement.
  */
-export type Backend = "local" | "gdrive" | "gcs" | "s3" | "azure" | "external";
-export const Backend = z.enum(["local", "gdrive", "gcs", "s3", "azure", "external"]);
+export type Backend = "local" | "gdrive" | "gcs" | "s3" | "azure" | "onedrive" | "external";
+export const Backend = z.enum(["local", "gdrive", "gcs", "s3", "azure", "onedrive", "external"]);
 type _AssertBackend = Expect<Equal<z.infer<typeof Backend>, Backend>>;
 
 /** One access control rule. */
@@ -199,6 +200,38 @@ type _AssertAzureBlobFileSystem = Expect<
   Equal<z.infer<typeof AzureBlobFileSystem>, AzureBlobFileSystem>
 >;
 
+/** A file system backed by Microsoft OneDrive (via the Microsoft Graph API). */
+export interface OneDriveFileSystem extends FileSystemBase {
+  backend: "onedrive";
+  /** OAuth access token. */
+  onedrive_access_token: string;
+  /** OAuth refresh token; pair with client id/secret to enable refresh. */
+  onedrive_refresh_token?: string;
+  /** OAuth application (client) ID. */
+  onedrive_client_id?: string;
+  /** OAuth client secret. */
+  onedrive_client_secret?: string;
+  /** Microsoft identity platform tenant used for token refresh. Defaults to `common`. */
+  onedrive_tenant?: string;
+  /** Target a specific drive (e.g. a SharePoint document library). Defaults to the user's OneDrive. */
+  onedrive_drive_id?: string;
+  /** Optional subfolder path the file system is scoped to (e.g. `e2e-test/run-42`). Created if absent. */
+  onedrive_prefix?: string;
+}
+export const OneDriveFileSystem = FileSystemBase.extend({
+  backend: z.literal("onedrive"),
+  onedrive_access_token: z.string(),
+  onedrive_refresh_token: z.string().optional(),
+  onedrive_client_id: z.string().optional(),
+  onedrive_client_secret: z.string().optional(),
+  onedrive_tenant: z.string().optional(),
+  onedrive_drive_id: z.string().optional(),
+  onedrive_prefix: z.string().optional(),
+});
+type _AssertOneDriveFileSystem = Expect<
+  Equal<z.infer<typeof OneDriveFileSystem>, OneDriveFileSystem>
+>;
+
 /**
  * A file system backed by an external HTTP host you implement. Each agent file
  * operation becomes one call against `host`.
@@ -230,6 +263,7 @@ export type FileSystem =
   | GCSFileSystem
   | S3FileSystem
   | AzureBlobFileSystem
+  | OneDriveFileSystem
   | ExternalFileSystem;
 export const FileSystem = z.discriminatedUnion("backend", [
   LocalFileSystem,
@@ -237,6 +271,7 @@ export const FileSystem = z.discriminatedUnion("backend", [
   GCSFileSystem,
   S3FileSystem,
   AzureBlobFileSystem,
+  OneDriveFileSystem,
   ExternalFileSystem,
 ]);
 type _AssertFileSystem = Expect<Equal<z.infer<typeof FileSystem>, FileSystem>>;

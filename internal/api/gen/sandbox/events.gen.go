@@ -234,6 +234,7 @@ type FSResponseEvent struct {
 	//   * `gcs`      — backed by Google Cloud Storage.
 	//   * `s3`       — backed by Amazon S3 or an S3-compatible service.
 	//   * `azure`    — backed by Azure Blob Storage.
+	//   * `onedrive` — backed by Microsoft OneDrive.
 	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 	Backend Backend `json:"backend"`
 

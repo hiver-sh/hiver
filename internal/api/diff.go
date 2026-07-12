@@ -43,6 +43,11 @@ func NormalizeConfig(cfg gen.SandboxConfig) gen.SandboxConfig {
 				v.Acls = acls
 				_ = cfg.Fs[i].FromAzureBlobFileSystem(v)
 			}
+		case gen.BackendOnedrive:
+			if v, err := fs.AsOneDriveFileSystem(); err == nil {
+				v.Acls = acls
+				_ = cfg.Fs[i].FromOneDriveFileSystem(v)
+			}
 		case gen.BackendExternal:
 			if v, err := fs.AsExternalFileSystem(); err == nil {
 				v.Acls = acls

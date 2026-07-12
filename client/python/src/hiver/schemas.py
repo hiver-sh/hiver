@@ -111,6 +111,26 @@ class AzureBlobFileSystem(_FileSystemBase):
     """Optional custom blob service endpoint (e.g. the Azurite emulator). When omitted, ``https://{azure_account}.blob.core.windows.net`` is used."""
 
 
+class OneDriveFileSystem(_FileSystemBase):
+    """A file system backed by Microsoft OneDrive (via the Microsoft Graph API)."""
+
+    backend: Literal["onedrive"]
+    onedrive_access_token: str
+    """OAuth access token."""
+    onedrive_refresh_token: Optional[str] = None
+    """OAuth refresh token; pair with ``onedrive_client_id`` and ``onedrive_client_secret`` to enable token refresh."""
+    onedrive_client_id: Optional[str] = None
+    """OAuth application (client) ID."""
+    onedrive_client_secret: Optional[str] = None
+    """OAuth client secret."""
+    onedrive_tenant: Optional[str] = None
+    """Microsoft identity platform tenant used for token refresh. Defaults to ``common``."""
+    onedrive_drive_id: Optional[str] = None
+    """Target a specific drive (e.g. a SharePoint document library). When omitted, the signed-in user's OneDrive is used."""
+    onedrive_prefix: Optional[str] = None
+    """Optional subfolder path the file system is scoped to (e.g. ``e2e-test/run-42``). Created if absent."""
+
+
 class ExternalFileSystem(_FileSystemBase):
     """A file system backed by an external HTTP host. Each agent file operation becomes one call against ``host``."""
 
@@ -120,7 +140,7 @@ class ExternalFileSystem(_FileSystemBase):
 
 
 FileSystem = Annotated[
-    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, S3FileSystem, AzureBlobFileSystem, ExternalFileSystem],
+    Union[LocalFileSystem, GDriveFileSystem, GCSFileSystem, S3FileSystem, AzureBlobFileSystem, OneDriveFileSystem, ExternalFileSystem],
     Field(discriminator="backend"),
 ]
 """A file system exposed to the agent at ``mount``. ``backend`` selects the storage type. Access is governed by ``acls``, evaluated longest-prefix-first with deny as the default."""
@@ -370,7 +390,7 @@ class FSResponseEvent(_SandboxEventBase):
     """The outcome of an earlier file operation."""
 
     type: Literal["fs.response"]
-    backend: Literal["local", "gdrive", "gcs", "s3", "azure", "external"]
+    backend: Literal["local", "gdrive", "gcs", "s3", "azure", "onedrive", "external"]
     request_id: int
     duration_ms: int
     error: Optional[str] = None

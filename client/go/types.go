@@ -83,7 +83,7 @@ type EgressRule struct {
 type FileSystem struct {
 	// Mount is the absolute path at which the file system appears to the agent.
 	Mount string `json:"mount"`
-	// Backend is "local", "gdrive", "gcs", "s3", "azure", or "external".
+	// Backend is "local", "gdrive", "gcs", "s3", "azure", "onedrive", or "external".
 	Backend string `json:"backend"`
 	// ACLs are access control rules for paths under Mount.
 	ACLs []ACLRule `json:"acls,omitempty"`
@@ -172,6 +172,25 @@ type FileSystem struct {
 	// endpoint (e.g. the Azurite emulator). When omitted,
 	// "https://{account}.blob.core.windows.net" is used.
 	AzureEndpoint string `json:"azure_endpoint,omitempty"`
+
+	// OneDriveAccessToken (onedrive backend) is an OAuth access token.
+	OneDriveAccessToken string `json:"onedrive_access_token,omitempty"`
+	// OneDriveRefreshToken (onedrive backend) is an OAuth refresh token; pair
+	// it with OneDriveClientID/OneDriveClientSecret to enable token refresh.
+	OneDriveRefreshToken string `json:"onedrive_refresh_token,omitempty"`
+	// OneDriveClientID (onedrive backend) is the OAuth application (client) ID.
+	OneDriveClientID string `json:"onedrive_client_id,omitempty"`
+	// OneDriveClientSecret (onedrive backend) is the OAuth client secret.
+	OneDriveClientSecret string `json:"onedrive_client_secret,omitempty"`
+	// OneDriveTenant (onedrive backend) is the Microsoft identity platform
+	// tenant used for token refresh. Defaults to "common".
+	OneDriveTenant string `json:"onedrive_tenant,omitempty"`
+	// OneDriveDriveID (onedrive backend) targets a specific drive (e.g. a
+	// SharePoint document library). When omitted, the user's OneDrive is used.
+	OneDriveDriveID string `json:"onedrive_drive_id,omitempty"`
+	// OneDrivePrefix (onedrive backend) is an optional subfolder path the file
+	// system is scoped to (e.g. "e2e-test/run-42"). Created if absent.
+	OneDrivePrefix string `json:"onedrive_prefix,omitempty"`
 
 	// Host (external backend) is the base URL of the host you implement to back
 	// this file system. A trailing slash is ignored.

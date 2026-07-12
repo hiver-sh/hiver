@@ -52,6 +52,7 @@ const (
 	BackendGcs      Backend = "gcs"
 	BackendGdrive   Backend = "gdrive"
 	BackendLocal    Backend = "local"
+	BackendOnedrive Backend = "onedrive"
 	BackendS3       Backend = "s3"
 )
 
@@ -67,6 +68,8 @@ func (e Backend) Valid() bool {
 	case BackendGdrive:
 		return true
 	case BackendLocal:
+		return true
+	case BackendOnedrive:
 		return true
 	case BackendS3:
 		return true
@@ -204,6 +207,21 @@ func (e LocalFileSystemBackend) Valid() bool {
 	}
 }
 
+// Defines values for OneDriveFileSystemBackend.
+const (
+	Onedrive OneDriveFileSystemBackend = "onedrive"
+)
+
+// Valid indicates whether the value is a known member of the OneDriveFileSystemBackend enum.
+func (e OneDriveFileSystemBackend) Valid() bool {
+	switch e {
+	case Onedrive:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for S3FileSystemBackend.
 const (
 	S3 S3FileSystemBackend = "s3"
@@ -313,6 +331,7 @@ type AzureBlobFileSystemBackend string
 //   - `gcs`      — backed by Google Cloud Storage.
 //   - `s3`       — backed by Amazon S3 or an S3-compatible service.
 //   - `azure`    — backed by Azure Blob Storage.
+//   - `onedrive` — backed by Microsoft OneDrive.
 //   - `external` — backed by an HTTP host (see `external_file_system.yaml`).
 type Backend string
 
@@ -527,6 +546,7 @@ type FileSystemBase struct {
 	//   * `gcs`      — backed by Google Cloud Storage.
 	//   * `s3`       — backed by Amazon S3 or an S3-compatible service.
 	//   * `azure`    — backed by Azure Blob Storage.
+	//   * `onedrive` — backed by Microsoft OneDrive.
 	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 	Backend Backend `json:"backend"`
 
@@ -656,6 +676,56 @@ type LocalFileSystem struct {
 
 // LocalFileSystemBackend defines model for LocalFileSystem.Backend.
 type LocalFileSystemBackend string
+
+// OneDriveFileSystem defines model for OneDriveFileSystem.
+type OneDriveFileSystem struct {
+	// Acls Access control rules for paths under `mount`. When omitted,
+	// a single default rule `{ path: "<mount>/**", access: "rw" }`
+	// is applied, granting full read-write access to the entire mount.
+	Acls    *[]ACLRule                `json:"acls,omitempty"`
+	Backend OneDriveFileSystemBackend `json:"backend"`
+
+	// Internal When true, the file system is mounted inside the sandbox runtime
+	// but is not exposed to the agent workload — the agent never sees
+	// `mount`. Use it for storage the sandbox needs but the agent must
+	// not access, e.g. a remote-backed snapshot target referenced by
+	// `snapshot.mount`. Because the agent cannot reach the mount, `acls`
+	// are ignored for internal file systems.
+	Internal *bool `json:"internal,omitempty"`
+
+	// Mount Absolute path at which the file system appears to the agent.
+	Mount string `json:"mount"`
+
+	// OnedriveAccessToken OAuth access token.
+	OnedriveAccessToken string `json:"onedrive_access_token"`
+
+	// OnedriveClientId OAuth application (client) ID.
+	OnedriveClientId *string `json:"onedrive_client_id,omitempty"`
+
+	// OnedriveClientSecret OAuth client secret.
+	OnedriveClientSecret *string `json:"onedrive_client_secret,omitempty"`
+
+	// OnedriveDriveId Target a specific drive (e.g. a SharePoint document library).
+	// When omitted, the signed-in user's OneDrive is used.
+	OnedriveDriveId *string `json:"onedrive_drive_id,omitempty"`
+
+	// OnedrivePrefix Optional subfolder path that the file system is scoped to
+	// (e.g. `e2e-test/run-42`). The path is created if it does not
+	// exist. When omitted, the drive root is used.
+	OnedrivePrefix *string `json:"onedrive_prefix,omitempty"`
+
+	// OnedriveRefreshToken OAuth refresh token. Combine with `onedrive_client_id` and
+	// `onedrive_client_secret` so the backend can refresh an expired
+	// access token.
+	OnedriveRefreshToken *string `json:"onedrive_refresh_token,omitempty"`
+
+	// OnedriveTenant Microsoft identity platform tenant used for token refresh.
+	// Defaults to `common`.
+	OnedriveTenant *string `json:"onedrive_tenant,omitempty"`
+}
+
+// OneDriveFileSystemBackend defines model for OneDriveFileSystem.Backend.
+type OneDriveFileSystemBackend string
 
 // S3FileSystem defines model for S3FileSystem.
 type S3FileSystem struct {
@@ -1038,6 +1108,32 @@ func (t *FileSystem) FromAzureBlobFileSystem(v AzureBlobFileSystem) error {
 
 // MergeAzureBlobFileSystem performs a merge with any union data inside the FileSystem, using the provided AzureBlobFileSystem
 func (t *FileSystem) MergeAzureBlobFileSystem(v AzureBlobFileSystem) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsOneDriveFileSystem returns the union data inside the FileSystem as a OneDriveFileSystem
+func (t FileSystem) AsOneDriveFileSystem() (OneDriveFileSystem, error) {
+	var body OneDriveFileSystem
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromOneDriveFileSystem overwrites any union data inside the FileSystem as the provided OneDriveFileSystem
+func (t *FileSystem) FromOneDriveFileSystem(v OneDriveFileSystem) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeOneDriveFileSystem performs a merge with any union data inside the FileSystem, using the provided OneDriveFileSystem
+func (t *FileSystem) MergeOneDriveFileSystem(v OneDriveFileSystem) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

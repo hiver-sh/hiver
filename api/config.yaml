@@ -270,6 +270,7 @@ components:
         - $ref: '#/components/schemas/GCSFileSystem'
         - $ref: '#/components/schemas/S3FileSystem'
         - $ref: '#/components/schemas/AzureBlobFileSystem'
+        - $ref: '#/components/schemas/OneDriveFileSystem'
         - $ref: '#/components/schemas/ExternalFileSystem'
 
     FileSystemBase:
@@ -492,6 +493,52 @@ components:
                 `https://{azure_account}.blob.core.windows.net` is used.
               example: https://mystorageaccount.blob.core.windows.net
 
+    OneDriveFileSystem:
+      description: A file system backed by Microsoft OneDrive (via the Microsoft Graph API).
+      allOf:
+        - $ref: '#/components/schemas/FileSystemBase'
+        - type: object
+          required: [onedrive_access_token]
+          properties:
+            backend:
+              type: string
+              enum: [onedrive]
+            onedrive_access_token:
+              type: string
+              format: password
+              description: OAuth access token.
+            onedrive_refresh_token:
+              type: string
+              format: password
+              description: |
+                OAuth refresh token. Combine with `onedrive_client_id` and
+                `onedrive_client_secret` so the backend can refresh an expired
+                access token.
+            onedrive_client_id:
+              type: string
+              description: OAuth application (client) ID.
+            onedrive_client_secret:
+              type: string
+              format: password
+              description: OAuth client secret.
+            onedrive_tenant:
+              type: string
+              description: |
+                Microsoft identity platform tenant used for token refresh.
+                Defaults to `common`.
+              example: common
+            onedrive_drive_id:
+              type: string
+              description: |
+                Target a specific drive (e.g. a SharePoint document library).
+                When omitted, the signed-in user's OneDrive is used.
+            onedrive_prefix:
+              type: string
+              description: |
+                Optional subfolder path that the file system is scoped to
+                (e.g. `e2e-test/run-42`). The path is created if it does not
+                exist. When omitted, the drive root is used.
+
     ExternalFileSystem:
       description: |
         A file system backed by an external HTTP host. The host
@@ -520,7 +567,7 @@ components:
 
     Backend:
       type: string
-      enum: [local, gdrive, gcs, s3, azure, external]
+      enum: [local, gdrive, gcs, s3, azure, onedrive, external]
       description: |
         Storage type for a file system.
           * `local`    — sandbox-local storage with no external dependency.
@@ -528,6 +575,7 @@ components:
           * `gcs`      — backed by Google Cloud Storage.
           * `s3`       — backed by Amazon S3 or an S3-compatible service.
           * `azure`    — backed by Azure Blob Storage.
+          * `onedrive` — backed by Microsoft OneDrive.
           * `external` — backed by an HTTP host (see `external_file_system.yaml`).
 
     ACLRule:

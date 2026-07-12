@@ -21,6 +21,7 @@ export {
   GCSFileSystem,
   S3FileSystem,
   AzureBlobFileSystem,
+  OneDriveFileSystem,
   HttpMethod,
   LocalFileSystem,
   SandboxConfig,

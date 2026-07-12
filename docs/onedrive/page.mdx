@@ -1,0 +1,80 @@
+export const metadata = { title: "OneDrive" }
+
+# OneDrive
+
+Mount Microsoft OneDrive into a sandbox with the `onedrive` backend. Everything the agent writes to the mount persists to OneDrive (via the Microsoft Graph API) and survives restarts. Configure it as an entry in [`SandboxConfig.fs`](/docs/remote-file-systems); access under the mount is governed by [ACLs](/docs/file-policy).
+
+## Authenticate
+
+Supply an OAuth access token. Pair it with a refresh token plus client credentials so the backend can renew the access token automatically.
+
+```typescript
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+const sandbox = await getOrCreateSandbox("onedrive", {
+  fs: [{
+    backend: "onedrive",
+    mount: "/drive",
+    onedrive_access_token: process.env.ONEDRIVE_ACCESS_TOKEN!,
+    onedrive_refresh_token: process.env.ONEDRIVE_REFRESH_TOKEN,
+    onedrive_client_id: process.env.ONEDRIVE_CLIENT_ID,
+    onedrive_client_secret: process.env.ONEDRIVE_CLIENT_SECRET,
+    onedrive_prefix: "sandbox/run-1", // optional; scopes to a subfolder
+    acls: [{ path: "/drive/**", access: "rw" }],
+  }],
+});
+```
+
+```python
+import os
+from hiver import get_or_create_sandbox, SandboxConfig, OneDriveFileSystem, ACLRule
+
+sandbox = await get_or_create_sandbox("onedrive", SandboxConfig(
+    fs=[OneDriveFileSystem(
+        backend="onedrive",
+        mount="/drive",
+        onedrive_access_token=os.environ["ONEDRIVE_ACCESS_TOKEN"],
+        onedrive_refresh_token=os.environ["ONEDRIVE_REFRESH_TOKEN"],
+        onedrive_client_id=os.environ["ONEDRIVE_CLIENT_ID"],
+        onedrive_client_secret=os.environ["ONEDRIVE_CLIENT_SECRET"],
+        onedrive_prefix="sandbox/run-1",  # optional; scopes to a subfolder
+        acls=[ACLRule(path="/drive/**", access="rw")],
+    )],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "onedrive", client.SandboxConfig{
+    FS: []client.FileSystem{{
+        Backend:              "onedrive",
+        Mount:                "/drive",
+        OneDriveAccessToken:  os.Getenv("ONEDRIVE_ACCESS_TOKEN"),
+        OneDriveRefreshToken: os.Getenv("ONEDRIVE_REFRESH_TOKEN"),
+        OneDriveClientID:     os.Getenv("ONEDRIVE_CLIENT_ID"),
+        OneDriveClientSecret: os.Getenv("ONEDRIVE_CLIENT_SECRET"),
+        OneDrivePrefix:       "sandbox/run-1", // optional; scopes to a subfolder
+        ACLs:                 []client.ACLRule{{Path: "/drive/**", Access: "rw"}},
+    }},
+})
+```
+
+## Fields
+
+| Field | Description |
+|-------|-------------|
+| `onedrive_access_token` | OAuth access token. Required. |
+| `onedrive_refresh_token` | OAuth refresh token, used to renew the access token automatically. |
+| `onedrive_client_id` / `onedrive_client_secret` | OAuth application credentials from your Entra ID (Azure AD) app registration. |
+| `onedrive_tenant` | Optional. Microsoft identity platform tenant used for token refresh. Defaults to `common`. |
+| `onedrive_drive_id` | Optional. Target a specific drive, e.g. a SharePoint document library. Omit to use the signed-in user's OneDrive. |
+| `onedrive_prefix` | Optional subfolder path the mount is scoped to (created if absent). |
+
+**Getting OAuth tokens**, register an app in Entra ID and run the [Microsoft identity platform OAuth 2.0 flow](https://learn.microsoft.com/entra/identity-platform/v2-oauth2-auth-code-flow) with the `Files.ReadWrite.All offline_access` scopes. The `onedrive_refresh_token` keeps the access token fresh automatically.
+
+**Scoping with a prefix**, set `onedrive_prefix` to keep a sandbox confined to a subfolder rather than the whole drive; the folder is created if it does not exist.
+
+<Callout>Combine a OneDrive mount with other backends in the same sandbox, for example a read-write `local` `/workspace` for scratch plus a `/drive` mount for durable output. Mount paths must be unique and non-overlapping. See [Local Files](/docs/remote-file-systems), [GCS](/docs/gcs), [S3](/docs/s3), [Azure Blob](/docs/azure), and [Google Drive](/docs/google-drive).</Callout>
+
+---
+
+Next: [Snapshots](/docs/snapshots)

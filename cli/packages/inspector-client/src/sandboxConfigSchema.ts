@@ -162,6 +162,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
         { $ref: "#/definitions/GCSFileSystem" },
         { $ref: "#/definitions/S3FileSystem" },
         { $ref: "#/definitions/AzureBlobFileSystem" },
+        { $ref: "#/definitions/OneDriveFileSystem" },
         { $ref: "#/definitions/ExternalFileSystem" },
       ],
     },
@@ -380,6 +381,53 @@ export const SANDBOX_CONFIG_SCHEMA = {
       ],
     },
 
+    OneDriveFileSystem: {
+      description: "A file system backed by Microsoft OneDrive (via the Microsoft Graph API).",
+      allOf: [
+        { $ref: "#/definitions/FileSystemBase" },
+        {
+          type: "object",
+          required: ["onedrive_access_token"],
+          properties: {
+            backend: { type: "string", enum: ["onedrive"] },
+            onedrive_access_token: {
+              type: "string",
+              description: "OAuth access token.",
+            },
+            onedrive_refresh_token: {
+              type: "string",
+              description:
+                "OAuth refresh token; pair with client id/secret to enable token refresh.",
+            },
+            onedrive_client_id: {
+              type: "string",
+              description: "OAuth application (client) ID.",
+            },
+            onedrive_client_secret: {
+              type: "string",
+              description: "OAuth client secret.",
+            },
+            onedrive_tenant: {
+              type: "string",
+              description:
+                "Microsoft identity platform tenant used for token refresh. Defaults to common.",
+              examples: ["common"],
+            },
+            onedrive_drive_id: {
+              type: "string",
+              description:
+                "Target a specific drive (e.g. a SharePoint document library). Defaults to the user's OneDrive.",
+            },
+            onedrive_prefix: {
+              type: "string",
+              description:
+                "Optional subfolder path the file system is scoped to (e.g. e2e-test/run-42). Created if absent.",
+            },
+          },
+        },
+      ],
+    },
+
     ExternalFileSystem: {
       description:
         "A file system backed by an external HTTP host implementing the external file system interface.",
@@ -403,9 +451,9 @@ export const SANDBOX_CONFIG_SCHEMA = {
 
     Backend: {
       type: "string",
-      enum: ["local", "gdrive", "gcs", "s3", "azure", "external"],
+      enum: ["local", "gdrive", "gcs", "s3", "azure", "onedrive", "external"],
       description:
-        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage), s3 (Amazon S3 or S3-compatible), azure (Azure Blob Storage), external (HTTP host).",
+        "Storage type: local (no external deps), gdrive (Google Drive), gcs (Google Cloud Storage), s3 (Amazon S3 or S3-compatible), azure (Azure Blob Storage), onedrive (Microsoft OneDrive), external (HTTP host).",
     },
 
     ACLRule: {
