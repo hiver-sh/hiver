@@ -1,7 +1,7 @@
 # Open Work
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="Open Work: chat, live browser viewer, and workspace panel" width="900">
+  <img src="thumbnail.svg" alt="Open Work" width="900">
 </p>
 
 Open Work is a Next.js (App Router) + [shadcn/ui](https://ui.shadcn.com) app
@@ -11,6 +11,10 @@ or [Codex](https://github.com/openai/codex), inside an isolated
 process and its own sandbox: files you attach or reference land in
 `/workspace`, the agent's replies stream back over a single shared SSE
 connection, and everything survives a page refresh or a server restart.
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="Open Work: chat, live browser viewer, and workspace panel" width="900">
+</p>
 
 ## Capabilities
 

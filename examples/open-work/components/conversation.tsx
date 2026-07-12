@@ -5,6 +5,7 @@ import { AtSign, Paperclip } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { EgressCard } from "@/components/egress-card";
+import { Logo } from "@/components/logo";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SmoothMarkdown } from "@/components/markdown";
 import type { Task } from "@/lib/task";
@@ -33,6 +34,7 @@ export function Conversation({
   if (!task) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
+        <Logo size={44} className="mb-2 text-muted-foreground" />
         <span
           className="text-2xl font-semibold tracking-tight text-muted-foreground"
           style={{ fontFamily: "var(--font-display)" }}

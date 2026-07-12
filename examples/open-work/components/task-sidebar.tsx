@@ -4,6 +4,7 @@ import * as React from "react";
 import { MoreHorizontal, PanelLeftClose, SquarePen, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Logo } from "@/components/logo";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { Task } from "@/lib/task";
@@ -29,10 +30,11 @@ export function TaskSidebar({
       <div className="flex items-center justify-between px-4 py-3.5">
         <button
           onClick={onNew}
-          className="cursor-pointer text-base font-semibold tracking-tight transition-opacity hover:opacity-70"
+          className="flex cursor-pointer items-center gap-2 text-base font-semibold tracking-tight transition-opacity hover:opacity-70"
           style={{ fontFamily: "var(--font-display)" }}
           aria-label="Go to home"
         >
+          <Logo size={20} />
           Open Work
         </button>
         <Button
