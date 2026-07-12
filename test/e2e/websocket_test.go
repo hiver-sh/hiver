@@ -52,9 +52,13 @@ func TestWebSocketE2E(t *testing.T) {
 	// Tear the sandbox down via its own API (no controller involvement).
 	t.Cleanup(func() { _ = sbx.Shutdown(context.Background()) })
 
-	// Collect all sandbox events via the Go client. Once the agent prints
-	// DONE (after which it enters an infinite sleep loop) we give the proxy a
-	// brief settle window then stop watching.
+	// Collect all sandbox events via the Go client. The four signals this test
+	// asserts on arrive on two independent streams (the proxy's egress.request
+	// audits and the agent's stdio) whose relative ordering isn't guaranteed —
+	// e.g. the denied egress.request is emitted just BEFORE the agent's WS client
+	// sees the 403 and prints "WS DENIED OK", and either can lag on a slow CI
+	// runner. So keep watching until all four are in hand, then stop; the outer
+	// deadline caps the wait if one never shows.
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()
 	eventsCh, _ := sbx.WatchEvents(watchCtx, 0)
@@ -63,11 +67,21 @@ func TestWebSocketE2E(t *testing.T) {
 	collectDone := make(chan struct{})
 	go func() {
 		defer close(collectDone)
+		var allowedWS, deniedWS, sawAllowedOK, sawDeniedOK bool
 		for ev := range eventsCh {
 			collected = append(collected, ev)
-			if ev.Type == "stdio" && strings.Contains(ev.Stdout, "DONE") {
-				time.Sleep(300 * time.Millisecond) // let proxy flush final audit events
-				watchCancel()
+			switch {
+			case ev.Type == "egress.request" && ev.Host == "upstream-ws" && ev.Access == "allowed":
+				allowedWS = true
+			case ev.Type == "egress.request" && ev.Host == "upstream-denied" && ev.Access == "denied":
+				deniedWS = true
+			case ev.Type == "stdio" && strings.Contains(ev.Stdout, "WS ALLOWED OK"):
+				sawAllowedOK = true
+			case ev.Type == "stdio" && strings.Contains(ev.Stdout, "WS DENIED OK"):
+				sawDeniedOK = true
+			}
+			if allowedWS && deniedWS && sawAllowedOK && sawDeniedOK {
+				watchCancel() // every asserted signal is in; stop promptly
 			}
 		}
 	}()
@@ -77,7 +91,7 @@ func TestWebSocketE2E(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		watchCancel()
 		<-collectDone
-		t.Fatalf("timed out waiting for agent DONE; collected %d events", len(collected))
+		t.Fatalf("timed out waiting for all WS egress/stdio events; collected %d events", len(collected))
 	}
 
 	// Verify egress.request events from the proxy.
