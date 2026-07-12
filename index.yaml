@@ -3,7 +3,7 @@ entries:
   hiver:
   - apiVersion: v2
     appVersion: 0.1.30
-    created: "2026-07-12T03:31:29.137466077Z"
+    created: "2026-07-11T21:32:44.886895-07:00"
     description: 'Hiver control plane (controller + Envoy gateway) plus the per-image
       sandbox pools. The gateway''s per-image Envoy routes/clusters and the per-image
       Deployment+Service are both generated from a single .Values.images list, so
@@ -23,6 +23,6 @@ entries:
     - https://github.com/hiver-sh/hiver
     type: application
     urls:
-    - https://github.com/hiver-sh/hiver/releases/download/hiver-0.1.30/hiver-0.1.30.tgz
+    - https://github.com/hiver-sh/hiver/releases/download/v0.1.30/hiver-0.1.30.tgz
     version: 0.1.30
-generated: "2026-07-12T03:31:29.137471797Z"
+generated: "2026-07-11T21:32:44.885748-07:00"
