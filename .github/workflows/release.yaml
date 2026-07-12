@@ -358,7 +358,7 @@ jobs:
         id: version
         run: echo "current=$(jq -r .version cli/package.json)" >> $GITHUB_OUTPUT
 
-      # chart-releaser needs the gh-pages branch to exist; create it once (empty)
+      # The Helm repo index lives on the gh-pages branch; create it once (empty)
       # if this is the first chart release. Done before touching the working tree.
       - name: Ensure gh-pages branch exists
         run: |
@@ -404,29 +404,40 @@ jobs:
 
       - uses: azure/setup-helm@v4
 
-      - name: Package and publish chart to gh-pages
-        uses: helm/chart-releaser-action@v1
-        with:
-          charts_dir: deployment/k8s
-          skip_existing: true
-        env:
-          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package chart
+        run: helm package deployment/k8s/chart -d .cr-release-packages
 
-      # Artifact Hub reads artifacthub-repo.yml from the repo root (gh-pages root).
-      # Sync it out-of-band from chart-releaser (which only manages index.yaml and
-      # the chart packages) via a detached worktree on gh-pages.
-      - name: Publish artifacthub-repo.yml to gh-pages
+      # Attach the chart to the existing v<version> release (created by `publish`)
+      # instead of minting a separate hiver-<version> release/tag — one tag per
+      # release holds both the source notes and the chart asset.
+      - name: Upload chart to the v${{ steps.version.outputs.current }} release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.current }}
+        run: gh release upload "v${VERSION}" ".cr-release-packages/hiver-${VERSION}.tgz" --clobber
+
+      # Regenerate the Helm repo index (URLs pointing at the v<version> release
+      # asset) and republish it plus artifacthub-repo.yml to the gh-pages root.
+      - name: Publish Helm repo index to gh-pages
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
         run: |
           git fetch origin gh-pages
           tmp=$(mktemp -d)
           git worktree add --detach "$tmp" origin/gh-pages
+          MERGE=""
+          [ -f "$tmp/index.yaml" ] && MERGE="--merge $tmp/index.yaml"
+          helm repo index .cr-release-packages \
+            --url "https://github.com/${{ github.repository }}/releases/download/v${VERSION}" \
+            $MERGE
+          cp .cr-release-packages/index.yaml "$tmp/index.yaml"
           cp deployment/k8s/artifacthub-repo.yml "$tmp/artifacthub-repo.yml"
-          git -C "$tmp" add artifacthub-repo.yml
+          git -C "$tmp" add index.yaml artifacthub-repo.yml
           if ! git -C "$tmp" diff --cached --quiet; then
             git -C "$tmp" \
               -c user.name="github-actions[bot]" \
               -c user.email="github-actions[bot]@users.noreply.github.com" \
-              commit -m "chore: sync artifacthub-repo.yml"
+              commit -m "chore: publish hiver chart v${VERSION}"
             git -C "$tmp" push origin HEAD:gh-pages
           fi
           git worktree remove --force "$tmp"

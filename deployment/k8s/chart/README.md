@@ -10,14 +10,21 @@ helm upgrade --install hiver .   # values in values.yaml
 ```
 
 Released versions are also published to the Hiver chart repository (indexed on
-[Artifact Hub](https://artifacthub.io/)) under the same version as the CLI:
+[Artifact Hub](https://artifacthub.io/packages/helm/hiver/hiver)) under the same
+version as the CLI. This is the recommended way to install a released version:
 
 ```sh
 helm repo add hiver https://hiver-sh.github.io/hiver
 helm repo update
-helm install hiver hiver/hiver            # latest published version
-helm install hiver hiver/hiver --version 0.1.29
+helm install hiver hiver/hiver                       # latest published version
+helm search repo hiver/hiver --versions             # list available versions
+helm install hiver hiver/hiver --version <x.y.z>    # pin a specific version
 ```
+
+The chart creates its own `hiver` and `hiver-sandbox` namespaces, so no
+`--namespace`/`--create-namespace` flags are needed. Every image ships pinned to
+an immutable digest, so a given chart version always installs the exact images it
+was released with.
 
 ## Prerequisites
 
