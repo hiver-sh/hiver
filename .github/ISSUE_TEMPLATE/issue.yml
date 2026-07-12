@@ -1,0 +1,41 @@
+name: Report an issue
+description: File a bug, request a feature, or propose a design.
+body:
+  - type: checkboxes
+    id: type
+    attributes:
+      label: Type
+      description: Select all that apply.
+      options:
+        - label: Feature request
+        - label: Design proposal
+        - label: Bug
+        - label: Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Hiver version
+      description: Output of `hiver --version`.
+      placeholder: e.g. 0.1.33
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is the problem?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Steps to reproduce the problem. Leave blank for non-bug issues.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: false

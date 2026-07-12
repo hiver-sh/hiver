@@ -19,9 +19,14 @@ your environment, make changes, and submit them.
 | [`cmd/`](cmd/) | Entry points for the binaries (`sandboxd`, `sbxfuse`, `sbxproxy`, `controller`, `sbxvsock`, `sbxguest`). |
 | [`internal/`](internal/) | Core runtime packages. |
 | [`api/`](api/) | API definitions. |
+| [`cli/`](cli/) | The `hiver` command-line interface. |
 | [`client/`](client/) | Language clients (TypeScript, Python). |
-| [`inspector/`](inspector/) | DevTools inspector UI. |
 | [`docker/`](docker/) | Compose files and image definitions. |
+| [`deployment/`](deployment/) | Kubernetes and GKE deployment manifests. |
+| [`docs/`](docs/) | Documentation source. |
+| [`examples/`](examples/) | Runnable examples and usage recipes. |
+| [`benchmarks/`](benchmarks/) | Performance benchmarks. |
+| [`scripts/`](scripts/) | Development and release helper scripts. |
 | [`test/`](test/) | Unit and end-to-end tests. |
 
 ## Building
@@ -80,6 +85,27 @@ cd client/python && pip install -e ".[dev]" && pytest tests/
 CI runs the Go unit tests and both client suites on every push — see
 [`.github/workflows/unit-tests.yaml`](.github/workflows/unit-tests.yaml).
 
+### Test requirements for new code
+
+New code must ship with automated tests that fully capture the scenario it
+implements or fixes — enough that the test would fail without your change and
+passes with it. Concretely:
+
+- **Cover the behavior, not just the happy line.** Exercise the actual contract
+  a caller depends on end-to-end, including the edge and failure paths your
+  change introduces or touches.
+- **A bug fix needs a regression test.** Add a test that reproduces the bug
+  (and fails) on `main`, so the fix is what makes it pass and the bug can't
+  silently return.
+- **Don't paper over races with sleeps or bounded polling.** If correctness
+  depends on some work having completed, assert against the guarantee the code
+  provides (e.g. block until a durability barrier is reached), rather than
+  waiting a few seconds and hoping. Timing-based waits flake under CI load and
+  hide the real defect.
+- **Put the test at the right level.** Prefer a unit test where the logic lives;
+  add or extend an end-to-end test in [`test/e2e/`](test/e2e/) when the scenario
+  only manifests across process or FUSE/network boundaries.
+
 ## Code style
 
 - Format Go sources before committing:
@@ -100,9 +126,11 @@ CI runs the Go unit tests and both client suites on every push — see
 
 1. Fork the repository and create a topic branch off `main`.
 2. Make your change, keeping commits focused and descriptive.
-3. Run `make fmt` and the relevant test targets — make sure they pass.
-4. Push your branch and open a pull request against `main`.
-5. Describe what changed and why. Link any related issues.
+3. Add automated tests that fully capture the scenario (see
+   [Test requirements for new code](#test-requirements-for-new-code)).
+4. Run `make fmt` and the relevant test targets — make sure they pass.
+5. Push your branch and open a pull request against `main`.
+6. Describe what changed and why. Link any related issues.
 
 Please open an issue first for large or breaking changes so we can discuss the
 approach before you invest significant effort.
