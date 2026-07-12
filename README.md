@@ -12,8 +12,6 @@ Replay every browser action, file change, network request, tool call, and approv
 <img src="./docs/devtools.png">
 </p>
 
-## What is Hiver?
-
 Hiver is the platform for running AI agents as untrusted workloads with visibility and control over their file, network, command, tool and model interactions. It has two parts:
 
 - **The runtime** boots each agent into an isolated sandbox in milliseconds, with its own file systems, network policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel or containers for local development behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
@@ -35,7 +33,7 @@ curl -fsSL https://hiver.sh/install | sh
 Use the CLI to manage sandboxes, stream live events, and launch the inspector:
 
 ```sh
-⬢ Hiver · Agent Runtime v0.1.29
+⬢ Hiver · Agent Runtime
 
   Usage: hiver <command> [options]
 
