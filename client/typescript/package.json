@@ -1,6 +1,6 @@
 {
   "name": "@hiver.sh/client",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "description": "TypeScript client for the Hiver runtime.",
   "type": "module",
   "repository": {
