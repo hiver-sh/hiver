@@ -10,7 +10,7 @@ import {
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { brand, dim, red, white } from "../theme.js";
+import { brand, bright, dim, red, white } from "../theme.js";
 
 /**
  * Shared logic for wiring the Hiver Agent Skill (bundled at dist/skills/hiver)
@@ -154,6 +154,13 @@ export function installForAgents(
         `  ${red("✖")} ${white(agent.name.padEnd(20))} ${dim(shown)}  ${red(String(err))}`,
       );
     }
+  }
+
+  if (blocked < agents.length) {
+    console.log();
+    console.log(
+      `  ${bright("Skill installed!")} Ask your coding agent ${brand("`build an agent using agents sdk with hiver`")}`,
+    );
   }
 
   return blocked;
