@@ -97,12 +97,6 @@ link-cli: ## Builds the local CLI and makes it available as hiver in the PATH
 unlink-cli: ## Unlinks the local CLI
 	npm unlink -g @hiver.sh/cli
 
-up: ## Start services
-	docker compose -f docker/compose.yaml up -d
-
-down: ## Stop services
-	docker compose -f docker/compose.yaml down
-
 test: test-unit ## Run tests
 
 e2e: test-e2e ## Run e2e tests (alias for test-e2e)

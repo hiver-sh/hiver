@@ -45,10 +45,13 @@ router.get("/", async (req: Request, res: Response) => {
 
 router.post("/:key", async (req: Request, res: Response) => {
   try {
+    // 5 min: generous enough for the controller to pull the runtime image on
+    // first use (a multi-GB agent bundle over the network) before the sandbox
+    // is ready. The inspector never pulls itself.
     const sandbox = await getOrCreateSandbox(
       req.params.key,
       req.body as SandboxConfig,
-      { gatewayUrl: gatewayUrl(req) },
+      { gatewayUrl: gatewayUrl(req), timeoutMs: 300_000 },
     );
     res.json({ id: sandbox.id, key: sandbox.key });
   } catch (err) {

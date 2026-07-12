@@ -122,19 +122,29 @@ if (!isLocalGateway(gatewayUrl)) {
     if (isDirectory(imageArg)) {
       resolvedImage = await bundleImage(imageArg);
     } else {
-      // A logical catalog name (e.g. `browser`) resolves to its concrete ref from
-      // sandbox-images.json, matching the variant the local stack was brought up
-      // with (container vs microvm). Raw refs and unknown names pass through.
-      const ref =
-        resolveSandboxImage(imageArg, Boolean(readConfig().microvm)) ??
-        imageArg;
-      // A ref that's already a bundle (a local build, or a catalog image the
-      // stack pulled at `up`) is used as-is; anything else is bundled, which
-      // pulls the source image first when it isn't already local. Getting the
-      // final runtime image onto the host for `docker create` is the
-      // controller's job (see the docker runtime's ensureImage), so this path
-      // no longer pre-pulls before starting.
-      resolvedImage = isHiverBundle(ref) ? ref : await bundleImage(ref);
+      // A logical catalog name (e.g. `browser`, `claude`) resolves to its
+      // concrete ref from sandbox-images.json, matching the variant the local
+      // stack was brought up with (container vs microvm).
+      const catalogRef = resolveSandboxImage(
+        imageArg,
+        Boolean(readConfig().microvm),
+      );
+      if (catalogRef) {
+        // A catalog image is always a published Hiver bundle. It isn't pulled at
+        // `up` (only the controller/gateway are) — the controller pulls it lazily
+        // on `docker create` (see the docker runtime's ensureImage). Use the ref
+        // as-is: inspecting isHiverBundle here would report false for the not-yet-
+        // local image and wrongly send it through bundleImage, which then pulls it
+        // and rejects it for already being a bundle.
+        resolvedImage = catalogRef;
+      } else {
+        // A raw ref or unknown name: used as-is when it's already a local bundle,
+        // otherwise bundled (which pulls the source image first when it isn't
+        // already local).
+        resolvedImage = isHiverBundle(imageArg)
+          ? imageArg
+          : await bundleImage(imageArg);
+      }
     }
   } catch (err) {
     console.error(
@@ -160,9 +170,12 @@ if (resolvedEntrypoint !== undefined) config.entrypoint = resolvedEntrypoint;
 if (ttl !== undefined) config.ttl = ttl;
 if (tty) config.tty = true;
 
-// Cap the provision + readiness wait so a sandbox that never comes up (e.g. an
-// image that exits on start) fails fast instead of hanging on the default 30s.
-const START_TIMEOUT_MS = 5_000;
+// Cap the provision + readiness wait. It must be generous enough for the
+// controller to pull the runtime image on first use (a multi-GB agent bundle
+// over the network) — the CLI never pulls itself, so this is the only budget
+// that covers it. A sandbox that never comes up (e.g. an image that exits on
+// start) is caught by the controller's own readiness timeout, not this cap.
+const START_TIMEOUT_MS = 300_000;
 
 const loader = createLoader(`Starting ${dim(key)}`).start();
 try {

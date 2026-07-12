@@ -817,6 +817,10 @@ func ensureImageID(ctx context.Context, ref string) (string, error) {
 // the cause (bad ref, auth, network) is visible.
 func pullImageRef(ctx context.Context, ref string) error {
 	pullStart := time.Now()
+	// Log at the start too: a cold pull of a multi-GB agent bundle can take a
+	// while, so this makes an otherwise-silent wait visible (the paired "pulled
+	// in" line below reports completion + duration).
+	log.Printf("image %s: not present locally, pulling…", ref)
 	if out, err := exec.CommandContext(ctx, "docker", "pull", ref).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker pull %s: %v: %s", ref, err, out)
 	}

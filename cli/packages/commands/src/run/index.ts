@@ -175,9 +175,11 @@ if (created) {
 
 const loader = createLoader(`Starting ${dim(key)}`).start();
 try {
+  // Generous enough for the controller to pull the runtime image on first use;
+  // the CLI never pulls itself. Success still returns as soon as it's ready.
   const sandbox = await getOrCreateSandbox(key, config, {
     gatewayUrl,
-    timeoutMs: 5_000,
+    timeoutMs: 300_000,
   });
   const ports = await sandbox.getPorts({ timeoutMs: 5_000 }).catch(() => []);
   const exposed = ports.length

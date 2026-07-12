@@ -7,8 +7,13 @@ jobs:
   build-cli:
     uses: ./.github/workflows/build-cli.yaml
 
+  # npm publish (clients + CLI) waits for every image to be pushed AND version-
+  # tagged (tag-sandbox-images ⇒ push-runtime-images ⇒ bundle-sandbox-images), so
+  # a released CLI never ships ahead of the images it references. The lock JSON
+  # from tag-sandbox-images is applied to the CLI's bundled container-config
+  # before packing (Bake versioned image tags step below).
   publish:
-    needs: [build-cli]
+    needs: [build-cli, tag-sandbox-images]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,6 +55,17 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false  # never use caching in release builds
+
+      # Pull the lock JSON (the versioned tags tag-sandbox-images just pushed) and
+      # bake it into the CLI's bundled container-config so the published CLI's
+      # `hiver up`/`hiver start` reference this release's images, not `:latest`.
+      # Working-tree edit only — the "Push dependency update to main" commit below
+      # is scoped to cli/package.json + lockfile, so this is not committed.
+      - uses: actions/download-artifact@v4
+        with:
+          name: sandbox-image-tags
+      - name: Bake versioned image tags into CLI container-config
+        run: HIVER_IMAGE_LOCK="$PWD/sandbox-images.lock.json" node cli/scripts/apply-image-tags.mjs
 
       - name: Build and publish typescript client
         run: |
@@ -302,6 +318,8 @@ jobs:
     needs: [push-runtime-images, bundle-sandbox-images]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
@@ -310,40 +328,27 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Copies each :latest[-microvm] manifest to its immutable hiversh/*:<version>
+      # tag (driven by the CLI catalog) and writes sandbox-images.lock.json — the
+      # exact tags pushed, consumed downstream by the `publish` job's CLI build.
       - name: Tag versioned sandbox images
         env:
           VERSION: ${{ needs.push-runtime-images.outputs.version }}
-        run: |
-          for img in agent-base claude codex copilot openclaw antigravity browser; do
-            docker buildx imagetools create \
-              --tag hiversh/$img:$VERSION \
-              hiversh/$img:latest
-            docker buildx imagetools create \
-              --tag hiversh/$img:$VERSION-microvm \
-              hiversh/$img:latest-microvm
-          done
-          docker buildx imagetools create \
-            --tag hiversh/python:$VERSION-3.13-alpine \
-            hiversh/python:3.13-alpine
-          docker buildx imagetools create \
-            --tag hiversh/node:$VERSION-alpine \
-            hiversh/node:alpine
-          docker buildx imagetools create \
-            --tag hiversh/python:$VERSION-3.13-alpine-microvm \
-            hiversh/python:3.13-alpine-microvm
-          docker buildx imagetools create \
-            --tag hiversh/node:$VERSION-alpine-microvm \
-            hiversh/node:alpine-microvm
+        run: scripts/tag-sandbox-images.sh "$VERSION" --lock sandbox-images.lock.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-image-tags
+          path: sandbox-images.lock.json
+          retention-days: 1
 
   # Package the Helm chart (already synced to the CLI version by
   # scripts/sync-client-version.sh and asserted in `publish`) and publish it to
   # the gh-pages Helm repo at https://hiver-sh.github.io/hiver, which Artifact Hub
-  # indexes. Needs the image jobs so both the :latest[-microvm] tags this release
-  # just pushed and the versioned tags exist:
-  #   1. update-digests.sh refreshes values.yaml :latest[-microvm]@digest to this
-  #      release's images and commits that to main (dev convenience).
-  #   2. pin-release-images.sh then re-points the packaged copy at the matching
-  #      hiversh/*:<version> digests — that's what ships in the chart.
+  # indexes. Needs the image jobs so the immutable hiversh/*:<version> tags exist:
+  # pin-release-images.sh rewrites the packaged values.yaml from the main-branch
+  # :latest tags to those version tags — that's what ships in the chart. main
+  # keeps :latest (nothing is committed back here).
   publish-chart:
     needs: [publish, push-runtime-images, tag-sandbox-images]
     runs-on: ubuntu-latest
@@ -373,30 +378,9 @@ jobs:
             git checkout "$SHA"
           fi
 
-      # Refresh values.yaml's :latest[-microvm]@digest pins to the images this
-      # release just pushed, and commit them to main so `helm install .` off main
-      # tracks the latest release. Rebase onto origin/main first — the `publish`
-      # job already pushed the client dep-bump commit there.
-      - name: Refresh and commit latest image digests to main
-        env:
-          VERSION: ${{ steps.version.outputs.current }}
-        run: |
-          git fetch origin main
-          git checkout -B main origin/main
-          deployment/k8s/update-digests.sh
-          git add deployment/k8s/chart/values.yaml
-          if git diff --cached --quiet; then
-            echo "Digests already current, nothing to commit."
-          else
-            git -c user.name="github-actions[bot]" \
-                -c user.email="github-actions[bot]@users.noreply.github.com" \
-                commit -m "chore: pin chart images to v${VERSION} digests"
-            git push origin main
-          fi
-
-      # Re-point the working-tree copy at the versioned digests for packaging only
-      # (not committed — main keeps :latest). Runs after the commit above so it
-      # rewrites the freshly-refreshed values.yaml.
+      # Re-point the working-tree copy at the immutable hiversh/*:<version> tags
+      # for packaging only (not committed — main keeps :latest, which always
+      # tracks the newest release).
       - name: Pin chart images to this release
         env:
           VERSION: ${{ steps.version.outputs.current }}
