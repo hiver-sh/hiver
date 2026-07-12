@@ -5,6 +5,7 @@ import {
   readlinkSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -91,8 +92,13 @@ export function linkSkill(target: string, src: string, force: boolean): LinkResu
     } catch {
       current = "";
     }
-    if (current === src) return "exists";
-    rmSync(target); // stale link or points elsewhere — repoint it
+    // A symlink is already in place: if it already points at our skill it's
+    // done, and otherwise we still skip it rather than fail — a pre-existing
+    // link is treated as "already installed" unless the caller passes --force.
+    if (current === src || !force) return "exists";
+    // Repoint (forced): remove just the link with unlinkSync — rmSync throws
+    // EISDIR ("Path is a directory") on a symlink that targets a directory.
+    unlinkSync(target);
     symlinkSync(src, target, "dir");
     return "updated";
   }
