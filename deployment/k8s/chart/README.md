@@ -9,6 +9,16 @@ Deployment+Service are both generated from a single `images` list in
 helm upgrade --install hiver .   # values in values.yaml
 ```
 
+Released versions are also published to the Hiver chart repository (indexed on
+[Artifact Hub](https://artifacthub.io/)) under the same version as the CLI:
+
+```sh
+helm repo add hiver https://hiver-sh.github.io/hiver
+helm repo update
+helm install hiver hiver/hiver            # latest published version
+helm install hiver hiver/hiver --version 0.1.29
+```
+
 ## Prerequisites
 
 Install the Helm CLI (v3) and point `kubectl` at the target cluster.

@@ -38,6 +38,12 @@ jobs:
             echo "Error: hiver-py version ($PYTHON_VERSION) does not match CLI version ($VERSION). Run scripts/sync-client-version.sh."
             exit 1
           fi
+          CHART_VERSION=$(grep '^version:' deployment/k8s/chart/Chart.yaml | awk '{print $2}')
+          CHART_APPVERSION=$(grep '^appVersion:' deployment/k8s/chart/Chart.yaml | sed 's/appVersion: *"\(.*\)"/\1/')
+          if [ "$CHART_VERSION" != "$VERSION" ] || [ "$CHART_APPVERSION" != "$VERSION" ]; then
+            echo "Error: Helm chart version ($CHART_VERSION) / appVersion ($CHART_APPVERSION) does not match CLI version ($VERSION). Run scripts/sync-client-version.sh."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v6
         with:
@@ -328,3 +334,99 @@ jobs:
           docker buildx imagetools create \
             --tag hiversh/node:$VERSION-alpine-microvm \
             hiversh/node:alpine-microvm
+
+  # Package the Helm chart (already synced to the CLI version by
+  # scripts/sync-client-version.sh and asserted in `publish`) and publish it to
+  # the gh-pages Helm repo at https://hiver-sh.github.io/hiver, which Artifact Hub
+  # indexes. Needs the image jobs so both the :latest[-microvm] tags this release
+  # just pushed and the versioned tags exist:
+  #   1. update-digests.sh refreshes values.yaml :latest[-microvm]@digest to this
+  #      release's images and commits that to main (dev convenience).
+  #   2. pin-release-images.sh then re-points the packaged copy at the matching
+  #      hiversh/*:<version> digests — that's what ships in the chart.
+  publish-chart:
+    needs: [publish, push-runtime-images, tag-sandbox-images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: echo "current=$(jq -r .version cli/package.json)" >> $GITHUB_OUTPUT
+
+      # chart-releaser needs the gh-pages branch to exist; create it once (empty)
+      # if this is the first chart release. Done before touching the working tree.
+      - name: Ensure gh-pages branch exists
+        run: |
+          if ! git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            SHA=$(git rev-parse HEAD)
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git checkout --orphan gh-pages
+            git rm -rf . >/dev/null 2>&1 || true
+            git commit --allow-empty -m "chore: init gh-pages"
+            git push origin gh-pages
+            git checkout "$SHA"
+          fi
+
+      # Refresh values.yaml's :latest[-microvm]@digest pins to the images this
+      # release just pushed, and commit them to main so `helm install .` off main
+      # tracks the latest release. Rebase onto origin/main first — the `publish`
+      # job already pushed the client dep-bump commit there.
+      - name: Refresh and commit latest image digests to main
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          deployment/k8s/update-digests.sh
+          git add deployment/k8s/chart/values.yaml
+          if git diff --cached --quiet; then
+            echo "Digests already current, nothing to commit."
+          else
+            git -c user.name="github-actions[bot]" \
+                -c user.email="github-actions[bot]@users.noreply.github.com" \
+                commit -m "chore: pin chart images to v${VERSION} digests"
+            git push origin main
+          fi
+
+      # Re-point the working-tree copy at the versioned digests for packaging only
+      # (not committed — main keeps :latest). Runs after the commit above so it
+      # rewrites the freshly-refreshed values.yaml.
+      - name: Pin chart images to this release
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+        run: deployment/k8s/pin-release-images.sh "${VERSION}"
+
+      - uses: azure/setup-helm@v4
+
+      - name: Package and publish chart to gh-pages
+        uses: helm/chart-releaser-action@v1
+        with:
+          charts_dir: deployment/k8s
+          skip_existing: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Artifact Hub reads artifacthub-repo.yml from the repo root (gh-pages root).
+      # Sync it out-of-band from chart-releaser (which only manages index.yaml and
+      # the chart packages) via a detached worktree on gh-pages.
+      - name: Publish artifacthub-repo.yml to gh-pages
+        run: |
+          git fetch origin gh-pages
+          tmp=$(mktemp -d)
+          git worktree add --detach "$tmp" origin/gh-pages
+          cp deployment/k8s/artifacthub-repo.yml "$tmp/artifacthub-repo.yml"
+          git -C "$tmp" add artifacthub-repo.yml
+          if ! git -C "$tmp" diff --cached --quiet; then
+            git -C "$tmp" \
+              -c user.name="github-actions[bot]" \
+              -c user.email="github-actions[bot]@users.noreply.github.com" \
+              commit -m "chore: sync artifacthub-repo.yml"
+            git -C "$tmp" push origin HEAD:gh-pages
+          fi
+          git worktree remove --force "$tmp"

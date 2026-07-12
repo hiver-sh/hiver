@@ -90,6 +90,54 @@ images:
         cpu: "4"
         memory: 4Gi
 
+  - name: codex
+    image: hiversh/codex:latest-microvm@sha256:734f11c1b7707251bf4f92543b17a5490768a01b1752a2eae5cee7ad1597f6ae
+    replicas: 0
+    maxConcurrentLaunches: 4
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+
+  - name: copilot
+    image: hiversh/copilot:latest-microvm@sha256:133bc181539e3f947bbee7857266f066ba72cb65e319f4dc70d39e445a3cf9c9
+    replicas: 0
+    maxConcurrentLaunches: 4
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+
+  - name: openclaw
+    image: hiversh/openclaw:latest-microvm@sha256:8dc51415a4550eeee4fff54706d51d9712741082ceebb9186dcaf3edc10edae0
+    replicas: 0
+    maxConcurrentLaunches: 4
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+
+  - name: antigravity
+    image: hiversh/antigravity:latest-microvm@sha256:cc2c74597a4f749668f4b0ba321ea48232325c6cebfacca1d10371841e1f2c5e
+    replicas: 0
+    maxConcurrentLaunches: 4
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+
   - name: browser
     image: hiversh/browser:latest-microvm@sha256:4004b5f7d03d492ab2218cea12383fa629259ba3005fbeff32c14c9f824a0884
     replicas: 1
