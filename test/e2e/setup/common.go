@@ -162,7 +162,7 @@ func BuildAgentNodeBundle(t *testing.T) string {
 // sandbox-ready image. Returns the bundle image tag.
 func BuildTSMCPServerBundle(t *testing.T) string {
 	t.Helper()
-	imageDir, err := filepath.Abs(filepath.Join(moduleRoot, "examples/mcp-server/typescript/image"))
+	imageDir, err := filepath.Abs(filepath.Join(moduleRoot, "test/e2e/mcp-server/image"))
 	if err != nil {
 		t.Fatalf("abs ts mcp-server image dir: %v", err)
 	}
