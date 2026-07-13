@@ -200,7 +200,21 @@ Deployment is split into two pieces: provisioning a cluster, and installing the 
 
 ### Architecture
 
-Hiver runs untrusted agent workloads inside `runc` or `firecracker` sandboxes, with sidecar processes (`sbxfuse`, `sbxproxy`, `sandboxd`) providing FUSE-backed volumes, transparent TCP/TLS interception, and the client API. For a full walkthrough of the runtime, isolation model, and file system design, see the [Architecture documentation](docs/architecture/page.mdx).
+The Hiver runtime runs inside a container and is composed of sidecar processes. The agent sandbox runs on `runc` or `firecracker` as an untrusted workload. `sbxfuse` provides FUSE-backed volumes, `sbxproxy` transparently intercepts all TCP traffic (including TLS), and `sandboxd` wires everything together, serving the client API, reconciling sidecar policy, and streaming telemetry events.
+
+<p align="center">
+<img src="./docs/hiver-arch.svg" width="500">
+</p>
+
+The root filesystem is assembled with overlayfs, layering the agent's writes over the read-only base image for efficient snapshotting.
+
+A typical deployment also includes a controller for sandbox lifecycle management and an Envoy gateway for external network access. All components ship out of the box but can be swapped for custom implementations.
+
+Sandboxes don't get a pod each. They are packed into a host pod and share its `sandboxd`, `sbxfuse`, and `sbxproxy` sidecars, so a new sandbox starts in a process rather than a cold pod. Placement picks a host that already serves the requested image, still has resource headroom under its limits, and satisfies the node constraints for that image (for example, microVM isolation requires nodes with nested virtualization).
+
+Hiver is unopinionated about orchestration: the agent CLI or SDK can run entirely inside the sandbox or in a separate deployment. Because everything inside the sandbox is treated as untrusted, agents can call private APIs and access files without ever seeing auth tokens or secrets.
+
+For a full walkthrough of the runtime, isolation model, and file system design, see the [Architecture documentation](docs/architecture/page.mdx).
 
 ## Status
 
