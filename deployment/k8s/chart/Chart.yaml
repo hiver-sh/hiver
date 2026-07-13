@@ -22,5 +22,5 @@ maintainers:
 # time the images in values.yaml are re-pinned to this same version
 # (deployment/k8s/pin-release-images.sh) so the published chart ships the images
 # built under the matching version.
-version: 0.1.33
-appVersion: "0.1.33"
+version: 0.1.34
+appVersion: "0.1.34"
