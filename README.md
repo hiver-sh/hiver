@@ -452,7 +452,7 @@ The agent issues a normal `https://api.openai.com/v1/models` request; the proxy 
 
 #### Lua script
 
-For rewrites the declarative `override` can't express — decoding a body, substituting a substring, re-encoding — attach an `override_script`. It's a Lua script the proxy runs against each matching request _after_ the declarative override is applied. The script sees the request through globals `body` (string) and `headers` (a name→value table) it can mutate, plus read-only `method`, `host`, `path`, and `query`; reassign `body` or change `headers` to rewrite the outbound request:
+Use `override_script` to run a Lua script on each matching request, after the declarative `override` is applied. The script can read `method`, `host`, `path`, and `query`, and can mutate `body` and `headers` to rewrite the request:
 
 ```typescript
 import * as hiver from "@hiver.sh/client";
@@ -472,8 +472,6 @@ const sandbox = await hiver.getOrCreateSandbox("agent-1", {
   ],
 });
 ```
-
-The script runs in a restricted VM (base/`string`/`table`/`math` only — no `os`, `io`, or file loading) under a short timeout, with `urldecode` / `urlencode` and `b64decode` / `b64encode` helpers for decoding and re-encoding bodies. It applies to inspected HTTP requests only; CONNECT and passthrough TLS tunnels are opaque and pass through untouched.
 
 ### Events
 
