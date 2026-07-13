@@ -21,7 +21,7 @@ export const metadata = { title: "Open Work" }
   className="my-12 hidden w-full rounded-xl border border-white/10 shadow-xl dark:block"
 />
 
-The full source is in the [`examples/open-work`](https://github.com/hiver-sh/hiver/tree/main/examples/open-work) directory of the repo.
+The full source lives in its own repo: [`hiver-sh/work`](https://github.com/hiver-sh/work).
 
 ## What it is
 
@@ -49,7 +49,8 @@ Open Work drives two worker orchestrators, each with its own sandbox image and s
 You'll need a running [Hiver gateway](/docs/installation) (`hiver up`, defaults to `http://localhost:10000`) and at least one provider API key (Anthropic and/or OpenAI), entered once in Settings, stored in your browser's local storage.
 
 ```bash
-cd examples/open-work
+git clone https://github.com/hiver-sh/work
+cd work
 npm install
 npm run dev   # http://localhost:3000
 ```

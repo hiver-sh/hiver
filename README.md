@@ -76,9 +76,9 @@ Bring your own image too — bundle any Docker image with `hiver bundle` (see [I
 
 ## Examples
 
-Find [`examples`](examples/README.md) in TypeScript, Python and Go.
+Find [**runnable examples**](https://github.com/hiver-sh/examples) in TypeScript and Python — Agent SDK servers, CLI and browser drivers, and lower-level client SDK recipes.
 
-**⭐ [`examples/open-work`](examples/open-work/)** — Open Work, a full Next.js app demonstrating a complete agent with security, elicitation, content collaboration with AI and a Web browser.
+**⭐ [Open Work](https://github.com/hiver-sh/work)** — a full Next.js app demonstrating a complete agent with security, elicitation, content collaboration with AI and a Web browser.
 
 ### Run a project directory
 
@@ -122,7 +122,7 @@ const res = await fetch(`${sandbox.proxyUrl(3000)}chat`, {
 console.log((await res.json()).reply);
 ```
 
-See the [Claude Agent SDK example](examples/claude-agent-sdk/) for a complete, runnable version.
+See the [Claude Agent SDK example](https://github.com/hiver-sh/examples/tree/main/claude-agent-sdk) for a complete, runnable version.
 
 ## Inspector
 

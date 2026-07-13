@@ -24,7 +24,6 @@ your environment, make changes, and submit them.
 | [`docker/`](docker/) | Compose files and image definitions. |
 | [`deployment/`](deployment/) | Kubernetes and GKE deployment manifests. |
 | [`docs/`](docs/) | Documentation source. |
-| [`examples/`](examples/) | Runnable examples and usage recipes. |
 | [`benchmarks/`](benchmarks/) | Performance benchmarks. |
 | [`scripts/`](scripts/) | Development and release helper scripts. |
 | [`test/`](test/) | Unit and end-to-end tests. |

@@ -634,11 +634,11 @@ for await (const pipe of exec.pipes) {
 }
 ```
 
-Same idea, bigger payoff: the [`browser-cdp`](../../examples/browser-cdp/typescript/)
+Same idea, bigger payoff: the [`browser-cdp`](https://github.com/hiver-sh/examples/tree/main/browser-cdp/typescript)
 example attaches to a resident Chromium once and reuses that one browser to scrape
 multiple pages, instead of paying the browser startup cost per scrape. Pass
 `tty: true` for a real PTY (stderr merges into stdout, and a `CSI 8` sequence on
-stdin resizes it) — see [`terminal-attach`](../../examples/terminal-attach/typescript/).
+stdin resizes it) — see [`terminal-attach`](https://github.com/hiver-sh/examples/tree/main/terminal-attach/typescript).
 
 See [`sandbox.exec()`](#sandboxexeccommand-opts) and
 [`sandbox.execStream()`](#sandboxexecstreamcommand-opts) for the full options.
@@ -655,5 +655,5 @@ Hiver keeps the API tokens secure and the generated files persisted to Google
 Drive — all while the agent only uses basic Bash commands. The next time the
 agent runs, the files are already there to be reused, saving tokens.
 
-See [`claude-agent-gdrive-filesystem`](../../examples/claude-agent-gdrive-filesystem/typescript/)
-(and the local-filesystem variant, [`claude-agent`](../../examples/claude-agent/typescript/)).
+See [`claude-agent-gdrive-filesystem`](https://github.com/hiver-sh/examples/tree/main/claude-agent-gdrive-filesystem/typescript)
+(and the local-filesystem variant, [`claude-agent`](https://github.com/hiver-sh/examples/tree/main/claude-agent/typescript)).
