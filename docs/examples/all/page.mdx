@@ -1,0 +1,98 @@
+export const metadata = { title: "All Examples" }
+
+# All Examples
+
+Every runnable example lives in one repo: [**hiver-sh/examples**](https://github.com/hiver-sh/examples), in TypeScript and Python.
+
+## Clone the examples
+
+```bash
+git clone https://github.com/hiver-sh/examples
+cd examples
+```
+
+Every example talks to a local gateway, so start one first (see [Installation](/docs/installation)):
+
+```bash
+hiver up      # http://localhost:10000 — hiver down to stop it
+```
+
+You'll also need an API key for whichever model provider the example uses.
+
+## Where to find the code
+
+Each example is a top-level directory, with a `typescript/` and/or `python/` implementation inside it. Each of those is standalone — it has its own `README.md` and its own dependencies, and you run it from that directory:
+
+```
+examples/
+  claude-code/
+    typescript/   index.ts, package.json      <- run from here
+    python/       main.py, requirements.txt   <- or here
+  claude-agent-sdk/
+    typescript/
+      client.ts                               <- drives the agent
+      agent/    Dockerfile, .hiver.json       <- the server that runs *inside* the sandbox
+```
+
+Run one:
+
+```bash
+# TypeScript
+cd claude-code/typescript && npm install && npm start
+
+# Python
+cd claude-code/python && pip install -r requirements.txt && python main.py
+```
+
+## Agent SDK servers
+
+The agent loop runs **inside** the sandbox as an HTTP service. Each has an `agent/` directory with a `Dockerfile` and a `.hiver.json`, launched in one step with `hiver run . <key>`. The `.hiver.json` locks [egress](/docs/network-policy) to the model provider and injects the key via an [override](/docs/network/overrides), so it never lives in the sandbox's env or context.
+
+| Example | Languages | Guide |
+| --- | --- | --- |
+| [`claude-agent-sdk`](https://github.com/hiver-sh/examples/tree/main/claude-agent-sdk) | TypeScript, Python | [Claude Agent SDK](/docs/examples/agent-sdk-anthropic) |
+| [`openai-agents-sdk`](https://github.com/hiver-sh/examples/tree/main/openai-agents-sdk) | TypeScript, Python | [OpenAI Agents SDK](/docs/examples/agent-sdk-openai) |
+| [`google-adk`](https://github.com/hiver-sh/examples/tree/main/google-adk) | Python | — |
+
+Google ADK is Python-first, so it has no TypeScript example.
+
+## CLI and browser drivers
+
+A script you run **on your machine**. It provisions a prebuilt image (`claude`, `codex`, `copilot`, `browser`) and drives it over the gateway with `exec` or CDP.
+
+| Example | Languages | Guide |
+| --- | --- | --- |
+| [`claude-code`](https://github.com/hiver-sh/examples/tree/main/claude-code) | TypeScript, Python | [Agent CLI](/docs/examples/agent-cli) |
+| [`codex`](https://github.com/hiver-sh/examples/tree/main/codex) | TypeScript, Python | [Agent CLI](/docs/examples/agent-cli) |
+| [`copilot`](https://github.com/hiver-sh/examples/tree/main/copilot) | TypeScript, Python | [Agent CLI](/docs/examples/agent-cli) |
+| [`browser-use`](https://github.com/hiver-sh/examples/tree/main/browser-use) | TypeScript, Python | [Browser Use](/docs/examples/browser-use) |
+
+## Client SDK recipes
+
+Lower-level examples that drive a sandbox directly with the [`@hiver.sh/client`](/docs/getting-started) SDK. TypeScript only.
+
+| Example | What it shows |
+| --- | --- |
+| [`node-exec`](https://github.com/hiver-sh/examples/tree/main/node-exec) / [`python-exec`](https://github.com/hiver-sh/examples/tree/main/python-exec) | Run a command and read the buffered result. |
+| [`node-exec-stream`](https://github.com/hiver-sh/examples/tree/main/node-exec-stream) / [`python-exec-stream`](https://github.com/hiver-sh/examples/tree/main/python-exec-stream) | Stream command output over SSE. |
+| [`node-exec-tty`](https://github.com/hiver-sh/examples/tree/main/node-exec-tty) / [`python-exec-tty`](https://github.com/hiver-sh/examples/tree/main/python-exec-tty) | Drive an interactive REPL over a [TTY](/docs/pseudo-terminals) exec stream. |
+| [`claude-exec`](https://github.com/hiver-sh/examples/tree/main/claude-exec) | Run Claude inside the `claude` image and print the result. |
+| [`terminal-attach`](https://github.com/hiver-sh/examples/tree/main/terminal-attach) | Attach your local terminal to an interactive shell in the sandbox. |
+| [`apply-config`](https://github.com/hiver-sh/examples/tree/main/apply-config) | Read the config, add an [egress rule](/docs/network-policy), apply the update. |
+| [`egress-events`](https://github.com/hiver-sh/examples/tree/main/egress-events) | Observe `egress.request` / `egress.response` [events](/docs/events) for allowed vs blocked hosts. |
+| [`node-internal-service`](https://github.com/hiver-sh/examples/tree/main/node-internal-service) | Start deny-all, then `applyConfig` to allow an internal host. |
+| [`files`](https://github.com/hiver-sh/examples/tree/main/files) | Upload a file into a mount and read it back out. |
+| [`list-directory`](https://github.com/hiver-sh/examples/tree/main/list-directory) | List the contents of a sandbox mount. |
+| [`snapshot`](https://github.com/hiver-sh/examples/tree/main/snapshot) | Persist a sandbox's filesystem across a full shutdown via [snapshots](/docs/snapshots). |
+| [`snapshot-fuse`](https://github.com/hiver-sh/examples/tree/main/snapshot-fuse) | Route the snapshot through an internal GCS-backed FUSE drive. |
+| [`local-filesystem-mount`](https://github.com/hiver-sh/examples/tree/main/local-filesystem-mount) | Mount a local directory into the sandbox during development. |
+| [`gdrive-filesystem`](https://github.com/hiver-sh/examples/tree/main/gdrive-filesystem) | Mount a [Google Drive](/docs/google-drive) folder over a FUSE mount. |
+| [`http-server`](https://github.com/hiver-sh/examples/tree/main/http-server) | Proxy HTTP requests to a service running inside the sandbox ([ingress](/docs/ingress)). |
+| [`mcp-server`](https://github.com/hiver-sh/examples/tree/main/mcp-server) | Bundle and run an MCP server inside the sandbox. |
+| [`browser-cdp`](https://github.com/hiver-sh/examples/tree/main/browser-cdp) | Drive the sandbox's resident Chromium with Playwright over CDP. |
+| [`claude-agent`](https://github.com/hiver-sh/examples/tree/main/claude-agent) | A Claude agent that drives the sandbox through an in-sandbox MCP server. |
+| [`claude-agent-gdrive-filesystem`](https://github.com/hiver-sh/examples/tree/main/claude-agent-gdrive-filesystem) | The Claude agent, with generated files persisted to Google Drive. |
+
+---
+
+Next: [Agent CLI](/docs/examples/agent-cli)
