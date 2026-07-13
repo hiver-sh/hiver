@@ -1,10 +1,5 @@
 # Contributing to Hiver
 
-Thanks for your interest in contributing! Hiver is Chrome DevTools for agents — a
-runtime that runs agents autonomously with controlled network access, auditable
-file operations, and full execution visibility. This guide covers how to set up
-your environment, make changes, and submit them.
-
 ## Prerequisites
 
 - **Go** — see the version in [`go.mod`](go.mod) (`go-version-file` is used in CI).

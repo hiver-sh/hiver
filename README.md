@@ -2,11 +2,9 @@
 <img src="./docs/hive.svg" width="100">
 </p>
 <h1 align="center">Hiver</h1>
-<h3 align="center">Chrome DevTools for Agents</h3>
-
-<p align="center">
+<h3 align="center">
 Replay every browser action, file change, network request, tool call, and approval.
-</p>
+</h3>
 
 <p align="center">
 <img src="./docs/devtools.png">
@@ -49,7 +47,6 @@ Use the CLI to manage sandboxes, stream live events, and launch the inspector:
     events         Stream a sandbox's events live as they happen
     inspect        Launch the inspector
     bundle         Bundle a Docker image into a Hiver runtime image
-    install-skill  Install the Hiver skill into your coding agents
 
   Run hiver <command> --help for command details.
 ```
@@ -183,6 +180,324 @@ hiver bundle my-agent:latest --tag my-agent-runtime \
   --platform linux/amd64,linux/arm64 --push
 ```
 
+Point a sandbox at the bundled image and the runtime boots it under the matching backend. Read back which one it chose via `GetInfo`:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "my-agent-runtime",
+});
+const info = await sandbox.getInfo();
+console.log(info.isolation); // "container" or "microvm"
+```
+
+## API overview
+
+### Exec
+
+Run commands inside the sandbox, from a single shell command to a long-running process, with every invocation audited as an `exec.request` event. There are two execution modes:
+
+**One-shot**: `exec()` runs a command, waits for it to finish, and returns the buffered output:
+
+```ts
+const { stdout } = await sandbox.exec(["node", "-e", "console.log(6 * 7)"]);
+console.log(stdout.trim()); // 42
+```
+
+**Sessions**: `execStream()` keeps a process alive: you stream its output via `exec.pipes` and feed it more input via `exec.writeStdin()`. Because the process stays running, its in-memory state persists across writes, so expensive setup (a launched browser, a loaded model, an open DB connection) happens **once** and is reused by every later command.
+
+The simplest version is an interactive interpreter:
+
+```ts
+const exec = await sandbox.execStream(["python3", "-iq"], {
+  cwd: "/workspace",
+});
+
+const commands = [
+  "import math; total = 0", // setup runs once...
+  "total += math.factorial(5); print(total)", // ...and is reused
+  "total += math.factorial(6); print(total)",
+  "exit()",
+];
+for (const cmd of commands) await exec.writeStdin(cmd + "\n");
+
+for await (const pipe of exec.pipes) {
+  if (pipe.stdout) process.stdout.write(pipe.stdout); // 120, then 840
+}
+```
+
+### FUSE File System
+
+FUSE is a first-class citizen in Hiver. A sandbox's filesystem is assembled from mounts you declare.
+
+Every mount is FUSE-backed by `sbxfuse`, so the agent sees ordinary files and directories while every read and write passes through the runtime, where it's checked against **path-level ACLs** and emitted as an auditable `fs.request` event.
+
+#### Cloud storage backends
+
+A mount can be backed by **local** storage, **GCS**, **S3**, **Azure Blob Storage**, **Google Drive**, or **OneDrive**. Each takes the same `mount` and `acls` fields; only the credential fields differ by backend:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
+  fs: [
+    // The user's working directory: writable, but secrets are off-limits.
+    {
+      backend: "local",
+      mount: "/workspace",
+      acls: [
+        { path: "/workspace", access: "rw" },
+        { path: "/workspace/.env", access: "deny" },
+      ],
+    },
+    // Org knowledge base, mounted from a shared bucket (read-only).
+    {
+      backend: "gcs",
+      mount: "/knowledge",
+      gcs_bucket: "acme-handbook",
+      gcs_service_account_json: SA_JSON,
+      acls: [{ path: "/knowledge", access: "ro" }],
+    },
+    // Amazon S3 (or any S3-compatible service via `s3_endpoint`).
+    {
+      backend: "s3",
+      mount: "/s3",
+      s3_bucket: "acme-data",
+      s3_region: "us-east-1",
+      s3_access_key_id: AWS_ACCESS_KEY_ID,
+      s3_secret_access_key: AWS_SECRET_ACCESS_KEY,
+      acls: [{ path: "/s3", access: "rw" }],
+    },
+    // Azure Blob Storage.
+    {
+      backend: "azure",
+      mount: "/azure",
+      azure_account: "acmestorage",
+      azure_container: "agent-data",
+      azure_account_key: AZURE_STORAGE_KEY,
+      acls: [{ path: "/azure", access: "rw" }],
+    },
+    // Google Drive (a shared folder, via a service account).
+    {
+      backend: "gdrive",
+      mount: "/drive",
+      gdrive_folder_id: "1AbCdEfGhIjKlMnOpQrStUvWxYz",
+      gdrive_service_account_json: SA_JSON,
+      acls: [{ path: "/drive", access: "ro" }],
+    },
+    // OneDrive.
+    {
+      backend: "onedrive",
+      mount: "/onedrive",
+      onedrive_access_token: ONEDRIVE_ACCESS_TOKEN,
+      acls: [{ path: "/onedrive", access: "rw" }],
+    },
+  ],
+});
+```
+
+Each backend takes an optional `*_prefix` to scope the mount to a subpath of the bucket, container, or drive. Credentials can also be supplied through the runtime's environment instead of the config, so they never appear in the sandbox spec.
+
+#### Network File System
+
+Point a mount at any HTTP host that implements the [file system interface](api/external_file_system.yaml) and the runtime turns every read and write into a call against it, letting you bring your own storage without a built-in backend:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
+  fs: [
+    { backend: "external", mount: "/data", host: "https://fs.internal:8080" },
+  ],
+});
+```
+
+### Snapshots
+
+A snapshot is the sandbox's working tree captured to a tarball on shutdown and restored on start. Point `snapshot.mount` at an **internal**, remote-backed file system and the tarball is persisted to blob storage instead of local disk, so a fresh sandbox can resume from where a previous one left off:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
+  fs: [
+    // The snapshot target, backed by GCS. `internal` keeps it out of the
+    // agent's view — it exists only for the runtime to read/write snapshots.
+    {
+      backend: "gcs",
+      mount: "/snapshots",
+      internal: true,
+      gcs_bucket: "acme-snapshots",
+      gcs_service_account_json: SA_JSON,
+    },
+  ],
+  snapshot: {
+    files: {
+      key: "agent-1", // tarball to restore on start / write on shutdown
+      write_on_shutdown: true, // capture before the sandbox stops
+      mount: "/snapshots", // pull it from the GCS-backed mount
+      include: ["/workspace/**"], // paths to capture
+    },
+  },
+});
+```
+
+#### VM state
+
+On the microVM backend, `snapshot.vm` captures the sandbox's full CPU and memory state, not just its files:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "my-agent-runtime", // a microVM-isolated image
+  snapshot: {
+    // Resume from this VM snapshot if it exists; otherwise cold-boot.
+    vm: { key: "agent-1" },
+  },
+});
+
+// Capture (or refresh) the VM snapshot without stopping the sandbox.
+await sandbox.snapshot({ vm: { key: "agent-1" } });
+```
+
+`vm` and `files` are independent parts, so you can capture both at once to resume a sandbox with its in-memory state and its writable filesystem together.
+
+### Files
+
+Move files in and out of a sandbox's from outside the workload. Operations bypass the mount's ACLs; the API is a higher-privilege control surface than the workload.
+
+```ts
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
+  fs: [
+    {
+      backend: "local",
+      mount: "/workspace",
+      acls: [{ path: "/**", access: "rw" }],
+    },
+  ],
+});
+
+// Seed an input file before the agent runs.
+await sandbox.writeFile("/workspace", "data.csv", csvContent);
+
+// List a directory to see what the agent produced.
+const entries = await sandbox.listDirectory("/workspace");
+// entries: [{ name, path, is_dir, size }, ...]
+
+// Pull a specific file out of the sandbox.
+const report = await sandbox.readFile("/workspace/report.pdf");
+
+// Remove a file.
+await sandbox.deleteFile("/workspace/data.csv");
+```
+
+### Request Overrides
+
+The egress proxy can **rewrite** requests on the way out. Attach an `override` to an egress rule and the proxy can inject **headers** and **query parameters**, redirect the request to a different **upstream host**, and prepend a **path prefix**, all on every matching request, overwriting whatever the agent set:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
+  egress: [
+    {
+      access: "allow",
+      host: "api.internal.acme.com",
+      override: {
+        // Auth token injected as a header. The agent never sees it.
+        headers: { Authorization: `Bearer ${API_TOKEN}` },
+        // URL params the proxy stamps onto the request.
+        query: { tenant: "acme", "api-version": "2024-01" },
+      },
+    },
+  ],
+});
+```
+
+#### Redirecting to a mock server
+
+`host` and `prefix_path` rewrite _where_ the request goes, so you can transparently point an agent at a local mock or stub server without touching its code:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
+  egress: [
+    {
+      access: "allow",
+      host: "api.openai.com",
+      override: {
+        // Dial a local mock instead of the real API...
+        host: "mockserver.internal:8080",
+        // ...and namespace its routes under /openai.
+        // The agent's GET /v1/models arrives as GET /openai/v1/models.
+        prefix_path: "/openai",
+      },
+    },
+  ],
+});
+```
+
+The agent issues a normal `https://api.openai.com/v1/models` request; the proxy dials `mockserver.internal:8080` and forwards it as `/openai/v1/models`.
+
+#### Lua script
+
+For rewrites the declarative `override` can't express — decoding a body, substituting a substring, re-encoding — attach an `override_script`. It's a Lua script the proxy runs against each matching request _after_ the declarative override is applied. The script sees the request through globals `body` (string) and `headers` (a name→value table) it can mutate, plus read-only `method`, `host`, `path`, and `query`; reassign `body` or change `headers` to rewrite the outbound request:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {
+  image: "node",
+  egress: [
+    {
+      access: "allow",
+      host: "api.internal.acme.com",
+      // Redact an account number from every request body on the way out.
+      override_script: `
+        body = string.gsub(body, "acct_%d+", "acct_[redacted]")
+        headers["x-rewritten-by"] = "hiver"
+      `,
+    },
+  ],
+});
+```
+
+The script runs in a restricted VM (base/`string`/`table`/`math` only — no `os`, `io`, or file loading) under a short timeout, with `urldecode` / `urlencode` and `b64decode` / `b64encode` helpers for decoding and re-encoding bodies. It applies to inspected HTTP requests only; CONNECT and passthrough TLS tunnels are opaque and pass through untouched.
+
+### Events
+
+Subscribe to a sandbox's audit stream from any client and react to events as they happen:
+
+```typescript
+import * as hiver from "@hiver.sh/client";
+
+const sandbox = await hiver.getOrCreateSandbox("agent-1", {"image": "node"});
+
+for await (const event of sandbox.getEventsStream()) {
+  console.log(event.type, event.access ?? "");
+}
+```
+
+Each event is structured, ordered, and tagged with whether the action was allowed or denied:
+
+```txt
+exec.request    allowed
+egress.request  allowed
+fs.request      denied
+stdio
+```
+
 ## Cloud Deployment
 
 Run the full stack (controller, gateway, and sandboxes) on a managed Kubernetes cluster, and drive it from the same client library you use locally.
@@ -213,8 +528,6 @@ A typical deployment also includes a controller for sandbox lifecycle management
 Sandboxes don't get a pod each. They are packed into a host pod and share its `sandboxd`, `sbxfuse`, and `sbxproxy` sidecars, so a new sandbox starts in a process rather than a cold pod. Placement picks a host that already serves the requested image, still has resource headroom under its limits, and satisfies the node constraints for that image (for example, microVM isolation requires nodes with nested virtualization).
 
 Hiver is unopinionated about orchestration: the agent CLI or SDK can run entirely inside the sandbox or in a separate deployment. Because everything inside the sandbox is treated as untrusted, agents can call private APIs and access files without ever seeing auth tokens or secrets.
-
-For a full walkthrough of the runtime, isolation model, and file system design, see the [Architecture documentation](docs/architecture/page.mdx).
 
 ## Status
 

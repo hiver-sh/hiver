@@ -33,7 +33,7 @@ npx -y @hiver.sh/cli
     bundle   Bundle a Docker image into a Hiver runtime image
 ```
 
-### Hiver Inspector: Chrome DevTools for Agents
+### Hiver Inspector
 
 Run `hiver inspect` to launch the inspector:
 
