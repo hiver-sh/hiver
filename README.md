@@ -7,7 +7,7 @@ Replay every browser action, file change, network request, tool call, and approv
 </h3>
 
 <p align="center">
-<img src="./docs/devtools.png">
+<img src="./docs/replay.gif" alt="Replaying an agent run in the Hiver inspector">
 </p>
 
 Hiver is the platform for running AI agents as untrusted workloads with visibility and control over their file, network, command, tool and model interactions. It has two parts:
@@ -15,7 +15,7 @@ Hiver is the platform for running AI agents as untrusted workloads with visibili
 - **The runtime** boots each agent into an isolated sandbox in milliseconds, with its own file systems, network policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel or containers for local development behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
 - **The inspector** is a live, DevTools-style UI over running sandboxes. It decodes the agent’s LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit sandbox policy on the fly — all over the same event stream and API used by the SDKs.
 
-Hiver supports both local development and cloud deployment. The same client library and runtime work whether you run hiver start on your machine or deploy to a cluster. Bring your own Docker image and run it in Hiver with no application changes.
+**Everything is in this repo and runs entirely on your machine — the runtime, the inspector, and the gateway.** There is no account to create and no hosted service to call; `hiver up` starts the whole stack locally. The same client library and runtime work whether you run `hiver start` on your laptop or deploy to a cluster, and you can bring your own Docker image with no application changes.
 
 ## 🚀 Getting Started
 
@@ -28,7 +28,17 @@ npm install --global @hiver.sh/cli
 curl -fsSL https://hiver.sh/install | sh
 ```
 
-Use the CLI to manage sandboxes, stream live events, and launch the inspector:
+Then bring up the local stack, start an agent from a built-in image, and open the inspector — three commands, no config:
+
+```sh
+hiver up                # start the local gateway
+hiver start agent-1     # launch Claude Code, Codex, Copilot, or Gemini in an isolated sandbox
+hiver inspect agent-1   # open the inspector and replay every file, request, and tool call
+```
+
+That's the full loop: an agent running in an isolated sandbox, with a live, replayable record of everything it does. From here, `hiver run` bundles your own project directory, and the client SDKs drive sandboxes programmatically — both covered below.
+
+The CLI manages sandboxes, streams live events, and launches the inspector:
 
 ```sh
 ⬢ Hiver · Agent Runtime
