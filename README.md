@@ -1,32 +1,37 @@
 <p align="center">
 <img src="./docs/hive.svg" width="100">
 </p>
+
 <h1 align="center">Hiver</h1>
+
 <h3 align="center">
-Replay every browser action, file change, network request, tool call, and approval.
+Replayable Sandboxes for AI Agents
 </h3>
 
 <p align="center">
 <img src="./docs/replay.gif" alt="Replaying an agent run in the Hiver inspector">
 </p>
 
-Hiver is the platform for running AI agents as untrusted workloads with visibility and control over their file, network, command, tool and model interactions. It has two parts:
+Improving agent performance requires a mini-RL loop: run, evaluate, update policy, repeat. Unfortunately, this isn’t very straightforward as agents have become stateful, distributed systems. Turning behavior into evals isn’t always simple as every state mutation to the environment makes the reproduction much harder.
 
-- **The runtime** boots each agent into an isolated sandbox in milliseconds, with its own file systems, network policy, and path-level ACLs. Use MicroVM isolation for fully untrusted code that needs its own kernel or containers for local development behind the same API. Every command, file access, and network request is mediated by the runtime and emitted as a structured, replayable audit event.
-- **The inspector** is a live, DevTools-style UI over running sandboxes. It decodes the agent’s LLM traffic into readable conversations, shows every egress request and file operation with its allowed/denied verdict, surfaces a timeline of activity, and lets you edit sandbox policy on the fly — all over the same event stream and API used by the SDKs.
+Hiver combines the sandbox and observability, so every agent run can be turned into insights to improve future runs.
 
-**Everything is in this repo and runs entirely on your machine — the runtime, the inspector, and the gateway.** There is no account to create and no hosted service to call; `hiver up` starts the whole stack locally. The same client library and runtime work whether you run `hiver start` on your laptop or deploy to a cluster, and you can bring your own Docker image with no application changes.
+It’s composed of a secure sandbox that works locally and in the cloud with different levels of isolation, an inspector web interface with live telemetry and a CLI that is used by a coding agent to improve the agent itself.
+
+Hiver doesn’t require an API key or a specific cloud service.
 
 ## 🚀 Getting Started
 
 Install the Hiver CLI:
 
 ```sh
-npm install --global @hiver.sh/cli
+npm install --global @hiver.sh/cli && hiver
 
 # If you don't have NPM:
 curl -fsSL https://hiver.sh/install | sh
 ```
+
+Installing the CLI also installs the `/hiver` skill, which gives coding agents the documentation needed to drive the CLI and client SDK.
 
 Then bring up the local stack, start an agent from a built-in image, and open the inspector — three commands, no config:
 
@@ -36,7 +41,7 @@ hiver start agent-1     # launch Claude Code, Codex, Copilot, or Gemini in an is
 hiver inspect agent-1   # open the inspector and replay every file, request, and tool call
 ```
 
-That's the full loop: an agent running in an isolated sandbox, with a live, replayable record of everything it does. From here, `hiver run` bundles your own project directory, and the client SDKs drive sandboxes programmatically — both covered below.
+That's the full loop: an agent running in an isolated sandbox, with a live, replayable record of everything it does.
 
 The CLI manages sandboxes, streams live events, and launches the inspector:
 
@@ -163,7 +168,7 @@ hiver events agent-1 --follow
 Then, pipe the event backlog into an LLM to get a plain-English summary of what the agent did:
 
 ```sh
-hiver events claude-code-an \
+hiver events agent-1 \
   | jq -c 'select(.type | IN("exec.request","egress.request","fs.request","stdio"))' \
   | claude -p "what did the agent do?"
 ```
@@ -379,7 +384,7 @@ await sandbox.snapshot({ vm: { key: "agent-1" } });
 
 ### Files
 
-Move files in and out of a sandbox's from outside the workload. Operations bypass the mount's ACLs; the API is a higher-privilege control surface than the workload.
+Move files in and out of a sandbox. Operations bypass the mount's ACLs; the API is a higher-privilege control surface than the workload.
 
 ```ts
 import * as hiver from "@hiver.sh/client";
