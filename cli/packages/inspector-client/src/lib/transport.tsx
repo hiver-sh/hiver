@@ -764,27 +764,32 @@ export function TransportProvider({
     setPaused(false);
   }, [player]);
   const [gatewayUrl, setGatewayUrlState] = useState(() => {
-    // The server injects the CLI-resolved gateway as a global on every page
-    // load (from its GATEWAY_URL, set by `hiver inspect` to the gateway you
-    // `hiver connect`-ed to). When it differs from the one we last adopted it's
-    // a fresh signal from the CLI — it wins and becomes the new override, so it
-    // supersedes any stale value saved by a previous session. When it's
-    // unchanged, a user's in-UI override (saved to localStorage) takes
-    // precedence so it survives reloads. Falls back to the built-in default.
+    // The CLI is the source of truth for the gateway. `hiver inspect`'s server
+    // injects it as a global on every page load, read live from
+    // ~/.hiver/config.json (the gateway you last `hiver connect`-ed to, or a
+    // `--gateway-url` flag). When present it ALWAYS wins — a value saved in
+    // localStorage by a previous session must never shadow what the CLI
+    // resolved, or the inspector silently talks to the wrong gateway. We still
+    // mirror it into localStorage so an in-UI switch has a base to persist from.
     const injected = (window as { __HIVE_GATEWAY_URL__?: string })
       .__HIVE_GATEWAY_URL__;
-    try {
-      if (injected && injected !== localStorage.getItem("inspector:gatewayInjected")) {
-        localStorage.setItem("inspector:gatewayInjected", injected);
+    if (injected) {
+      try {
         localStorage.setItem("inspector:gatewayUrl", injected);
-        return injected;
+      } catch {
+        /* localStorage unavailable */
       }
+      return injected;
+    }
+    // No injected value (e.g. the client served standalone, not via the CLI):
+    // fall back to a previously chosen gateway, else the built-in default.
+    try {
       const stored = localStorage.getItem("inspector:gatewayUrl");
       if (stored) return stored;
     } catch {
       /* localStorage unavailable */
     }
-    return injected || DEFAULT_GATEWAY_URL;
+    return DEFAULT_GATEWAY_URL;
   });
 
   const setGatewayUrl = useCallback((url: string) => {

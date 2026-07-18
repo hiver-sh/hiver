@@ -13,7 +13,7 @@ import terminalRoutes from "./routes/terminal.js";
 import browserRoutes from "./routes/browser.js";
 import snapshotRoutes from "./routes/snapshot.js";
 import traceRoutes from "./routes/trace.js";
-import { DEFAULT_URL } from "./lib/gatewayUrl.js";
+import { defaultGatewayUrl } from "./lib/gatewayUrl.js";
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
@@ -48,8 +48,9 @@ if (existsSync(clientDist)) {
   // the server, and inject runtime config so the web client defaults to it
   // instead of its own hard-coded defaults.
   const renderIndex = () => {
+    // Resolved per request so a reused server picks up a newer `hiver connect`.
     const globals = [
-      `window.__HIVE_GATEWAY_URL__=${JSON.stringify(DEFAULT_URL)}`,
+      `window.__HIVE_GATEWAY_URL__=${JSON.stringify(defaultGatewayUrl())}`,
     ].join(";");
     return readFileSync(join(clientDist, "index.html"), "utf8").replace(
       "</head>",
@@ -67,6 +68,6 @@ if (existsSync(clientDist)) {
 
 app.listen(PORT, () => {
   console.log(`DevTools server on http://localhost:${PORT}`);
-  console.log(`Default gateway: ${DEFAULT_URL}`);
+  console.log(`Default gateway: ${defaultGatewayUrl()}`);
   if (existsSync(clientDist)) console.log(`Serving client from ${clientDist}`);
 });

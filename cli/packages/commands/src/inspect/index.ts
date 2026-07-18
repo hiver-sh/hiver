@@ -4,7 +4,7 @@ import { mkdirSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { listSandboxes } from "@hiver.sh/client";
-import { HIVER_DIR } from "../config.js";
+import { HIVER_DIR, readConfig } from "../config.js";
 import { brand, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
 import { createLoader, hex } from "../hive.js";
@@ -138,13 +138,21 @@ if (await serverReachable()) {
   const loader = createLoader("starting devtools server…").start();
   spinning = true;
 
+  // Pin GATEWAY_URL for the server only when this run resolved to something
+  // other than the saved config (an explicit --gateway-url, or a port the
+  // gateway moved to). Left unset for a plain `hiver connect` gateway, the
+  // server reads it live from config on each page load — so a still-running
+  // server reflects a later `hiver connect` instead of a value frozen here.
+  const pinnedGateway =
+    gatewayUrl !== readConfig().gatewayUrl ? { GATEWAY_URL: gatewayUrl } : {};
+
   // detached: own process group, so we can kill the server *and* anything it
   // ever spawns as one unit, and so the terminal's SIGINT goes only to us
   // (we forward the teardown deliberately in shutdown).
   server = spawn(process.execPath, [SERVER_ENTRY], {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PORT: port, GATEWAY_URL: gatewayUrl },
+    env: { ...process.env, PORT: port, ...pinnedGateway },
   });
 
   // Read the server's output to detect readiness but don't print it — keep this
