@@ -293,7 +293,14 @@ export class Sandbox {
     try {
       for await (const frame of parseSSE(res.body, ac.signal)) {
         if (!follow) armIdle();
-        yield SandboxEvent.parse(JSON.parse(frame.data));
+        // The event stream is an open, append-only schema and the server is the
+        // trusted source, so we don't validate frames here — a new event `type`
+        // (or new field on an existing one) must flow straight through, not be
+        // rejected. Strict discriminated-union parsing would tear the whole
+        // stream down on the first unrecognised `type`. The Go client likewise
+        // unmarshals without validating; consumers dispatch on `type` and ignore
+        // anything they don't recognise.
+        yield JSON.parse(frame.data) as SandboxEvent;
       }
     } catch (err) {
       if (!isAbortError(err)) throw err;

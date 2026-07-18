@@ -160,8 +160,7 @@ func (h *Sandbox) ApplyConfig(c *gin.Context) {
 	// On a committed change, also record a lifecycle event carrying the full
 	// post-apply config (config.apply above only reports the delta).
 	if success {
-		cfg := postState
-		h.broker.Publish(events.SystemFactory(gen.SystemConfigChanged, &cfg))
+		h.broker.Publish(events.SystemConfigChanged(postState))
 	}
 
 	result := gen.ApplyResult{

@@ -337,7 +337,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	// First event on the stream: the request to start this sandbox has been
 	// received and boot is beginning. Silent — it precedes the lifetime hook and
 	// isn't agent activity.
-	broker.PublishSilent(events.SystemFactory(gen.SystemStart, nil))
+	broker.PublishSilent(events.SystemStart())
 
 	p := s.pack
 	sp, err := specFromConfig(cfg)
@@ -665,7 +665,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		// TTL elapsed without activity: record the shutdown before tearing the
 		// sandbox down so live event streams see it. Silent — the sandbox is
 		// expiring, so this must not reset the (already-elapsed) inactivity timer.
-		broker.PublishSilent(events.SystemFactory(gen.SystemShutdown, nil))
+		broker.PublishSilent(events.SystemShutdown())
 		cancel()
 	})
 	sb.SetLifetime(lifetime)

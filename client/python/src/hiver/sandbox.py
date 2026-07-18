@@ -7,6 +7,7 @@ from typing import AsyncGenerator, Callable, Coroutine, Any, AsyncIterable, Opti
 from urllib.parse import quote
 
 import httpx
+from pydantic import ValidationError
 
 from .schemas import (
     ApplyResult,
@@ -461,7 +462,15 @@ class Sandbox:
                 await res.aread()
                 raise _to_error(res, "events")
             async for frame in parse_sse(res, abort):
-                yield SandboxEventAdapter.validate_python(json.loads(frame.data))
+                # Tolerate unknown/newer event types: a `type` this client predates
+                # must be skipped, never raised — otherwise one forward-compatible
+                # event (e.g. a new `system.*`) tears down the whole stream and the
+                # consumer sees nothing after it. Malformed frames skip likewise.
+                try:
+                    event = SandboxEventAdapter.validate_python(json.loads(frame.data))
+                except (ValidationError, ValueError):
+                    continue
+                yield event
 
 
 async def _sleep(seconds: float, abort: Optional[asyncio.Event]) -> None:

@@ -68,27 +68,6 @@ func (e FSRequestEventOperation) Valid() bool {
 	}
 }
 
-// Defines values for SystemEventType.
-const (
-	SystemConfigChanged SystemEventType = "system.config-changed"
-	SystemShutdown      SystemEventType = "system.shutdown"
-	SystemStart         SystemEventType = "system.start"
-)
-
-// Valid indicates whether the value is a known member of the SystemEventType enum.
-func (e SystemEventType) Valid() bool {
-	switch e {
-	case SystemConfigChanged:
-		return true
-	case SystemShutdown:
-		return true
-	case SystemStart:
-		return true
-	default:
-		return false
-	}
-}
-
 // ConfigApplyEvent defines model for ConfigApplyEvent.
 type ConfigApplyEvent struct {
 	// Changes Concrete additions and removals carried out by the apply. Each
@@ -379,21 +358,35 @@ type StdioEvent struct {
 	Type      string    `json:"type"`
 }
 
-// SystemEvent defines model for SystemEvent.
-type SystemEvent struct {
-	// Config Sandbox config as of this event. Set for
-	// `system.config-changed`; omitted for other types.
-	Config *SandboxConfig `json:"config,omitempty"`
+// SystemConfigChangedEvent defines model for SystemConfigChangedEvent.
+type SystemConfigChangedEvent struct {
+	// Config Hive sandbox configuration.
+	Config SandboxConfig `json:"config"`
 
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
-	Id        int             `json:"id"`
-	Timestamp time.Time       `json:"timestamp"`
-	Type      SystemEventType `json:"type"`
+	Id        int       `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
 }
 
-// SystemEventType defines model for SystemEvent.Type.
-type SystemEventType string
+// SystemShutdownEvent defines model for SystemShutdownEvent.
+type SystemShutdownEvent struct {
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id        int       `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
+// SystemStartEvent defines model for SystemStartEvent.
+type SystemStartEvent struct {
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id        int       `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
 
 // AsConfigApplyEvent returns the union data inside the SandboxEvent as a ConfigApplyEvent
 func (t SandboxEvent) AsConfigApplyEvent() (ConfigApplyEvent, error) {
@@ -404,6 +397,7 @@ func (t SandboxEvent) AsConfigApplyEvent() (ConfigApplyEvent, error) {
 
 // FromConfigApplyEvent overwrites any union data inside the SandboxEvent as the provided ConfigApplyEvent
 func (t *SandboxEvent) FromConfigApplyEvent(v ConfigApplyEvent) error {
+	v.Type = "config.apply"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -411,6 +405,7 @@ func (t *SandboxEvent) FromConfigApplyEvent(v ConfigApplyEvent) error {
 
 // MergeConfigApplyEvent performs a merge with any union data inside the SandboxEvent, using the provided ConfigApplyEvent
 func (t *SandboxEvent) MergeConfigApplyEvent(v ConfigApplyEvent) error {
+	v.Type = "config.apply"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -430,6 +425,7 @@ func (t SandboxEvent) AsEgressRequestEvent() (EgressRequestEvent, error) {
 
 // FromEgressRequestEvent overwrites any union data inside the SandboxEvent as the provided EgressRequestEvent
 func (t *SandboxEvent) FromEgressRequestEvent(v EgressRequestEvent) error {
+	v.Type = "egress.request"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -437,6 +433,7 @@ func (t *SandboxEvent) FromEgressRequestEvent(v EgressRequestEvent) error {
 
 // MergeEgressRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressRequestEvent
 func (t *SandboxEvent) MergeEgressRequestEvent(v EgressRequestEvent) error {
+	v.Type = "egress.request"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -456,6 +453,7 @@ func (t SandboxEvent) AsEgressResponseEvent() (EgressResponseEvent, error) {
 
 // FromEgressResponseEvent overwrites any union data inside the SandboxEvent as the provided EgressResponseEvent
 func (t *SandboxEvent) FromEgressResponseEvent(v EgressResponseEvent) error {
+	v.Type = "egress.response"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -463,6 +461,7 @@ func (t *SandboxEvent) FromEgressResponseEvent(v EgressResponseEvent) error {
 
 // MergeEgressResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressResponseEvent
 func (t *SandboxEvent) MergeEgressResponseEvent(v EgressResponseEvent) error {
+	v.Type = "egress.response"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -482,6 +481,7 @@ func (t SandboxEvent) AsEgressChunkEvent() (EgressChunkEvent, error) {
 
 // FromEgressChunkEvent overwrites any union data inside the SandboxEvent as the provided EgressChunkEvent
 func (t *SandboxEvent) FromEgressChunkEvent(v EgressChunkEvent) error {
+	v.Type = "egress.chunk"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -489,6 +489,7 @@ func (t *SandboxEvent) FromEgressChunkEvent(v EgressChunkEvent) error {
 
 // MergeEgressChunkEvent performs a merge with any union data inside the SandboxEvent, using the provided EgressChunkEvent
 func (t *SandboxEvent) MergeEgressChunkEvent(v EgressChunkEvent) error {
+	v.Type = "egress.chunk"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -508,6 +509,7 @@ func (t SandboxEvent) AsFSRequestEvent() (FSRequestEvent, error) {
 
 // FromFSRequestEvent overwrites any union data inside the SandboxEvent as the provided FSRequestEvent
 func (t *SandboxEvent) FromFSRequestEvent(v FSRequestEvent) error {
+	v.Type = "fs.request"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -515,6 +517,7 @@ func (t *SandboxEvent) FromFSRequestEvent(v FSRequestEvent) error {
 
 // MergeFSRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided FSRequestEvent
 func (t *SandboxEvent) MergeFSRequestEvent(v FSRequestEvent) error {
+	v.Type = "fs.request"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -534,6 +537,7 @@ func (t SandboxEvent) AsFSResponseEvent() (FSResponseEvent, error) {
 
 // FromFSResponseEvent overwrites any union data inside the SandboxEvent as the provided FSResponseEvent
 func (t *SandboxEvent) FromFSResponseEvent(v FSResponseEvent) error {
+	v.Type = "fs.response"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -541,6 +545,7 @@ func (t *SandboxEvent) FromFSResponseEvent(v FSResponseEvent) error {
 
 // MergeFSResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided FSResponseEvent
 func (t *SandboxEvent) MergeFSResponseEvent(v FSResponseEvent) error {
+	v.Type = "fs.response"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -560,6 +565,7 @@ func (t SandboxEvent) AsStdioEvent() (StdioEvent, error) {
 
 // FromStdioEvent overwrites any union data inside the SandboxEvent as the provided StdioEvent
 func (t *SandboxEvent) FromStdioEvent(v StdioEvent) error {
+	v.Type = "stdio"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -567,6 +573,7 @@ func (t *SandboxEvent) FromStdioEvent(v StdioEvent) error {
 
 // MergeStdioEvent performs a merge with any union data inside the SandboxEvent, using the provided StdioEvent
 func (t *SandboxEvent) MergeStdioEvent(v StdioEvent) error {
+	v.Type = "stdio"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -586,6 +593,7 @@ func (t SandboxEvent) AsResourceUsageEvent() (ResourceUsageEvent, error) {
 
 // FromResourceUsageEvent overwrites any union data inside the SandboxEvent as the provided ResourceUsageEvent
 func (t *SandboxEvent) FromResourceUsageEvent(v ResourceUsageEvent) error {
+	v.Type = "resource.usage"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -593,6 +601,7 @@ func (t *SandboxEvent) FromResourceUsageEvent(v ResourceUsageEvent) error {
 
 // MergeResourceUsageEvent performs a merge with any union data inside the SandboxEvent, using the provided ResourceUsageEvent
 func (t *SandboxEvent) MergeResourceUsageEvent(v ResourceUsageEvent) error {
+	v.Type = "resource.usage"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -612,6 +621,7 @@ func (t SandboxEvent) AsExecRequestEvent() (ExecRequestEvent, error) {
 
 // FromExecRequestEvent overwrites any union data inside the SandboxEvent as the provided ExecRequestEvent
 func (t *SandboxEvent) FromExecRequestEvent(v ExecRequestEvent) error {
+	v.Type = "exec.request"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -619,6 +629,7 @@ func (t *SandboxEvent) FromExecRequestEvent(v ExecRequestEvent) error {
 
 // MergeExecRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided ExecRequestEvent
 func (t *SandboxEvent) MergeExecRequestEvent(v ExecRequestEvent) error {
+	v.Type = "exec.request"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -638,6 +649,7 @@ func (t SandboxEvent) AsExecResponseEvent() (ExecResponseEvent, error) {
 
 // FromExecResponseEvent overwrites any union data inside the SandboxEvent as the provided ExecResponseEvent
 func (t *SandboxEvent) FromExecResponseEvent(v ExecResponseEvent) error {
+	v.Type = "exec.response"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -645,6 +657,7 @@ func (t *SandboxEvent) FromExecResponseEvent(v ExecResponseEvent) error {
 
 // MergeExecResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided ExecResponseEvent
 func (t *SandboxEvent) MergeExecResponseEvent(v ExecResponseEvent) error {
+	v.Type = "exec.response"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -664,6 +677,7 @@ func (t SandboxEvent) AsIngressRequestEvent() (IngressRequestEvent, error) {
 
 // FromIngressRequestEvent overwrites any union data inside the SandboxEvent as the provided IngressRequestEvent
 func (t *SandboxEvent) FromIngressRequestEvent(v IngressRequestEvent) error {
+	v.Type = "ingress.request"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -671,6 +685,7 @@ func (t *SandboxEvent) FromIngressRequestEvent(v IngressRequestEvent) error {
 
 // MergeIngressRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided IngressRequestEvent
 func (t *SandboxEvent) MergeIngressRequestEvent(v IngressRequestEvent) error {
+	v.Type = "ingress.request"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -690,6 +705,7 @@ func (t SandboxEvent) AsIngressResponseEvent() (IngressResponseEvent, error) {
 
 // FromIngressResponseEvent overwrites any union data inside the SandboxEvent as the provided IngressResponseEvent
 func (t *SandboxEvent) FromIngressResponseEvent(v IngressResponseEvent) error {
+	v.Type = "ingress.response"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -697,6 +713,7 @@ func (t *SandboxEvent) FromIngressResponseEvent(v IngressResponseEvent) error {
 
 // MergeIngressResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided IngressResponseEvent
 func (t *SandboxEvent) MergeIngressResponseEvent(v IngressResponseEvent) error {
+	v.Type = "ingress.response"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -707,22 +724,80 @@ func (t *SandboxEvent) MergeIngressResponseEvent(v IngressResponseEvent) error {
 	return err
 }
 
-// AsSystemEvent returns the union data inside the SandboxEvent as a SystemEvent
-func (t SandboxEvent) AsSystemEvent() (SystemEvent, error) {
-	var body SystemEvent
+// AsSystemStartEvent returns the union data inside the SandboxEvent as a SystemStartEvent
+func (t SandboxEvent) AsSystemStartEvent() (SystemStartEvent, error) {
+	var body SystemStartEvent
 	err := json.Unmarshal(t.union, &body)
 	return body, err
 }
 
-// FromSystemEvent overwrites any union data inside the SandboxEvent as the provided SystemEvent
-func (t *SandboxEvent) FromSystemEvent(v SystemEvent) error {
+// FromSystemStartEvent overwrites any union data inside the SandboxEvent as the provided SystemStartEvent
+func (t *SandboxEvent) FromSystemStartEvent(v SystemStartEvent) error {
+	v.Type = "system.start"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
 }
 
-// MergeSystemEvent performs a merge with any union data inside the SandboxEvent, using the provided SystemEvent
-func (t *SandboxEvent) MergeSystemEvent(v SystemEvent) error {
+// MergeSystemStartEvent performs a merge with any union data inside the SandboxEvent, using the provided SystemStartEvent
+func (t *SandboxEvent) MergeSystemStartEvent(v SystemStartEvent) error {
+	v.Type = "system.start"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSystemConfigChangedEvent returns the union data inside the SandboxEvent as a SystemConfigChangedEvent
+func (t SandboxEvent) AsSystemConfigChangedEvent() (SystemConfigChangedEvent, error) {
+	var body SystemConfigChangedEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSystemConfigChangedEvent overwrites any union data inside the SandboxEvent as the provided SystemConfigChangedEvent
+func (t *SandboxEvent) FromSystemConfigChangedEvent(v SystemConfigChangedEvent) error {
+	v.Type = "system.config-changed"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSystemConfigChangedEvent performs a merge with any union data inside the SandboxEvent, using the provided SystemConfigChangedEvent
+func (t *SandboxEvent) MergeSystemConfigChangedEvent(v SystemConfigChangedEvent) error {
+	v.Type = "system.config-changed"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSystemShutdownEvent returns the union data inside the SandboxEvent as a SystemShutdownEvent
+func (t SandboxEvent) AsSystemShutdownEvent() (SystemShutdownEvent, error) {
+	var body SystemShutdownEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSystemShutdownEvent overwrites any union data inside the SandboxEvent as the provided SystemShutdownEvent
+func (t *SandboxEvent) FromSystemShutdownEvent(v SystemShutdownEvent) error {
+	v.Type = "system.shutdown"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSystemShutdownEvent performs a merge with any union data inside the SandboxEvent, using the provided SystemShutdownEvent
+func (t *SandboxEvent) MergeSystemShutdownEvent(v SystemShutdownEvent) error {
+	v.Type = "system.shutdown"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -772,11 +847,11 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 	case "stdio":
 		return t.AsStdioEvent()
 	case "system.config-changed":
-		return t.AsSystemEvent()
+		return t.AsSystemConfigChangedEvent()
 	case "system.shutdown":
-		return t.AsSystemEvent()
+		return t.AsSystemShutdownEvent()
 	case "system.start":
-		return t.AsSystemEvent()
+		return t.AsSystemStartEvent()
 	default:
 		return nil, errors.New("unknown discriminator value: " + discriminator)
 	}

@@ -18,7 +18,9 @@ components:
         - $ref: '#/components/schemas/ExecResponseEvent'
         - $ref: '#/components/schemas/IngressRequestEvent'
         - $ref: '#/components/schemas/IngressResponseEvent'
-        - $ref: '#/components/schemas/SystemEvent'
+        - $ref: '#/components/schemas/SystemStartEvent'
+        - $ref: '#/components/schemas/SystemConfigChangedEvent'
+        - $ref: '#/components/schemas/SystemShutdownEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -34,9 +36,9 @@ components:
           exec.response: '#/components/schemas/ExecResponseEvent'
           ingress.request: '#/components/schemas/IngressRequestEvent'
           ingress.response: '#/components/schemas/IngressResponseEvent'
-          system.start: '#/components/schemas/SystemEvent'
-          system.config-changed: '#/components/schemas/SystemEvent'
-          system.shutdown: '#/components/schemas/SystemEvent'
+          system.start: '#/components/schemas/SystemStartEvent'
+          system.config-changed: '#/components/schemas/SystemConfigChangedEvent'
+          system.shutdown: '#/components/schemas/SystemShutdownEvent'
 
     SandboxEventBase:
       type: object
@@ -485,17 +487,10 @@ components:
         status: 200
         duration_ms: 12
 
-    SystemEvent:
+    SystemStartEvent:
       description: |
-        Emitted for sandbox lifecycle transitions. The `type` field
-        selects which transition occurred:
-
-          - `system.start` — the request to start the VM or container
-            was first received.
-          - `system.config-changed` — the sandbox config was updated;
-            the new config is recorded in `config`.
-          - `system.shutdown` — the VM or container expired its TTL
-            without activity and is being shut down.
+        Emitted when the request to start the VM or container was first
+        received and boot is beginning. Always the first event on the stream.
       allOf:
         - $ref: '#/components/schemas/SandboxEventBase'
         - type: object
@@ -503,13 +498,26 @@ components:
           properties:
             type:
               type: string
-              enum: [system.start, system.config-changed, system.shutdown]
+              const: system.start
+      example:
+        type: system.start
+        id: 1
+        timestamp: "2026-06-02T14:22:00Z"
+
+    SystemConfigChangedEvent:
+      description: |
+        Emitted when the sandbox config is updated. `config` carries the
+        full config as of this event.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, config]
+          properties:
+            type:
+              type: string
+              const: system.config-changed
             config:
-              allOf:
-                - $ref: './config.yaml#/components/schemas/SandboxConfig'
-              description: |
-                Sandbox config as of this event. Set for
-                `system.config-changed`; omitted for other types.
+              $ref: './config.yaml#/components/schemas/SandboxConfig'
       example:
         type: system.config-changed
         id: 240
@@ -523,3 +531,20 @@ components:
               access: allow
               methods: [GET]
               paths: [/repos/*]
+
+    SystemShutdownEvent:
+      description: |
+        Emitted when the VM or container expired its TTL without activity
+        and is being shut down.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              const: system.shutdown
+      example:
+        type: system.shutdown
+        id: 512
+        timestamp: "2026-06-02T14:30:00Z"

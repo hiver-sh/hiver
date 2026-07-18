@@ -1,10 +1,10 @@
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdirSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { listSandboxes } from "@hiver.sh/client";
-import { HIVER_DIR, readConfig } from "../config.js";
+import { HIVER_DIR } from "../config.js";
 import { brand, dim, red } from "../theme.js";
 import { subcommand, withGateway, run, resolveGatewayUrl } from "../args.js";
 import { createLoader, hex } from "../hive.js";
@@ -129,22 +129,85 @@ async function serverReachable(): Promise<boolean> {
   }
 }
 
+// The gateway a server already listening on `port` is serving, read from the
+// `__HIVE_GATEWAY_URL__` global it injects into its HTML. Works across server
+// versions, and reflects a still-running server frozen to an old `hiver connect`
+// (or pinned via a past --gateway-url) — the exact case where reusing it would
+// make the inspector talk to a different gateway than the CLI now resolves.
+async function runningGateway(): Promise<string | undefined> {
+  try {
+    const html = await (
+      await fetch(serverUrl, { signal: AbortSignal.timeout(1000) })
+    ).text();
+    const m = html.match(/__HIVE_GATEWAY_URL__=("(?:[^"\\]|\\.)*")/);
+    return m ? (JSON.parse(m[1]) as string) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Kill whatever holds `port` (unix only; best-effort) and wait for it to let go,
+// so we can start a fresh server there. Used to evict a stale inspector serving
+// the wrong gateway.
+async function freePort(p: string): Promise<void> {
+  if (process.platform !== "win32") {
+    try {
+      const pids = execSync(`lsof -ti tcp:${p}`, {
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .toString()
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const pid of pids) {
+        try {
+          process.kill(Number(pid), "SIGTERM");
+        } catch {
+          /* already gone */
+        }
+      }
+    } catch {
+      /* lsof missing, or nothing on the port */
+    }
+  }
+  for (let i = 0; i < 30 && (await serverReachable()); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 let server: ReturnType<typeof spawn> | undefined;
 let spinning = false;
 
+// Reuse an already-running inspector only when it serves the gateway the CLI
+// resolved; otherwise it's stale (a past `hiver inspect` frozen to an older
+// `hiver connect`), so evict it and start fresh. Without this, the reuse path
+// never re-applies the gateway and the inspector keeps talking to the old one.
+let reuse = false;
 if (await serverReachable()) {
+  if ((await runningGateway()) === gatewayUrl) {
+    reuse = true;
+  } else {
+    await freePort(port);
+  }
+}
+
+if (reuse) {
   if (!recording) openBrowser(serverUrl + inspectPath);
 } else {
   const loader = createLoader("starting devtools server…").start();
   spinning = true;
 
-  // Pin GATEWAY_URL for the server only when this run resolved to something
-  // other than the saved config (an explicit --gateway-url, or a port the
-  // gateway moved to). Left unset for a plain `hiver connect` gateway, the
-  // server reads it live from config on each page load — so a still-running
-  // server reflects a later `hiver connect` instead of a value frozen here.
-  const pinnedGateway =
-    gatewayUrl !== readConfig().gatewayUrl ? { GATEWAY_URL: gatewayUrl } : {};
+  // The server resolves its gateway live from ~/.hiver/config.json on every page
+  // load, so a freshly spawned *or* reused inspector always reflects the gateway
+  // the CLI currently sees — the last `hiver connect`, else the built-in default.
+  // Only an explicit `--gateway-url` (a one-off override we never persist to
+  // config) pins the server to a fixed value. In every other case we must not let
+  // an ambient GATEWAY_URL leak into the child and shadow the config the CLI reads
+  // — that is exactly what made the inspector talk to a different gateway than the
+  // CLI. A moved port needs no pin: `hiver up` saves it to config first.
+  const env: NodeJS.ProcessEnv = { ...process.env, PORT: port };
+  if (opts.gatewayUrl) env.GATEWAY_URL = gatewayUrl;
+  else delete env.GATEWAY_URL;
 
   // detached: own process group, so we can kill the server *and* anything it
   // ever spawns as one unit, and so the terminal's SIGINT goes only to us
@@ -152,7 +215,7 @@ if (await serverReachable()) {
   server = spawn(process.execPath, [SERVER_ENTRY], {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PORT: port, ...pinnedGateway },
+    env,
   });
 
   // Read the server's output to detect readiness but don't print it — keep this
