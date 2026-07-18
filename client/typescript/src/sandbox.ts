@@ -20,7 +20,7 @@ export interface SandboxOptions {
 }
 
 export interface RequestOptions {
-  /** Abort after this many milliseconds. Defaults to 5 000 for short operations. */
+  /** Abort after this many milliseconds. Defaults to 5 000 for short operations. Pass `0` to disable the timeout. */
   timeoutMs?: number;
 }
 
@@ -34,7 +34,7 @@ export interface ExecOptions {
   env?: Record<string, string>;
   /** Abort the command from the caller's side. */
   signal?: AbortSignal;
-  /** Abort after this many milliseconds. */
+  /** Abort after this many milliseconds. Pass `0` to disable the timeout. */
   timeoutMs?: number;
 }
 
@@ -50,7 +50,7 @@ export interface ExecStreamOptions {
   tty?: boolean;
   /** Abort the command from the caller's side. */
   signal?: AbortSignal;
-  /** Abort after this many milliseconds. */
+  /** Abort after this many milliseconds. Pass `0` to disable the timeout. */
   timeoutMs?: number;
 }
 
@@ -106,7 +106,7 @@ export class Sandbox {
    * so it can be passed straight to `setInterval(sandbox.ping, 10_000)`.
    */
   ping = async (opts?: RequestOptions): Promise<void> => {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/ping`, {
       signal,
     });
@@ -117,7 +117,7 @@ export class Sandbox {
    * Tear this sandbox down via `DELETE /v1/<key>`, cancelling its lifecycle.
    */
   async shutdown(opts?: RequestOptions): Promise<void> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(
       `${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}`,
       { method: "DELETE", signal },
@@ -130,7 +130,7 @@ export class Sandbox {
    * {@link proxyUrl}.
    */
   async getPorts(opts?: RequestOptions): Promise<number[]> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/ports`, {
       signal,
     });
@@ -144,7 +144,7 @@ export class Sandbox {
    * image ships a guest root filesystem) rather than configured.
    */
   async getInfo(opts?: RequestOptions): Promise<SandboxInfo> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/info`, {
       signal,
     });
@@ -154,7 +154,7 @@ export class Sandbox {
 
   /** Read the current `SandboxConfig`. */
   async getConfig(opts?: RequestOptions): Promise<SandboxConfig> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/config`, {
       signal,
     });
@@ -171,7 +171,7 @@ export class Sandbox {
     config: SandboxConfig,
     opts?: RequestOptions,
   ): Promise<ApplyResult> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const validated = SandboxConfig.parse(config);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/config`, {
       method: "PUT",
@@ -193,7 +193,7 @@ export class Sandbox {
     request: Snapshot,
     opts?: RequestOptions,
   ): Promise<SnapshotResult> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/snapshot`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -447,7 +447,7 @@ export class Sandbox {
     path: string,
     opts?: RequestOptions,
   ): Promise<{ name: string; path: string; is_dir: boolean; size: number }[]> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const url = new URL(`${this.apiServerUrl}/v1/${encodeURIComponent(this.key)}/directories`);
     url.searchParams.set("path", path);
     const res = await this.fetchImpl(url, { signal });
@@ -478,7 +478,7 @@ export class Sandbox {
    * absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
    */
   async readFile(path: string, opts?: RequestOptions): Promise<Uint8Array> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(this.fileUrl(path), { signal });
     if (!res.ok) throw await toError(res, "readFile");
     return new Uint8Array(await res.arrayBuffer());
@@ -495,7 +495,7 @@ export class Sandbox {
     content: Blob | Uint8Array | ArrayBuffer | string,
     opts?: RequestOptions,
   ): Promise<{ path: string; bytes: number }> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(this.fileUrl(path), {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
@@ -512,7 +512,7 @@ export class Sandbox {
    * `path` is the agent-visible absolute path (e.g. `/workspace/data.csv`).
    */
   async deleteFile(path: string, opts?: RequestOptions): Promise<void> {
-    const signal = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = requestTimeoutSignal(opts?.timeoutMs);
     const res = await this.fetchImpl(this.fileUrl(path), { method: "DELETE", signal });
     if (!res.ok) throw await toError(res, "deleteFile");
   }
@@ -567,13 +567,20 @@ export type ExecStreamEvent =
   | { type: "stderr"; text: string }
   | { type: "exit"; code: number };
 
+// Build the timeout signal for a short request. `timeoutMs: 0` disables the
+// timeout entirely; omitting it falls back to DEFAULT_TIMEOUT_MS.
+function requestTimeoutSignal(timeoutMs?: number): AbortSignal | undefined {
+  const ms = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  return ms > 0 ? AbortSignal.timeout(ms) : undefined;
+}
+
 // Merge timeoutMs and signal into a single AbortSignal. If both are
-// provided, abort whichever fires first.
+// provided, abort whichever fires first. `timeoutMs: 0` disables the timeout.
 function resolveSignal(
   opts: { signal?: AbortSignal; timeoutMs?: number } | undefined,
 ): AbortSignal | undefined {
   const { signal, timeoutMs } = opts ?? {};
-  if (timeoutMs === undefined) return signal;
+  if (timeoutMs === undefined || timeoutMs === 0) return signal;
   const timeout = AbortSignal.timeout(timeoutMs);
   if (!signal) return timeout;
   const ac = new AbortController();

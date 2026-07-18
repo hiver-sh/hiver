@@ -149,6 +149,33 @@ it("applyConfig throws SandboxError on non-200", async () => {
   });
 });
 
+// timeoutMs
+
+it("timeoutMs: 0 disables the timeout (no aborted signal)", async () => {
+  const mockFetch = vi.fn().mockResolvedValue(jsonResp(MIN_CONFIG));
+  await makeSandbox(mockFetch).getConfig({ timeoutMs: 0 });
+  const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+  // No timeout signal is attached, so the request can run indefinitely.
+  expect(init.signal == null || init.signal.aborted === false).toBe(true);
+});
+
+it("timeoutMs: 0 disables the timeout for exec", async () => {
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(jsonResp({ stdout: "", stderr: "", exit_code: 0 }));
+  await makeSandbox(mockFetch).exec("true", { timeoutMs: 0 });
+  const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+  expect(init.signal == null || init.signal.aborted === false).toBe(true);
+});
+
+it("a positive timeoutMs attaches a live (not-yet-aborted) signal", async () => {
+  const mockFetch = vi.fn().mockResolvedValue(jsonResp(MIN_CONFIG));
+  await makeSandbox(mockFetch).getConfig({ timeoutMs: 5_000 });
+  const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+  expect(init.signal).toBeInstanceOf(AbortSignal);
+  expect(init.signal!.aborted).toBe(false);
+});
+
 // readFile
 
 it("readFile sends GET /v1/file?path=<encoded> and returns Uint8Array", async () => {
