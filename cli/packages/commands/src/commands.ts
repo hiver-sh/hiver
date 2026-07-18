@@ -13,6 +13,8 @@ export interface CommandSpec {
   entry: string;
   /** Optional usage examples shown beneath the listing. */
   usage?: string[];
+  /** When true, the command still routes but is omitted from the help listing. */
+  hidden?: boolean;
 }
 
 export const COMMANDS: CommandSpec[] = [
@@ -30,7 +32,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: "connect",
-    summary: "Connect to remote stack",
+    summary: "Connect to stack",
     entry: "connect/index.ts",
     usage: ["hiver connect <url>", "hiver connect http://gateway"],
   },
@@ -104,6 +106,7 @@ export const COMMANDS: CommandSpec[] = [
     name: "install-skill",
     summary: "Install the Hiver skill into your coding agents",
     entry: "install-skill/index.ts",
+    hidden: true,
     usage: [
       "hiver install-skill",
       "hiver install-skill claude codex",

@@ -72,8 +72,9 @@ function printCommands(unknown: string | undefined) {
   console.log(`  ${dim("Usage:")} ${white("hiver")} ${dim("<command> [options]")}\n`);
   console.log(`  ${bold(white("Commands"))}`);
 
-  const pad = Math.max(...COMMANDS.map((c) => c.name.length));
-  for (const cmd of COMMANDS) {
+  const visible = COMMANDS.filter((c) => !c.hidden);
+  const pad = Math.max(...visible.map((c) => c.name.length));
+  for (const cmd of visible) {
     console.log(`    ${white(cmd.name.padEnd(pad))}  ${dim(cmd.summary)}`);
   }
 

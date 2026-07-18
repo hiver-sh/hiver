@@ -53,7 +53,7 @@ The CLI manages sandboxes, streams live events, and launches the inspector:
   Commands
     up             Bring up local stack
     down           Bring down local stack
-    connect        Connect to remote stack
+    connect        Connect to stack
     start          Start a sandbox
     run            Build and launch a project directory as a sandbox
     stop           Stop a sandbox

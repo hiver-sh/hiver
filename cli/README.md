@@ -23,7 +23,7 @@ npx -y @hiver.sh/cli
   Commands
     up       Bring up local stack
     down     Bring down local stack
-    connect  Connect to remote stack
+    connect  Connect to stack
     start    Start a sandbox
     stop     Stop a sandbox
     shell    Open an interactive shell in a sandbox
