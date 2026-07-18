@@ -3,7 +3,7 @@ CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 # JS/TS subprojects with their own format/lint npm scripts
 JS_DIRS := cli client/typescript
 
-.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images build-agent-base buildx-builder up down test e2e test-e2e test-unit gen fmt format lint lint-go staticcheck $(CMDS)
+.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images build-agent-base buildx-builder test e2e test-e2e test-unit gen fmt format lint lint-go staticcheck local-link local-unlink $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -91,11 +91,16 @@ publish-sandbox-images: bundle-sandbox-images ## Build and push sandbox images (
 sync-client-version: ## Sync @hiver.sh/client version to match cli/package.json, update cli dep and lockfile
 	./scripts/sync-client-version.sh
 
-link-cli: ## Builds the local CLI and makes it available as hiver in the PATH
-	cd cli && npm run build && npm link
+local-link: ## Build + link the local TS client and CLI so `hiver` runs your working tree
+	cd client/typescript && npm run build && npm link
+	cd cli && npm link @hiver.sh/client && npm run build && npm link
 
-unlink-cli: ## Unlinks the local CLI
-	npm unlink -g @hiver.sh/cli
+local-unlink: ## Drop the local links so `hiver` falls back to the globally installed CLI
+	-cd cli && npm unlink @hiver.sh/client
+	-npm unlink -g @hiver.sh/cli
+	-npm unlink -g @hiver.sh/client
+	cd cli && npm install
+	npm install -g @hiver.sh/cli
 
 test: test-unit ## Run tests
 

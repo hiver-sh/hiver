@@ -43,11 +43,18 @@ Build the Docker images:
 make build-images
 ```
 
+Build a specific sandbox image with `hiver bundle`, e.g. the Claude or Codex image:
+
+```sh
+hiver bundle ./docker/claude --tag hiversh/claude:latest
+hiver bundle ./docker/codex --tag hiversh/codex:latest
+```
+
 ## Running the stack
 
 ```sh
-make up      # start services via docker compose
-make down    # stop services
+hiver up      # start services via docker compose
+hiver down    # stop services
 ```
 
 Run `make help` to see all available targets.
@@ -74,6 +81,24 @@ cd client/typescript && npm ci && npm test
 
 # Python
 cd client/python && pip install -e ".[dev]" && pytest tests/
+```
+
+### Testing the client and CLI locally
+
+To exercise your working-tree changes to the TypeScript client and the CLI
+together, use `make local-link`. It builds the local client, links it, builds
+the CLI against that local client, and links the CLI so `hiver` on your PATH
+runs your working tree:
+
+```sh
+make local-link
+```
+
+This is the preferred way to test client and CLI changes end-to-end locally.
+When you're done, restore the globally installed CLI:
+
+```sh
+make local-unlink
 ```
 
 CI runs the Go unit tests and both client suites on every push — see
