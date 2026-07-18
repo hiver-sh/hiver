@@ -450,6 +450,16 @@ class IngressResponseEvent(_SandboxEventBase):
     body: Optional[str] = None
 
 
+class SystemEvent(_SandboxEventBase):
+    """A sandbox lifecycle transition: ``system.start`` when the request to start
+    the VM or container is first received, ``system.config-changed`` when the
+    config is updated (``config`` carries the new config), and ``system.shutdown``
+    when the sandbox expires its TTL without activity."""
+
+    type: Literal["system.start", "system.config-changed", "system.shutdown"]
+    config: Optional[SandboxConfig] = None
+
+
 SandboxEvent = Annotated[
     Union[
         ConfigApplyEvent,
@@ -464,6 +474,7 @@ SandboxEvent = Annotated[
         ExecResponseEvent,
         IngressRequestEvent,
         IngressResponseEvent,
+        SystemEvent,
     ],
     Field(discriminator="type"),
 ]

@@ -40,6 +40,7 @@ from .schemas import (
     SnapshotResult,
     SnapshotVM,
     StdioEvent,
+    SystemEvent,
 )
 from .utils import allow_sandbox, allowed_npm_packages, allowed_python_packages
 
@@ -88,6 +89,7 @@ __all__ = [
     "SnapshotResult",
     "SnapshotVM",
     "StdioEvent",
+    "SystemEvent",
     # utils
     "allow_sandbox",
     "allowed_npm_packages",

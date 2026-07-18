@@ -50,7 +50,15 @@ export interface ToolInvocation {
 
 export interface TimelineRow {
   key: string;
-  type: "egress" | "ingress" | "fs" | "stdio" | "resource" | "exec" | "tool";
+  type:
+    | "egress"
+    | "ingress"
+    | "fs"
+    | "stdio"
+    | "resource"
+    | "exec"
+    | "tool"
+    | "system";
   label: string;
   method?: string;
   isPoint: boolean;
@@ -250,6 +258,23 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
         undefined,
         true,
       ).bars.push({ ...bar });
+    } else if (
+      event.type === "system.start" ||
+      event.type === "system.config-changed" ||
+      event.type === "system.shutdown"
+    ) {
+      // Lifecycle transitions (start / config-changed / shutdown) render as
+      // point markers on a single row grouped under Resources.
+      getOrCreateRow("system", "system", "lifecycle", undefined, true).bars.push(
+        {
+          id: event.id,
+          sandboxKey,
+          startTime: new Date(event.timestamp).getTime(),
+          durationMs: 0,
+          pending: false,
+          rawEvents: [event],
+        },
+      );
     }
   }
 
@@ -523,6 +548,7 @@ function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
       ? "bg-red-400/70"
       : "bg-zinc-500/70";
   }
+  if (type === "system") return "bg-amber-500/70";
   return "bg-purple-500/65";
 }
 
@@ -539,6 +565,7 @@ function methodClass(row: TimelineRow): string {
       ? "text-sky-600 dark:text-sky-400"
       : "text-emerald-600 dark:text-emerald-400";
   if (row.type === "ingress") return "text-blue-500 dark:text-blue-400";
+  if (row.type === "system") return "text-amber-600 dark:text-amber-400";
   switch (row.method) {
     case "GET":
       return "text-green-600 dark:text-green-400";
@@ -726,7 +753,7 @@ function getRowCategory(row: TimelineRow): Category {
   if (row.type === "tool") return "tools";
   if (row.type === "stdio" || row.type === "exec") return "stdio";
   if (row.type === "fs") return "fs";
-  if (row.type === "resource") return "resource";
+  if (row.type === "resource" || row.type === "system") return "resource";
   if (row.type === "ingress") return "ingress";
   const e = row.bars[0]?.rawEvents[0];
   if (e?.type === "egress.request" && LLM_PROVIDERS.some((p) => p.matches(e))) {

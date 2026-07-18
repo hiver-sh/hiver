@@ -116,6 +116,13 @@ type SandboxEventVariant =
       duration_ms: number;
       headers?: Record<string, string>;
       body?: string;
+    }
+  | {
+      id: number;
+      timestamp: string;
+      type: "system.start" | "system.config-changed" | "system.shutdown";
+      // Present on system.config-changed: the config in effect after the change.
+      config?: unknown;
     };
 
 export type SandboxEvent = SandboxEventVariant & {

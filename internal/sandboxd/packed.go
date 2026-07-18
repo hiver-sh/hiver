@@ -333,6 +333,12 @@ func setupEntrypointTTY(ctx context.Context, key string, iso isolation.Isolation
 }
 
 func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.SandboxConfig) (*handlers.Sandbox, error) {
+	broker := events.New(events.DefaultCapacity, 0)
+	// First event on the stream: the request to start this sandbox has been
+	// received and boot is beginning. Silent — it precedes the lifetime hook and
+	// isn't agent activity.
+	broker.PublishSilent(events.SystemFactory(gen.SystemStart, nil))
+
 	p := s.pack
 	sp, err := specFromConfig(cfg)
 	if err != nil {
@@ -402,8 +408,6 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 	}
 
 	phase.mark("pack " + key + ": isolation root + CA")
-
-	broker := events.New(events.DefaultCapacity, 0)
 	store := api.NewConfigStore(cfg)
 
 	// Per-key sbxfuse workspaces under /run/sandboxd/<key> (host side); the guest
@@ -657,7 +661,13 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 			return defaultTtl
 		}
 		return time.Duration(*c.Ttl) * time.Second
-	}, cancel)
+	}, func() {
+		// TTL elapsed without activity: record the shutdown before tearing the
+		// sandbox down so live event streams see it. Silent — the sandbox is
+		// expiring, so this must not reset the (already-elapsed) inactivity timer.
+		broker.PublishSilent(events.SystemFactory(gen.SystemShutdown, nil))
+		cancel()
+	})
 	sb.SetLifetime(lifetime)
 	broker.SetActivityHook(lifetime.Reset)
 

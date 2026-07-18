@@ -18,6 +18,7 @@ components:
         - $ref: '#/components/schemas/ExecResponseEvent'
         - $ref: '#/components/schemas/IngressRequestEvent'
         - $ref: '#/components/schemas/IngressResponseEvent'
+        - $ref: '#/components/schemas/SystemEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -33,6 +34,9 @@ components:
           exec.response: '#/components/schemas/ExecResponseEvent'
           ingress.request: '#/components/schemas/IngressRequestEvent'
           ingress.response: '#/components/schemas/IngressResponseEvent'
+          system.start: '#/components/schemas/SystemEvent'
+          system.config-changed: '#/components/schemas/SystemEvent'
+          system.shutdown: '#/components/schemas/SystemEvent'
 
     SandboxEventBase:
       type: object
@@ -480,3 +484,42 @@ components:
         request_id: 230
         status: 200
         duration_ms: 12
+
+    SystemEvent:
+      description: |
+        Emitted for sandbox lifecycle transitions. The `type` field
+        selects which transition occurred:
+
+          - `system.start` — the request to start the VM or container
+            was first received.
+          - `system.config-changed` — the sandbox config was updated;
+            the new config is recorded in `config`.
+          - `system.shutdown` — the VM or container expired its TTL
+            without activity and is being shut down.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              enum: [system.start, system.config-changed, system.shutdown]
+            config:
+              allOf:
+                - $ref: './config.yaml#/components/schemas/SandboxConfig'
+              description: |
+                Sandbox config as of this event. Set for
+                `system.config-changed`; omitted for other types.
+      example:
+        type: system.config-changed
+        id: 240
+        timestamp: "2026-06-02T14:22:07Z"
+        config:
+          fs:
+            - mount: /workspace
+              backend: local
+          egress:
+            - host: api.github.com
+              access: allow
+              methods: [GET]
+              paths: [/repos/*]

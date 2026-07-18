@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
+	"github.com/hiver-sh/hiver/internal/events"
 )
 
 // GetInfo reports internal runtime facts about the sandbox that are determined
@@ -155,6 +156,13 @@ func (h *Sandbox) ApplyConfig(c *gin.Context) {
 		_ = ev.FromConfigApplyEvent(evt)
 		return ev
 	})
+
+	// On a committed change, also record a lifecycle event carrying the full
+	// post-apply config (config.apply above only reports the delta).
+	if success {
+		cfg := postState
+		h.broker.Publish(events.SystemFactory(gen.SystemConfigChanged, &cfg))
+	}
 
 	result := gen.ApplyResult{
 		Applied: success,

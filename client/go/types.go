@@ -496,4 +496,9 @@ type SandboxEvent struct {
 	// exec.request, exec.response
 	CWD     string `json:"cwd,omitempty"`
 	Command string `json:"command,omitempty"`
+
+	// system.config-changed. Type is one of "system.start",
+	// "system.config-changed", or "system.shutdown"; Config carries the
+	// post-change config for "system.config-changed" and is nil otherwise.
+	Config *SandboxConfig `json:"config,omitempty"`
 }

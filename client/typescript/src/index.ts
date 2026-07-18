@@ -34,6 +34,7 @@ export {
   SnapshotResult,
   SnapshotPartResult,
   StdioEvent,
+  SystemEvent,
 } from "./schemas";
 
 export {

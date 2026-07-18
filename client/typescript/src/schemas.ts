@@ -892,6 +892,22 @@ type _AssertIngressResponseEvent = Expect<
   Equal<z.infer<typeof IngressResponseEvent>, IngressResponseEvent>
 >;
 
+export interface SystemEvent extends SandboxEventBase {
+  type: "system.start" | "system.config-changed" | "system.shutdown";
+  config?: SandboxConfig;
+}
+export const SystemEvent = SandboxEventBase.extend({
+  type: z.enum([
+    "system.start",
+    "system.config-changed",
+    "system.shutdown",
+  ]),
+  config: SandboxConfig.optional(),
+});
+type _AssertSystemEvent = Expect<
+  Equal<z.infer<typeof SystemEvent>, SystemEvent>
+>;
+
 export type SandboxEvent =
   | ConfigApplyEvent
   | EgressRequestEvent
@@ -904,7 +920,8 @@ export type SandboxEvent =
   | ExecRequestEvent
   | ExecResponseEvent
   | IngressRequestEvent
-  | IngressResponseEvent;
+  | IngressResponseEvent
+  | SystemEvent;
 export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
   EgressRequestEvent,
@@ -918,6 +935,7 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   ExecResponseEvent,
   IngressRequestEvent,
   IngressResponseEvent,
+  SystemEvent,
 ]);
 type _AssertSandboxEvent = Expect<
   Equal<z.infer<typeof SandboxEvent>, SandboxEvent>

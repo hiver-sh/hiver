@@ -63,6 +63,12 @@ function eventBadge(event: SandboxEvent): {
       return { label: "exec", variant: "zinc" };
     case "exec.response":
       return { label: "exec.res", variant: "zinc" };
+    case "system.start":
+      return { label: "start", variant: "orange" };
+    case "system.config-changed":
+      return { label: "config-changed", variant: "orange" };
+    case "system.shutdown":
+      return { label: "shutdown", variant: "orange" };
     default:
       return { label: "unknown", variant: "default" };
   }
@@ -180,6 +186,24 @@ function EventDetail({ event }: { event: SandboxEvent }) {
       return (
         <span className="font-mono text-xs text-muted-foreground">
           req#{event.request_id}
+        </span>
+      );
+    case "system.start":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          sandbox start requested
+        </span>
+      );
+    case "system.config-changed":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          config updated
+        </span>
+      );
+    case "system.shutdown":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          ttl expired · shutting down
         </span>
       );
   }

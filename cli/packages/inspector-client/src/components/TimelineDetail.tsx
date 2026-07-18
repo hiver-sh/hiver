@@ -754,6 +754,60 @@ function RowDetailPanelInner({
     );
   }
 
+  if (
+    req.type === "system.start" ||
+    req.type === "system.config-changed" ||
+    req.type === "system.shutdown"
+  ) {
+    const label = req.type.slice("system.".length);
+    const configJson =
+      req.type === "system.config-changed" && req.config !== undefined
+        ? JSON.stringify(req.config, null, 2)
+        : null;
+    return (
+      <div ref={containerRef} className="flex flex-col h-full text-xs">
+        <div className="relative shrink-0">
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+              system · {label}
+            </span>
+            <DetailNav
+              onPrev={onPrev}
+              onNext={onNext}
+              onExpand={onExpand}
+              expandedView={expandedView}
+            />
+          </div>
+        </div>
+        {configJson ? (
+          <div
+            className={`flex rounded-md border border-border mx-3 mb-3 flex-1 min-h-0 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}
+          >
+            <div
+              className={`overflow-hidden shrink-0 ${narrow ? "border-b border-border" : "w-48 border-r border-border"}`}
+            >
+              <div className="p-3">
+                <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
+                  <KV label="id" value={String(req.id)} />
+                  <KV label="time" value={ts} />
+                  <KV label="event" value={req.type} />
+                </div>
+              </div>
+            </div>
+            <CodeViewer content={configJson} className="flex-1 min-h-0" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 px-3 pb-3 font-mono text-xs">
+            <span className="text-muted-foreground/70">event</span>
+            <span className="text-foreground">{req.type}</span>
+            <span className="text-muted-foreground/70">time</span>
+            <span className="text-foreground">{ts}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const reqRawBody =
     req.type === "egress.request" || req.type === "ingress.request"
       ? req.body
