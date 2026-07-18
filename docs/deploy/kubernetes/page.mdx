@@ -106,8 +106,20 @@ images), `gatewayUrl` (the callback URL injected into sandboxes), and
 
 ## Adding your own service
 
-You can add a pool for your own image. It takes two steps: 
-1. Build the image as a **Hiver bundle** (it must be `FROM hiversh/core`.
+You can add a pool for your own image. It takes two steps:
+
+1. Build the image as a **Hiver bundle** — a plain container can't serve
+   sandboxes. Turn a Dockerfile directory (or an existing image) into one with
+   `hiver bundle`:
+
+   ```bash
+   hiver bundle ./docker/mytool --entrypoint="tail -f /dev/null" \
+     --tag myrepo/mytool:1.0.0 --push --platform linux/amd64,linux/arm64
+   ```
+
+   Add `--microvm` for the microVM variant (e.g.
+   `myrepo/mytool:1.0.0-microvm`); build only the variant(s) your pool's
+   `isolation` uses, and push to a registry the cluster can pull from.
 2. Add a key under `sandboxServices`:
 
 ```yaml values.yaml

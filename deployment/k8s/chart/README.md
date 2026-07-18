@@ -129,24 +129,28 @@ route+cluster, so they can't drift. No template edits, no gateway config.
 ### 1. Build the image as a Hiver bundle
 
 A pool image can't be an arbitrary container — it must be a **Hiver bundle**: an
-image built `FROM hiversh/core` whose entrypoint is `sandboxd`, the pack host
-that parks and serves same-image sandboxes over `POST /v1/{key}` and listens on
-the sandbox port. `hiver bundle` produces one from any source (a Dockerfile
-directory or a base image), and `--microvm` builds the VM-isolation variant.
-Push both variants so a service can pick either via `isolation`:
+image prepared so its pods can serve sandboxes. Turn a Dockerfile directory (or
+an existing image ref) into one with `hiver bundle`:
 
 ```sh
 # container variant
 hiver bundle ./docker/mytool --entrypoint="tail -f /dev/null" \
   --tag myrepo/mytool:1.0.0 --push --platform linux/amd64,linux/arm64
 
-# microvm variant
+# microvm variant (add --microvm)
 hiver bundle ./docker/mytool --entrypoint="tail -f /dev/null" --microvm \
   --tag myrepo/mytool:1.0.0-microvm --push --platform linux/amd64,linux/arm64
 ```
 
-The registry must be pullable from the cluster. Pointing a pool at a plain
-image that isn't a bundle deploys pods that never serve sandboxes.
+- `--entrypoint` sets the command each sandbox starts with — use a long-running
+  one like `tail -f /dev/null` for a general-purpose pool you exec into.
+- `--microvm` builds the microvm variant; omit it for the container variant.
+  Build only the variant(s) your pool's `isolation` uses.
+- `--tag` names the result; `--push --platform ...` publishes it as a multi-arch
+  image to a registry the cluster can pull from.
+
+Pointing a pool at a plain image that isn't a bundle deploys pods that never
+serve sandboxes.
 
 ### 2. Add it to `sandboxServices`
 
@@ -177,28 +181,16 @@ sandboxServices:
 helm upgrade --install hiver hiver/hiver -f my-values.yaml
 ```
 
-Each entry needs at least an `image` and `replicas` (the key is the pool name,
-and the value the gateway matches on the `x-hiver-image` header); see `helm show
+Each entry needs at least an `image` and `replicas`; see `helm show
 values hiver/hiver` for the full shape (`isolation`, `maxConcurrentLaunches`,
 `resources`, `upstreamPoolScope`, etc.). A `replicas: 0` pool deploys the route
 and Service but keeps no warm pods until scaled up.
 
-### 3. Use it
-
-Clients address a pool **by name**: the CLI's `--image mytool` and the SDKs'
-`image: "mytool"` set the `x-hiver-image` header, which the gateway matches
-against the pool you added. So against a deployed gateway the service name is the
-only contract:
+### 3. Start sandbox
 
 ```sh
-hiver start --image mytool           # routes to the mytool pool
+hiver start --image mytool           # routes to the mytool service
 ```
-
-The CLI catalog ([cli/container-config/sandbox-images.json](../../../cli/container-config/sandbox-images.json)),
-which supplies a name's default entrypoint/cwd/tty and its container-vs-microvm
-refs, applies only to the **local** `hiver up` dev stack — not to a chart
-deployment, where the pod's baked entrypoint and the pool's `isolation` decide
-those instead.
 
 ## Gateway public IP
 
