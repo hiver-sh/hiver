@@ -31,7 +31,7 @@ version as the CLI. Install from the repository:
 helm repo add hiver https://hiver-sh.github.io/hiver
 helm repo update
 helm install hiver hiver/hiver                       # latest published version
-helm search repo hiver/hiver --versions             # list available versions
+helm search repo hiver/hiver --versions              # list available versions
 ```
 
 The chart creates its own `hiver` and `hiver-sandbox` namespaces. Every image ships pinned to
@@ -183,12 +183,12 @@ values hiver/hiver` for the full shape (`isolation`, `maxConcurrentLaunches`,
 `resources`, `upstreamPoolScope`, etc.). A `replicas: 0` pool deploys the route
 and Service but keeps no warm pods until scaled up.
 
-### 3. Use it — no client catalog edit needed
+### 3. Use it
 
 Clients address a pool **by name**: the CLI's `--image mytool` and the SDKs'
 `image: "mytool"` set the `x-hiver-image` header, which the gateway matches
 against the pool you added. So against a deployed gateway the service name is the
-only contract — nothing else is registered client-side:
+only contract:
 
 ```sh
 hiver start --image mytool           # routes to the mytool pool
