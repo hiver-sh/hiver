@@ -1,20 +1,32 @@
 {{- /*
 Per-image sandbox pools (design §5/§6). One Deployment+Service per entry in
-.Values.images, all in the sandbox namespace. The gateway routes creates
+.Values.sandboxServices, all in the sandbox namespace. The gateway routes creates
 carrying `x-hiver-image: <name>` to the matching Service (see gateway.yaml),
 which round-robins across the Deployment's prewarm pods. The controller never
 creates these pods.
 */ -}}
-{{- range .Values.images }}
+{{- range $name, $img := .Values.sandboxServices }}
+{{- /*
+Resolve the image ref: a plain string is used as-is (single-variant image); a
+map is keyed by isolation mode and the service's `isolation` (default microvm)
+selects the variant. Fail loudly if the selected mode is missing rather than
+rendering an empty image.
+*/ -}}
+{{- $ref := $img.image -}}
+{{- if not (kindIs "string" $img.image) -}}
+  {{- $isolation := $img.isolation | default "microvm" -}}
+  {{- $ref = index $img.image $isolation -}}
+  {{- if not $ref }}{{ fail (printf "sandboxServices.%s.image has no %q isolation mode" $name $isolation) }}{{ end -}}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .name }}
+  name: {{ $name }}
   namespace: {{ $.Values.namespaces.sandbox }}
   labels:
-    app: {{ .name }}
+    app: {{ $name }}
 spec:
-  replicas: {{ .replicas }}
+  replicas: {{ $img.replicas }}
   # These pack hosts are privileged and sized to ~fill a node, so the cluster
   # can't hold an old + new pod at once. The default RollingUpdate (maxSurge
   # 25% -> 1 for replicas:1) schedules the new pod before terminating the old
@@ -25,11 +37,11 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: {{ .name }}
+      app: {{ $name }}
   template:
     metadata:
       labels:
-        app: {{ .name }}
+        app: {{ $name }}
     spec:
       # On SIGTERM, sandboxd runs a serial graceful shutdown (FS flush →
       # snapshot capture → FUSE oplog drain → http drain → sidecar SIGTERM
@@ -37,10 +49,10 @@ spec:
       # capture is unbounded (workspace size / remote backend), so the
       # default 30s grace can SIGKILL the pod mid-upload and lose the
       # snapshot. Size this to the worst-case shutdown budget.
-      terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds | default $.Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ $img.terminationGracePeriodSeconds | default $.Values.terminationGracePeriodSeconds }}
       containers:
         - name: sandbox
-          image: {{ .image }}
+          image: {{ $ref }}
           imagePullPolicy: IfNotPresent
           # sandboxd boots as a multi-tenant pack host: it parks and serves
           # same-image sandboxes created on demand via POST /v1/{key}. Guest size
@@ -54,7 +66,7 @@ spec:
           args: [
             "--pack",
             "--snapshot-dir", "/snapshots",
-            "--max-concurrent-launches", "{{ .maxConcurrentLaunches }}"
+            "--max-concurrent-launches", "{{ $img.maxConcurrentLaunches }}"
           ]
           env:
             # The create response must echo the pod's routing id (its IPv4
@@ -77,21 +89,21 @@ spec:
             - name: HIVER_GATEWAY_URL
               value: {{ . | quote }}
             {{- end }}
-            {{- if .upstreamPoolScope }}
+            {{- if $img.upstreamPoolScope }}
             # sbxproxy upstream connection-pool scope. "pod" shares warm upstream
             # connections across all sandboxes in the pod, so a fresh sandbox's first
             # request reuses a sibling's already-warm connection (faster first goto) —
             # trading per-VM connection isolation. "vm" (default) keeps per-source
             # isolation. sandboxd passes this to sbxproxy as -upstream-pool-scope.
             - name: HIVER_PROXY_UPSTREAM_POOL_SCOPE
-              value: {{ .upstreamPoolScope | quote }}
+              value: {{ $img.upstreamPoolScope | quote }}
             {{- end }}
           ports:
             - containerPort: {{ $.Values.sandboxPort }}
           securityContext:
             privileged: true
           resources:
-            {{- toYaml .resources | nindent 12 }}
+            {{- toYaml $img.resources | nindent 12 }}
           volumeMounts:
             - name: snapshots
               mountPath: /snapshots
@@ -106,10 +118,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .name }}
+  name: {{ $name }}
   namespace: {{ $.Values.namespaces.sandbox }}
   labels:
-    app: {{ .name }}
+    app: {{ $name }}
 spec:
   # Headless (clusterIP: None) so the Service DNS name resolves to one A record
   # per pod rather than a single ClusterIP VIP. The gateway's STRICT_DNS cluster
@@ -118,7 +130,7 @@ spec:
   # A VIP would push load-balancing down to kube-proxy and break the hash.
   clusterIP: None
   selector:
-    app: {{ .name }}
+    app: {{ $name }}
   ports:
     - port: {{ $.Values.sandboxPort }}
       targetPort: {{ $.Values.sandboxPort }}

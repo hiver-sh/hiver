@@ -13,8 +13,14 @@
 #   hiversh/controller:latest          -> hiversh/controller:X.Y.Z
 #   hiversh/gateway:latest             -> hiversh/gateway:X.Y.Z
 #   hiversh/claude:latest-microvm      -> hiversh/claude:X.Y.Z-microvm
+#   hiversh/claude:latest              -> hiversh/claude:X.Y.Z
 #   hiversh/python:3.13-alpine-microvm -> hiversh/python:X.Y.Z-3.13-alpine-microvm
 #   hiversh/node:alpine-microvm        -> hiversh/node:X.Y.Z-alpine-microvm
+#
+# Every distinct hiversh/... ref in the file is rewritten regardless of the key
+# it sits under, so both isolation variants of a sandboxService (the `microvm:`
+# and `container:` refs) are pinned — the end-of-line anchoring below keeps the
+# shorter `container` ref from also matching inside the longer `microvm` one.
 #
 # Usage: deployment/k8s/pin-release-images.sh <version> [path/to/values.yaml]
 set -euo pipefail

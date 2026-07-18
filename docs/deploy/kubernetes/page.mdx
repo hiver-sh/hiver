@@ -4,7 +4,7 @@ export const metadata = { title: "Deploy on Kubernetes" }
 
 Run Hiver on any Kubernetes cluster with the official Helm chart. The chart
 deploys the control plane (controller + Envoy gateway) and a pool per sandbox
-image, all generated from a single `images` list.
+image.
 
 ## Prerequisites
 
@@ -55,17 +55,25 @@ Each entry becomes a sandbox pool addressable by its **name** (e.g.
 
 ## Configuration
 
-Override the defaults with your own `values.yaml`. The key knob is the `images`
-list — each entry generates a Deployment + Service for the pool **and** the
-gateway's Envoy route to it.
+Override the defaults with your own `values.yaml`. The key knob is
+`sandboxServices` — a **map keyed by service name**. Each entry generates a
+Deployment + Service for the pool **and** the gateway's Envoy route to it.
+
+Because it's a map (not a list), Helm deep-merges your overrides into the
+defaults, so you can change a single field of a single pool without redeclaring
+the others. Warm claude's pool to 3 pods:
+
+```bash
+helm upgrade hiver hiver/hiver --set sandboxServices.claude.replicas=3
+```
+
+`replicas: 0` keeps a pool defined but scales its prewarmed pods to zero
+(sandboxes still launch on demand); raise it to keep hot pods ready. In a values
+file:
 
 ```yaml values.yaml
-# Warm-pool size per image. replicas: 0 keeps a pool defined but scales its
-# prewarmed pods to zero (sandboxes still launch on demand); raise it to keep
-# hot pods ready.
-images:
-  - name: python
-    image: hiversh/python:3.13-alpine-microvm
+sandboxServices:
+  python:
     replicas: 2
     maxConcurrentLaunches: 4
     resources:
@@ -77,19 +85,54 @@ images:
         memory: 4Gi
 ```
 
-> The `images` value **replaces** the chart's default list rather than merging
-> into it — include every pool you want deployed. Run
-> `helm show values hiver/hiver` to see the full defaults to copy from.
-
-Apply it with:
-
 ```bash
 helm upgrade hiver hiver/hiver --values values.yaml
 ```
 
-Other common overrides: `controller.image` / `gateway.image` (pin different
-control-plane images), `gatewayUrl` (the callback URL injected into sandboxes),
-and `proxyPassthroughAll` (disable TLS MITM in the egress proxy).
+### Isolation (microVM vs container)
+
+Each service ships both image variants and picks one with its own `isolation`
+field (`microvm` | `container`, default `microvm`). There is no global switch —
+set it per service:
+
+```bash
+helm upgrade hiver hiver/hiver --set sandboxServices.claude.isolation=container
+```
+
+Run `helm show values hiver/hiver` to see the full defaults. Other common
+overrides: `controller.image` / `gateway.image` (pin different control-plane
+images), `gatewayUrl` (the callback URL injected into sandboxes), and
+`proxyPassthroughAll` (disable TLS MITM in the egress proxy).
+
+## Adding your own service
+
+You can add a pool for your own image. It takes two steps: 
+1. Build the image as a **Hiver bundle** (it must be `FROM hiversh/core`.
+2. Add a key under `sandboxServices`:
+
+```yaml values.yaml
+sandboxServices:
+  mytool:
+    image:
+      microvm: myrepo/mytool:1.0.0-microvm
+      container: myrepo/mytool:1.0.0
+    isolation: microvm
+    replicas: 1
+    maxConcurrentLaunches: 4
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+```
+
+`image` may be the variant map above or a plain string for a single-variant
+image. Clients then address the pool by name (`image: "mytool"`) — the gateway
+routes on that name, so nothing else is registered client-side. See the
+[chart README](https://github.com/hiver-sh/hiver/tree/main/deployment/k8s/chart)
+for the full walkthrough.
 
 ## Verify
 

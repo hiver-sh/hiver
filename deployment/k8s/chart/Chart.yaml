@@ -1,10 +1,11 @@
 apiVersion: v2
 name: hiver
 description: |
-  Hiver control plane (controller + Envoy gateway) plus the per-image sandbox
-  pools. The gateway's per-image Envoy routes/clusters and the per-image
-  Deployment+Service are both generated from a single .Values.images list, so
-  adding an image is one entry.
+  Hiver control plane (controller + Envoy gateway) plus the per-service sandbox
+  pools. The gateway's per-service Envoy routes/clusters and the
+  Deployment+Service are both generated from a single .Values.sandboxServices
+  map, so adding a service is one entry. Each service selects its runtime
+  isolation (microvm or container) with a per-service isolation field.
 type: application
 home: https://github.com/hiver-sh/hiver
 sources:

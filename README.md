@@ -523,7 +523,7 @@ Deployment is split into two pieces: provisioning a cluster, and installing the 
 
 ### Helm Chart
 
-[`deployment/k8s/chart`](deployment/k8s/chart/README.md) is a Helm chart that deploys the controller, the Envoy gateway, and the per-image sandbox pools onto any Kubernetes cluster. The gateway's per-image routes and each image's Deployment+Service are generated from a single `images` list, so adding an image is one entry. Install with `helm upgrade --install hiver deployment/k8s/chart`; see the [chart README](deployment/k8s/chart/README.md) for prerequisites and configuration.
+[`deployment/k8s/chart`](deployment/k8s/chart/README.md) is a Helm chart that deploys the controller, the Envoy gateway, and the per-service sandbox pools onto any Kubernetes cluster.
 
 
 ### Architecture
