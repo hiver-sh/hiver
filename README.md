@@ -246,8 +246,6 @@ for await (const pipe of exec.pipes) {
 
 FUSE is a first-class citizen in Hiver. A sandbox's filesystem is assembled from mounts you declare.
 
-Every mount is FUSE-backed by `sbxfuse`, so the agent sees ordinary files and directories while every read and write passes through the runtime, where it's checked against **path-level ACLs** and emitted as an auditable `fs.request` event.
-
 #### Cloud storage backends
 
 A mount can be backed by **local** storage, **GCS**, **S3**, **Azure Blob Storage**, **Google Drive**, or **OneDrive**. Each takes the same `mount` and `acls` fields; only the credential fields differ by backend:
