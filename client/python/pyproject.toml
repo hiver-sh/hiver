@@ -1,6 +1,6 @@
 [project]
 name = "hiver-py"
-version = "0.1.34"
+version = "0.1.35"
 description = "Python client for the Hiver runtime."
 readme = "README.md"
 requires-python = ">=3.11"
