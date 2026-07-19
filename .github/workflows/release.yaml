@@ -226,6 +226,16 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.current }}
         run: |
+          # Idempotent re-runs (e.g. finishing a half-completed release): if every
+          # runtime image is already tagged for this version, don't rebuild/re-push
+          # — that would move the versioned tags to fresh digests the already-
+          # published CLI never referenced. Mirrors the push-vmlinux guard.
+          if docker manifest inspect "hiversh/controller:${VERSION}" >/dev/null 2>&1 \
+            && docker manifest inspect "hiversh/core:${VERSION}" >/dev/null 2>&1 \
+            && docker manifest inspect "hiversh/gateway:${VERSION}" >/dev/null 2>&1; then
+            echo "hiversh/{controller,core,gateway}:${VERSION} already exist, skipping build and push."
+            exit 0
+          fi
           make buildx-builder && make publish-images PLATFORMS=linux/amd64,linux/arm64
           for img in controller core gateway; do
             docker buildx imagetools create \
@@ -294,6 +304,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read version
+        id: version
+        run: echo "current=$(jq -r .version cli/package.json)" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -318,11 +332,29 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Bundle and push ${{ matrix.tag }}
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+          TAG: ${{ matrix.tag }}
         run: |
+          # Idempotent re-runs (e.g. finishing a half-completed release): skip if
+          # this image's versioned tag already exists, so we don't re-bundle and
+          # move :latest to a fresh build the released version never referenced.
+          # Derive the versioned tag from the :latest[-microvm] matrix tag exactly
+          # as scripts/tag-sandbox-images.sh does (empty->X.Y.Z, *latest*->
+          # substitute, else->X.Y.Z-<tag>).
+          repo="${TAG%%:*}"; t="${TAG#*:}"; [ "$TAG" = "$t" ] && t=""
+          if [ -z "$t" ]; then vt="$VERSION"
+          elif [ "${t#*latest}" != "$t" ]; then vt="${t/latest/$VERSION}"
+          else vt="${VERSION}-${t}"
+          fi
+          if docker manifest inspect "${repo}:${vt}" >/dev/null 2>&1; then
+            echo "${repo}:${vt} already exists, skipping bundle of ${TAG}."
+            exit 0
+          fi
           hiver bundle ${{ matrix.source }} \
             --entrypoint="tail -f /dev/null" \
             ${{ matrix.bundler-flags }} \
-            --tag ${{ matrix.tag }} \
+            --tag "${TAG}" \
             --push \
             --platform linux/amd64,linux/arm64
 
