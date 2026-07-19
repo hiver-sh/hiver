@@ -76,6 +76,22 @@ resource "google_container_node_pool" "primary" {
       }
     }
 
+    // Preallocate 2MiB hugepages at node boot so a sandbox pool can back guest
+    // memory with hugetlbfs (chart: sandboxServices.<pool>.hugePages). Boot time
+    // is the only workable moment: kubelet enumerates hugepages at startup, so
+    // pages added later are invisible as node capacity and unrequestable by pods
+    // — which is why this lives here and not in a sysctl or DaemonSet.
+    // The memory is carved out permanently and is not reclaimable for normal
+    // allocations, so 0 (the default) leaves nodes untouched.
+    dynamic "linux_node_config" {
+      for_each = var.hugepages_2m_count > 0 ? [1] : []
+      content {
+        hugepages_config {
+          hugepage_size_2m = var.hugepages_2m_count
+        }
+      }
+    }
+
     // Nested virtualization requires the Ubuntu node image (KVM is not
     // available on Container-Optimized OS).
     image_type = "UBUNTU_CONTAINERD"

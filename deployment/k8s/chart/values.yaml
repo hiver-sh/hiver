@@ -109,13 +109,36 @@ sandboxServices:
     replicas: 0
     maxConcurrentLaunches: 4
     # hugePages: "2M"
-    #   Back guest memory with hugetlbfs instead of 4KiB pages. Cuts the page
-    #   faults a resumed VM takes on its first turn (~15.5k -> ~48 here), which
-    #   is the dominant cost of a warm resume. Off by default: it needs a
-    #   pre-provisioned node hugetlb pool (vm.nr_hugepages) that is not
-    #   reclaimable for normal allocations, so it caps concurrent VMs per node,
-    #   and firecracker fails the boot when the pool runs out. Enabling it also
-    #   requires re-capturing any existing VM snapshot for this pool.
+    #   Back guest memory with hugetlbfs instead of 4KiB pages. A resumed VM maps
+    #   its memory file lazily and faults its working set in one page at a time:
+    #   measured here at ~15.5k minor faults / ~740ms on the first turn after a
+    #   resume, vs ~2k / ~60ms for the same work on a cold-booted guest. At 2MiB
+    #   granularity that working set is ~48 faults.
+    #
+    #   Setting this is all the chart needs: it also adds the matching
+    #   `hugepages-2Mi` container limit (sized from resources.limits.memory, or
+    #   from hugePagesLimit if you set one), which is what kubelet turns into the
+    #   container's hugetlb cgroup allowance.
+    #
+    #   It does NOT provision the node, and the guest fails to boot with ENOMEM
+    #   until that is done separately:
+    #
+    #     1. A node hugetlb pool. On GKE set it in node system config
+    #        (linuxConfig.hugepageConfig.hugepage_size2m) so the pages exist at
+    #        BOOT and survive node upgrades/autoscale. It is carved out of node
+    #        memory permanently and is not reclaimable for normal allocations.
+    #     2. kubelet must report it as capacity. kubelet enumerates hugepages at
+    #        STARTUP, so a pool allocated afterwards shows up in /proc/meminfo but
+    #        stays 0 in `kubectl get node -o jsonpath={.status.capacity}` — and
+    #        pods then cannot request it, which is why (1) belongs at boot rather
+    #        than in a post-hoc sysctl or DaemonSet.
+    #
+    #   Size the pool for ALL guests a node hosts concurrently: firecracker fails
+    #   the boot when it is exhausted rather than falling back to 4KiB pages, and
+    #   2MiB granularity amplifies footprint (touching one byte maps 2MiB).
+    #
+    #   An existing VM snapshot must also be RE-CAPTURED after enabling, since
+    #   huge_pages is boot-time state baked into the snapshot.
     resources:
       requests:
         cpu: "1"

@@ -78,6 +78,29 @@ variable "local_nvme_ssd_count" {
   default     = 1
 }
 
+variable "hugepages_2m_count" {
+  description = <<-EOT
+    Number of 2MiB hugepages to preallocate per node (0 disables). Set this to
+    let a sandbox pool run with the chart's `hugePages: \"2M\"`, which backs guest
+    memory with hugetlbfs: a resumed microVM otherwise faults its working set in
+    one 4KiB page at a time (measured ~15.5k faults / ~740ms on the first turn
+    after a resume, vs ~2k / ~60ms cold-booted).
+
+    It must be set HERE rather than by a sysctl or DaemonSet after the fact:
+    kubelet enumerates hugepages at startup, so pages allocated later show up in
+    /proc/meminfo but stay 0 in the node's reported capacity — and pods can then
+    never request them.
+
+    Sizing: total hugepage bytes = count x 2MiB, carved permanently out of node
+    memory and NOT reclaimable for normal allocations. Cover every guest a node
+    hosts concurrently; firecracker fails a boot when the pool is exhausted
+    rather than falling back to 4KiB pages. e.g. 2048 = 4 GiB = 8 concurrent
+    512MiB guests. Changing this recreates the node pool.
+  EOT
+  type        = number
+  default     = 0
+}
+
 variable "enable_nested_virtualization" {
   description = "Enable nested virtualization on nodes (KVM inside the node)."
   type        = bool

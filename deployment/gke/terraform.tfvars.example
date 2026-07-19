@@ -13,3 +13,5 @@ enable_nested_virtualization = true
 # Autoscaling bounds (per zone)
 min_node_count = 1
 max_node_count = 3
+
+hugepages_2m_count = 2048

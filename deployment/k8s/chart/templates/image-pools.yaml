@@ -122,7 +122,23 @@ spec:
           securityContext:
             privileged: true
           resources:
+            {{- if $img.hugePages }}
+            {{- /* hugePages is a single switch: it implies the matching k8s
+                   resource, so an operator never has to hand-add it. kubelet
+                   derives the container's hugetlb cgroup limit from this — omit
+                   it and the limit is 0, so every mmap(MAP_HUGETLB) gets ENOMEM
+                   and firecracker cannot boot a guest. Hugepage memory is a
+                   SEPARATE resource from `memory` (it does not count against
+                   that limit), so it defaults to the pool's memory ceiling:
+                   the pod must cover every guest it hosts concurrently. */}}
+            {{- $hpName := index (dict "2M" "hugepages-2Mi" "1G" "hugepages-1Gi") $img.hugePages }}
+            {{- if not $hpName }}{{ fail (printf "sandboxServices.%s.hugePages must be \"2M\" or \"1G\", got %q" $name $img.hugePages) }}{{ end }}
+            {{- $hpQty := $img.hugePagesLimit | default (dig "limits" "memory" "" $img.resources) }}
+            {{- if not $hpQty }}{{ fail (printf "sandboxServices.%s.hugePages needs resources.limits.memory (or an explicit hugePagesLimit) to size the pool" $name) }}{{ end }}
+            {{- toYaml (merge (dict "limits" (dict $hpName $hpQty)) (deepCopy $img.resources)) | nindent 12 }}
+            {{- else }}
             {{- toYaml $img.resources | nindent 12 }}
+            {{- end }}
           volumeMounts:
             - name: snapshots
               mountPath: /snapshots
