@@ -98,6 +98,25 @@ spec:
             - name: HIVER_PROXY_UPSTREAM_POOL_SCOPE
               value: {{ $img.upstreamPoolScope | quote }}
             {{- end }}
+            {{- if $img.hugePages }}
+            # Back guest memory with hugetlbfs pages ("2M") instead of 4KiB ones.
+            # A resumed VM maps its memory file lazily, so it faults its working
+            # set in one page at a time on first use — measured at ~15.5k minor
+            # faults (~0.8s) on the first turn after resume for the claude pool.
+            # At 2MiB granularity that same working set is ~48 faults.
+            #
+            # Boot-time only: it is baked into a VM snapshot at capture, so an
+            # existing base must be RE-CAPTURED before a resume benefits.
+            #
+            # Requires a pre-provisioned hugetlb pool on the node
+            # (vm.nr_hugepages). The pool is NOT reclaimable for normal
+            # allocations and a guest needs memory/2MiB pages, so it caps
+            # concurrent VMs per node — size it against expected concurrency
+            # before enabling. Firecracker fails the boot when the pool is
+            # exhausted rather than falling back to 4KiB pages.
+            - name: FIRECRACKER_HUGE_PAGES
+              value: {{ $img.hugePages | quote }}
+            {{- end }}
           ports:
             - containerPort: {{ $.Values.sandboxPort }}
           securityContext:

@@ -78,6 +78,18 @@ type MachineConfig struct {
 	VcpuCount  int  `json:"vcpu_count"`
 	MemSizeMib int  `json:"mem_size_mib"`
 	Smt        bool `json:"smt"`
+	// HugePages backs guest memory with hugetlbfs pages instead of 4KiB ones:
+	// "2M", or "" (omitted) for the 4KiB default. It is a boot-time property, so
+	// it is baked into a VM snapshot at capture and cannot be changed on resume —
+	// a base must be RE-CAPTURED for a resume to benefit.
+	//
+	// Why it matters on the resume path: /snapshot/load maps the memory file
+	// without MAP_POPULATE, so a resumed guest faults its working set in on first
+	// use, one page at a time. Measured on the `claude` base: ~15.5k minor faults
+	// (~96MiB) on the first turn after resume, ~0.8s of EPT-install overhead, and
+	// zero major faults — it is fault count, not disk I/O. At 2MiB granularity
+	// the same working set is ~48 faults.
+	HugePages string `json:"huge_pages,omitempty"`
 }
 
 // BootSource is the body of PUT /boot-source.

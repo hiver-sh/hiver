@@ -98,6 +98,16 @@ type microvm struct {
 	// .memory). New defaults these before construction.
 	vcpuCount  int
 	memSizeMib int
+	// hugePages backs guest memory with hugetlbfs ("2M") instead of 4KiB pages;
+	// "" keeps the default. Boot-time only — see MachineConfig.HugePages for why
+	// this is the resume path's dominant cost and why a base must be re-captured.
+	//
+	// Opt-in via FIRECRACKER_HUGE_PAGES because the hugetlb pool is PRE-RESERVED
+	// and not reclaimable for normal allocations: a guest needs memSizeMib/2 pages
+	// and firecracker fails to boot when the pool is exhausted. Sizing is an
+	// operator decision (vm.nr_hugepages vs. concurrent-VM ceiling), so it stays
+	// off unless the host has been provisioned for it.
+	hugePages string
 
 	// Per-VM network identity. For the boot sandbox these are the boot*
 	// defaults; for a packed sandbox they are derived from Config.GuestIP so N
@@ -218,6 +228,7 @@ func newMicroVM(cfg Config) *microvm {
 		guestMAC:          mac,
 		vcpuCount:         cfg.VcpuCount,
 		memSizeMib:        cfg.MemoryMiB,
+		hugePages:         envOr("FIRECRACKER_HUGE_PAGES", ""),
 		fcBin:             envOr("FIRECRACKER_BIN", "firecracker"),
 		kernel:            envOr("FIRECRACKER_KERNEL", "/var/lib/firecracker/vmlinux"),
 		tapName:           tap,
@@ -994,6 +1005,7 @@ func (m *microvm) LaunchAgent(cfg AgentConfig) (string, []string, error) {
 			VcpuCount:  m.vcpuCount,
 			MemSizeMib: m.memSizeMib,
 			Smt:        false,
+			HugePages:  m.hugePages,
 		},
 		Drives: []firecracker.Drive{
 			{DriveID: firecracker.RootDriveID, PathOnHost: m.rootfsImg, IsRootDevice: true, IsReadOnly: true},

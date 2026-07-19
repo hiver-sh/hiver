@@ -108,6 +108,14 @@ sandboxServices:
     isolation: microvm
     replicas: 0
     maxConcurrentLaunches: 4
+    # hugePages: "2M"
+    #   Back guest memory with hugetlbfs instead of 4KiB pages. Cuts the page
+    #   faults a resumed VM takes on its first turn (~15.5k -> ~48 here), which
+    #   is the dominant cost of a warm resume. Off by default: it needs a
+    #   pre-provisioned node hugetlb pool (vm.nr_hugepages) that is not
+    #   reclaimable for normal allocations, so it caps concurrent VMs per node,
+    #   and firecracker fails the boot when the pool runs out. Enabling it also
+    #   requires re-capturing any existing VM snapshot for this pool.
     resources:
       requests:
         cpu: "1"
