@@ -46,9 +46,11 @@ after the sandbox and the local cache are gone.
   stall `Broker.Publish`.
 - Transport-agnostic egress: sandboxd speaks only OTLP; Kafka vs Pub/Sub is a
   Collector config choice, not a code choice.
-- Redact secret-bearing payloads (`stdio`, `egress.*` bodies) **before they
-  leave the node**.
-- Give the inspector a **sandbox key → logs** lookup backed by the warehouse.
+- Redact secret-bearing payloads **before they leave the node**: strip
+  `egress.*` bodies, secret-scan `stdio` (which is itself the log, so it's kept).
+- Give the inspector **and the `hiver events <sandbox-key>` CLI** a **sandbox
+  key → logs** lookup backed by the warehouse — including for sandboxes that are
+  already gone.
 
 **Non-goals**
 
@@ -56,7 +58,7 @@ after the sandbox and the local cache are gone.
   for the interactive, low-latency path; the warehouse is the durable/history
   path.
 - Distributed tracing / span correlation across sandboxes (possible later; see
-  §9). These are discrete events, modeled as OTel **Logs**, not spans.
+  §12). These are discrete events, modeled as OTel **Logs**, not spans.
 - Exactly-once delivery. The pipeline is at-least-once; dedup is a query-time
   concern (§7).
 
@@ -68,13 +70,13 @@ after the sandbox and the local cache are gone.
 │  broker.Publish ─┬─► SSE subscribers        │ OTLP   │ otlp receiver    │  kafka   ┌──────────┐
 │                  │                          │ /gRPC  │ batch            │  ──or──► │ BigQuery │
 │                  └─► otelSink.Emit ─────────┼───────►│ (redact already  │  gcp-    └──────────┘
-│                      (redact + sample,      │  :4317 │  done in-proc)   │  pubsub
+│                      (redact; per-key,      │  :4317 │  done in-proc)   │  pubsub
 │                       non-blocking buffer)  │        │ kafka/gcp export │
 └─────────────────────────────────────────────┘        └──────────────────┘
                                                                                           ▲
                                                                                           │ read path
                                                       ┌──────────────────┐  query   ┌─────┴──────┐
-                            inspector server ────────► Events Query API  ├─────────►│ serving /  │
+              inspector + `hiver events` CLI ────────►  Events Query API ├─────────►│ serving /  │
                             (key → logs, history)     └──────────────────┘          │ BigQuery   │
                                                                                     └────────────┘
 ```
@@ -115,7 +117,16 @@ This mirrors the existing `activityHook` pattern (set-once, invoked from
 The OTel sink owns a bounded ring/channel and a drain goroutine. `Emit` does a
 non-blocking send; on overflow it increments a dropped-events counter (itself
 exported as a metric) rather than blocking the publisher. This preserves the
-broker's existing "slow consumer drops, never stalls" contract.
+broker's existing "slow consumer drops, never stalls" contract — non-blocking is
+a hard requirement (§2: a blocking sink would stall `Broker.Publish`).
+
+An overflow drop is the **one** thing that can breach the per-key completeness
+goal (§6.1): it punches a hole in a sampled-in key's timeline. So it's treated as
+a monitored failure, not normal operation — the buffer is sized for the sandbox's
+peak event rate and the drop counter is alarmed, so in steady state drops are
+zero and completeness holds. (If zero-loss ever has to be guaranteed rather than
+engineered-for, the fallback is spill-to-disk on the drain path; out of scope
+here.)
 
 ### 4.3 Wiring
 
@@ -124,11 +135,17 @@ immediately after `broker := events.New(...)`:
 
 ```go
 broker := events.New(events.DefaultCapacity, 0)
+// When OTel is on, ALWAYS attach a sink; the admission decision (§6.1) lives
+// inside it, not here — the error-tail path must observe the stream to catch a
+// failure in a key that wasn't baseline-sampled. The sink ships immediately for
+// baseline/opt-in keys and otherwise buffers a bounded ring, shipping only if an
+// error triggers. `collect` carries the opt-in (config flag / allowlist).
 if s.otel != nil {
     broker.SetSink(s.otel.SandboxSink(otel.SandboxIdentity{
-        Key:   key,
-        ID:    s.RoutingID().String(), // pod routing id (POD_IP-derived UUID)
-        Image: specImage(sp),
+        Key:     key,
+        ID:      s.RoutingID().String(), // pod routing id (POD_IP-derived UUID)
+        Image:   specImage(sp),
+        Collect: sp.TelemetryCollect,    // path-2 opt-in
     }))
 }
 ```
@@ -145,22 +162,34 @@ data-plane routes (`/:id/:key/...`, see
 [sandboxFromReq.ts](../../cli/packages/inspector-server/src/lib/sandboxFromReq.ts)),
 where `id` is the pod routing id and `key` is the sandbox key within the pod. To
 make "key → logs" work in the warehouse, every exported record carries that
-identity plus enough to disambiguate reuse over time:
+identity plus the dimensions searches filter on:
 
 | Attribute            | Source                                   | Purpose                                    |
 | -------------------- | ---------------------------------------- | ------------------------------------------ |
-| `sandbox.key`        | `key` at `createPacked`                  | Primary lookup dimension                   |
-| `sandbox.id`         | supervisor `RoutingID()` (POD_IP UUID)   | Disambiguates key across pods              |
-| `sandbox.run_id`     | new per-`createPacked` UUID              | Disambiguates a **reused key over time**   |
+| `sandbox.key`        | `key` at `createPacked`                  | Unique per sandbox (even in pack mode)     |
+| `sandbox.id`         | supervisor `RoutingID()` (POD_IP UUID)   | Pod routing id; pairs with key (see below) |
 | `sandbox.image`      | `specImage(sp)`                          | Fleet analytics / filtering                |
 | `event.id`           | broker `Entry.ID`                        | Per-sandbox monotonic order + resume       |
 | `event.type`         | `SandboxEvent.Discriminator()`           | e.g. `egress.request`                      |
 | `k8s.pod.name`,      | Downward API env                         | OTel **resource** attrs, set once/process  |
 | `k8s.node.name`, …   |                                          |                                            |
 
-A key can recur (a later sandbox reuses the same key on a different pod). `id`
-separates concurrent placements; `run_id` separates lifetimes of the same key so
-the inspector never merges two runs into one timeline.
+The **`(id, key)` pair is the unique per-lifetime sandbox identity** — the same
+identity the rest of the system already keys on. `key` is unique per sandbox even
+in pack mode; `id` (the pod routing id, shared across a pack pod) disambiguates a
+key that recurs across lifetimes, because a reused key lands on a different pod
+and so carries a different `id`. This mirrors the inspector's own `${id}:${key}`
+partition, whose comment states the invariant: *"key-reuse across lifetimes
+(different id) never collides."* No synthetic `run_id` is needed — `(id, key)`
+already separates lifetimes, and the dedup key (§7.2) is exactly this pair plus
+`event.id`.
+
+> Edge case: a key deleted and recreated **on the same still-live pack pod**
+> reuses the same `id`, so `(id, key)` repeats. This is a pre-existing limitation
+> the current inspector already carries (its `${id}:${key}` partition collides the
+> same way); the time-range search (§8.1) narrows a query to one lifetime when it
+> matters. If that edge ever needs to be closed, mint a per-instance id at
+> `createPacked` — but that's out of scope here.
 
 ### 5.1 OTLP Logs mapping
 
@@ -175,18 +204,29 @@ Logs (not spans) are the correct signal: these are discrete, zero-duration facts
 
 ## 6. Redaction (in the sink, before the wire)
 
-Per the transport/redaction decision, redaction happens **in-process**, so raw
-`stdio`/`egress` bodies never cross the network. The policy is one testable
-function keyed on the discriminator:
+Per the transport/redaction decision, redaction happens **in-process**, so no
+secret leaves the node. It distinguishes two kinds of payload:
+
+- **Third-party payloads** — `egress.*` request/response bodies (the sandbox
+  talking to external hosts). Stripped; the inspector shows metadata, not bodies.
+- **First-party console output** — `stdio`. This *is* the log the inspector must
+  render (§1, §8), so it is **kept**, only scanned for secret patterns. Stripping
+  it would defeat the feature.
+
+Redaction transforms an event's payload — it **never drops the event**. Every
+event of a sampled-in sandbox is logged (sampling is per key, §6.1), so a redacted
+`egress.chunk` still produces a record; only its *body* is stripped. The policy is
+one testable function keyed on the discriminator:
 
 ```go
-func redact(disc string, raw json.RawMessage) (attrs []attr, body any, keep bool) {
+// Always returns a record; redaction only rewrites body/attrs, never omits.
+func redact(disc string, raw json.RawMessage) (attrs []attr, body any) {
     switch disc {
-    case "stdio":            // keep stream + byte count; hash or drop body
+    case "stdio":            // KEEP content (it is the log); scrub secret patterns only
     case "egress.request":   // keep method/host/status; strip headers+body (or allowlist)
     case "egress.response":  // keep status/size; strip body
-    case "egress.chunk":     // drop entirely (highest volume, lowest value)
-    case "resource.usage":   // sample: emit 1/N or on threshold change only
+    case "egress.chunk":     // keep seq + byte count; strip payload bytes
+    case "resource.usage":   // keep as-is (small, structured)
     default:                 // system/exec/fs/ingress/config.apply → full body
     }
 }
@@ -194,8 +234,52 @@ func redact(disc string, raw json.RawMessage) (attrs []attr, body any, keep bool
 
 Isolating this in one function (with unit tests over recorded fixtures of each
 event variant) is the whole reason to redact in Go rather than in a Collector
-processor: the security-sensitive logic is local, auditable, and testable, and
-sampling drops volume before it ever costs network or warehouse ingest.
+processor: the security-sensitive logic is local, auditable, and testable, and no
+secret leaves the node even for events whose metadata we keep in full.
+
+### 6.1 Admission is per sandbox key, via three paths
+
+Volume is controlled by admitting a **fraction of sandboxes** and logging each
+admitted sandbox's stream in full — never by dropping individual events (which
+would hole a key's timeline). But a purely statistical `hash(key) < rate` has a
+fatal flaw for a debugging/audit tool: it is **exactly as likely to drop the
+sandbox that failed as any other**. So admission is the **OR of three paths**,
+evaluated by the sink:
+
+1. **Baseline sample** — `hash(key) < sampleRate`, deterministic and stable across
+   restarts. A fleet-wide statistical floor for analytics (representative, not
+   targeted).
+2. **Opt-in** — the sandbox config requests it (`telemetry.collect: true`) or its
+   image/tenant is on an always-log allowlist. Deterministic capture of what you
+   *already know* you care about: a canary image, an active debugging session, a
+   specific customer.
+3. **Error tail** — the sandbox emits an error-class event: non-zero agent exit,
+   `system.shutdown` after a fault, failed `config.apply`, a 5xx/refused egress,
+   or a crash on `stdio`. This is the path that guarantees the *interesting*
+   sandbox is captured **even when it was neither sampled nor opted in**.
+
+Baseline and opt-in are known at sink creation, so those keys **ship from the
+first event**. Every other key's sink starts in **buffer mode**: it holds a
+bounded pre-trigger ring (the last `tailRingEvents`, e.g. 2 000 — or the whole run
+if shorter) and ships nothing. On the first error trigger it **flushes the ring
+and switches to shipping** for the rest of the sandbox's life; if the sandbox ends
+with no trigger, the ring is discarded and the key produces no records.
+
+- **Sampled-in / opted-in →** complete stream, first event onward.
+- **Errored →** the run-up to the error (bounded by `tailRingEvents`) plus
+  everything after it. A run that errors *later* than the ring is deep loses its
+  earliest events — the standard tail-sampling trade-off; size the ring to the
+  debugging window you care about, or opt the image in (path 2) for full capture.
+- **Otherwise →** cleanly, entirely absent.
+
+This keeps the completeness guarantee where it matters — a key you pull up is
+complete (modulo the tail-ring bound for late errors, and the never-in-steady-
+state overflow drop of §4.2) — while guaranteeing **failures are never silently
+dropped** and still capping volume by admitting only a fraction of the *healthy*
+fleet. Cost for a not-admitted key: a bounded in-memory ring plus one cheap
+discriminator check per event; it ships nothing. `sampleRate: 1.0` (log every
+sandbox) is the default; lower it to cap warehouse cost — errored and opted-in
+keys stay captured regardless.
 
 ## 7. Transport & warehouse (Collector-side, pluggable)
 
@@ -205,46 +289,65 @@ fronted by a gateway) does batching, retry, and backpressure, then exports via a
 
 - **Kafka** — `kafkaexporter` → BigQuery Sink Connector (or a custom consumer).
   Prefer when Kafka already exists or multiple downstreams consume the feed.
-- **Pub/Sub** — `googlecloudpubsub` exporter → a **BigQuery subscription**
-  (direct writes, no Dataflow) or Dataflow for transforms.
+- **Pub/Sub** — `googlecloudpubsub` exporter → a **BigQuery subscription**.
 
 Both can run simultaneously; switching is a `exporters:` edit, no redeploy of
 sandboxd.
 
+> Landing in BigQuery is not free plumbing: a Pub/Sub BigQuery subscription
+> writes the message into a table that must either match a declared schema or use
+> the subscription's JSON-body column, and the Kafka BQ Sink Connector needs the
+> same schema handling. The `body JSON` column (§7.1) is chosen so the payload
+> lands schemalessly; the promoted columns are populated from OTLP attributes by
+> the subscription/connector mapping. If that mapping proves fiddly, a thin
+> transform (Dataflow, or a small consumer) is the fallback — noted so this leg
+> isn't mistaken for zero-effort.
+
 ### 7.1 BigQuery schema
 
-One wide table, partitioned by ingest day, clustered on the lookup dimensions:
+One wide table, partitioned by event date, clustered on the sandbox key. The
+columns are the identity/filter attributes from §5 promoted out of `body`; the
+redacted payload stays in the `body` JSON:
 
 ```
 timestamp    TIMESTAMP,
 event_id     INT64,
 sandbox_key  STRING,
 sandbox_id   STRING,
-run_id       STRING,
-image        STRING,
+image        STRING,     -- fleet analytics (§1: failure rates across images)
 event_type   STRING,
 body         JSON        -- redacted structured payload
 -- PARTITION BY DATE(timestamp)
--- CLUSTER BY sandbox_key, sandbox_id, event_type
+-- CLUSTER BY sandbox_key
 ```
 
-Clustering on `sandbox_key` is what keeps the inspector's key→logs lookups
-cheap (small scan) despite the table being fleet-wide.
+Partitioning by `DATE(timestamp)` (event time) is what makes the start/end-date
+search (§8.1) prune to just the relevant days; clustering on `sandbox_key` keeps
+the key lookup within those days a small scan despite the table being fleet-wide.
 
 ### 7.2 Delivery semantics
 
 At-least-once. Duplicates are possible (Collector retry, consumer replay). The
-`(sandbox_id, run_id, event_id)` triple is a natural dedup key at query time; the
-inspector read path (§8) de-dupes on it when merging.
+`(sandbox_key, sandbox_id, event_id)` triple is a natural dedup key at query
+time; the read path (§8) de-dupes on it when merging.
 
-## 8. Inspector: sandbox key → logs (history)
+## 8. Inspector & CLI: sandbox key → logs (history)
 
-Today the inspector serves a sandbox's timeline from local SQLite, keyed by
-`(owner_id, owner_key)` and filled **live** from SSE
-([eventStore.ts](../../cli/packages/inspector-server/src/lib/eventStore.ts),
-[routes/events.ts](../../cli/packages/inspector-server/src/routes/events.ts)).
-That only covers sandboxes streamed while the inspector was connected, and only
-within the 24h TTL. The warehouse fills the gap.
+Two consumers resolve a sandbox **by key** today, and both are limited to the
+live/local view:
+
+- **The inspector** serves a sandbox's timeline from local SQLite, keyed by
+  `(owner_id, owner_key)` and filled **live** from SSE
+  ([eventStore.ts](../../cli/packages/inspector-server/src/lib/eventStore.ts),
+  [routes/events.ts](../../cli/packages/inspector-server/src/routes/events.ts)).
+- **`hiver events <sandbox-key>`** resolves the key via `listSandboxes` (which
+  returns **only live** sandboxes — it errors `no sandbox with key …` otherwise),
+  replays from that same local SQLite, then attaches the live SSE stream
+  ([commands/src/events/index.ts](../../cli/packages/commands/src/events/index.ts)).
+
+Both therefore only cover sandboxes streamed while a local consumer was
+connected, within the 24h TTL, and `hiver events` additionally can't address a
+sandbox that has already gone. The warehouse fills both gaps.
 
 ### 8.1 Read path: an Events Query API (not inspector → BigQuery directly)
 
@@ -255,31 +358,97 @@ The inspector should **not** query BigQuery directly:
 - It would couple the inspector (and every CLI user) to GCP credentials and the
   warehouse's physical schema.
 
-Instead, introduce a small **Events Query API** — a read endpoint keyed by
-sandbox identity — that the inspector calls:
+Instead, introduce a small **Events Query API** — a read endpoint that takes just
+a **sandbox key and a time range** — that the inspector and CLI call:
 
 ```
-GET /events?sandbox_key=<key>&sandbox_id=<id>&run_id=<opt>&after=<event_id>
-    → [ SandboxEvent, ... ]   # ordered by event_id, de-duped
+GET /events?sandbox_key=<key>&start=<rfc3339>&end=<rfc3339>
+    → [ SandboxEvent, ... ]   # ordered by (timestamp, event_id), de-duped
 ```
 
-It can live in the controller (already the fleet's read plane) or as a dedicated
-service. Its backing store is swappable behind the API: BigQuery direct (with the
-clustering above) to start, a cache/BI-Engine or a dedicated serving DB later —
-without touching the inspector.
+`start`/`end` are the only scoping needed: they map straight onto the table's
+date partition (§7.1) so a query prunes to the relevant days, and they bound a
+reused key to the lifetime the caller is looking at. `start`/`end` are optional
+(default: full retention window). It can live in the controller (already the
+fleet's read plane) or as a dedicated service; its backing store is swappable —
+BigQuery direct to start, a cache/BI-Engine or a dedicated serving DB later —
+without touching the callers.
 
 ### 8.2 How the inspector uses it
 
 - **Running sandbox:** unchanged — live SSE into SQLite, served locally (fast,
   real-time).
 - **Gone / historical sandbox, or events past the local TTL:** the events route
-  falls back to the Query API by `(id, key)`, seeds SQLite, and serves from
+  falls back to the Query API by key + time range, seeds SQLite, and serves from
   there. The existing `(owner_id, owner_key, owner_event_id)` cursor model
   absorbs backfilled rows unchanged.
 - **Merge:** when both exist, rows are unioned and de-duped on
-  `(sandbox_id, run_id, event_id)`, preserving the current ordered-feed contract.
+  `(sandbox_key, sandbox_id, event_id)`, preserving the current ordered-feed
+  contract.
 
-### 8.3 Nested/linked sandboxes
+### 8.3 How `hiver events <sandbox-key>` uses it
+
+The CLI must serve history by key **whether or not the sandbox is still live** —
+that's the point of the durable pipeline. Two changes:
+
+- **Resolution.** Stop making a live `listSandboxes` hit fatal. Resolve `<key>`
+  through the Events Query API (§8.1); if the sandbox happens to be live, also
+  learn its `id` so the live SSE tail can be attached. A gone sandbox resolves
+  purely from the warehouse instead of erroring `no sandbox with key …`. Optional
+  `--start`/`--end` flags map onto the Query API's time range.
+- **Replay source.** The existing replay-then-follow logic
+  ([commands/src/events/index.ts](../../cli/packages/commands/src/events/index.ts))
+  keeps local SQLite as a fast first source, then **backfills from the Query API**
+  for anything older than the local window (or when SQLite is empty). Live follow
+  attaches only when the sandbox is still running; for a gone sandbox the command
+  prints the full history and exits (nothing to follow). `--start-event-id`
+  remains the explicit lower bound, now applied against the merged history.
+
+The command already de-dupes replay against the live tail by `event.id`; the same
+`(sandbox_key, sandbox_id, event_id)` key (§7.2) de-dupes warehouse rows against
+local ones, and a caller who wants only one lifetime of a reused key narrows it
+with `--start`/`--end`.
+
+Because both the inspector and the CLI go through the **same** Events Query API,
+there is one authorization and schema surface to maintain, not two — and neither
+needs GCP credentials or knowledge of the warehouse's physical layout.
+
+### 8.4 Inspector client: search by sandbox key
+
+The inspector web client only lets you open a sandbox that's in the sidebar
+list, which is the **live** set: it's fetched from `/api/sandboxes` and kept in
+sync by the lifecycle stream
+([App.tsx](../../cli/packages/inspector-client/src/App.tsx),
+[SandboxList.tsx](../../cli/packages/inspector-client/src/components/SandboxList.tsx)).
+Selection navigates to `/sandboxes/:id/:key`, and the detail view resolves the
+sandbox with `sandboxes.find(s => s.key === key)` — so a key that isn't in the
+live list can't be opened at all. To reach warehouse history, add a **search by
+key** entry point:
+
+- **Search input in the sidebar.** A key field (plus optional **start / end
+  date** pickers) above the list. The key filters the live list as you type and,
+  on submit, is treated as a sandbox key to open directly — including when it
+  matches nothing live. The date range, when set, scopes the history query;
+  left empty it defaults to the full retention window.
+- **Resolve unknown keys via the server.** On submit with no live match, the
+  client asks the inspector server to fetch that key over the chosen range from
+  the Events Query API (§8.1). The sandbox's `id` and status come from the
+  returned events themselves, so no separate identity lookup is needed. An empty
+  result means no events for that key in range — surfaced as "nothing found",
+  distinct from an error.
+- **Tolerate a not-live selection.** The detail view must stop assuming the
+  selected key is in the live `sandboxes` list. When it isn't, render from the
+  resolved history identity with a distinct **"archived"** status (no live dot,
+  no live tail — §8.2's gone-sandbox path), so a stopped sandbox opened by key
+  looks correct rather than empty.
+- **Deep-linkable.** Because the route already carries `(:id, :key)`, a resolved
+  historical sandbox yields a shareable URL; opening that URL re-resolves through
+  the same server path, so links to gone sandboxes keep working.
+
+This is purely a client + inspector-server-resolution change; it reuses the same
+Events Query API as §8.2/§8.3, so no new backend surface is introduced.
+
+### 8.5 Nested/linked sandboxes
 
 The broker sink only knows its **own** sandbox — the owner/nested relay model
 (`nested_id`/`nested_key` in the store,
@@ -288,36 +457,174 @@ is an inspector-side construct built from egress-link events. The warehouse
 therefore stores **flat per-sandbox streams**. History reconstruction reuses the
 same linking logic: fetch the owner's stream, discover linked sandbox keys from
 its egress-link events, and fetch each linked stream by key through the same
-Query API. No new edge table is required (though one could be added later to skip
-re-deriving links).
+Query API.
 
-## 9. Rollout
+The reconstruction is O(links) Query API calls, one per linked sandbox. That's
+fine for the shallow trees the inspector shows, and the calls fan out in parallel;
+it degrades for deep/wide link graphs. Two bounds keep it honest: the Query API
+caps link depth (and total linked fetches) per request, and — if deep trees become
+common — an **edge table** (`owner_key, linked_key`, populated from the same
+egress-link events at ingest) collapses discovery into one query instead of
+re-deriving links per level. The edge table is an optimization, not required for
+correctness.
+
+## 9. Kubernetes configuration
+
+Three moving parts land in the Helm chart
+([deployment/k8s/chart](../../deployment/k8s/chart)): the **producer** wiring on
+sandbox pods, a node-local **Collector**, and the **Events Query API** service
+the read path talks to. The design principle that shapes all of it: **only the
+Query API (and the Collector) hold warehouse/GCP credentials — consumers hold
+none.**
+
+### 9.1 What a consumer needs (the whole list)
+
+A "consumer" here is anything that reads logs by key: the inspector server, the
+`hiver events` CLI, and the inspector web client. From their point of view the
+entire requirement is **one HTTP endpoint plus the auth the gateway already
+enforces** — nothing else:
+
+- **A URL for the Events Query API.** Nothing more than an address.
+  - *Inspector server* (in-cluster): injected as an env var, exactly like
+    `HIVER_GATEWAY_URL` is today ([values.yaml](../../deployment/k8s/chart/values.yaml)
+    `gatewayUrl`) — e.g. `HIVER_EVENTS_QUERY_URL=http://events-query.hiver:9100`,
+    resolved by cluster DNS to the Query API Service.
+  - *CLI / web client* (outside the cluster): reach the **same** API through the
+    gateway, which adds an `/events/` route to the `events-query` cluster. So
+    they reuse the gateway URL they already have — no new endpoint to configure.
+- **No GCP credentials, no BigQuery dataset name, no schema knowledge.** Those
+  live only on the Query API pod (§9.3). A consumer that leaks or lacks cloud
+  creds still works; it just makes an HTTP call.
+- **No new network policy for the CLI/browser.** They already traverse the
+  gateway; the `/events/` route is the only addition.
+
+In short: give the inspector server one env var, add one gateway route, and every
+consumer can resolve **key + date range → logs**.
+
+### 9.2 Producer side (sandboxd → Collector)
+
+Add OTLP env to the per-image pods in
+[image-pools.yaml](../../deployment/k8s/chart/templates/image-pools.yaml),
+gated on `otel.enabled` so it stays a no-op by default (§4.3):
+
+```yaml
+{{- if $.Values.otel.enabled }}
+- name: HOST_IP
+  valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+- name: NODE_NAME
+  valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+# sandboxd reads this as --otel-endpoint; node-local so OTLP never leaves the node
+# before batching.
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: "http://$(HOST_IP):4317"
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: "service.name=sandboxd,k8s.node.name=$(NODE_NAME),k8s.pod.name=$(POD_NAME)"
+{{- end }}
+```
+
+The Collector runs as a **DaemonSet** (one per node, `hostPort: 4317`) with a
+ConfigMap pipeline: `otlp` receiver → `batch` → the selected exporter. Redaction
+is already done in-process (§6), so the Collector just batches and ships. GCP auth
+for the `googlecloudpubsub` exporter comes from a **Workload Identity** service
+account (`pubsub.publisher`), never a mounted key.
+
+### 9.3 Events Query API service
+
+A Deployment + ClusterIP Service in the control-plane namespace, modeled on
+[controller.yaml](../../deployment/k8s/chart/templates/controller.yaml):
+
+```yaml
+# values.yaml
+eventsQuery:
+  image: hiversh/events-query:latest
+  port: 9100
+  # The ONLY component with warehouse creds: Workload Identity SA bound to
+  # BigQuery Data Viewer + Job User on the dataset.
+  serviceAccount: events-query@PROJECT.iam.gserviceaccount.com
+  bigquery: { dataset: hiver, table: events }
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits:   { cpu: "1",    memory: "512Mi" }
+```
+
+The gateway grows one route — `/events/` → `events-query:9100` — so external
+consumers reach it exactly as they reach `/controller/` today.
+
+### 9.4 values.yaml surface (summary)
+
+```yaml
+otel:
+  enabled: false                      # default off → sink nil, no behavior change
+  # Per-KEY admission (§6.1), OR of three paths. Never per-event thinning.
+  admission:
+    # Path 1 — baseline statistical floor: fraction of the HEALTHY fleet logged
+    # in full. 1.0 = every sandbox. Lowering it drops whole keys, never events.
+    sampleRate: 1.0
+    # Path 2 — always log these images/tenants regardless of sampleRate (canaries,
+    # debugging). Sandboxes can also opt in per-run via config `telemetry.collect`.
+    alwaysLogImages: []
+    # Path 3 — error tail: log any sandbox that hits an error-class event, even if
+    # unsampled. tailRingEvents bounds the pre-error history retained before the
+    # trigger flushes and streaming begins.
+    errorTail: true
+    tailRingEvents: 2000
+  collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    exporter: googlecloudpubsub       # or "kafka"
+    pubsubTopic: projects/PROJECT/topics/hiver-events
+    kafkaBrokers: []
+    serviceAccount: otel-collector@PROJECT.iam.gserviceaccount.com
+
+eventsQuery: { image: ..., port: 9100, serviceAccount: ..., bigquery: {...} }
+
+# Injected into the inspector server (and controller, if it hosts the read path):
+eventsQueryUrl: http://events-query.hiver:9100
+```
+
+## 10. Rollout
 
 1. **In-process, no infra (this repo).** `events/sink.go`, `internal/telemetry`
    (OTLP log exporter + `otelSink` + `redact` with tests), wire at
    [packed.go:336](../../internal/sandboxd/packed.go#L336) behind
    `--otel-endpoint` (default off → no-op).
-2. **Collector + warehouse (cluster config).** DaemonSet Collector, `otlp`
+2. **Collector + warehouse (cluster config, §9).** DaemonSet Collector, `otlp`
    receiver, `batch`, Kafka **and** Pub/Sub exporters (one enabled), BQ table
-   DDL + subscription/connector. Shipped as `deployment/` examples.
-3. **Read path.** Events Query API + inspector history fallback (§8).
+   DDL + subscription/connector. Shipped as Helm chart values.
+3. **Read path.** Events Query API service (§9.3) + inspector/CLI/client history
+   (§8), reachable by consumers with just an endpoint (§9.1).
 
 Each stage is independently shippable; stage 1 is inert until a Collector
 endpoint is configured.
 
-## 10. Concerns
+## 11. Concerns
 
-- **Volume/cost.** `stdio`, `resource.usage`, `egress.chunk` dominate. Sampling
-  and dropping in the sink (§6) is the primary control; clustering (§7.1) bounds
-  query cost.
-- **PII/secrets.** Addressed by in-sink redaction before egress (§6). This is a
-  hard requirement, not a follow-up.
+- **Node-local transport is not the bottleneck (rough sizing).** A pack host runs
+  O(30) sandboxes; a chatty agent averages ~10 events/s (bursting to hundreds), so
+  ~300 events/s/node × ~1 KB/record ≈ **0.3 MB/s of OTLP per node** — negligible
+  for a node-local Collector, whose `batch` processor sustains 10⁴–10⁵ records/s
+  per core. OTLP-as-bulk-pipe was the worry; at this rate it isn't one. Bursts
+  (a sandbox dumping a large log) are absorbed by the sink's bounded buffer (§4.2)
+  and Collector batching. **The real cost is warehouse ingest + storage**, and
+  that's what admission (§6.1) controls: at `sampleRate: 0.1` the healthy fleet is
+  ~1/10th the rows, with errored + opted-in keys always kept.
+- **Query latency (rough sizing).** A single-key, single-day BigQuery lookup scans
+  only the matching `sandbox_key` cluster blocks — a few MB, **~1–2 s wall**
+  (dominated by BQ's ~0.5–1 s query-scheduling floor), at roughly the 10 MB
+  minimum-scan cost (~$0.00005). Fine for "open this sandbox"; too slow for
+  type-ahead — so the sidebar search debounces, and the Query API fronts BQ with a
+  small LRU (or BI-Engine reservation) for hot/recent keys (§8.1). This is why the
+  read path is a service, not direct BQ from the client.
+- **Volume shape.** `stdio`, `resource.usage`, `egress.chunk` dominate per-key
+  volume; `stdio` is kept in full (it's the log, §6), so per-key sampling — not
+  per-event thinning — is the only volume lever that preserves timelines.
+- **PII/secrets.** Addressed by in-sink redaction before egress (§6). Hard
+  requirement, not a follow-up.
 - **Ordering.** `event.id` is monotonic **per sandbox**, which is all the
   inspector needs; there is no global order and none is implied.
 - **Backpressure.** Bounded buffer + drop-with-counter in the sink (§4.2); the
   Collector owns retry/queueing beyond the node.
 
-## 11. Alternatives considered
+## 12. Alternatives considered
 
 - **Tap at the controller instead of the broker.** Rejected: the controller only
   sees lifecycle; the detail events never reach it. Collecting "all events"
