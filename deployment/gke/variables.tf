@@ -78,6 +78,30 @@ variable "local_nvme_ssd_count" {
   default     = 1
 }
 
+variable "node_upgrade_max_surge" {
+  description = <<-EOT
+    Extra nodes GKE may add while upgrading or applying a node_config change.
+    GKE's own default is 1 (create the replacement, then drain the old node),
+    which requires a spare instance. When node_reservation holds exactly the
+    nodes this pool runs, that surge cannot be satisfied and the update fails
+    with "reservation does not have available resources" — so this defaults to 0
+    and the pool recycles in place via node_upgrade_max_unavailable instead.
+  EOT
+  type        = number
+  default     = 0
+}
+
+variable "node_upgrade_max_unavailable" {
+  description = <<-EOT
+    Nodes GKE may take down simultaneously while upgrading. Paired with
+    node_upgrade_max_surge = 0 this recycles nodes in place, within the
+    reservation's capacity. On a single-node pool it means the pool is fully
+    unavailable while the node is drained and replaced.
+  EOT
+  type        = number
+  default     = 1
+}
+
 variable "hugepages_2m_count" {
   description = <<-EOT
     Number of 2MiB hugepages to preallocate per node (0 disables). Set this to

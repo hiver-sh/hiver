@@ -39,6 +39,20 @@ resource "google_container_node_pool" "primary" {
     auto_upgrade = true
   }
 
+  // Recycle nodes IN PLACE rather than adding a surge node first. GKE's default
+  // (max_surge = 1) creates the replacement before draining the old node, which
+  // needs a spare instance — and node_reservation holds exactly the nodes this
+  // pool runs, so a surge upgrade fails with "reservation does not have
+  // available resources" and the config change never lands. Trading surge for
+  // max_unavailable keeps the upgrade inside the reservation's capacity, at the
+  // cost of downtime while a node is drained and replaced (a single-node pool
+  // goes fully unavailable).
+  upgrade_settings {
+    strategy        = "SURGE"
+    max_surge       = var.node_upgrade_max_surge
+    max_unavailable = var.node_upgrade_max_unavailable
+  }
+
   node_config {
     machine_type     = var.machine_type
     min_cpu_platform = var.min_cpu_platform
