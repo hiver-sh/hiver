@@ -21,7 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # Full history so the "Push dependency update to main" step can rebase
+          # onto a main that advanced during the release run.
+          fetch-depth: 0
 
       - name: Read version
         id: version
@@ -131,7 +133,19 @@ jobs:
             echo "No dependency changes to commit, skipping."
           else
             git commit -m "chore: update @hiver.sh/client dep to v${VERSION}"
-            git push origin main
+            # main can advance during the release run (another push landing
+            # between checkout and here), which rejects a plain push. Rebase our
+            # single dep-bump commit onto the latest main and retry.
+            for attempt in 1 2 3 4 5; do
+              if git push origin main; then
+                exit 0
+              fi
+              echo "Push rejected (attempt ${attempt}); rebasing onto origin/main and retrying."
+              git fetch origin main
+              git rebase origin/main
+            done
+            echo "Error: failed to push dependency update after retries." >&2
+            exit 1
           fi
 
       - name: Tag and release
