@@ -97,6 +97,28 @@ jobs:
           fi
         working-directory: client/python
 
+      # `npm publish` returning 200 does not mean the version is resolvable yet:
+      # the registry's read path is a CDN that lags the write by seconds to
+      # minutes. The CLI's `npm install` below asks for ^$VERSION and fails hard
+      # with ETARGET if it reads a stale packument, so block until the version is
+      # actually visible. Query the registry over HTTP rather than `npm view` so
+      # no local metadata cache can answer for us.
+      - name: Wait for @hiver.sh/client to be resolvable on npm
+        env:
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          URL="https://registry.npmjs.org/@hiver.sh%2Fclient/${VERSION}"
+          for attempt in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL")" = "200" ]; then
+              echo "@hiver.sh/client@${VERSION} is resolvable."
+              exit 0
+            fi
+            echo "Not yet on the registry (attempt ${attempt}/30); retrying in 10s."
+            sleep 10
+          done
+          echo "Error: @hiver.sh/client@${VERSION} not resolvable after 5 minutes." >&2
+          exit 1
+
       - name: Update CLI dependency and lockfile
         env:
           VERSION: ${{ steps.version.outputs.current }}
