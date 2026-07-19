@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+
+	"github.com/hiver-sh/hiver/internal/wsaudit"
 )
 
 // maxAuditBodyBytes caps the request body snapshot captured for audit so a
@@ -33,7 +35,7 @@ const maxAuditBodyBytes = 1 << 20 // 1 MiB
 // may return the connection to the upstream pool; otherwise the caller must close
 // it. WebSocket upgrades and any error path return false.
 func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, upstreamBR *bufio.Reader, req *http.Request, rawReqBytes []byte, ac *auditCtx, allowReuse bool) bool {
-	ws := isWebSocketUpgrade(req)
+	ws := wsaudit.IsUpgrade(req)
 	// keepAlive drives both the upstream request (omit "Connection: close") and the
 	// reuse decision. Never for WebSocket (the conn becomes a tunnel) or when the
 	// agent itself asked to close.
@@ -44,9 +46,9 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, upstreamBR 
 	// plain on the wire and the audit log records native payloads.
 	if ws {
 		if rawReqBytes != nil {
-			rawReqBytes = stripWebSocketExtensionsRaw(rawReqBytes)
+			rawReqBytes = wsaudit.StripExtensionsRaw(rawReqBytes)
 		} else {
-			stripWebSocketExtensions(req.Header)
+			wsaudit.StripExtensions(req.Header)
 		}
 	}
 
@@ -71,7 +73,7 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, upstreamBR 
 			return false
 		}
 		// Response event before the WS tunnel starts pumping — frame audit
-		// events flow as response_chunks from wsForward, so consumers see
+		// events flow as response_chunks from wsaudit.Forward, so consumers see
 		// the 101 immediately rather than at tunnel close.
 		ac.responseHeaders = headerMap(resp.Header)
 		ac.response(http.StatusSwitchingProtocols)
@@ -79,15 +81,18 @@ func (p *Proxy) forwardHTTP(client io.ReadWriter, upstream net.Conn, upstreamBR 
 		// http.ReadResponse over-read past the headers — drain it before
 		// reading further from upstream.
 		done := make(chan struct{}, 2)
-		go func() { p.wsForward(client, upstream, wsDirUp, ac); done <- struct{}{} }()
-		go func() { p.wsForward(io.MultiReader(upstreamBR, upstream), client, wsDirDown, ac); done <- struct{}{} }()
+		go func() { wsaudit.Forward(client, upstream, wsaudit.DirUp, ac.host, ac.streamChunk); done <- struct{}{} }()
+		go func() {
+			wsaudit.Forward(io.MultiReader(upstreamBR, upstream), client, wsaudit.DirDown, ac.host, ac.streamChunk)
+			done <- struct{}{}
+		}()
 		<-done
 		return false
 	}
 
 	src := unwrapBody(resp)
 	ac.responseHeaders = headerMap(resp.Header)
-	if err := writeResponseHeaders(client, resp); err != nil {
+	if err := wsaudit.WriteResponseHeaders(client, resp); err != nil {
 		ac.responseError("write response: "+err.Error(), http.StatusBadGateway)
 		return false
 	}
@@ -118,9 +123,8 @@ const maxReuseDrainBytes = 1 << 16
 //
 //   - WS upgrade with captured raw bytes → write the bytes verbatim
 //     (preserves header casing/order from the agent's original request).
-//   - WS upgrade without raw bytes → writeWebSocketUpgrade (hand-rolled
-//     header writer in proxy.go that avoids the User-Agent injection
-//     req.Write would do).
+//   - WS upgrade without raw bytes → wsaudit.WriteUpgradeRequest (hand-rolled
+//     header writer that avoids the User-Agent injection req.Write would do).
 //   - Anything else → req.Write with the proxy fingerprint suppressed
 //     (blank User-Agent if the agent didn't send one). Connection is set to
 //     close unless keepAlive is set, in which case the header is dropped so the
@@ -133,7 +137,7 @@ func writeUpstreamRequest(upstream net.Conn, req *http.Request, rawReqBytes []by
 		return err
 	case ws:
 		log.Printf("forward http: ws upgrade host=%s path=%s", req.Host, req.URL.Path)
-		return writeWebSocketUpgrade(upstream, req)
+		return wsaudit.WriteUpgradeRequest(upstream, req)
 	default:
 		if keepAlive {
 			req.Header.Del("Connection") // HTTP/1.1 default is keep-alive

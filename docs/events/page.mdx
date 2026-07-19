@@ -32,7 +32,8 @@ The stream auto-reconnects on network drops (exponential backoff). Pass a `signa
 | `egress.response` | `request_id`, `status`, `duration_ms`, `headers?` | Response to an egress request |
 | `egress.chunk` | `request_id`, `body`, `label?` | Streaming/WebSocket frame (`label`: `up` or `down`) |
 | `ingress.request` | `port`, `method`, `path`, `query?`, `headers?`, `body?` | Inbound request to a port exposed by the sandbox |
-| `ingress.response` | `request_id`, `status`, `duration_ms`, `headers?`, `body?` | Response to an ingress request |
+| `ingress.response` | `request_id`, `status`, `duration_ms`, `headers?` | Response to an ingress request (status + headers at time-to-first-byte) |
+| `ingress.chunk` | `request_id`, `body`, `label?` | Inbound response body/WebSocket frame as it streams (`label`: `up` or `down`) |
 | `fs.request` | `access`, `mount`, `path`, `operation` | File access attempt (`read` or `write`) |
 | `fs.response` | `backend`, `request_id`, `duration_ms`, `error?` | File operation result |
 | `stdio` | `stdout?`, `stderr?` | Process output |

@@ -18,6 +18,7 @@ components:
         - $ref: '#/components/schemas/ExecResponseEvent'
         - $ref: '#/components/schemas/IngressRequestEvent'
         - $ref: '#/components/schemas/IngressResponseEvent'
+        - $ref: '#/components/schemas/IngressChunkEvent'
         - $ref: '#/components/schemas/SystemStartEvent'
         - $ref: '#/components/schemas/SystemConfigChangedEvent'
         - $ref: '#/components/schemas/SystemShutdownEvent'
@@ -36,6 +37,7 @@ components:
           exec.response: '#/components/schemas/ExecResponseEvent'
           ingress.request: '#/components/schemas/IngressRequestEvent'
           ingress.response: '#/components/schemas/IngressResponseEvent'
+          ingress.chunk: '#/components/schemas/IngressChunkEvent'
           system.start: '#/components/schemas/SystemStartEvent'
           system.config-changed: '#/components/schemas/SystemConfigChangedEvent'
           system.shutdown: '#/components/schemas/SystemShutdownEvent'
@@ -448,8 +450,12 @@ components:
 
     IngressResponseEvent:
       description: |
-        Emitted when a proxied inbound request completes. The `request_id`
-        matches the `id` of the originating `IngressRequestEvent`.
+        Emitted as soon as the sandbox responds to a proxied inbound request
+        — carrying the status, headers, and time-to-first-byte. The
+        `request_id` matches the `id` of the originating
+        `IngressRequestEvent`. Body bytes are NOT included here; they flow as
+        `IngressChunkEvent`s so consumers see long-lived SSE / WebSocket
+        streams as they arrive instead of waiting for the stream to finish.
       allOf:
         - $ref: '#/components/schemas/SandboxEventBase'
         - type: object
@@ -466,7 +472,7 @@ components:
               description: HTTP status code returned by the sandbox.
             duration_ms:
               type: integer
-              description: Wall-clock duration of the proxied request, in milliseconds.
+              description: Time to first byte of the proxied response, in milliseconds.
             headers:
               type: object
               additionalProperties:
@@ -474,11 +480,6 @@ components:
               description: |
                 HTTP response headers returned by the sandbox. Multi-value
                 headers are joined with `, ` per RFC 7230 §3.2.2.
-            body:
-              type: string
-              description: |
-                Response body. Omitted when the response has no body or the
-                body exceeds the capture limit.
       example:
         type: ingress.response
         id: 231
@@ -486,6 +487,42 @@ components:
         request_id: 230
         status: 200
         duration_ms: 12
+
+    IngressChunkEvent:
+      description: |
+        Emitted for each chunk of a proxied inbound response body as it
+        streams back to the caller. The `request_id` matches the `id` of the
+        originating `IngressRequestEvent`. An ordinary HTTP response emits
+        however many chunks the sandbox pushes per write; SSE and WebSocket
+        streams emit many.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, request_id, body]
+          properties:
+            type:
+              type: string
+              const: ingress.chunk
+            request_id:
+              type: integer
+              description: Unique identifier correlating this chunk to its `IngressRequestEvent`.
+            body:
+              type: string
+              description: |
+                Raw chunk content.
+            label:
+              type: string
+              description: |
+                Optional tag indicating the chunk's origin. For WebSocket
+                traffic the proxy sets `up` (caller→sandbox) or `down`
+                (sandbox→caller); HTTP/SSE responses omit the field.
+      example:
+        type: ingress.chunk
+        id: 232
+        timestamp: "2026-06-01T09:00:01Z"
+        request_id: 230
+        body: "data: {\"token\":\"Hello\"}"
+        label: "down"
 
     SystemStartEvent:
       description: |

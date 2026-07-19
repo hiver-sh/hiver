@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/hiver-sh/hiver/internal/wsaudit"
 	"golang.org/x/net/http2"
 )
 
@@ -44,7 +45,7 @@ func (p *Proxy) handleInnerH2(w http.ResponseWriter, r *http.Request, sniHost, o
 
 	// We don't enable h2 extended CONNECT, so Chrome won't send WebSocket/CONNECT
 	// over h2 — fail closed if one somehow arrives rather than mishandle it.
-	if r.Method == http.MethodConnect || isWebSocketUpgrade(r) {
+	if r.Method == http.MethodConnect || wsaudit.IsUpgrade(r) {
 		ac.deny("h2 connect/upgrade not supported", http.StatusNotImplemented)
 		http.Error(w, "", http.StatusNotImplemented)
 		return

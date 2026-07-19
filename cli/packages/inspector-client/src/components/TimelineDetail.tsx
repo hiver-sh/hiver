@@ -530,8 +530,8 @@ function RowDetailPanelInner({
       e.type === "exec.response",
   );
   const chunks = bar.rawEvents.filter(
-    (e): e is Extract<SandboxEvent, { type: "egress.chunk" }> =>
-      e.type === "egress.chunk",
+    (e): e is Extract<SandboxEvent, { type: "egress.chunk" | "ingress.chunk" }> =>
+      e.type === "egress.chunk" || e.type === "ingress.chunk",
   );
 
   const effectiveDurationMs = useMemo(() => {
@@ -595,7 +595,11 @@ function RowDetailPanelInner({
   const hasSummary = summaryData !== null;
 
   const isWebSocket = useMemo(() => {
-    if (!res || res.type !== "egress.response") return false;
+    if (
+      !res ||
+      (res.type !== "egress.response" && res.type !== "ingress.response")
+    )
+      return false;
     if (res.status === 101) return true;
     const upgrade = res.headers?.["upgrade"] ?? res.headers?.["Upgrade"] ?? "";
     return upgrade.toLowerCase().includes("websocket");
@@ -812,7 +816,6 @@ function RowDetailPanelInner({
     req.type === "egress.request" || req.type === "ingress.request"
       ? req.body
       : undefined;
-  const resRawBody = res?.type === "ingress.response" ? res.body : undefined;
 
   const tabOptions: { value: DetailTab; label: string }[] = [
     ...(hasSummary
@@ -980,7 +983,7 @@ function RowDetailPanelInner({
           className={`flex flex-1 min-h-0 rounded-md border border-border mx-3 mb-3 ${narrow ? "flex-col overflow-auto" : "overflow-hidden"}`}
         >
           <div
-            className={`overflow-y-auto ${!narrow && (chunks.length > 0 || resRawBody) ? "flex-1 min-w-0 border-r border-border" : narrow && (chunks.length > 0 || resRawBody) ? "shrink-0 border-b border-border" : "flex-1"}`}
+            className={`overflow-y-auto ${!narrow && chunks.length > 0 ? "flex-1 min-w-0 border-r border-border" : narrow && chunks.length > 0 ? "shrink-0 border-b border-border" : "flex-1"}`}
           >
             <div className="p-3">
               {res ? (
@@ -1078,18 +1081,6 @@ function RowDetailPanelInner({
                 })()
               )}
             </div>
-          )}
-          {resRawBody && (
-            <BodyBlock
-              raw={resRawBody}
-              contentType={getHeader(
-                res?.type === "ingress.response" ? res.headers : undefined,
-                "content-type",
-              )}
-              className={
-                narrow ? "flex-1 min-h-[300px]" : "flex-1 min-w-0 min-h-0"
-              }
-            />
           )}
         </div>
       )}

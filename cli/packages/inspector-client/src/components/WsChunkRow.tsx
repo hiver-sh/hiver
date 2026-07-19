@@ -13,7 +13,7 @@ import { tryPretty } from "@/lib/prettyBody";
 export function WsChunkRow({
   chunk,
 }: {
-  chunk: Extract<SandboxEvent, { type: "egress.chunk" }>;
+  chunk: Extract<SandboxEvent, { type: "egress.chunk" | "ingress.chunk" }>;
 }) {
   const [open, setOpen] = useState(false);
   const snippet =

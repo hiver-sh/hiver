@@ -878,7 +878,6 @@ export interface IngressResponseEvent extends SandboxEventBase {
   status: number;
   duration_ms: number;
   headers?: Record<string, string>;
-  body?: string;
 }
 export const IngressResponseEvent = SandboxEventBase.extend({
   type: z.literal("ingress.response"),
@@ -886,10 +885,26 @@ export const IngressResponseEvent = SandboxEventBase.extend({
   status: z.number().int(),
   duration_ms: z.number().int(),
   headers: z.record(z.string(), z.string()).optional(),
-  body: z.string().optional(),
 });
 type _AssertIngressResponseEvent = Expect<
   Equal<z.infer<typeof IngressResponseEvent>, IngressResponseEvent>
+>;
+
+export interface IngressChunkEvent extends SandboxEventBase {
+  type: "ingress.chunk";
+  request_id: number;
+  body: string;
+  /** Optional origin tag: `up` for caller→sandbox, `down` for sandbox→caller (WebSocket only). */
+  label?: string;
+}
+export const IngressChunkEvent = SandboxEventBase.extend({
+  type: z.literal("ingress.chunk"),
+  request_id: z.number(),
+  body: z.string(),
+  label: z.string().optional(),
+});
+type _AssertIngressChunkEvent = Expect<
+  Equal<z.infer<typeof IngressChunkEvent>, IngressChunkEvent>
 >;
 
 export interface SystemEvent extends SandboxEventBase {
@@ -921,6 +936,7 @@ export type SandboxEvent =
   | ExecResponseEvent
   | IngressRequestEvent
   | IngressResponseEvent
+  | IngressChunkEvent
   | SystemEvent;
 export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
@@ -935,6 +951,7 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   ExecResponseEvent,
   IngressRequestEvent,
   IngressResponseEvent,
+  IngressChunkEvent,
   SystemEvent,
 ]);
 type _AssertSandboxEvent = Expect<

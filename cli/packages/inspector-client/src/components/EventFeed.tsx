@@ -38,6 +38,15 @@ function eventBadge(event: SandboxEvent): {
       };
     case "egress.chunk":
       return { label: "egress.chunk", variant: "cyan" };
+    case "ingress.request":
+      return { label: `ingress.req ${event.method}`.trim(), variant: "blue" };
+    case "ingress.response":
+      return {
+        label: `ingress.res ${event.status}`,
+        variant: event.status >= 400 ? "red" : "green",
+      };
+    case "ingress.chunk":
+      return { label: "ingress.chunk", variant: "cyan" };
     case "fs.request":
       return {
         label:
@@ -120,6 +129,48 @@ function EventDetail({ event }: { event: SandboxEvent }) {
         </span>
       );
     case "egress.chunk":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          req#{event.request_id} chunk
+          {event.label ? (
+            <span
+              className={`ml-1 ${event.label === "up" ? "text-blue-600 dark:text-blue-400" : "text-green-600 dark:text-green-400"}`}
+            >
+              {event.label === "up" ? "↑" : "↓"} {event.label}
+            </span>
+          ) : null}{" "}
+          ({event.body.length}b)
+        </span>
+      );
+    case "ingress.request":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          <span className="text-zinc-500">#{event.id}</span>{" "}
+          <span className="text-blue-600 dark:text-blue-400">
+            {event.method}
+          </span>{" "}
+          :{event.port}
+          {event.path}
+          {event.query ? `?${event.query}` : ""}
+        </span>
+      );
+    case "ingress.response":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          req#{event.request_id}{" "}
+          <span
+            className={
+              event.status >= 400
+                ? "text-red-600 dark:text-red-400"
+                : "text-green-600 dark:text-green-400"
+            }
+          >
+            {event.status}
+          </span>{" "}
+          {event.duration_ms}ms
+        </span>
+      );
+    case "ingress.chunk":
       return (
         <span className="font-mono text-xs text-muted-foreground">
           req#{event.request_id} chunk

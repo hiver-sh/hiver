@@ -474,7 +474,7 @@ type SandboxEvent struct {
 	Status     int `json:"status,omitempty"`
 	DurationMs int `json:"duration_ms,omitempty"`
 
-	// egress.chunk
+	// egress.chunk, ingress.chunk (Body carries the chunk bytes)
 	Label string `json:"label,omitempty"` // "up" for client→upstream, "down" for upstream→client (WebSocket only)
 
 	// fs.request

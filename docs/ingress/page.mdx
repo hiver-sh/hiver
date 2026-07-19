@@ -109,7 +109,7 @@ For a service baked into an image as its entrypoint, see [Custom Docker image](/
 
 ## Observing inbound traffic
 
-Every inbound call surfaces on the [event stream](/docs/events) as an `ingress.request` / `ingress.response` pair, the mirror image of the `egress.*` events for outbound traffic. Watch them to audit what's hitting your in-sandbox service:
+Every inbound call surfaces on the [event stream](/docs/events) as an `ingress.request` / `ingress.response` pair, the mirror image of the `egress.*` events for outbound traffic. The `ingress.response` fires as soon as the status and headers are known; the body then streams as `ingress.chunk` events (with `label` `up`/`down` for WebSocket frames), so you can follow a long-lived SSE or WebSocket connection live instead of waiting for it to close. Watch them to audit what's hitting your in-sandbox service:
 
 ```typescript
 for await (const event of sandbox.getEventsStream()) {

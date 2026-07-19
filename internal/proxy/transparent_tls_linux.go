@@ -11,6 +11,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+
+	"github.com/hiver-sh/hiver/internal/wsaudit"
 )
 
 // handleTransparentTLS reads enough of the TLS ClientHello to extract the
@@ -139,7 +141,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		p.beginAudit(srcIP, "TLS", host, "", "").deny("read request: "+err.Error(), 0)
 		return
 	}
-	log.Printf("intercept tls: request host=%s method=%s path=%s ws=%v", host, req.Method, req.URL.Path, isWebSocketUpgrade(req))
+	log.Printf("intercept tls: request host=%s method=%s path=%s ws=%v", host, req.Method, req.URL.Path, wsaudit.IsUpgrade(req))
 
 	_, port := splitHostPort("", origDst, 0)
 	ac := p.beginAudit(srcIP, req.Method, host, req.URL.Path, req.URL.RawQuery)
@@ -150,7 +152,7 @@ func (p *Proxy) interceptTLS(c *net.TCPConn, br *bufio.Reader, host, origDst str
 		return
 	}
 
-	ws := isWebSocketUpgrade(req)
+	ws := wsaudit.IsUpgrade(req)
 	dialAddr := dialTarget(rule, upstreamAddr(host, origDst))
 
 	// Reuse a warm upstream connection when one exists for THIS source. The pool is

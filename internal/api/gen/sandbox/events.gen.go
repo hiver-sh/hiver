@@ -254,6 +254,26 @@ type FSResponseEvent struct {
 	Type      string    `json:"type"`
 }
 
+// IngressChunkEvent defines model for IngressChunkEvent.
+type IngressChunkEvent struct {
+	// Body Raw chunk content.
+	Body string `json:"body"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// Label Optional tag indicating the chunk's origin. For WebSocket
+	// traffic the proxy sets `up` (caller→sandbox) or `down`
+	// (sandbox→caller); HTTP/SSE responses omit the field.
+	Label *string `json:"label,omitempty"`
+
+	// RequestId Unique identifier correlating this chunk to its `IngressRequestEvent`.
+	RequestId int       `json:"request_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
 // IngressRequestEvent defines model for IngressRequestEvent.
 type IngressRequestEvent struct {
 	// Body Request body. Omitted when the request has no body or the
@@ -286,11 +306,7 @@ type IngressRequestEvent struct {
 
 // IngressResponseEvent defines model for IngressResponseEvent.
 type IngressResponseEvent struct {
-	// Body Response body. Omitted when the response has no body or the
-	// body exceeds the capture limit.
-	Body *string `json:"body,omitempty"`
-
-	// DurationMs Wall-clock duration of the proxied request, in milliseconds.
+	// DurationMs Time to first byte of the proxied response, in milliseconds.
 	DurationMs int `json:"duration_ms"`
 
 	// Headers HTTP response headers returned by the sandbox. Multi-value
@@ -724,6 +740,34 @@ func (t *SandboxEvent) MergeIngressResponseEvent(v IngressResponseEvent) error {
 	return err
 }
 
+// AsIngressChunkEvent returns the union data inside the SandboxEvent as a IngressChunkEvent
+func (t SandboxEvent) AsIngressChunkEvent() (IngressChunkEvent, error) {
+	var body IngressChunkEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIngressChunkEvent overwrites any union data inside the SandboxEvent as the provided IngressChunkEvent
+func (t *SandboxEvent) FromIngressChunkEvent(v IngressChunkEvent) error {
+	v.Type = "ingress.chunk"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIngressChunkEvent performs a merge with any union data inside the SandboxEvent, using the provided IngressChunkEvent
+func (t *SandboxEvent) MergeIngressChunkEvent(v IngressChunkEvent) error {
+	v.Type = "ingress.chunk"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsSystemStartEvent returns the union data inside the SandboxEvent as a SystemStartEvent
 func (t SandboxEvent) AsSystemStartEvent() (SystemStartEvent, error) {
 	var body SystemStartEvent
@@ -838,6 +882,8 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 		return t.AsFSRequestEvent()
 	case "fs.response":
 		return t.AsFSResponseEvent()
+	case "ingress.chunk":
+		return t.AsIngressChunkEvent()
 	case "ingress.request":
 		return t.AsIngressRequestEvent()
 	case "ingress.response":

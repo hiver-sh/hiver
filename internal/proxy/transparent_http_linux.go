@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+
+	"github.com/hiver-sh/hiver/internal/wsaudit"
 )
 
 // handleTransparentHTTP serves one origin-form HTTP request. The Host header
@@ -29,7 +31,7 @@ func (p *Proxy) handleTransparentHTTP(c *net.TCPConn, br *bufio.Reader, origDst 
 	// that's what the kernel will actually dial, and what we hold the agent to.
 	_, port := splitHostPort("", origDst, 0)
 
-	log.Printf("transparent http: host=%s port=%d method=%s path=%s ws=%v", hostOnly, port, req.Method, req.URL.Path, isWebSocketUpgrade(req))
+	log.Printf("transparent http: host=%s port=%d method=%s path=%s ws=%v", hostOnly, port, req.Method, req.URL.Path, wsaudit.IsUpgrade(req))
 
 	ac := p.beginAudit(srcIPOf(c.RemoteAddr().String()), req.Method, hostOnly, req.URL.Path, req.URL.RawQuery)
 	rule := p.applyRequestRule(req, hostOnly, port, srcIPOf(c.RemoteAddr().String()), ac, func() { writeDenyHTTP(c, hostOnly) })

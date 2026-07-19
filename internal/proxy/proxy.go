@@ -31,6 +31,7 @@ import (
 	"log"
 
 	"github.com/andybalholm/brotli"
+	"github.com/hiver-sh/hiver/internal/wsaudit"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -444,7 +445,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.Host = dialAddr
 	}
 
-	if isWebSocketUpgrade(r) {
+	if wsaudit.IsUpgrade(r) {
 		p.handleWebSocket(w, r, dialAddr, ac)
 		return
 	}
@@ -601,45 +602,6 @@ func isTextContentType(ct string) bool {
 	return strings.HasSuffix(mt, "+json") || strings.HasSuffix(mt, "+xml")
 }
 
-// isWebSocketUpgrade reports whether r carries a WebSocket upgrade.
-func isWebSocketUpgrade(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
-		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
-}
-
-// writeWebSocketUpgrade writes a WebSocket upgrade request to w using the
-// headers from req.Header directly, without the modifications that
-// http.Request.Write makes:
-//
-//   - req.Write adds "User-Agent: Go-http-client/1.1" when the original
-//     request carries no User-Agent. That tag identifies the proxy to the
-//     upstream's WAF and can trigger security rejections.
-//   - req.Write sorts headers in map-iteration order, which may differ from
-//     the client's original ordering.
-//
-// Header names are still Go-canonical (e.g. "Sec-Websocket-Key") because
-// http.ReadRequest normalises them on ingress; that canonicalisation is
-// unavoidable. HTTP/1.1 requires case-insensitive header processing, so
-// compliant upstreams accept it.
-func writeWebSocketUpgrade(w io.Writer, req *http.Request) error {
-	bw := bufio.NewWriter(w)
-	path := req.URL.RequestURI()
-	if path == "" {
-		path = "/"
-	}
-	log.Printf("ws upgrade: sending %s %s HTTP/1.1 host=%s headers=%v", req.Method, path, req.Host, req.Header)
-	if _, err := fmt.Fprintf(bw, "%s %s HTTP/1.1\r\nHost: %s\r\n", req.Method, path, req.Host); err != nil {
-		return err
-	}
-	if err := req.Header.Write(bw); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(bw, "\r\n"); err != nil {
-		return err
-	}
-	return bw.Flush()
-}
-
 // handleWebSocket tunnels a plain ws:// WebSocket through the proxy.
 // The egress rule has already been matched and ac.allow() already called by
 // handleHTTP, which also resolved dialAddr (including any override.host
@@ -656,8 +618,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, dialAddr
 	// permessage-deflate (or anything else that touches the RSV bits).
 	// Frames on the wire are then plain bytes and the audit log
 	// records exactly the application payload.
-	stripWebSocketExtensions(r.Header)
-	if err := writeWebSocketUpgrade(upstream, r); err != nil {
+	wsaudit.StripExtensions(r.Header)
+	if err := wsaudit.WriteUpgradeRequest(upstream, r); err != nil {
 		_ = upstream.Close()
 		ac.responseError("ws write request: "+err.Error(), http.StatusBadGateway)
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -694,7 +656,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, dialAddr
 		return
 	}
 
-	if err := writeResponseHeaders(client, resp); err != nil {
+	if err := wsaudit.WriteResponseHeaders(client, resp); err != nil {
 		_ = client.Close()
 		_ = upstream.Close()
 		ac.responseError("ws write response: "+err.Error(), http.StatusInternalServerError)
@@ -702,17 +664,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, dialAddr
 	}
 
 	// Response event before the WS tunnel starts pumping — frame audit
-	// events flow as response_chunks from wsForward, so consumers see the
+	// events flow as response_chunks from wsaudit.Forward, so consumers see the
 	// 101 immediately rather than at tunnel close.
 	ac.responseHeaders = headerMap(resp.Header)
 	ac.response(http.StatusSwitchingProtocols)
 	done := make(chan struct{}, 2)
 	go func() {
-		p.wsForward(io.MultiReader(clientBrw.Reader, client), upstream, wsDirUp, ac)
+		wsaudit.Forward(io.MultiReader(clientBrw.Reader, client), upstream, wsaudit.DirUp, ac.host, ac.streamChunk)
 		done <- struct{}{}
 	}()
 	go func() {
-		p.wsForward(io.MultiReader(upstreamBuf, upstream), client, wsDirDown, ac)
+		wsaudit.Forward(io.MultiReader(upstreamBuf, upstream), client, wsaudit.DirDown, ac.host, ac.streamChunk)
 		done <- struct{}{}
 	}()
 	<-done
@@ -1254,28 +1216,6 @@ func writeDenyHTTP(c net.Conn, host string) {
 		"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		len(body), body,
 	)
-}
-
-// writeResponseHeaders writes the HTTP status line and headers of resp to w,
-// followed by the blank line that separates headers from body. Used when the
-// caller needs to stream the body separately (e.g. SSE or WebSocket).
-func writeResponseHeaders(w io.Writer, resp *http.Response) error {
-	statusText := http.StatusText(resp.StatusCode)
-	if statusText == "" {
-		statusText = "Unknown"
-	}
-	if _, err := fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText); err != nil {
-		return err
-	}
-	// Forward upstream headers verbatim except Transfer-Encoding: the body
-	// we're about to stream is already decoded by Go's http.ReadResponse.
-	hdrs := resp.Header.Clone()
-	hdrs.Del("Transfer-Encoding")
-	if err := hdrs.Write(w); err != nil {
-		return err
-	}
-	_, err := fmt.Fprint(w, "\r\n")
-	return err
 }
 
 // headerMap converts an http.Header into a flat map[string]string, joining

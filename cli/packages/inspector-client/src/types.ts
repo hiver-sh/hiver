@@ -115,7 +115,14 @@ type SandboxEventVariant =
       status: number;
       duration_ms: number;
       headers?: Record<string, string>;
-      body?: string;
+    }
+  | {
+      id: number;
+      timestamp: string;
+      type: "ingress.chunk";
+      request_id: number;
+      body: string;
+      label?: string;
     }
   | {
       id: number;

@@ -83,7 +83,7 @@ function fsMethodRank(method?: string): number {
 export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[] {
   const chunkMap = new Map<
     number,
-    Extract<SandboxEvent, { type: "egress.chunk" }>[]
+    Extract<SandboxEvent, { type: "egress.chunk" | "ingress.chunk" }>[]
   >();
   const egressResMap = new Map<
     number,
@@ -105,7 +105,7 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
   const rowOrder: string[] = [];
 
   for (const event of events) {
-    if (event.type === "egress.chunk") {
+    if (event.type === "egress.chunk" || event.type === "ingress.chunk") {
       const list = chunkMap.get(event.request_id) ?? [];
       list.push(event);
       chunkMap.set(event.request_id, list);
@@ -167,8 +167,17 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
       });
     } else if (event.type === "ingress.request") {
       const res = ingressResMap.get(event.id);
+      const chunks = chunkMap.get(event.id) ?? [];
       const startMs = new Date(event.timestamp).getTime();
-      const durationMs = res ? res.duration_ms : 0;
+      // ingress.response now carries time-to-first-byte; the body streams as
+      // ingress.chunk events, so a streaming/WebSocket bar runs until its last
+      // chunk. Fall back to the response's duration when there are no chunks.
+      const lastChunk = chunks[chunks.length - 1];
+      const durationMs = res
+        ? lastChunk
+          ? new Date(lastChunk.timestamp).getTime() - startMs
+          : res.duration_ms
+        : 0;
       const key = `ingress:${event.port}`;
       const row = getOrCreateRow(key, "ingress", `:${event.port}`);
       row.bars.push({
@@ -178,7 +187,7 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
         durationMs,
         status: res?.status,
         pending: !res,
-        rawEvents: res ? [event, res] : [event],
+        rawEvents: res ? [event, res, ...chunks] : [event, ...chunks],
       });
     } else if (event.type === "fs.request") {
       const res = fsResMap.get(event.id);
@@ -672,7 +681,11 @@ export function filterEvents(
           e.type === "egress.chunk"
         );
       if (f.kind === "ingress")
-        return e.type === "ingress.request" || e.type === "ingress.response";
+        return (
+          e.type === "ingress.request" ||
+          e.type === "ingress.response" ||
+          e.type === "ingress.chunk"
+        );
       if (f.kind === "fs")
         return e.type === "fs.request" || e.type === "fs.response";
       if (f.kind === "llm" || f.kind === "tools") {
