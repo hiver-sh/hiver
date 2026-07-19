@@ -63,6 +63,13 @@ export interface TimelineRow {
   method?: string;
   isPoint: boolean;
   bars: TimelineBar[];
+  /**
+   * Rows sharing a group sort as a block, positioned by the group's earliest
+   * bar, so the several rows an fs mount or an HTTP authority now expands into
+   * stay adjacent instead of scattering across the timeline by first-seen time.
+   * Defaults to the row key, i.e. the row is its own group.
+   */
+  group?: string;
 }
 
 // Orders the fs operation rows within a mount: read, then write, then
@@ -80,7 +87,60 @@ function fsMethodRank(method?: string): number {
   }
 }
 
-export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[] {
+// The path component HTTP rows group on. Deliberately excludes the query
+// string: it carries per-request tokens, cursors and timestamps, so folding it
+// into the row key would put nearly every call on a row of its own. Paths
+// themselves can still be high-cardinality when they embed ids (/users/123),
+// which trades a denser timeline for one that distinguishes endpoints.
+function routePath(path: string): string {
+  if (!path) return "/";
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+/**
+ * Row identity for one HTTP request under the active grouping. `authority` is
+ * the hostname for egress and `:port` for ingress. Only the selected fields
+ * reach the key, so e.g. grouping on hostname alone folds every method and
+ * path on a host back into a single row.
+ */
+function httpRowIdentity(
+  prefix: "egress" | "ingress",
+  groupBy: GroupByField[],
+  authority: string,
+  method: string,
+  path: string,
+): { key: string; label: string; method?: string; group?: string } {
+  const on = (f: GroupByField) => groupBy.includes(f);
+  const label =
+    [on("host") ? authority : null, on("path") ? routePath(path) : null]
+      .filter(Boolean)
+      .join("") ||
+    // Grouping on method alone leaves nothing host-shaped to name the row
+    // after; the method itself renders in its own column beside this.
+    "all requests";
+  const key = [
+    prefix,
+    on("host") ? authority : "*",
+    on("method") ? method : "*",
+    on("path") ? routePath(path) : "*",
+  ].join(":");
+  return {
+    key,
+    label,
+    // A row that aggregates several methods must not display one of them.
+    method: on("method") ? method : undefined,
+    // Keeping a host's rows adjacent only means anything while rows are split
+    // within a host.
+    group: on("host") ? `${prefix}:${authority}` : undefined,
+  };
+}
+
+export function buildRows(
+  events: SandboxEvent[],
+  sandboxKey = "",
+  groupByFields: GroupByField[] = DEFAULT_GROUP_BY,
+): TimelineRow[] {
+  const groupBy = normalizeGroupBy(groupByFields);
   const chunkMap = new Map<
     number,
     Extract<SandboxEvent, { type: "egress.chunk" | "ingress.chunk" }>[]
@@ -126,9 +186,10 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
     label: string,
     method?: string,
     isPoint = false,
+    group?: string,
   ): TimelineRow {
     if (!rowMap.has(key)) {
-      rowMap.set(key, { key, type, label, method, isPoint, bars: [] });
+      rowMap.set(key, { key, type, label, method, isPoint, bars: [], group });
       rowOrder.push(key);
     }
     return rowMap.get(key)!;
@@ -145,16 +206,30 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
           ? new Date(lastChunk.timestamp).getTime() - startMs
           : res.duration_ms
         : 0;
-      let label = event.host;
-      let key: string;
       const matchedProvider = matchProvider(event);
-      if (matchedProvider) {
-        label = extractLabelCached(matchedProvider, event) ?? event.host;
-        key = `llm:${label}`;
-      } else {
-        key = `egress:${event.host}`;
-      }
-      const row = getOrCreateRow(key, "egress", label);
+      // LLM rows stay grouped by the model the provider extracts, not by route:
+      // every call goes to the same endpoint, so routing them would collapse
+      // them into one row and lose the per-model split.
+      const id = matchedProvider
+        ? (() => {
+            const label = extractLabelCached(matchedProvider, event) ?? event.host;
+            return { key: `llm:${label}`, label, method: undefined, group: undefined };
+          })()
+        : httpRowIdentity(
+            "egress",
+            groupBy,
+            event.host,
+            event.method,
+            event.path,
+          );
+      const row = getOrCreateRow(
+        id.key,
+        "egress",
+        id.label,
+        id.method,
+        false,
+        id.group,
+      );
       row.bars.push({
         id: event.id,
         sandboxKey,
@@ -178,8 +253,21 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
           ? new Date(lastChunk.timestamp).getTime() - startMs
           : res.duration_ms
         : 0;
-      const key = `ingress:${event.port}`;
-      const row = getOrCreateRow(key, "ingress", `:${event.port}`);
+      const id = httpRowIdentity(
+        "ingress",
+        groupBy,
+        `:${event.port}`,
+        event.method,
+        event.path,
+      );
+      const row = getOrCreateRow(
+        id.key,
+        "ingress",
+        id.label,
+        id.method,
+        false,
+        id.group,
+      );
       row.bars.push({
         id: event.id,
         sandboxKey,
@@ -192,7 +280,14 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
     } else if (event.type === "fs.request") {
       const res = fsResMap.get(event.id);
       const key = `fs:${event.mount}:${event.operation}`;
-      const row = getOrCreateRow(key, "fs", event.mount, event.operation);
+      const row = getOrCreateRow(
+        key,
+        "fs",
+        event.mount,
+        event.operation,
+        false,
+        `fs:${event.mount}`,
+      );
       row.bars.push({
         id: event.id,
         sandboxKey,
@@ -404,30 +499,36 @@ export function buildRows(events: SandboxEvent[], sandboxKey = ""): TimelineRow[
     });
   }
 
-  const mountEarliestTime = new Map<string, number>();
+  // Earliest bar per group, so every row in a group sorts to the same slot and
+  // the group lands where its first activity did.
+  const groupEarliestTime = new Map<string, number>();
   for (const k of rowOrder) {
     const row = rowMap.get(k)!;
-    if (row.type === "fs") {
-      const t = row.bars[0]?.startTime ?? Infinity;
-      const prev = mountEarliestTime.get(row.label) ?? Infinity;
-      if (t < prev) mountEarliestTime.set(row.label, t);
-    }
+    const g = row.group ?? row.key;
+    const t = row.bars[0]?.startTime ?? Infinity;
+    const prev = groupEarliestTime.get(g) ?? Infinity;
+    if (t < prev) groupEarliestTime.set(g, t);
   }
+
+  // A group with no bars at all keeps the pre-existing "sorts first" behaviour
+  // rather than being pushed to the end by the Infinity sentinel.
+  const groupTime = (row: TimelineRow): number => {
+    const t = groupEarliestTime.get(row.group ?? row.key);
+    return t === undefined || t === Infinity ? 0 : t;
+  };
 
   return rowOrder
     .map((k) => rowMap.get(k)!)
     .sort((a, b) => {
-      const aTime =
-        a.type === "fs"
-          ? (mountEarliestTime.get(a.label) ?? 0)
-          : (a.bars[0]?.startTime ?? 0);
-      const bTime =
-        b.type === "fs"
-          ? (mountEarliestTime.get(b.label) ?? 0)
-          : (b.bars[0]?.startTime ?? 0);
+      const aTime = groupTime(a);
+      const bTime = groupTime(b);
       if (aTime !== bTime) return aTime - bTime;
-      if (a.type === "fs" && b.type === "fs" && a.label === b.label)
-        return fsMethodRank(a.method) - fsMethodRank(b.method);
+      if (a.group && a.group === b.group) {
+        // Within an fs mount: read, then write, then delete. Other groups fall
+        // through to insertion order (first-seen), which sort() preserves.
+        if (a.type === "fs" && b.type === "fs")
+          return fsMethodRank(a.method) - fsMethodRank(b.method);
+      }
       return 0;
     });
 }
@@ -590,11 +691,12 @@ function methodClass(row: TimelineRow): string {
   }
 }
 
-export type FilterKind = "all" | "egress" | "ingress" | "fs" | "llm" | "tools";
+// The selectable kinds. "All" is not a member: it's the empty selection, so an
+// unset filter and "everything selected" can't drift apart.
+export type FilterKind = "egress" | "ingress" | "fs" | "llm" | "tools";
 export type FilterAccess = "all" | "allowed" | "denied";
 
 export const KIND_OPTIONS: { value: FilterKind; label: string }[] = [
-  { value: "all", label: "All" },
   { value: "egress", label: "Egress" },
   { value: "ingress", label: "Ingress" },
   { value: "fs", label: "File system" },
@@ -608,19 +710,55 @@ export const ACCESS_OPTIONS: { value: FilterAccess; label: string }[] = [
   { value: "denied", label: "Denied" },
 ];
 
+// Fields HTTP rows are grouped on. "host" is the request authority — the
+// hostname for egress, the listening port for ingress.
+export type GroupByField = "host" | "method" | "path";
+
+export const GROUP_BY_OPTIONS: { value: GroupByField; label: string }[] = [
+  { value: "host", label: "Hostname" },
+  { value: "method", label: "Method" },
+  { value: "path", label: "Path" },
+];
+
+export const DEFAULT_GROUP_BY: GroupByField[] = ["host"];
+
+// Canonical ordering, so a row key doesn't depend on the order the user
+// happened to click the toggles in.
+const GROUP_BY_ORDER: GroupByField[] = ["host", "method", "path"];
+
+export function normalizeGroupBy(fields: GroupByField[]): GroupByField[] {
+  const set = new Set(fields);
+  const out = GROUP_BY_ORDER.filter((f) => set.has(f));
+  return out.length > 0 ? out : DEFAULT_GROUP_BY;
+}
+
 export interface FilterState {
-  kind: FilterKind;
+  /** Selected kinds; empty means "all kinds", not "none". */
+  kinds: FilterKind[];
   access: FilterAccess;
   query: string;
+  groupBy: GroupByField[];
 }
 export const EMPTY_FILTER: FilterState = {
-  kind: "all",
+  kinds: [],
   access: "all",
   query: "",
+  groupBy: DEFAULT_GROUP_BY,
 };
 
+// Grouping is a view preference, not a filter, so it deliberately doesn't count
+// here: a non-default grouping shouldn't light up the filter button or make the
+// toolbar render a "12 / 12 events" ratio.
 export function isFilterActive(f: FilterState) {
-  return f.kind !== "all" || f.access !== "all" || f.query !== "";
+  return f.kinds.length > 0 || f.access !== "all" || f.query !== "";
+}
+
+export function isGroupingCustom(f: FilterState) {
+  const g = normalizeGroupBy(f.groupBy);
+  return (
+    g.length !== DEFAULT_GROUP_BY.length ||
+    g.some((v, i) => v !== DEFAULT_GROUP_BY[i])
+  );
 }
 
 export function applyFilter(
@@ -628,18 +766,26 @@ export function applyFilter(
   f: FilterState,
 ): TimelineRow[] {
   let out = rows;
-  if (f.kind === "fs") out = out.filter((r) => r.type === "fs");
-  else if (f.kind === "tools") out = out.filter((r) => r.type === "tool");
-  else if (f.kind === "llm")
-    out = out.filter((r) => {
+  if (f.kinds.length > 0) {
+    const kinds = new Set(f.kinds);
+    const isLlmRow = (r: TimelineRow) => {
       if (r.type !== "egress") return false;
       const e = r.bars[0]?.rawEvents[0];
       return (
         e?.type === "egress.request" && LLM_PROVIDERS.some((p) => p.matches(e))
       );
-    });
-  else if (f.kind === "egress") out = out.filter((r) => r.type === "egress");
-  else if (f.kind === "ingress") out = out.filter((r) => r.type === "ingress");
+    };
+    // Kinds union rather than intersect. Note "egress" subsumes LLM rows, so
+    // selecting Egress + LLM is the same set as Egress alone.
+    out = out.filter(
+      (r) =>
+        (kinds.has("fs") && r.type === "fs") ||
+        (kinds.has("tools") && r.type === "tool") ||
+        (kinds.has("egress") && r.type === "egress") ||
+        (kinds.has("ingress") && r.type === "ingress") ||
+        (kinds.has("llm") && isLlmRow(r)),
+    );
+  }
   if (f.query) {
     const q = f.query.toLowerCase();
     out = out.filter((r) => r.label.toLowerCase().includes(q));
@@ -658,43 +804,46 @@ export function filterEvents(
 ): SandboxEvent[] {
   let out = events;
 
-  if (f.kind !== "all") {
+  if (f.kinds.length > 0) {
+    const kinds = new Set(f.kinds);
     // Tools are derived from the LLM egress traffic, so the raw feed shows the
     // same underlying LLM events for both the "llm" and "tools" kinds.
-    const llmIds =
-      f.kind === "llm" || f.kind === "tools"
-        ? new Set(
-            events
-              .filter(
-                (e) =>
-                  e.type === "egress.request" &&
-                  LLM_PROVIDERS.some((p) => p.matches(e)),
-              )
-              .map((e) => e.id),
-          )
-        : null;
+    const wantsLlm = kinds.has("llm") || kinds.has("tools");
+    const llmIds = wantsLlm
+      ? new Set(
+          events
+            .filter(
+              (e) =>
+                e.type === "egress.request" &&
+                LLM_PROVIDERS.some((p) => p.matches(e)),
+            )
+            .map((e) => e.id),
+        )
+      : null;
     out = out.filter((e) => {
-      if (f.kind === "egress")
-        return (
-          e.type === "egress.request" ||
-          e.type === "egress.response" ||
-          e.type === "egress.chunk"
-        );
-      if (f.kind === "ingress")
-        return (
-          e.type === "ingress.request" ||
-          e.type === "ingress.response" ||
-          e.type === "ingress.chunk"
-        );
-      if (f.kind === "fs")
-        return e.type === "fs.request" || e.type === "fs.response";
-      if (f.kind === "llm" || f.kind === "tools") {
-        if (e.type === "egress.request") return llmIds!.has(e.id);
-        if (e.type === "egress.response" || e.type === "egress.chunk")
-          return llmIds!.has(e.request_id);
-        return false;
+      if (
+        e.type === "egress.request" ||
+        e.type === "egress.response" ||
+        e.type === "egress.chunk"
+      ) {
+        if (kinds.has("egress")) return true;
+        if (!wantsLlm) return false;
+        return e.type === "egress.request"
+          ? llmIds!.has(e.id)
+          : llmIds!.has(e.request_id);
       }
-      return true;
+      if (
+        e.type === "ingress.request" ||
+        e.type === "ingress.response" ||
+        e.type === "ingress.chunk"
+      )
+        return kinds.has("ingress");
+      if (e.type === "fs.request" || e.type === "fs.response")
+        return kinds.has("fs");
+      // Events that belong to no selectable kind (stdio, exec, resource,
+      // system) stay visible only when nothing narrower is selected — which,
+      // with a non-empty selection, means never.
+      return false;
     });
   }
 
@@ -1359,9 +1508,9 @@ function TimelineViewInner({
       else byKey.set(k, [e]);
     }
     const result = new Map<string, TimelineRow[]>();
-    for (const [k, evs] of byKey) result.set(k, buildRows(evs, k));
+    for (const [k, evs] of byKey) result.set(k, buildRows(evs, k, filter.groupBy));
     return result;
-  }, [events]);
+  }, [events, filter.groupBy]);
 
   const allRows = useMemo(() => [...rowsByKey.values()].flat(), [rowsByKey]);
 
@@ -2639,6 +2788,10 @@ function TimelineViewInner({
                               </span>
                               <span
                                 className={`truncate font-mono ${hasSelection && isLaneSelected ? "text-foreground" : "text-muted-foreground"}`}
+                                // host+path labels routinely overflow the
+                                // (resizable) label column; the tooltip keeps
+                                // the distinguishing tail reachable.
+                                title={vl.row.label}
                               >
                                 {vl.row.label}
                               </span>

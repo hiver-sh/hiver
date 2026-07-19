@@ -29,6 +29,7 @@ import {
   useState,
   type ComponentProps,
   type Dispatch,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 import { Mosaic, MosaicWindow } from "react-mosaic-component";
@@ -53,7 +54,11 @@ import {
   EMPTY_FILTER,
   KIND_OPTIONS,
   ACCESS_OPTIONS,
+  GROUP_BY_OPTIONS,
+  DEFAULT_GROUP_BY,
+  normalizeGroupBy,
   isFilterActive,
+  isGroupingCustom,
   buildRows,
   applyFilter,
 } from "@/components/TimelineView";
@@ -61,6 +66,7 @@ import type {
   FilterKind,
   FilterAccess,
   FilterState,
+  GroupByField,
 } from "@/components/TimelineView";
 import {
   Popover,
@@ -120,9 +126,7 @@ const TimelineFilterButton = memo(function TimelineFilterButton({
         >
           <Filter className="h-3 w-3" />
           {isFilterActive(filter)
-            ? [
-                filter.kind !== "all" &&
-                  KIND_OPTIONS.find((o) => o.value === filter.kind)?.label,
+            ? [summarizeKinds(filter.kinds),
                 filter.access !== "all" &&
                   ACCESS_OPTIONS.find((o) => o.value === filter.access)?.label,
                 filter.query || null,
@@ -141,51 +145,156 @@ const TimelineFilterButton = memo(function TimelineFilterButton({
           onChange={(e) => setFilter((f) => ({ ...f, query: e.target.value }))}
           className="w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none placeholder:text-muted-foreground/50 focus:border-blue-500/50"
         />
+        <FieldLabel>Filter by</FieldLabel>
         <div className="flex gap-1">
+          {/* "All" is the empty selection rather than a sixth kind, so it
+              can't disagree with having every kind ticked. */}
+          <Chip
+            active={filter.kinds.length === 0}
+            onClick={() => setFilter((f) => ({ ...f, kinds: [] }))}
+          >
+            All
+          </Chip>
           {KIND_OPTIONS.map((opt) => (
-            <button
+            <Chip
               key={opt.value}
-              onClick={() => setFilter((f) => ({ ...f, kind: opt.value }))}
-              className={cn(
-                "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
-                filter.kind === opt.value
-                  ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                  : "border-border text-muted-foreground hover:bg-muted/40",
-              )}
+              active={filter.kinds.includes(opt.value)}
+              onClick={() =>
+                setFilter((f) => ({
+                  ...f,
+                  kinds: f.kinds.includes(opt.value)
+                    ? f.kinds.filter((k) => k !== opt.value)
+                    : [...f.kinds, opt.value],
+                }))
+              }
             >
               {opt.label}
-            </button>
+            </Chip>
           ))}
         </div>
         <div className="h-px bg-border" />
+        <FieldLabel>Group by</FieldLabel>
+        <div className="flex gap-1">
+          {GROUP_BY_OPTIONS.map((opt) => {
+            const active = filter.groupBy.includes(opt.value);
+            // The last remaining field can't be switched off — with none
+            // selected there'd be nothing to build a row identity from.
+            const isLast = active && filter.groupBy.length === 1;
+            return (
+              <Chip
+                key={opt.value}
+                active={active}
+                disabled={isLast}
+                title={
+                  isLast ? "At least one grouping field is required" : undefined
+                }
+                onClick={() =>
+                  setFilter((f) => ({
+                    ...f,
+                    groupBy: normalizeGroupBy(
+                      f.groupBy.includes(opt.value)
+                        ? f.groupBy.filter((g) => g !== opt.value)
+                        : [...f.groupBy, opt.value],
+                    ),
+                  }))
+                }
+              >
+                {opt.label}
+              </Chip>
+            );
+          })}
+        </div>
+        <div className="h-px bg-border" />
+        <FieldLabel>Access</FieldLabel>
         <div className="flex gap-1">
           {ACCESS_OPTIONS.map((opt) => (
-            <button
+            <Chip
               key={opt.value}
+              active={filter.access === opt.value}
               onClick={() => setFilter((f) => ({ ...f, access: opt.value }))}
-              className={cn(
-                "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
-                filter.access === opt.value
-                  ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
-                  : "border-border text-muted-foreground hover:bg-muted/40",
-              )}
             >
               {opt.label}
-            </button>
+            </Chip>
           ))}
         </div>
-        {isFilterActive(filter) && (
-          <button
-            onClick={() => setFilter(EMPTY_FILTER)}
-            className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-          >
-            <X className="h-3 w-3" /> Clear filter
-          </button>
+        {(isFilterActive(filter) || isGroupingCustom(filter)) && (
+          <div className="flex gap-3">
+            {isFilterActive(filter) && (
+              <button
+                // Grouping survives a filter clear: it's a view preference the
+                // user set separately, not part of what they're filtering to.
+                onClick={() =>
+                  setFilter((f) => ({ ...EMPTY_FILTER, groupBy: f.groupBy }))
+                }
+                className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+              >
+                <X className="h-3 w-3" /> Clear filter
+              </button>
+            )}
+            {isGroupingCustom(filter) && (
+              <button
+                onClick={() =>
+                  setFilter((f) => ({ ...f, groupBy: DEFAULT_GROUP_BY }))
+                }
+                className="flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+              >
+                <X className="h-3 w-3" /> Reset grouping
+              </button>
+            )}
+          </div>
         )}
       </PopoverContent>
     </Popover>
   );
 });
+
+function FieldLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className="text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium">
+      {children}
+    </span>
+  );
+}
+
+function Chip({
+  active,
+  disabled,
+  title,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={cn(
+        "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
+        active
+          ? "border-blue-600/60 bg-blue-600/10 text-blue-700 dark:border-blue-500/60 dark:bg-blue-500/10 dark:text-blue-400"
+          : "border-border text-muted-foreground hover:bg-muted/40",
+        disabled && "cursor-default opacity-70",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Keeps the trigger from growing without bound as kinds are ticked.
+function summarizeKinds(kinds: FilterKind[]): string | null {
+  if (kinds.length === 0) return null;
+  if (kinds.length > 2) return `${kinds.length} kinds`;
+  return kinds
+    .map((k) => KIND_OPTIONS.find((o) => o.value === k)?.label ?? k)
+    .join(" · ");
+}
 
 // The fs.request "write" slice the file tree consumes.
 function isFsWriteEvent(
@@ -221,7 +330,13 @@ function FileExplorerLive(
 // updates don't re-render the rest of the toolbar (notably the filter popover).
 function TimelineEventCount({ filter }: { filter: FilterState }) {
   const events = useEvents();
-  const rows = useMemo(() => buildRows(events), [events]);
+  // Same grouping as the timeline: applyFilter's query match runs against row
+  // labels, which are grouping-dependent, so a different grouping here would
+  // make the counter disagree with the rows on screen.
+  const rows = useMemo(
+    () => buildRows(events, "", filter.groupBy),
+    [events, filter.groupBy],
+  );
   const totalBars = useMemo(
     () => rows.reduce((sum, r) => sum + r.bars.length, 0),
     [rows],
@@ -324,20 +439,34 @@ export function SandboxDetail({
   const [streamingPaused, setStreamingPaused] = useState(false);
 
   const [filter, setFilter] = useState<FilterState>(() => {
-    const kind = searchParams.get("filter-kind") ?? "all";
     const access = searchParams.get("filter-access") ?? "all";
+    // Comma-separated lists; unknown entries are dropped rather than rejecting
+    // the whole param, so an old link with `filter-kind=all` degrades to the
+    // empty selection — which is what "all" now means.
+    const parseList = <T extends string>(param: string, valid: readonly T[]) =>
+      (searchParams.get(param) ?? "")
+        .split(",")
+        .filter((v): v is T => (valid as readonly string[]).includes(v));
+    const groupBy = parseList<GroupByField>("filter-group", [
+      "host",
+      "method",
+      "path",
+    ]);
     return {
-      kind: (["all", "egress", "ingress", "fs", "llm", "tools"] as FilterKind[]).includes(
-        kind as FilterKind,
-      )
-        ? (kind as FilterKind)
-        : "all",
+      kinds: parseList<FilterKind>("filter-kind", [
+        "egress",
+        "ingress",
+        "fs",
+        "llm",
+        "tools",
+      ]),
       access: (["all", "allowed", "denied"] as FilterAccess[]).includes(
         access as FilterAccess,
       )
         ? (access as FilterAccess)
         : "all",
       query: searchParams.get("filter-q") ?? "",
+      groupBy: groupBy.length > 0 ? normalizeGroupBy(groupBy) : DEFAULT_GROUP_BY,
     };
   });
 
@@ -345,12 +474,16 @@ export function SandboxDetail({
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        if (filter.kind !== "all") next.set("filter-kind", filter.kind);
+        if (filter.kinds.length > 0)
+          next.set("filter-kind", filter.kinds.join(","));
         else next.delete("filter-kind");
         if (filter.access !== "all") next.set("filter-access", filter.access);
         else next.delete("filter-access");
         if (filter.query) next.set("filter-q", filter.query);
         else next.delete("filter-q");
+        if (isGroupingCustom(filter))
+          next.set("filter-group", filter.groupBy.join(","));
+        else next.delete("filter-group");
         return next;
       },
       { replace: true },

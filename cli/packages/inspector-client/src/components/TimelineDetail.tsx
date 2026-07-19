@@ -7,7 +7,7 @@ import {
   Maximize2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { WsChunkRow } from "./WsChunkRow";
+import { ChunkRow } from "./ChunkRow";
 import type { SandboxEvent, SandboxTarget } from "@/types";
 import type { TimelineBar } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
@@ -606,6 +606,20 @@ function RowDetailPanelInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bar]);
 
+  // SSE responses stream as one chunk per message just like WebSocket frames,
+  // so they get the same per-message list rather than one concatenated body.
+  const isSse = useMemo(() => {
+    if (
+      !res ||
+      (res.type !== "egress.response" && res.type !== "ingress.response")
+    )
+      return false;
+    return (getHeader(res.headers, "content-type") ?? "").includes(
+      "text/event-stream",
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bar]);
+
   const [tab, setTab] = useState<DetailTab>(() => {
     const saved = localStorage.getItem(
       "timeline:detailTab",
@@ -1046,10 +1060,15 @@ function RowDetailPanelInner({
               <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/50 font-medium border-b border-border shrink-0 bg-background">
                 Body
               </div>
-              {isWebSocket ? (
+              {isWebSocket || isSse ? (
                 <div className="flex flex-1 min-h-0 flex-col overflow-y-auto py-1">
                   {chunks.map((chunk) => (
-                    <WsChunkRow key={chunk.id} chunk={chunk} />
+                    <ChunkRow
+                      key={chunk.id}
+                      chunk={chunk}
+                      kind={isWebSocket ? "ws" : "sse"}
+                      startedAt={req.timestamp}
+                    />
                   ))}
                 </div>
               ) : (
