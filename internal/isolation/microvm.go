@@ -21,6 +21,7 @@ import (
 	"github.com/hiver-sh/hiver/internal/firecracker"
 	"github.com/hiver-sh/hiver/internal/runc"
 	"github.com/hiver-sh/hiver/internal/snapshot"
+	"github.com/hiver-sh/hiver/internal/uffd"
 	"github.com/hiver-sh/hiver/internal/vsockexec"
 )
 
@@ -98,6 +99,28 @@ type microvm struct {
 	// .memory). New defaults these before construction.
 	vcpuCount  int
 	memSizeMib int
+	// memBackend selects how a resume sources guest memory: "uffd" serves it from
+	// a userfaultfd handler that populates memory up front, "" (default) lets
+	// firecracker map the memory file and demand-page it. hugePages forces uffd
+	// regardless, since firecracker refuses to map a hugetlbfs-backed snapshot.
+	//
+	// Worth enabling on its own, independent of huge pages — the win is populating
+	// memory, not the page size. The File backend maps without MAP_POPULATE, so a
+	// resumed guest faults its working set in on the first turn. Measured on the
+	// claude base against a real snapshot:
+	//
+	//	File   ~5ms load, then ~15,545 faults / ~740ms on the first turn
+	//	uffd  ~20ms load, then 15 faults; population done by ~125ms
+	//
+	// i.e. ~15ms on creation buys ~725ms of first-token latency. The cost is
+	// residency: the guest is fully resident (~514MiB vs ~271MiB), so a pool must
+	// budget the whole guest per concurrent VM rather than its working set.
+	memBackend string
+
+	// uffdHandler serves guest-memory faults on the resume path when the uffd
+	// backend is in use. Held so UnmountRoot can tear it down with the VM.
+	uffdHandler *uffd.Handler
+
 	// hugePages backs guest memory with hugetlbfs ("2M") instead of 4KiB pages;
 	// "" keeps the default. Boot-time only — see MachineConfig.HugePages for why
 	// this is the resume path's dominant cost and why a base must be re-captured.
@@ -229,6 +252,7 @@ func newMicroVM(cfg Config) *microvm {
 		vcpuCount:         cfg.VcpuCount,
 		memSizeMib:        cfg.MemoryMiB,
 		hugePages:         envOr("FIRECRACKER_HUGE_PAGES", ""),
+		memBackend:        envOr("FIRECRACKER_MEM_BACKEND", ""),
 		fcBin:             envOr("FIRECRACKER_BIN", "firecracker"),
 		kernel:            envOr("FIRECRACKER_KERNEL", "/var/lib/firecracker/vmlinux"),
 		tapName:           tap,
@@ -393,7 +417,14 @@ func (m *microvm) UnmountRoot() error {
 	if m.ephemeralStateDir && m.stateDir != "" {
 		ephemeralDir = m.stateDir
 	}
+	handler := m.uffdHandler
+	m.uffdHandler = nil
 	m.mu.Unlock()
+	// The uffd handler (resume path with huge pages) owns a socket in jailDir and
+	// a mapping of the memory file; both die with the VM it served.
+	if handler != nil {
+		_ = handler.Close()
+	}
 	if ephemeralDir != "" {
 		_ = os.RemoveAll(ephemeralDir)
 	}
@@ -1252,7 +1283,35 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 	// carries a distinct source IP. The overlay/metadata drives are reopened at
 	// their recorded state-dir paths directly.
 	override := firecracker.NetworkOverride{IfaceID: "eth0", HostDevName: m.tapName}
-	if err := client.LoadSnapshot(ctx, m.snapFile, m.memFile, true, override); err != nil {
+
+	// Two independent reasons to serve memory over uffd, either of which selects
+	// it. Explicitly, via memBackend, to populate guest memory up front instead
+	// of letting the guest demand-page its working set; or implicitly, because
+	// huge pages leave no choice — firecracker rejects a hugetlbfs-backed
+	// snapshot with "Cannot restore hugetlbfs backed snapshot by mapping the
+	// memory file. Please use uffd."
+	//
+	// The handler must be listening BEFORE the load: firecracker connects to it
+	// during /snapshot/load, not after. Neither flag set leaves the long-standing
+	// File path exactly as it was.
+	backend, backendPath := firecracker.MemBackendFile, m.memFile
+	if m.hugePages != "" || strings.EqualFold(m.memBackend, "uffd") {
+		h, err := uffd.Listen(filepath.Join(m.jailDir, "uffd.sock"), m.memFile, uffd.Options{Background: true, Workers: 4})
+		if err != nil {
+			return fmt.Errorf("start uffd handler: %w", err)
+		}
+		m.mu.Lock()
+		m.uffdHandler = h
+		m.mu.Unlock()
+		go func() {
+			if err := h.Serve(); err != nil {
+				log.Printf("microvm: uffd handler: %v", err)
+			}
+		}()
+		backend, backendPath = firecracker.MemBackendUffd, h.SocketPath()
+	}
+
+	if err := client.LoadSnapshotWithBackend(ctx, m.snapFile, backend, backendPath, true, override); err != nil {
 		return fmt.Errorf("load snapshot: %w", err)
 	}
 	return nil

@@ -98,6 +98,28 @@ spec:
             - name: HIVER_PROXY_UPSTREAM_POOL_SCOPE
               value: {{ $img.upstreamPoolScope | quote }}
             {{- end }}
+            {{- if $img.memBackend }}
+            # How a resumed VM sources guest memory. "uffd" serves it from a
+            # userfaultfd handler that populates the whole region up front;
+            # unset lets firecracker map the memory file and demand-page it.
+            #
+            # The default costs a fault per page on the first turn after a resume.
+            # Measured on the claude pool against a real snapshot:
+            #   File   ~5ms load, then ~15,545 faults / ~740ms on the first turn
+            #   uffd  ~20ms load, then 15 faults; population done by ~125ms
+            # i.e. ~15ms on creation for ~725ms of first-token latency.
+            #
+            # Not needed alongside hugePages, which implies uffd on its own.
+            #
+            # The tradeoff is residency: the guest is fully resident straight
+            # away (~514MiB vs ~271MiB here), so it buys latency with node
+            # memory. Sizing a pool, count the full guest per concurrent VM.
+            #
+            # hugePages implies this regardless — firecracker cannot map a
+            # hugetlbfs-backed snapshot.
+            - name: FIRECRACKER_MEM_BACKEND
+              value: {{ $img.memBackend | quote }}
+            {{- end }}
             {{- if $img.hugePages }}
             # Back guest memory with hugetlbfs pages ("2M") instead of 4KiB ones.
             # A resumed VM maps its memory file lazily, so it faults its working
@@ -133,8 +155,18 @@ spec:
                    the pod must cover every guest it hosts concurrently. */}}
             {{- $hpName := index (dict "2M" "hugepages-2Mi" "1G" "hugepages-1Gi") $img.hugePages }}
             {{- if not $hpName }}{{ fail (printf "sandboxServices.%s.hugePages must be \"2M\" or \"1G\", got %q" $name $img.hugePages) }}{{ end }}
-            {{- $hpQty := $img.hugePagesLimit | default (dig "limits" "memory" "" $img.resources) }}
-            {{- if not $hpQty }}{{ fail (printf "sandboxServices.%s.hugePages needs resources.limits.memory (or an explicit hugePagesLimit) to size the pool" $name) }}{{ end }}
+            {{- /* Size from resources.REQUESTS.memory — the guest size — not from
+                   limits.memory, which is the node allocatable ceiling a pool may
+                   burst to (13Gi on the browser pool). Deriving from the limit
+                   asks for more hugepages than the node's whole pool and the pod
+                   never schedules ("Insufficient hugepages-2Mi").
+
+                   This default covers ONE guest. A pack host runs several
+                   concurrently, and hugepages are a hard allocation rather than a
+                   soft reservation like memory — a pod cannot exceed its limit —
+                   so set hugePagesLimit explicitly to cover peak concurrency. */}}
+            {{- $hpQty := $img.hugePagesLimit | default (dig "requests" "memory" "" $img.resources) }}
+            {{- if not $hpQty }}{{ fail (printf "sandboxServices.%s.hugePages needs resources.requests.memory (or an explicit hugePagesLimit) to size the pool" $name) }}{{ end }}
             {{- toYaml (merge (dict "limits" (dict $hpName $hpQty)) (deepCopy $img.resources)) | nindent 12 }}
             {{- else }}
             {{- toYaml $img.resources | nindent 12 }}

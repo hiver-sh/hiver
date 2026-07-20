@@ -108,6 +108,28 @@ sandboxServices:
     isolation: microvm
     replicas: 0
     maxConcurrentLaunches: 4
+    # memBackend: uffd
+    #   Serve a resumed VM's guest memory from a userfaultfd handler that
+    #   populates it in the background, instead of letting firecracker map the
+    #   memory file and demand-page it.
+    #
+    #   You do NOT need this to use hugePages — that implies uffd on its own,
+    #   because firecracker cannot map a hugetlbfs-backed snapshot at all. Set it
+    #   when you want the resume speedup WITHOUT huge pages, which is the usual
+    #   case: the win comes from populating memory, not from the page size.
+    #
+    #   Why: the default maps without MAP_POPULATE, so a resumed guest faults its
+    #   working set in one page at a time on the first turn. Measured on this
+    #   pool, against a real snapshot:
+    #
+    #     File   ~5ms to load, then ~15,545 faults / ~740ms on the first turn
+    #     uffd  ~20ms to load, then 15 faults; population done by ~125ms
+    #
+    #   So it trades ~15ms on sandbox creation for ~725ms of first-token latency.
+    #
+    #   Costs residency: the guest becomes fully resident (~514MiB here versus
+    #   ~271MiB), so budget the whole guest per concurrent VM, not its working set.
+    #
     # hugePages: "2M"
     #   Back guest memory with hugetlbfs instead of 4KiB pages. A resumed VM maps
     #   its memory file lazily and faults its working set in one page at a time:

@@ -236,6 +236,22 @@ type memBackend struct {
 	BackendPath string `json:"backend_path"`
 }
 
+// MemBackendType selects how Firecracker sources guest memory on /snapshot/load.
+type MemBackendType string
+
+const (
+	// MemBackendFile maps the memory file directly. Firecracker demand-pages it,
+	// so a resumed guest faults its working set in on first use.
+	MemBackendFile MemBackendType = "File"
+	// MemBackendUffd hands guest-memory faults to a userfaultfd handler listening
+	// on a Unix socket (BackendPath is the socket, not the memory file). Required
+	// for hugetlbfs-backed snapshots: Firecracker rejects loading one through
+	// MemBackendFile with "Cannot restore hugetlbfs backed snapshot by mapping
+	// the memory file. Please use uffd." It also lets the handler populate the
+	// whole region up front instead of serving one fault per page.
+	MemBackendUffd MemBackendType = "Uffd"
+)
+
 // NetworkOverride is one entry of SnapshotLoad.NetworkOverrides: it repoints a
 // snapshotted network interface at a different host tap. Required for pack-mode
 // resume, where every VM loads the same base snapshot (which recorded the base
@@ -274,9 +290,17 @@ func (c *Client) CreateSnapshot(ctx context.Context, snapshotPath, memFilePath s
 // stays Paused until Resume. netOverrides repoints snapshotted interfaces at
 // per-VM host taps (nil for an in-place resume that reuses the recorded tap).
 func (c *Client) LoadSnapshot(ctx context.Context, snapshotPath, memFilePath string, resume bool, netOverrides ...NetworkOverride) error {
+	return c.LoadSnapshotWithBackend(ctx, snapshotPath, MemBackendFile, memFilePath, resume, netOverrides...)
+}
+
+// LoadSnapshotWithBackend is LoadSnapshot with an explicit memory backend.
+// backendPath is the memory file for MemBackendFile, or the handler's Unix
+// socket for MemBackendUffd — with Uffd the handler must already be listening,
+// since Firecracker connects to it during this call.
+func (c *Client) LoadSnapshotWithBackend(ctx context.Context, snapshotPath string, backend MemBackendType, backendPath string, resume bool, netOverrides ...NetworkOverride) error {
 	return c.put(ctx, "/snapshot/load", SnapshotLoad{
 		SnapshotPath:        snapshotPath,
-		MemBackend:          memBackend{BackendType: "File", BackendPath: memFilePath},
+		MemBackend:          memBackend{BackendType: string(backend), BackendPath: backendPath},
 		EnableDiffSnapshots: false,
 		ResumeVM:            resume,
 		NetworkOverrides:    netOverrides,
