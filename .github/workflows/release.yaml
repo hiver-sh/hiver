@@ -97,26 +97,49 @@ jobs:
           fi
         working-directory: client/python
 
-      # `npm publish` returning 200 does not mean the version is resolvable yet:
-      # the registry's read path is a CDN that lags the write by seconds to
-      # minutes. The CLI's `npm install` below asks for ^$VERSION and fails hard
-      # with ETARGET if it reads a stale packument, so block until the version is
-      # actually visible. Query the registry over HTTP rather than `npm view` so
-      # no local metadata cache can answer for us.
+      # `npm publish` returning 200 does not mean the version is installable yet:
+      # the registry's read path is a CDN whose cached resources warm
+      # independently, so a publish becomes visible on one resource before
+      # another.
+      #
+      # This must poll the *packument* (the whole-package document), because that
+      # is what `npm install` resolves a `^` range against. An earlier version of
+      # this step polled /<pkg>/<version> instead — a separately cached resource
+      # that goes live earlier — so the wait passed while the packument was still
+      # stale and the install below died with ETARGET.
+      #
+      # Resolve through npm itself, with a throwaway cache and --prefer-online, so
+      # the check runs the same code path as the install (same range, same semver
+      # resolution) and nothing local can answer for us. Require consecutive hits,
+      # since one success can come from a single warm edge while others are cold.
       - name: Wait for @hiver.sh/client to be resolvable on npm
         env:
           VERSION: ${{ steps.version.outputs.current }}
         run: |
-          URL="https://registry.npmjs.org/@hiver.sh%2Fclient/${VERSION}"
-          for attempt in $(seq 1 30); do
-            if [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL")" = "200" ]; then
-              echo "@hiver.sh/client@${VERSION} is resolvable."
-              exit 0
+          NEEDED=3
+          streak=0
+          for attempt in $(seq 1 60); do
+            cache=$(mktemp -d)
+            got=$(npm view "@hiver.sh/client@^${VERSION}" version \
+                    --cache "$cache" --prefer-online 2>/dev/null \
+                    | tail -1 | tr -d "'\" ")
+            rm -rf "$cache"
+            if [ -n "$got" ]; then
+              streak=$((streak + 1))
+              echo "Resolved ^${VERSION} -> ${got} (${streak}/${NEEDED} consecutive)."
+              if [ "$streak" -ge "$NEEDED" ]; then
+                exit 0
+              fi
+            else
+              if [ "$streak" -gt 0 ]; then
+                echo "Resolution regressed (stale CDN edge); resetting streak."
+              fi
+              streak=0
+              echo "Not resolvable yet (attempt ${attempt}/60)."
             fi
-            echo "Not yet on the registry (attempt ${attempt}/30); retrying in 10s."
-            sleep 10
+            sleep 5
           done
-          echo "Error: @hiver.sh/client@${VERSION} not resolvable after 5 minutes." >&2
+          echo "Error: @hiver.sh/client@^${VERSION} not resolvable after 5 minutes." >&2
           exit 1
 
       - name: Update CLI dependency and lockfile
@@ -125,7 +148,20 @@ jobs:
         run: |
           jq --arg v "^$VERSION" '.dependencies["@hiver.sh/client"] = $v' \
             cli/package.json > cli/package.json.tmp && mv cli/package.json.tmp cli/package.json
-          cd cli && npm install
+          cd cli
+          # Second line of defence behind the wait above: CDN edges warm
+          # independently, so this install can still draw a stale packument even
+          # after the check passed. A transient ETARGET must not fail a release
+          # that has already published both clients — retry instead.
+          for attempt in 1 2 3 4 5; do
+            if npm install --prefer-online; then
+              exit 0
+            fi
+            echo "npm install failed (attempt ${attempt}/5); retrying in 15s."
+            sleep 15
+          done
+          echo "Error: npm install failed after 5 attempts." >&2
+          exit 1
 
       - name: Install and build CLI
         run: npm ci
@@ -158,13 +194,21 @@ jobs:
             # main can advance during the release run (another push landing
             # between checkout and here), which rejects a plain push. Rebase our
             # single dep-bump commit onto the latest main and retry.
+            #
+            # --autostash is required, not defensive: the "Bake versioned image
+            # tags" step above deliberately leaves its container-config edit
+            # uncommitted, and the commit here is scoped to package.json +
+            # lockfile, so the working tree ALWAYS has unstaged changes at this
+            # point. A plain `git rebase` aborts with "cannot rebase: You have
+            # unstaged changes", which made this retry loop fail every single
+            # time main advanced — the exact case it exists to handle.
             for attempt in 1 2 3 4 5; do
               if git push origin main; then
                 exit 0
               fi
               echo "Push rejected (attempt ${attempt}); rebasing onto origin/main and retrying."
               git fetch origin main
-              git rebase origin/main
+              git rebase --autostash origin/main
             done
             echo "Error: failed to push dependency update after retries." >&2
             exit 1
