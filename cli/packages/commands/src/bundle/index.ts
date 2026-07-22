@@ -11,7 +11,7 @@ const HIVER_JSON = ".hiver.json";
 
 const cli = subcommand(
   "bundle",
-  "Bundle a Docker image into a Hiver runtime image.",
+  "Add runtime to OCI image.",
 )
   .argument("<image>", "Docker image or directory with a Dockerfile to bundle")
   .option(

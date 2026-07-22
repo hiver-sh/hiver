@@ -45,7 +45,7 @@ const docsNav = [
       { href: "/docs/examples/python-sandbox", label: "Python" },
       { href: "/docs/examples/node-sandbox", label: "Node.js" },
       { href: "/docs/examples/bash-sandbox", label: "Bash" },
-      { href: "/docs/examples/custom-docker-image", label: "Custom Docker image" },
+      { href: "/docs/examples/oci-image", label: "OCI Image" },
       { href: "/docs/mocking", label: "Mocking" },
     ],
   },
