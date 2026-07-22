@@ -164,6 +164,82 @@ func TestIngressPlainResponseBodyFlowsAsChunks(t *testing.T) {
 	}
 }
 
+// TestIngressChunkNotCapturedWhenNotObserved checks that narrowing
+// SandboxConfig.events to exclude ingress.request/ingress.chunk stops the
+// proxy from capturing request/response bodies at all — not just from
+// publishing them. ingress.response (kept observed here) still carries no
+// body by design, so its presence confirms the stream isn't silenced
+// wholesale, only the excluded types' capture work.
+func TestIngressChunkNotCapturedWhenNotObserved(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "request payload" {
+			t.Errorf("backend saw body %q, want %q", body, "request payload")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer backend.Close()
+
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(backend.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split backend url: %v", err)
+	}
+	b := events.New(0, 0)
+	b.SetFilter([]string{"ingress.response"}) // request/chunk excluded
+	_, ch, cancel := b.Subscribe(0)
+	t.Cleanup(cancel)
+
+	s := NewSandbox("k", 0)
+	s.SetBroker(b)
+	s.SetProxyHost(host)
+
+	gin.SetMode(gin.TestMode)
+	eng := gin.New()
+	eng.POST("/proxy/:port/*path", func(c *gin.Context) { s.ProxyGet(c, c.Param("port"), c.Param("path")) })
+	front := httptest.NewServer(eng)
+	t.Cleanup(front.Close)
+
+	resp, err := http.Post(front.URL+"/proxy/"+port+"/api", "text/plain", strings.NewReader("request payload"))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	var sawResponse, sawRequest, sawChunk bool
+	deadline := time.After(500 * time.Millisecond)
+drain:
+	for {
+		select {
+		case e := <-ch:
+			v, err := e.Event.ValueByDiscriminator()
+			if err != nil {
+				t.Fatalf("decode event: %v", err)
+			}
+			switch v.(type) {
+			case gen.IngressResponseEvent:
+				sawResponse = true
+			case gen.IngressRequestEvent:
+				sawRequest = true
+			case gen.IngressChunkEvent:
+				sawChunk = true
+			}
+		case <-deadline:
+			break drain
+		}
+	}
+	if !sawResponse {
+		t.Fatal("ingress.response should still be observed")
+	}
+	if sawRequest {
+		t.Error("ingress.request should be filtered out, but one was published")
+	}
+	if sawChunk {
+		t.Error("ingress.chunk should be filtered out, but one was published")
+	}
+}
+
 func TestIngressWebSocketLogsFramesUpAndDown(t *testing.T) {
 	// Backend: accept the upgrade and echo each frame back unmasked.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

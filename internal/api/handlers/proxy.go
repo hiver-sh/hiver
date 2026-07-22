@@ -28,6 +28,14 @@ const proxyDialHold = 60 * time.Second
 // maxBodyCapture is the per-request and per-chunk body capture limit (512 KB).
 const maxBodyCapture = 512 * 1024
 
+// SandboxEvent discriminator values this file publishes, used to check
+// broker.Observes before doing capture work that would otherwise be
+// discarded unread (see SandboxConfig.events).
+const (
+	ingressRequestEventType = "ingress.request"
+	ingressChunkEventType   = "ingress.chunk"
+)
+
 // streamingWriter wraps gin.ResponseWriter so a proxied inbound response is
 // audited the way the egress proxy audits an outbound one: an `ingress.response`
 // event is emitted as soon as the status and headers are known (carrying
@@ -74,7 +82,8 @@ func (w *streamingWriter) ensureResponse(code int) {
 	}
 	w.published = true
 	hdr := w.Header()
-	w.logBody = isCapturableBody(hdr.Get("Content-Type"), hdr.Get("Content-Encoding"))
+	w.logBody = w.h.broker.Observes(ingressChunkEventType) &&
+		isCapturableBody(hdr.Get("Content-Type"), hdr.Get("Content-Encoding"))
 	w.h.publishIngressResponse(w.reqID, code, msSince(w.start), flattenHeaders(hdr))
 }
 
@@ -102,8 +111,13 @@ func (h *Sandbox) newReverseProxy(c *gin.Context, port, path string) {
 		return
 	}
 
-	// Capture request body before the proxy consumes it.
-	reqBody := captureBody(c.Request)
+	// Capture request body before the proxy consumes it. Skipped entirely when
+	// ingress.request isn't observed — captureBody reads and buffers the whole
+	// body, work worth avoiding when nobody's listening for it.
+	var reqBody string
+	if h.broker.Observes(ingressRequestEventType) {
+		reqBody = captureBody(c.Request)
+	}
 
 	reqID := h.publishIngressRequest(c, port, path, reqBody)
 
@@ -205,7 +219,11 @@ func (h *Sandbox) proxyWebSocket(c *gin.Context, target *url.URL, path string, r
 	// Response event before the tunnel starts pumping — frame audit events flow
 	// as ingress.chunks, so consumers see the 101 immediately, not at close.
 	h.publishIngressResponse(reqID, http.StatusSwitchingProtocols, msSince(start), flattenHeaders(resp.Header))
-	emit := func(body, label string) { h.publishIngressChunk(reqID, body, label) }
+	emit := func(body, label string) {
+		if h.broker.Observes(ingressChunkEventType) {
+			h.publishIngressChunk(reqID, body, label)
+		}
+	}
 	done := make(chan struct{}, 2)
 	go func() {
 		wsaudit.Forward(io.MultiReader(clientBrw.Reader, client), upstream, wsaudit.DirUp, target.Host, emit)

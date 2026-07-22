@@ -335,6 +335,8 @@ fmt.Println(out.Stdout) // {"USD":1,"EUR":0.92}
 
 <Callout>The example calls the API over **HTTP**, so the proxy forwards it straight to the stub. For an **HTTPS** destination the proxy intercepts the request and then re-establishes TLS to the upstream, still validating the certificate against the *original* hostname, so a plaintext stub won't match. Either target an HTTP endpoint as above, or give the stub a certificate valid for the original host.</Callout>
 
+`override` and `override_script` both depend on this interception, so they require `SandboxConfig.mitm` to stay at its default of `true`. Setting `mitm: false` (see [Network Access](/docs/network-policy#disabling-tls-interception-mitm)) disables TLS interception for the whole sandbox, which disables re-routing for HTTPS destinations too.
+
 ---
 
 Next: [Execution](/docs/execution)

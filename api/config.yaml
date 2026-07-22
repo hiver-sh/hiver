@@ -143,6 +143,37 @@ components:
             request decides the outcome; requests that match no rule
             are denied.
           items: { $ref: '#/components/schemas/EgressRule' }
+        mitm:
+          type: boolean
+          default: true
+          description: >
+            Whether outbound TLS connections are intercepted (man-in-the-
+            middle) so egress rules can inspect and enforce method, path,
+            headers, body, and `override`/`override_script`. When true (the
+            default).
+
+            When false, TLS connections are never intercepted: egress rules
+            still match on `host` (from the TLS SNI) and `ports`, but
+            `methods`, `paths`, `override`, and `override_script` are not
+            enforced — the encrypted byte stream is forwarded end-to-end
+            unmodified. Use this for upstreams whose TLS fingerprint or
+            certificate pinning rejects the proxy's intercepted connection.
+            Plain HTTP (unencrypted) egress is unaffected either way.
+          example: true
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/EventType' }
+          description: >
+            Restricts which event types are observed on the sandbox's event
+            stream. When omitted (the default), every
+            event type is observed. When set, only the listed types are
+            observed — an empty array observes nothing. Excluded event
+            types are not just hidden from the stream: the sandbox also
+            skips the work of capturing them (for example, request/response
+            body capture for `ingress.chunk`), so narrowing this list can
+            reduce overhead for high-volume traffic. Reconciled at runtime,
+            like `fs` and `egress`.
+          example: [egress.request, egress.response, exec.request, exec.response, stdio]
         snapshot:
           $ref: '#/components/schemas/Snapshot'
 
@@ -812,6 +843,30 @@ components:
           description: |
             Optional structured context such as the offending field
             path or a conflict identifier.
+
+    EventType:
+      type: string
+      description: |
+        A `SandboxEvent` discriminator value (see `events.yaml`), used to
+        restrict `SandboxConfig.events` to a subset of the event stream.
+      enum:
+        - config.apply
+        - egress.request
+        - egress.response
+        - egress.chunk
+        - fs.request
+        - fs.response
+        - stdio
+        - resource.usage
+        - exec.request
+        - exec.response
+        - ingress.request
+        - ingress.response
+        - ingress.chunk
+        - system.start
+        - system.config-changed
+        - system.vm-resumed
+        - system.shutdown
 
     HttpMethod:
       type: string

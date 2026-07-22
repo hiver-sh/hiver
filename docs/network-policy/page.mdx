@@ -93,6 +93,34 @@ Egress: []client.EgressRule{
 
 Path matching is segment-by-segment on `/`. `*` matches within a single segment (`/users/*` matches `/users/42` but not `/users/42/posts`); `**` matches across segments (`/repos/**` matches `/repos`, `/repos/foo`, and `/repos/foo/bar`).
 
+## Disabling TLS interception (mitm)
+
+By default (`SandboxConfig.mitm: true`), outbound TLS connections are intercepted so egress rules can inspect and enforce `methods`/`paths`/`override`/`override_script`.
+
+Set `mitm: false` to turn interception off entirely. Egress rules still match on `host` (read from the TLS SNI, before any bytes are decrypted) and `ports`; `methods`, `paths`, `override`, and `override_script` are no longer enforced, and the encrypted byte stream is forwarded end-to-end unmodified. Use this for upstreams whose TLS fingerprint or certificate pinning rejects an intercepted connection. Plain HTTP egress is unaffected either way, and `egress.request`/`egress.response`/`egress.chunk` events still fire, but without method/path/header/body detail for TLS traffic.
+
+```typescript
+const sandbox = await getOrCreateSandbox("pinned-upstream", {
+  mitm: false,
+  egress: [{ access: "allow", host: "pinned.example.com" }],
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("pinned-upstream", SandboxConfig(
+    mitm=False,
+    egress=[EgressRule(access="allow", host="pinned.example.com")],
+))
+```
+
+```go
+mitm := false
+sandbox, err := c.GetOrCreateSandbox(ctx, "pinned-upstream", client.SandboxConfig{
+    Mitm:   &mitm,
+    Egress: []client.EgressRule{{Access: "allow", Host: "pinned.example.com"}},
+})
+```
+
 ## Installing packages
 
 The TypeScript and Python clients ship helpers that generate the exact egress rules a package installer needs, and nothing more, so `pip`/`npm install` for any package you didn't list is blocked.

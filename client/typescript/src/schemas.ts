@@ -295,6 +295,46 @@ export const HttpMethod = z.enum([
 ]);
 type _AssertHttpMethod = Expect<Equal<z.infer<typeof HttpMethod>, HttpMethod>>;
 
+/** A `SandboxEvent` discriminator value, used to restrict `SandboxConfig.events` to a subset of the event stream. */
+export type EventType =
+  | "config.apply"
+  | "egress.request"
+  | "egress.response"
+  | "egress.chunk"
+  | "fs.request"
+  | "fs.response"
+  | "stdio"
+  | "resource.usage"
+  | "exec.request"
+  | "exec.response"
+  | "ingress.request"
+  | "ingress.response"
+  | "ingress.chunk"
+  | "system.start"
+  | "system.config-changed"
+  | "system.vm-resumed"
+  | "system.shutdown";
+export const EventType = z.enum([
+  "config.apply",
+  "egress.request",
+  "egress.response",
+  "egress.chunk",
+  "fs.request",
+  "fs.response",
+  "stdio",
+  "resource.usage",
+  "exec.request",
+  "exec.response",
+  "ingress.request",
+  "ingress.response",
+  "ingress.chunk",
+  "system.start",
+  "system.config-changed",
+  "system.vm-resumed",
+  "system.shutdown",
+]);
+type _AssertEventType = Expect<Equal<z.infer<typeof EventType>, EventType>>;
+
 /**
  * Values the proxy injects into outbound requests that match an egress rule.
  * If the agent already set the same query parameter or header, the proxy overwrites it;
@@ -543,6 +583,22 @@ export interface SandboxConfig {
    * requests that match no rule are denied.
    */
   egress?: EgressRule[];
+  /**
+   * Whether outbound TLS connections are intercepted (man-in-the-middle) so egress rules can
+   * inspect and enforce method, path, headers, body, and `override`/`override_script`. Defaults
+   * to true. When false, egress rules still match on `host` (from the TLS SNI) and `ports`, but
+   * `methods`, `paths`, `override`, and `override_script` are not enforced — the encrypted byte
+   * stream is forwarded end-to-end unmodified. Plain HTTP egress is unaffected either way.
+   */
+  mitm?: boolean;
+  /**
+   * Restricts which event types are observed on the sandbox's event stream. When omitted (the
+   * default), every event type is observed; when set, only the listed types are — an empty array
+   * observes nothing. Excluded types are not just hidden from the stream: the sandbox also skips
+   * the work of capturing them (e.g. body capture for `ingress.chunk`). Reconciled at runtime,
+   * like `fs` and `egress`.
+   */
+  events?: EventType[];
   snapshot?: Snapshot;
 }
 const SandboxConfigObject = z.object({
@@ -557,6 +613,8 @@ const SandboxConfigObject = z.object({
   ttl: z.number().int().min(0).optional(),
   fs: z.array(FileSystem).min(1).optional(),
   egress: z.array(EgressRule).optional(),
+  mitm: z.boolean().optional(),
+  events: z.array(EventType).optional(),
   snapshot: Snapshot.optional(),
 });
 

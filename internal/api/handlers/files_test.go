@@ -11,11 +11,11 @@ func fsMount(mount string, backend gen.Backend) gen.FileSystem {
 	var fs gen.FileSystem
 	switch backend {
 	case gen.BackendGdrive:
-		_ = fs.FromGDriveFileSystem(gen.GDriveFileSystem{Mount: mount, Backend: gen.Gdrive})
+		_ = fs.FromGDriveFileSystem(gen.GDriveFileSystem{Mount: mount, Backend: gen.GDriveFileSystemBackendGdrive})
 	case gen.BackendGcs:
-		_ = fs.FromGCSFileSystem(gen.GCSFileSystem{Mount: mount, Backend: gen.Gcs})
+		_ = fs.FromGCSFileSystem(gen.GCSFileSystem{Mount: mount, Backend: gen.GCSFileSystemBackendGcs})
 	default:
-		_ = fs.FromLocalFileSystem(gen.LocalFileSystem{Mount: mount, Backend: gen.Local})
+		_ = fs.FromLocalFileSystem(gen.LocalFileSystem{Mount: mount, Backend: gen.LocalFileSystemBackendLocal})
 	}
 	return fs
 }

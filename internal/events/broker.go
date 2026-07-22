@@ -44,6 +44,12 @@ type Broker struct {
 	lastPublishAt time.Time // updated under mu on every Publish
 	closed        bool      // Close() flips this; rejects new subscribers
 	activityHook  func()    // called by Publish (not PublishSilent) outside the lock
+
+	// filter restricts which event types are stored/fanned out, per
+	// SandboxConfig.events. nil (the default) observes every type. A non-nil
+	// filter observes exactly the types it contains — an empty-but-non-nil
+	// filter observes nothing. See SetFilter.
+	filter map[string]struct{}
 }
 
 // New returns a Broker that keeps the most recent `capacity` events for
@@ -69,6 +75,65 @@ func New(capacity, subDepth int) *Broker {
 // set before the first Publish call to avoid data races.
 func (b *Broker) SetActivityHook(fn func()) {
 	b.activityHook = fn
+}
+
+// SetFilter restricts which event types this broker stores and fans out.
+// Pass nil to observe every type (the default). Pass a non-nil slice to
+// observe only the listed types — an empty (but non-nil) slice observes
+// nothing. Safe to call at any time, including after publishing has
+// started (a config apply can narrow or widen the filter live); a type
+// excluded mid-stream simply stops appearing in subsequent Publish calls.
+//
+// Filtering happens after `build` runs, inside publish's critical section:
+// every call still allocates a unique, monotonic id (so a filtered-out
+// event's id can still be referenced by a later, observed, correlated
+// event — e.g. an ingress.response's request_id when ingress.request
+// itself isn't observed), it just isn't stored or fanned out.
+func (b *Broker) SetFilter(types []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if types == nil {
+		b.filter = nil
+		return
+	}
+	m := make(map[string]struct{}, len(types))
+	for _, t := range types {
+		m[t] = struct{}{}
+	}
+	b.filter = m
+}
+
+// Observes reports whether eventType is currently observed — i.e. whether a
+// Publish/PublishSilent call for that type would be stored and fanned out.
+// Callers doing non-trivial work to build an event (e.g. capturing a request
+// body) should check this first and skip that work entirely when it would be
+// filtered out anyway.
+func (b *Broker) Observes(eventType string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.observesLocked(eventType)
+}
+
+func (b *Broker) observesLocked(eventType string) bool {
+	if b.filter == nil {
+		return true
+	}
+	_, ok := b.filter[eventType]
+	return ok
+}
+
+// FilterFromConfig converts SandboxConfig.Events (nil when the field is
+// unset) to the []string SetFilter expects, preserving the nil-means-observe-
+// everything / non-nil-means-restrict distinction.
+func FilterFromConfig(types *[]gen.EventType) []string {
+	if types == nil {
+		return nil
+	}
+	out := make([]string, len(*types))
+	for i, t := range *types {
+		out[i] = string(t)
+	}
+	return out
 }
 
 // Publish allocates the next id+timestamp, hands them to `build` to
@@ -99,18 +164,20 @@ func (b *Broker) publish(build Factory, store bool) int64 {
 	now := time.Now().UTC()
 	entry := Entry{ID: b.nextID, Event: build(b.nextID, now)}
 	b.lastPublishAt = now
-	if store {
-		if len(b.ring) < b.cap {
-			b.ring = append(b.ring, entry)
-		} else {
-			copy(b.ring, b.ring[1:])
-			b.ring[b.cap-1] = entry
+	if typ, err := entry.Event.Discriminator(); err != nil || b.observesLocked(typ) {
+		if store {
+			if len(b.ring) < b.cap {
+				b.ring = append(b.ring, entry)
+			} else {
+				copy(b.ring, b.ring[1:])
+				b.ring[b.cap-1] = entry
+			}
 		}
-	}
-	for _, ch := range b.subs {
-		select {
-		case ch <- entry:
-		default:
+		for _, ch := range b.subs {
+			select {
+			case ch <- entry:
+			default:
+			}
 		}
 	}
 	return b.nextID

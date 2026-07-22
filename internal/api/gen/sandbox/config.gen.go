@@ -98,16 +98,79 @@ func (e EgressRuleAccess) Valid() bool {
 
 // Defines values for EgressRuleOverrideBodyStrategy.
 const (
-	Merge   EgressRuleOverrideBodyStrategy = "merge"
-	Replace EgressRuleOverrideBodyStrategy = "replace"
+	EgressRuleOverrideBodyStrategyMerge   EgressRuleOverrideBodyStrategy = "merge"
+	EgressRuleOverrideBodyStrategyReplace EgressRuleOverrideBodyStrategy = "replace"
 )
 
 // Valid indicates whether the value is a known member of the EgressRuleOverrideBodyStrategy enum.
 func (e EgressRuleOverrideBodyStrategy) Valid() bool {
 	switch e {
-	case Merge:
+	case EgressRuleOverrideBodyStrategyMerge:
 		return true
-	case Replace:
+	case EgressRuleOverrideBodyStrategyReplace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EventType.
+const (
+	EventTypeConfigApply         EventType = "config.apply"
+	EventTypeEgressChunk         EventType = "egress.chunk"
+	EventTypeEgressRequest       EventType = "egress.request"
+	EventTypeEgressResponse      EventType = "egress.response"
+	EventTypeExecRequest         EventType = "exec.request"
+	EventTypeExecResponse        EventType = "exec.response"
+	EventTypeFsRequest           EventType = "fs.request"
+	EventTypeFsResponse          EventType = "fs.response"
+	EventTypeIngressChunk        EventType = "ingress.chunk"
+	EventTypeIngressRequest      EventType = "ingress.request"
+	EventTypeIngressResponse     EventType = "ingress.response"
+	EventTypeResourceUsage       EventType = "resource.usage"
+	EventTypeStdio               EventType = "stdio"
+	EventTypeSystemConfigChanged EventType = "system.config-changed"
+	EventTypeSystemShutdown      EventType = "system.shutdown"
+	EventTypeSystemStart         EventType = "system.start"
+	EventTypeSystemVmResumed     EventType = "system.vm-resumed"
+)
+
+// Valid indicates whether the value is a known member of the EventType enum.
+func (e EventType) Valid() bool {
+	switch e {
+	case EventTypeConfigApply:
+		return true
+	case EventTypeEgressChunk:
+		return true
+	case EventTypeEgressRequest:
+		return true
+	case EventTypeEgressResponse:
+		return true
+	case EventTypeExecRequest:
+		return true
+	case EventTypeExecResponse:
+		return true
+	case EventTypeFsRequest:
+		return true
+	case EventTypeFsResponse:
+		return true
+	case EventTypeIngressChunk:
+		return true
+	case EventTypeIngressRequest:
+		return true
+	case EventTypeIngressResponse:
+		return true
+	case EventTypeResourceUsage:
+		return true
+	case EventTypeStdio:
+		return true
+	case EventTypeSystemConfigChanged:
+		return true
+	case EventTypeSystemShutdown:
+		return true
+	case EventTypeSystemStart:
+		return true
+	case EventTypeSystemVmResumed:
 		return true
 	default:
 		return false
@@ -116,13 +179,13 @@ func (e EgressRuleOverrideBodyStrategy) Valid() bool {
 
 // Defines values for ExternalFileSystemBackend.
 const (
-	External ExternalFileSystemBackend = "external"
+	ExternalFileSystemBackendExternal ExternalFileSystemBackend = "external"
 )
 
 // Valid indicates whether the value is a known member of the ExternalFileSystemBackend enum.
 func (e ExternalFileSystemBackend) Valid() bool {
 	switch e {
-	case External:
+	case ExternalFileSystemBackendExternal:
 		return true
 	default:
 		return false
@@ -131,13 +194,13 @@ func (e ExternalFileSystemBackend) Valid() bool {
 
 // Defines values for GCSFileSystemBackend.
 const (
-	Gcs GCSFileSystemBackend = "gcs"
+	GCSFileSystemBackendGcs GCSFileSystemBackend = "gcs"
 )
 
 // Valid indicates whether the value is a known member of the GCSFileSystemBackend enum.
 func (e GCSFileSystemBackend) Valid() bool {
 	switch e {
-	case Gcs:
+	case GCSFileSystemBackendGcs:
 		return true
 	default:
 		return false
@@ -146,13 +209,13 @@ func (e GCSFileSystemBackend) Valid() bool {
 
 // Defines values for GDriveFileSystemBackend.
 const (
-	Gdrive GDriveFileSystemBackend = "gdrive"
+	GDriveFileSystemBackendGdrive GDriveFileSystemBackend = "gdrive"
 )
 
 // Valid indicates whether the value is a known member of the GDriveFileSystemBackend enum.
 func (e GDriveFileSystemBackend) Valid() bool {
 	switch e {
-	case Gdrive:
+	case GDriveFileSystemBackendGdrive:
 		return true
 	default:
 		return false
@@ -161,31 +224,31 @@ func (e GDriveFileSystemBackend) Valid() bool {
 
 // Defines values for HttpMethod.
 const (
-	DELETE  HttpMethod = "DELETE"
-	GET     HttpMethod = "GET"
-	HEAD    HttpMethod = "HEAD"
-	OPTIONS HttpMethod = "OPTIONS"
-	PATCH   HttpMethod = "PATCH"
-	POST    HttpMethod = "POST"
-	PUT     HttpMethod = "PUT"
+	HttpMethodDELETE  HttpMethod = "DELETE"
+	HttpMethodGET     HttpMethod = "GET"
+	HttpMethodHEAD    HttpMethod = "HEAD"
+	HttpMethodOPTIONS HttpMethod = "OPTIONS"
+	HttpMethodPATCH   HttpMethod = "PATCH"
+	HttpMethodPOST    HttpMethod = "POST"
+	HttpMethodPUT     HttpMethod = "PUT"
 )
 
 // Valid indicates whether the value is a known member of the HttpMethod enum.
 func (e HttpMethod) Valid() bool {
 	switch e {
-	case DELETE:
+	case HttpMethodDELETE:
 		return true
-	case GET:
+	case HttpMethodGET:
 		return true
-	case HEAD:
+	case HttpMethodHEAD:
 		return true
-	case OPTIONS:
+	case HttpMethodOPTIONS:
 		return true
-	case PATCH:
+	case HttpMethodPATCH:
 		return true
-	case POST:
+	case HttpMethodPOST:
 		return true
-	case PUT:
+	case HttpMethodPUT:
 		return true
 	default:
 		return false
@@ -194,13 +257,13 @@ func (e HttpMethod) Valid() bool {
 
 // Defines values for LocalFileSystemBackend.
 const (
-	Local LocalFileSystemBackend = "local"
+	LocalFileSystemBackendLocal LocalFileSystemBackend = "local"
 )
 
 // Valid indicates whether the value is a known member of the LocalFileSystemBackend enum.
 func (e LocalFileSystemBackend) Valid() bool {
 	switch e {
-	case Local:
+	case LocalFileSystemBackendLocal:
 		return true
 	default:
 		return false
@@ -209,13 +272,13 @@ func (e LocalFileSystemBackend) Valid() bool {
 
 // Defines values for OneDriveFileSystemBackend.
 const (
-	Onedrive OneDriveFileSystemBackend = "onedrive"
+	OneDriveFileSystemBackendOnedrive OneDriveFileSystemBackend = "onedrive"
 )
 
 // Valid indicates whether the value is a known member of the OneDriveFileSystemBackend enum.
 func (e OneDriveFileSystemBackend) Valid() bool {
 	switch e {
-	case Onedrive:
+	case OneDriveFileSystemBackendOnedrive:
 		return true
 	default:
 		return false
@@ -224,13 +287,13 @@ func (e OneDriveFileSystemBackend) Valid() bool {
 
 // Defines values for S3FileSystemBackend.
 const (
-	S3 S3FileSystemBackend = "s3"
+	S3FileSystemBackendS3 S3FileSystemBackend = "s3"
 )
 
 // Valid indicates whether the value is a known member of the S3FileSystemBackend enum.
 func (e S3FileSystemBackend) Valid() bool {
 	switch e {
-	case S3:
+	case S3FileSystemBackendS3:
 		return true
 	default:
 		return false
@@ -491,6 +554,10 @@ type Error struct {
 	// Error Human-readable failure reason.
 	Error string `json:"error"`
 }
+
+// EventType A `SandboxEvent` discriminator value (see `events.yaml`), used to
+// restrict `SandboxConfig.events` to a subset of the event stream.
+type EventType string
 
 // ExternalFileSystem defines model for ExternalFileSystem.
 type ExternalFileSystem struct {
@@ -802,6 +869,9 @@ type SandboxConfig struct {
 	// Env Additional environment variables as a key/value map. This cannot be changed after the sandbox is initialized.
 	Env *map[string]string `json:"env,omitempty"`
 
+	// Events Restricts which event types are observed on the sandbox's event stream (`GET /v1/events`). When omitted (the default), every event type is observed. When set, only the listed types are observed — an empty array observes nothing. Excluded event types are not just hidden from the stream: the sandbox also skips the work of capturing them (for example, request/response body capture for `ingress.chunk`), so narrowing this list can reduce overhead for high-volume traffic. Reconciled at runtime, like `fs` and `egress`.
+	Events *[]EventType `json:"events,omitempty"`
+
 	// ExtraHosts Additional /etc/hosts entries injected before the sandbox starts, in `hostname:ip` form. The special value `host-gateway` resolves to the host machine's IP on the container network (equivalent to Docker's `--add-host` flag). Cannot be changed after the sandbox is initialized.
 	ExtraHosts *[]string `json:"extra_hosts,omitempty"`
 
@@ -817,6 +887,11 @@ type SandboxConfig struct {
 	//
 	// Snapshot/resume: like cpu, the guest RAM size is a boot-time property baked into a VM snapshot at capture. A sandbox resumed from a snapshot gets the RAM the guest had when the snapshot was CREATED — set memory when creating the snapshot to size guest RAM. On resume this value applies the VMM's cgroup memory limit but does not resize an already-captured guest. As with cpu, a warm workload captured once and resumed per request (e.g. a resident browser) should set memory both when the snapshot is created and on resume.
 	Memory *int `json:"memory,omitempty"`
+
+	// Mitm Whether outbound TLS connections are intercepted (man-in-the- middle) so egress rules can inspect and enforce method, path, headers, body, and `override`/`override_script`. When true (the default), the sandbox CA terminates the agent's TLS and re-encrypts upstream, giving `egress.request`/`egress.response`/ `egress.chunk` events full visibility.
+	//
+	// When false, TLS connections are never intercepted: egress rules still match on `host` (from the TLS SNI) and `ports`, but `methods`, `paths`, `override`, and `override_script` are not enforced — the encrypted byte stream is forwarded end-to-end unmodified. Use this for upstreams whose TLS fingerprint or certificate pinning rejects the proxy's intercepted connection. Plain HTTP (unencrypted) egress is unaffected either way.
+	Mitm *bool `json:"mitm,omitempty"`
 
 	// Snapshot Snapshot configuration. It has two independent parts: `vm` captures the
 	// full microVM state (a no-op for the container backend) and `files`

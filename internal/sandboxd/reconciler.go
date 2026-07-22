@@ -32,6 +32,18 @@ func specFromConfig(cfg gen.SandboxConfig) (*spec.Spec, error) {
 	if err := json.Unmarshal(data, &sp); err != nil {
 		return nil, fmt.Errorf("parse config as spec: %w", err)
 	}
+	// mitm has no wire-format counterpart on proxy.EgressRule (it's a
+	// sandbox-level toggle, not a per-rule one) — apply it here as the one
+	// place a config becomes the egress rules sbxproxy receives. false
+	// forces every rule's Passthrough, the existing per-rule mechanism that
+	// makes handleTransparentTLS skip TLS interception and raw-forward the
+	// byte stream after a host-only allow decision (see
+	// internal/proxy/transparent_tls_linux.go).
+	if cfg.Mitm != nil && !*cfg.Mitm {
+		for i := range sp.Egress {
+			sp.Egress[i].Passthrough = true
+		}
+	}
 	return &sp, nil
 }
 

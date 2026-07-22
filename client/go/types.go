@@ -296,6 +296,23 @@ type SandboxConfig struct {
 	// Egress is the ordered list of egress rules. The first rule that matches a
 	// request decides the outcome; requests that match no rule are denied.
 	Egress []EgressRule `json:"egress,omitempty"`
+	// Mitm controls whether outbound TLS connections are intercepted
+	// (man-in-the-middle) so egress rules can inspect and enforce method,
+	// path, headers, body, and Override/OverrideScript. Defaults to true. When
+	// false, egress rules still match on Host (from the TLS SNI) and Ports,
+	// but Methods, Paths, Override, and OverrideScript are not enforced — the
+	// encrypted byte stream is forwarded end-to-end unmodified. Plain HTTP
+	// egress is unaffected either way. A pointer so an explicit false can be
+	// distinguished from "unset" (which defaults to true).
+	Mitm *bool `json:"mitm,omitempty"`
+	// Events restricts which event types are observed on the sandbox's event
+	// stream. Nil (the default) observes every type; a non-nil slice observes
+	// only the listed types, and a non-nil empty slice observes nothing.
+	// Excluded types are not just hidden from the stream: the sandbox also
+	// skips the work of capturing them (e.g. body capture for
+	// "ingress.chunk"). Reconciled at runtime, like FS and Egress. A pointer
+	// so an explicit empty slice can be distinguished from "unset".
+	Events *[]string `json:"events,omitempty"`
 	// Snapshot configures automatic snapshots for this sandbox.
 	Snapshot *Snapshot `json:"snapshot,omitempty"`
 }

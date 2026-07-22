@@ -148,6 +148,27 @@ FileSystem = Annotated[
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 """An HTTP method an egress rule can match."""
 
+EventType = Literal[
+    "config.apply",
+    "egress.request",
+    "egress.response",
+    "egress.chunk",
+    "fs.request",
+    "fs.response",
+    "stdio",
+    "resource.usage",
+    "exec.request",
+    "exec.response",
+    "ingress.request",
+    "ingress.response",
+    "ingress.chunk",
+    "system.start",
+    "system.config-changed",
+    "system.vm-resumed",
+    "system.shutdown",
+]
+"""A ``SandboxEvent`` discriminator value, used to restrict ``SandboxConfig.events`` to a subset of the event stream."""
+
 
 class EgressOverride(BaseModel):
     """Values the proxy injects into outbound requests that match an egress rule. If the agent already set the same query parameter or header, the proxy overwrites it; otherwise the value is added. The agent cannot read these values back."""
@@ -261,6 +282,10 @@ class SandboxConfig(BaseModel):
     """File systems exposed to the agent. Mount paths must be unique and non-overlapping (a mount path may not be a parent directory of another)."""
     egress: Optional[list[EgressRule]] = None
     """Ordered list of egress rules. The first rule that matches a request decides the outcome; requests that match no rule are denied."""
+    mitm: Optional[bool] = None
+    """Whether outbound TLS connections are intercepted (man-in-the-middle) so egress rules can inspect and enforce method, path, headers, body, and ``override``/``override_script``. Defaults to true. When false, egress rules still match on ``host`` (from the TLS SNI) and ``ports``, but ``methods``, ``paths``, ``override``, and ``override_script`` are not enforced — the encrypted byte stream is forwarded end-to-end unmodified. Plain HTTP egress is unaffected either way."""
+    events: Optional[list[EventType]] = None
+    """Restricts which event types are observed on the sandbox's event stream. When omitted (the default), every event type is observed; when set, only the listed types are — an empty list observes nothing. Excluded types are not just hidden from the stream: the sandbox also skips the work of capturing them (e.g. body capture for ``ingress.chunk``). Reconciled at runtime, like ``fs`` and ``egress``."""
     snapshot: Optional[Snapshot] = None
     """Snapshot configuration for this sandbox."""
 

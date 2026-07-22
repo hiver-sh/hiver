@@ -334,6 +334,9 @@ func setupEntrypointTTY(ctx context.Context, key string, iso isolation.Isolation
 
 func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.SandboxConfig) (*handlers.Sandbox, error) {
 	broker := events.New(events.DefaultCapacity, 0)
+	// Apply the requested observability scope (SandboxConfig.events) before the
+	// first event is published, so even system.start respects it.
+	broker.SetFilter(events.FilterFromConfig(cfg.Events))
 	// First event on the stream: the request to start this sandbox has been
 	// received and boot is beginning. Silent — it precedes the lifetime hook and
 	// isn't agent activity.

@@ -93,6 +93,13 @@ func validateConfig(cfg gen.SandboxConfig) error {
 			}
 		}
 	}
+	if cfg.Events != nil {
+		for i, et := range *cfg.Events {
+			if !et.Valid() {
+				return fmt.Errorf("events[%d]: unknown value %q", i, et)
+			}
+		}
+	}
 	return nil
 }
 
@@ -139,6 +146,14 @@ func (h *Sandbox) ApplyConfig(c *gin.Context) {
 		if prev, err := h.store.Get(); err == nil {
 			postState = prev
 		}
+	}
+
+	// Reconcile the broker's observability scope with the post-apply config
+	// before publishing anything below, so both the config.apply and
+	// system.config-changed events for this call already reflect it — like
+	// fs and egress, `events` is never frozen and reconciles at runtime.
+	if success {
+		h.broker.SetFilter(events.FilterFromConfig(postState.Events))
 	}
 
 	h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {

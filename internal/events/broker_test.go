@@ -15,6 +15,12 @@ func makeEvent(id int64, ts time.Time) gen.SandboxEvent {
 	return ev
 }
 
+func makeExecEvent(id int64, ts time.Time) gen.SandboxEvent {
+	var ev gen.SandboxEvent
+	_ = ev.FromExecRequestEvent(gen.ExecRequestEvent{Id: int(id), Timestamp: ts, Cwd: "/", Command: "true"})
+	return ev
+}
+
 func TestBrokerPublishFanout(t *testing.T) {
 	b := New(10, 8)
 	_, ch, cancel := b.Subscribe(0)
@@ -233,6 +239,90 @@ func TestBrokerPublishAfterClose(t *testing.T) {
 	id := b.Publish(makeEvent)
 	if id != 1 {
 		t.Errorf("got id %d, want 1", id)
+	}
+}
+
+func TestBrokerFilterObservesOnlyListedTypes(t *testing.T) {
+	b := New(10, 8)
+	b.SetFilter([]string{"exec.request"})
+	_, ch, cancel := b.Subscribe(0)
+	defer cancel()
+
+	b.Publish(makeEvent)     // stdio, filtered out
+	b.Publish(makeExecEvent) // exec.request, observed
+
+	select {
+	case e := <-ch:
+		typ, err := e.Event.Discriminator()
+		if err != nil || typ != "exec.request" {
+			t.Fatalf("got type %q err %v, want exec.request", typ, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for observed event")
+	}
+
+	select {
+	case e := <-ch:
+		t.Fatalf("got unexpected second event id=%d, filtered type should not fan out", e.ID)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestBrokerFilterEmptyObservesNothing(t *testing.T) {
+	b := New(10, 8)
+	b.SetFilter([]string{})
+	replayBefore, ch, cancel := b.Subscribe(0)
+	defer cancel()
+	if len(replayBefore) != 0 {
+		t.Fatalf("replay len %d, want 0", len(replayBefore))
+	}
+
+	id := b.Publish(makeEvent)
+	if id != 1 {
+		t.Errorf("got id %d, want 1 (ids still allocate while filtered)", id)
+	}
+
+	select {
+	case e := <-ch:
+		t.Fatalf("got unexpected event id=%d, empty filter should observe nothing", e.ID)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	replay, _, cancel2 := b.Subscribe(0)
+	cancel2()
+	if len(replay) != 0 {
+		t.Fatalf("replay after publish len %d, want 0 (filtered events aren't stored)", len(replay))
+	}
+}
+
+func TestBrokerFilterPreservesIDsForCorrelation(t *testing.T) {
+	b := New(10, 8)
+	b.SetFilter([]string{"exec.response"}) // exec.request filtered out
+	_, ch, cancel := b.Subscribe(0)
+	defer cancel()
+
+	firstID := b.Publish(makeExecEvent)  // filtered, still allocates an id
+	secondID := b.Publish(makeExecEvent) // filtered too
+	if secondID != firstID+1 {
+		t.Fatalf("ids not monotonic across filtered publishes: %d then %d", firstID, secondID)
+	}
+
+	select {
+	case e := <-ch:
+		t.Fatalf("got unexpected event id=%d, exec.request should be filtered", e.ID)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestBrokerSetFilterNilObservesEverything(t *testing.T) {
+	b := New(10, 8)
+	b.SetFilter([]string{"exec.request"})
+	if b.Observes("stdio") {
+		t.Fatal("stdio should not be observed while filter is set")
+	}
+	b.SetFilter(nil)
+	if !b.Observes("stdio") {
+		t.Fatal("stdio should be observed after clearing the filter")
 	}
 }
 

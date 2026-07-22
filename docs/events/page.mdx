@@ -47,6 +47,30 @@ The stream auto-reconnects on network drops (exponential backoff). Pass a `signa
 
 `access` on `egress.request` and `fs.request` is `"allowed"` or `"denied"`.
 
+## Restricting which events are observed
+
+By default every event type above is emitted. Set `SandboxConfig.events` to observe only a subset — useful to cut noise, or to avoid the overhead of capturing high-volume traffic (like `ingress.chunk`/`egress.chunk` bodies) you don't plan to read. An empty array observes nothing. `events` is reconciled at runtime, like `fs` and `egress`.
+
+```typescript
+const sandbox = await getOrCreateSandbox("my-sandbox", {
+  events: ["egress.request", "egress.response", "exec.request", "exec.response", "stdio"],
+});
+```
+
+```python
+sandbox = await get_or_create_sandbox("my-sandbox", SandboxConfig(
+    events=["egress.request", "egress.response", "exec.request", "exec.response", "stdio"],
+))
+```
+
+```go
+sandbox, err := c.GetOrCreateSandbox(ctx, "my-sandbox", client.SandboxConfig{
+    Events: &[]string{"egress.request", "egress.response", "exec.request", "exec.response", "stdio"},
+})
+```
+
+This isn't just a display filter: an excluded event type's underlying work is skipped too. For example, narrowing `events` to exclude `ingress.chunk` stops the sandbox from capturing the response body of proxied inbound requests at all, rather than capturing it and discarding it unread.
+
 ## Resuming from a cursor
 
 Each event has a numeric `id`. Pass `lastEventId` to resume from where you left off, for example after a reconnect or process restart:
@@ -64,9 +88,9 @@ for await (const event of sandbox.getEventsStream({ lastEventId: cursor })) {
 }
 ```
 
-## Filtering
+## Filtering client-side
 
-Filter events by checking `event.type` in the loop:
+Filter events by checking `event.type` in the loop — useful for ad hoc filtering that doesn't need the overhead savings of `SandboxConfig.events` above:
 
 ```typescript
 for await (const event of sandbox.getEventsStream()) {

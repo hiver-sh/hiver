@@ -5,3 +5,12 @@ generate:
 output: ./gen/sandbox/config.gen.go
 output-options:
   skip-prune: true
+# EventType's members (config.apply, exec.request, ...) would otherwise
+# generate bare identifiers like `ExecRequest`, colliding with unrelated
+# types oapi-codegen generates from sandbox_server.yaml into this same
+# package (e.g. the POST /v1/exec request body). Prefixing every enum's
+# constants with its type name (EventTypeExecRequest, BackendLocal, ...)
+# avoids that — oapi-codegen only de-conflicts within one generation pass,
+# not across the separate invocations that share this package.
+compatibility:
+  always-prefix-enum-values: true

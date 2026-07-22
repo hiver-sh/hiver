@@ -10,6 +10,7 @@ export {
   EgressRequestEvent,
   EgressResponseEvent,
   EgressRule,
+  EventType,
   ExecRequestEvent,
   ExecResponseEvent,
   ExternalFileSystem,

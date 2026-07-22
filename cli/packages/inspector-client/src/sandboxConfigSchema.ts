@@ -88,6 +88,20 @@ export const SANDBOX_CONFIG_SCHEMA = {
             "Ordered list of egress rules. First matching rule wins; unmatched requests are denied.",
           items: { $ref: "#/definitions/EgressRule" },
         },
+        mitm: {
+          type: "boolean",
+          default: true,
+          description:
+            "Whether outbound TLS connections are intercepted (man-in-the-middle) so egress rules can inspect and enforce method, path, headers, body, and override/override_script. When false, egress rules still match on host (from the TLS SNI) and ports, but method/path/override/override_script are not enforced — the encrypted byte stream is forwarded end-to-end unmodified. Plain HTTP egress is unaffected either way.",
+          examples: [true],
+        },
+        events: {
+          type: "array",
+          description:
+            "Restricts which event types are observed on the sandbox's event stream. Omitted observes every type; an empty array observes nothing. Excluded types also skip the work of capturing them (e.g. body capture for ingress.chunk).",
+          items: { $ref: "#/definitions/EventType" },
+          examples: [["egress.request", "egress.response", "exec.request", "exec.response", "stdio"]],
+        },
         snapshot: { $ref: "#/definitions/Snapshot" },
       },
     },
@@ -580,6 +594,31 @@ export const SANDBOX_CONFIG_SCHEMA = {
     HttpMethod: {
       type: "string",
       enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    },
+
+    EventType: {
+      type: "string",
+      description:
+        "A SandboxEvent discriminator value, used to restrict `events` to a subset of the event stream.",
+      enum: [
+        "config.apply",
+        "egress.request",
+        "egress.response",
+        "egress.chunk",
+        "fs.request",
+        "fs.response",
+        "stdio",
+        "resource.usage",
+        "exec.request",
+        "exec.response",
+        "ingress.request",
+        "ingress.response",
+        "ingress.chunk",
+        "system.start",
+        "system.config-changed",
+        "system.vm-resumed",
+        "system.shutdown",
+      ],
     },
   },
 };

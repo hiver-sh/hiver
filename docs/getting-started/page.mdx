@@ -97,6 +97,8 @@ sandbox, err := c.GetOrCreateSandbox(context.Background(), "agent-1", client.San
 | `ttl` | `number` | Idle seconds before the sandbox shuts itself down. Defaults to `1800` (30 min). Use `0` to disable. |
 | `fs` | `FileSystem[]` | File systems exposed to the agent. Defaults to a local `/workspace` mount with read/write access. |
 | `egress` | `EgressRule[]` | Ordered egress rules, first match wins. All outbound traffic is allowed by default. |
+| `mitm` | `boolean` | Whether outbound TLS is intercepted so egress rules can enforce method/path/headers/body. Defaults to `true`. See [Network Access](/docs/network-policy). |
+| `events` | `EventType[]` | Restrict the event stream to these types. Defaults to every type. An empty array observes nothing. See [Events](/docs/events). |
 | `snapshot` | `Snapshot` | Automatic snapshot configuration, captured on shutdown, restored on start. |
 
 ## Run a command
