@@ -54,8 +54,10 @@ func (p *Proxy) Run() error {
 }
 
 // kernelToHost reads kernel→server messages, tracks them, and forwards to the
-// host, re-delivering across a reconnect (the kernel may issue a request the
-// instant the VM resumes, before the host link is back).
+// host. Delivery across a reconnect belongs to Reconnect itself: it re-sends
+// every outstanding request, so writeHost only delivers within the generation
+// the message was observed under (obsGen) — otherwise the same request would
+// reach the new server twice.
 func (p *Proxy) kernelToHost() error {
 	for {
 		msg, err := ReadMsg(p.kernel)
@@ -64,8 +66,9 @@ func (p *Proxy) kernelToHost() error {
 		}
 		p.mu.Lock()
 		p.sess.ObserveClient(msg)
+		obsGen := p.hostGen
 		p.mu.Unlock()
-		if err := p.writeHost(msg); err != nil {
+		if err := p.writeHost(msg, obsGen); err != nil {
 			return err
 		}
 	}
@@ -99,13 +102,20 @@ func (p *Proxy) hostToKernel() error {
 	}
 }
 
-// writeHost writes msg to the current host, blocking across a reconnect if the
-// host link is down or the write fails.
-func (p *Proxy) writeHost(msg []byte) error {
+// writeHost writes msg to the host connection of the generation the message was
+// observed under. If that generation is gone — a reconnect happened after the
+// observe, whether before the write or after a failed one — the message was
+// already re-delivered by Reconnect's ResendOutstanding (it is outstanding by
+// definition: no reply can exist for a message that never reached a live
+// server), so writing it again here would hand the new server a duplicate.
+func (p *Proxy) writeHost(msg []byte, obsGen uint64) error {
 	for {
 		h, gen, ok := p.currentHost()
 		if !ok {
 			return errClosed
+		}
+		if gen != obsGen {
+			return nil // a reconnect re-delivered this message already
 		}
 		if h != nil {
 			if _, err := h.Write(msg); err == nil {
@@ -163,6 +173,13 @@ func (p *Proxy) Reconnect(newHost io.ReadWriteCloser) error {
 	// replay drives newHost directly (it is not yet the live host, so the
 	// hostToKernel reader won't steal its replies).
 	if err := p.sess.Replay(newHost); err != nil {
+		return err
+	}
+	// Re-deliver requests the dying connection swallowed (a write into a
+	// dead-but-not-yet-RST'd TCP conn succeeds locally); without this the kernel
+	// waits forever on their tags and the requesting guest process wedges in
+	// p9_client_rpc. Their replies arrive once the pumps wake below.
+	if err := p.sess.ResendOutstanding(newHost); err != nil {
 		return err
 	}
 	// Close the previous (dead) host conn if it wasn't already, so a pump still

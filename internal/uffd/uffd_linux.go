@@ -25,6 +25,19 @@ const (
 	// with UFFDIO == 0xAA and sizeof(struct uffdio_copy) == 40.
 	uffdioCopy = 0xc028aa03
 
+	// uffdioWake = _IOR(UFFDIO, _UFFDIO_WAKE, struct uffdio_range), with
+	// sizeof(struct uffdio_range) == 16.
+	//
+	// _IOR, NOT _IOWR (the kernel's uffdio_range has no written-back field). The
+	// kernel dispatches on the FULL 32-bit command, so the _IOWR encoding
+	// (0xc010aa02) this originally used is simply not UFFDIO_WAKE: every call
+	// fell through the ioctl switch to -EINVAL and no thread was ever woken.
+	// That made the EEXIST-defensive wake in serveResidual a silent no-op — the
+	// "added, no change" result in the huge-pages investigation was measuring a
+	// wake that never executed. TestWakeIoctlEncoding fails against the _IOWR
+	// encoding and passes against this one.
+	uffdioWake = 0x8010aa02
+
 	uffdEventPagefault = 0x12
 
 	// sizeof(struct uffd_msg). The pagefault address sits at offset 16: an 8-byte
@@ -33,6 +46,12 @@ const (
 	uffdMsgAddrOff  = 16
 	uffdMsgEventOff = 0
 )
+
+// uffdioRangeArg mirrors struct uffdio_range.
+type uffdioRangeArg struct {
+	start uint64
+	len   uint64
+}
 
 // uffdioCopyArg mirrors struct uffdio_copy.
 type uffdioCopyArg struct {
@@ -57,6 +76,7 @@ type Handler struct {
 	populateNanos  atomic.Int64
 	residualFaults atomic.Int64
 	bytesCopied    atomic.Int64
+	misaligned     atomic.Int64
 
 	// memMu guards the memory mapping against teardown. Copies run concurrently
 	// (Options.Workers) and, with Options.Background, outlive the resume — so a
@@ -71,12 +91,58 @@ type Handler struct {
 	closed bool
 }
 
+// pageSize is the granularity UFFDIO_COPY works at for this guest: the hugetlb
+// page size when the snapshot is huge-page backed, otherwise the host page size.
+func (h *Handler) pageSize() uint64 {
+	if h.opts.HugePageSize > 0 {
+		return h.opts.HugePageSize
+	}
+	return uint64(os.Getpagesize())
+}
+
+// copied interprets uffdio_copy.copy after a FAILED ioctl and reports how many
+// bytes actually landed, if any.
+//
+// The field is overloaded, and getting this wrong is silent and catastrophic.
+// mfill_atomic returns `copied ? copied : err`, and the kernel writes that
+// straight into uffdio_copy.copy — so the field is a byte count only when
+// POSITIVE. On zero progress it holds NEGATIVE ERRNO: an EEXIST that copied
+// nothing reports -17, not 0.
+//
+// Reading that as an unsigned count yields 2^64-17, which is what the original
+// code did. Every consequence of that is invisible at the call site: the range
+// looks fully consumed, so population returns having filled nothing, and the
+// guest is left demand-paging memory the copier believes it already wrote.
+//
+// So: treat only positive values as progress. The alignment check is a standing
+// assertion — a positive count under hugetlbfs is always a 2MiB multiple, and if
+// that ever stops being true, advancing by it would shift every subsequent copy
+// and write snapshot bytes to the wrong guest addresses.
+func (h *Handler) copied(reported int64, cause string) (uint64, bool) {
+	if reported <= 0 {
+		return 0, false
+	}
+	page := h.pageSize()
+	aligned := uint64(reported) &^ (page - 1)
+	if aligned != uint64(reported) {
+		h.misaligned.Add(1)
+		log.Printf("uffd: %s reported %d bytes copied, not a multiple of page size %d — using %d",
+			cause, reported, page, aligned)
+	}
+	if aligned == 0 {
+		return 0, false
+	}
+	h.bytesCopied.Add(int64(aligned))
+	return aligned, true
+}
+
 // Stats returns population counters; safe to call while serving.
 func (h *Handler) Stats() Stats {
 	return Stats{
 		PopulateNanos:  h.populateNanos.Load(),
 		ResidualFaults: h.residualFaults.Load(),
 		BytesCopied:    h.bytesCopied.Load(),
+		Misaligned:     h.misaligned.Load(),
 	}
 }
 
@@ -240,10 +306,10 @@ func (h *Handler) copyRegion(uffd int, m Mapping) error {
 // copier races a running guest (i.e. Options.Background):
 //
 //   - EEXIST: the guest faulted this range and it was already served.
-//   - EAGAIN: a PARTIAL copy. The kernel sets uffdio_copy.copy to the bytes it
-//     managed before contending on the address space, and expects the caller to
-//     resume from there. Treating it as fatal aborts population mid-region and
-//     silently leaves the guest demand-paging the remainder.
+//   - EAGAIN: contention on the address space, possibly after a partial copy.
+//
+// In both cases uffdio_copy.copy carries either the bytes copied or a negative
+// errno — see copied(), which is where that distinction is enforced.
 func (h *Handler) copyRange(uffd int, dst, srcOff, size uint64) error {
 	// Held across the ioctl so Close cannot unmap the source mid-copy.
 	h.memMu.RLock()
@@ -266,18 +332,44 @@ func (h *Handler) copyRange(uffd int, dst, srcOff, size uint64) error {
 			h.bytesCopied.Add(int64(size))
 			return nil
 		case unix.EEXIST:
-			return nil
-		case unix.EAGAIN:
-			if arg.copy > 0 {
-				done := uint64(arg.copy)
-				if done > size {
-					return fmt.Errorf("UFFDIO_COPY reported %d copied of %d", done, size)
-				}
-				h.bytesCopied.Add(arg.copy)
-				dst += done
-				srcOff += done
-				size -= done
+			// A page inside this range is already mapped — the guest reached it
+			// first. The kernel fills up to that page, so skip past it and keep
+			// going.
+			//
+			// Returning here instead (the original behaviour) abandons the rest of
+			// the range: the copier reports success having filled nothing past the
+			// present page, and the guest silently demand-pages the remainder.
+			// TestPopulatesAroundAlreadyPresentPage covers this and fails against
+			// the old arithmetic, abandoning ~2MiB from the first present page on.
+			//
+			// Note this is NOT the cause of the intermittent huge-pages turn
+			// failures — those persist with this fixed. Do not read this comment as
+			// an explanation for that; it remains open.
+			skip, ok := h.copied(arg.copy, "EEXIST")
+			if !ok {
+				// Nothing copied: the already-present page is at the very start of
+				// the range, so step over exactly one page to get past it.
+				skip = h.pageSize()
 			}
+			if skip >= size {
+				return nil
+			}
+			dst += skip
+			srcOff += skip
+			size -= skip
+			continue
+		case unix.EAGAIN:
+			done, ok := h.copied(arg.copy, "EAGAIN")
+			if !ok {
+				// No bytes moved — retry the same range rather than advancing.
+				continue
+			}
+			if done > size {
+				return fmt.Errorf("UFFDIO_COPY reported %d copied of %d", done, size)
+			}
+			dst += done
+			srcOff += done
+			size -= done
 			continue
 		default:
 			return fmt.Errorf("UFFDIO_COPY: %w", errno)
@@ -292,6 +384,17 @@ func (h *Handler) copyRange(uffd int, dst, srcOff, size uint64) error {
 // serveResidual answers any fault that arrives after population by copying the
 // page's whole containing region. Regions are copied wholesale, so one fault
 // resolves everything behind it.
+// wake releases any threads parked on [start, start+len). start and len must be
+// page-aligned and inside a registered region, or the kernel returns EINVAL.
+func wake(uffd int, start, len uint64) error {
+	arg := uffdioRangeArg{start: start, len: len}
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(uffd), uffdioWake,
+		uintptr(unsafe.Pointer(&arg))); errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 func (h *Handler) serveResidual(uffd int, mappings []Mapping) {
 	buf := make([]byte, uffdMsgSize)
 	for {
@@ -325,17 +428,43 @@ func (h *Handler) serveResidual(uffd int, mappings []Mapping) {
 		h.residualFaults.Add(1)
 		for _, m := range mappings {
 			if addr >= m.BaseHostVirtAddr && addr < m.BaseHostVirtAddr+m.Size {
-				// Serve just the faulting 2MiB slab rather than the whole region:
-				// the copier may still be working through it, and a huge-page
-				// aligned slab is the smallest unit UFFDIO_COPY accepts on hugetlbfs.
+				// Start at the faulting PAGE, not at the slab boundary. Anything
+				// before it may already be mapped (that is what the copier was
+				// doing), and starting there would return EEXIST before ever
+				// reaching the address the guest is blocked on.
+				page := h.pageSize()
+				rel := (addr - m.BaseHostVirtAddr) &^ (page - 1)
+				// Serve up to a slab's worth from there, so one fault also fills
+				// what follows rather than trapping again immediately.
 				const slab = 2 << 20
-				rel := (addr - m.BaseHostVirtAddr) &^ uint64(slab-1)
 				size := uint64(slab)
+				if size < page {
+					size = page
+				}
 				if rel+size > m.Size {
 					size = m.Size - rel
 				}
 				if err := h.copyRange(uffd, m.BaseHostVirtAddr+rel, m.Offset+rel, size); err != nil {
 					log.Printf("uffd: residual fault at %#x: %v", addr, err)
+				}
+				// Wake the faulting page explicitly.
+				//
+				// UFFDIO_COPY only wakes the range it actually copied, so a fault on
+				// a page that is ALREADY mapped gets EEXIST, copies nothing, and
+				// wakes nobody. The faulting thread parks in handle_userfault and
+				// never re-checks the PTE, so it blocks forever while the rest of
+				// the guest keeps running.
+				//
+				// That can happen when two faults race on one page: the first is
+				// served, the second was already queued and finds the page present.
+				//
+				// This is defensive — a redundant wake is a no-op, and one ioctl per
+				// residual fault is not worth the risk of a permanently parked guest
+				// thread. It is NOT a demonstrated fix for anything: the race above
+				// could not be reproduced in a test, since the copier's own
+				// UFFDIO_COPY already wakes the range it fills.
+				if err := wake(uffd, m.BaseHostVirtAddr+rel, page); err != nil {
+					log.Printf("uffd: wake %#x: %v", addr, err)
 				}
 				break
 			}

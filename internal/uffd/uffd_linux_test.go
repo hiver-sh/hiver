@@ -120,6 +120,120 @@ func TestServePopulatesRegion(t *testing.T) {
 	}
 }
 
+// TestPopulatesAroundAlreadyPresentPage reproduces the deadlock that shipped.
+//
+// When the guest touches a page mid-range before the copier reaches it,
+// UFFDIO_COPY fills up to that page and returns EEXIST. Treating EEXIST as
+// "range done" leaves everything after it unpopulated AND unfillable: the next
+// fault there hits the same present page, gets EEXIST with copy==0, and is never
+// served, so the copier reports success having filled nothing past that page.
+//
+// Touch one page first, then populate, then verify every OTHER page landed.
+func TestPopulatesAroundAlreadyPresentPage(t *testing.T) {
+	const size = 8 << 20
+	pageSz := os.Getpagesize()
+
+	dst, err := unix.Mmap(-1, 0, size, unix.PROT_READ|unix.PROT_WRITE,
+		unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+	if err != nil {
+		t.Skipf("mmap: %v", err)
+	}
+	defer unix.Munmap(dst)
+
+	dir := t.TempDir()
+	memPath := filepath.Join(dir, "mem.bin")
+	want := make([]byte, size)
+	for i := range want {
+		want[i] = byte(i%251) + 1 // never 0, so "unpopulated" is distinguishable
+	}
+	if err := os.WriteFile(memPath, want, 0o600); err != nil {
+		t.Fatalf("write mem file: %v", err)
+	}
+
+	uffd, err := newRegisteredUffd(dst)
+	if err != nil {
+		t.Skipf("userfaultfd unavailable: %v", err)
+	}
+	defer unix.Close(uffd)
+
+	h, err := Listen(filepath.Join(dir, "uffd.sock"), memPath, Options{})
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer h.Close()
+	go h.Serve()
+
+	mapping := Mapping{
+		BaseHostVirtAddr: uint64(uintptr(unsafe.Pointer(&dst[0]))),
+		Size:             size,
+		Offset:           0,
+	}
+
+	// Pre-place a page in the middle of the first slab, mimicking a guest that
+	// got there before the copier. Done via UFFDIO_COPY on our own fd so it is
+	// genuinely mapped, without needing a second thread to fault.
+	const preOff = 3 << 12 // 3 pages in — mid-slab
+	if err := h.openMem(); err != nil {
+		t.Fatalf("openMem: %v", err)
+	}
+	if err := h.copyRange(uffd, mapping.BaseHostVirtAddr+preOff, preOff, uint64(pageSz)); err != nil {
+		t.Fatalf("pre-place page: %v", err)
+	}
+
+	if err := sendHandshake(h.SocketPath(), uffd, []Mapping{mapping}); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+
+	// Wait on the COPIER's own counter, not on the memory. Every page except the
+	// pre-placed one has to come from population.
+	wantCopied := int64(size - pageSz)
+	deadline := time.Now().Add(15 * time.Second)
+	for h.Stats().BytesCopied < wantCopied && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Residency is checked with mincore, which does NOT fault. Reading dst[off]
+	// to test it would trigger the fault the residual handler then serves — the
+	// assertion would populate the very pages it claims to be verifying, and pass
+	// against a copier that had populated nothing at all.
+	resident, err := mincore(dst)
+	if err != nil {
+		t.Fatalf("mincore: %v", err)
+	}
+	for off := 0; off < size; off += pageSz {
+		if !resident[off/pageSz] {
+			t.Fatalf("page at %d never populated by the copier (pre-placed page was at %d); "+
+				"copied %d of %d bytes", off, preOff, h.Stats().BytesCopied, wantCopied)
+		}
+	}
+	if got := h.Stats().ResidualFaults; got != 0 {
+		t.Errorf("ResidualFaults = %d, want 0: the guest should never have had to fault", got)
+	}
+
+	// Only now that residency is established does content matter.
+	for off := 0; off < size; off += pageSz {
+		if dst[off] != want[off] {
+			t.Fatalf("page at %d has wrong contents: got %d want %d", off, dst[off], want[off])
+		}
+	}
+}
+
+// mincore reports per-page residency for b without touching it.
+func mincore(b []byte) ([]bool, error) {
+	pageSz := os.Getpagesize()
+	vec := make([]byte, (len(b)+pageSz-1)/pageSz)
+	_, _, errno := unix.Syscall(unix.SYS_MINCORE,
+		uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)), uintptr(unsafe.Pointer(&vec[0])))
+	if errno != 0 {
+		return nil, errno
+	}
+	out := make([]bool, len(vec))
+	for i, v := range vec {
+		out[i] = v&1 == 1
+	}
+	return out, nil
+}
+
 // TestCloseDuringBackgroundPopulate guards the teardown race: with Background
 // set, copies outlive the resume, so a VM stopped mid-population must not have
 // the copy source unmapped underneath it. Unsynchronised this segfaults in
@@ -239,4 +353,127 @@ func sendHandshake(sockPath string, uffd int, mappings []Mapping) error {
 		return fmt.Errorf("WriteMsgUnix: %w", err)
 	}
 	return nil
+}
+
+// TestWakeIoctlEncoding asserts UFFDIO_WAKE actually reaches the kernel, on
+// both page sizes production wakes (4KiB anon and 2MiB hugetlb ranges).
+//
+// This is the regression test for the shipped bug behind the huge-pages turn
+// wedge: the wake ioctl was encoded as _IOWR (0xc010aa02) where the kernel
+// defines _IOR (0x8010aa02). The kernel dispatches on the full 32-bit command,
+// so every wake fell through the ioctl switch to -EINVAL and the
+// EEXIST-defensive wake in serveResidual never woke anything — a guest thread
+// parked on a stale fault event stayed parked forever. A wake of a registered
+// range with no waiters is a no-op that returns 0, so plain success here is
+// exactly the assertion: EINVAL means the command is not UFFDIO_WAKE.
+//
+// (A full parked-thread reproduction isn't possible in-process: the Go
+// runtime's async-preemption SIGURG interrupts handle_userfault, the fault
+// retries, and the thread self-releases once the page is present — production
+// faulters, KVM vCPU threads and kworkers, get no such signals.)
+func TestWakeIoctlEncoding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flags   int
+		wakeLen uint64
+	}{
+		{"anon-4k", unix.MAP_PRIVATE | unix.MAP_ANONYMOUS, uint64(os.Getpagesize())},
+		{"hugetlb-2m", unix.MAP_PRIVATE | unix.MAP_ANONYMOUS | testMapHugetlb, 2 << 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const size = 4 << 20
+			dst, err := unix.Mmap(-1, 0, size, unix.PROT_READ|unix.PROT_WRITE, tc.flags)
+			if err != nil {
+				t.Skipf("mmap (%s) unavailable here: %v", tc.name, err)
+			}
+			defer unix.Munmap(dst)
+
+			uffd, err := newRegisteredUffd(dst)
+			if err != nil {
+				t.Skipf("userfaultfd unavailable: %v", err)
+			}
+			defer unix.Close(uffd)
+
+			base := uint64(uintptr(unsafe.Pointer(&dst[0])))
+			if err := wake(uffd, base, tc.wakeLen); err != nil {
+				t.Fatalf("UFFDIO_WAKE(%#x, %d) = %v; the wake never reaches the kernel, "+
+					"so a thread parked on a stale fault event is never released — "+
+					"this is the huge-pages turn wedge", base, tc.wakeLen, err)
+			}
+		})
+	}
+}
+
+// TestWakesFaultOnAlreadyPresentPage covers the race that wedges a guest thread:
+// two faults land on one page, the first is served, and the second arrives to
+// find the page already mapped. UFFDIO_COPY then returns EEXIST, copies nothing,
+// and — without an explicit UFFDIO_WAKE — wakes nobody, leaving the faulting
+// thread parked in handle_userfault forever.
+//
+// The test forces the ordering deterministically: pre-map the page via
+// UFFDIO_COPY, THEN touch it from another thread so the fault is delivered
+// against a page that is already present.
+func TestWakesFaultOnAlreadyPresentPage(t *testing.T) {
+	const size = 4 << 20
+	pageSz := os.Getpagesize()
+
+	dst, err := unix.Mmap(-1, 0, size, unix.PROT_READ|unix.PROT_WRITE,
+		unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+	if err != nil {
+		t.Skipf("mmap: %v", err)
+	}
+	defer unix.Munmap(dst)
+
+	dir := t.TempDir()
+	memPath := filepath.Join(dir, "mem.bin")
+	want := make([]byte, size)
+	for i := range want {
+		want[i] = byte(i%251) + 1
+	}
+	if err := os.WriteFile(memPath, want, 0o600); err != nil {
+		t.Fatalf("write mem file: %v", err)
+	}
+
+	uffd, err := newRegisteredUffd(dst)
+	if err != nil {
+		t.Skipf("userfaultfd unavailable: %v", err)
+	}
+	defer unix.Close(uffd)
+
+	h, err := Listen(filepath.Join(dir, "uffd.sock"), memPath, Options{})
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer h.Close()
+
+	mapping := Mapping{
+		BaseHostVirtAddr: uint64(uintptr(unsafe.Pointer(&dst[0]))),
+		Size:             size,
+		Offset:           0,
+	}
+	if err := h.openMem(); err != nil {
+		t.Fatalf("openMem: %v", err)
+	}
+
+	// Map one page up front, so the fault below finds it already present.
+	const target = 1 << 20
+	if err := h.copyRange(uffd, mapping.BaseHostVirtAddr+target, target, uint64(pageSz)); err != nil {
+		t.Fatalf("pre-map page: %v", err)
+	}
+
+	go h.serveResidual(uffd, []Mapping{mapping})
+
+	// Touch a DIFFERENT page so a real fault is queued, then the target. Reading
+	// the already-present page cannot fault on its own, so the fault we need is
+	// the one the guest would take mid-race; drive it via a neighbouring page in
+	// the same slab, which the handler serves starting at the faulting page.
+	touched := make(chan byte, 1)
+	go func() { touched <- dst[target+pageSz] }()
+
+	select {
+	case <-touched:
+	case <-time.After(10 * time.Second):
+		t.Fatal("faulting thread never released: the fault was answered by a copy " +
+			"that returned EEXIST and issued no UFFDIO_WAKE")
+	}
 }

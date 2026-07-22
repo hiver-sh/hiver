@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -88,12 +89,49 @@ func TestSessionTracksFids(t *testing.T) {
 	}
 }
 
+// TestSessionOutstandingLifecycle covers the raw-request tracking that feeds
+// reconnect re-delivery: every client request is outstanding until ANY reply
+// settles its tag (including types the parser passes through opaquely), and a
+// successful Rflush settles both the flush and its cancelled oldtag.
+func TestSessionOutstandingLifecycle(t *testing.T) {
+	s := NewSession()
+	trackVersion(s)
+	trackAttach(s, 1)
+	if len(s.outstanding) != 0 {
+		t.Fatalf("settled requests still outstanding: %d", len(s.outstanding))
+	}
+
+	// An opaque type (Tgetattr) is tracked while unanswered.
+	const tTgetattrLocal = 24
+	s.ObserveClient(frame(tTgetattrLocal, 5, func(w *builder) { w.u32(1) }))
+	if _, ok := s.outstanding[5]; !ok {
+		t.Fatal("opaque request not tracked as outstanding")
+	}
+	s.ObserveServer(frame(tTgetattrLocal+1, 5, func(w *builder) {}))
+	if _, ok := s.outstanding[5]; ok {
+		t.Fatal("answered request still outstanding")
+	}
+
+	// Rflush settles the flush AND the tag it cancelled.
+	s.ObserveClient(frame(tTgetattrLocal, 6, func(w *builder) { w.u32(1) }))
+	s.ObserveClient(frame(tTflush, 7, func(w *builder) { w.u16(6) }))
+	s.ObserveServer(frame(tTflush+1, 7, func(w *builder) {}))
+	for _, tag := range []uint16{6, 7} {
+		if _, ok := s.outstanding[tag]; ok {
+			t.Fatalf("tag %d still outstanding after Rflush", tag)
+		}
+	}
+}
+
 // fakeServer answers the replay handshake over conn and records the fids it was
 // asked to (re)establish, so the test can assert the replay reproduced them.
 type fakeServer struct {
 	attachFid uint32
 	walks     map[uint32][]string // newfid -> names (only root-origin walks)
 	opens     []uint32
+
+	mu     sync.Mutex
+	opaque []byte // types answered by the default echo, in arrival order
 }
 
 func serveFake(conn net.Conn) *fakeServer {
@@ -145,6 +183,13 @@ func serveFake(conn net.Conn) *fakeServer {
 			case tTclunk:
 				_ = c.u32()
 				_, _ = conn.Write(frame(tRclunk, tag, func(w *builder) {}))
+			default:
+				// Opaque types (Tgetattr, Tread, …): echo an empty R-message so
+				// pass-through traffic — including reconnect re-delivery — completes.
+				fs.mu.Lock()
+				fs.opaque = append(fs.opaque, msgType(m))
+				fs.mu.Unlock()
+				_, _ = conn.Write(frame(msgType(m)+1, tag, func(w *builder) {}))
 			}
 		}
 	}()

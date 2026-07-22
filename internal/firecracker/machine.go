@@ -72,6 +72,20 @@ func CommandNoConfig(bin, apiSock string) (string, []string) {
 // and a devpts PTY, independent of the system console, so dropping it is
 // transparent to the workload. Set FIRECRACKER_DEBUG_CONSOLE=1 to restore
 // console=ttyS0 when you need to watch a boot failure on the serial log.
+//
+// no-kvmapf disables KVM async page faults in the guest. With APF, a guest task
+// that touches memory the host hasn't provided yet (a uffd resume racing its
+// population) is parked by the guest kernel on an APF token and woken only by a
+// later "page ready" interrupt from KVM. That guest-visible wake can be lost
+// across a snapshot/resume cycle (firecracker#3020 is this exact signature),
+// leaving the task asleep forever while the rest of the guest — and the vCPU,
+// halted in kvm_vcpu_block — look healthy. With no-kvmapf the guest never
+// enrolls in APF, so a missing page simply blocks the vCPU in the host until
+// UFFDIO_COPY provides it: no guest-side parking, no wake to lose. The cost is
+// only that the guest can't schedule other work during a fault, which is noise
+// here — population is eager and residual faults are few (~15 per resume
+// measured). Boot-time only: enrollment is an MSR write at guest boot, so the
+// snapshot base must be re-captured for this to take effect on resumes.
 func DefaultBootArgs(guestIP, gatewayIP string) string {
 	console := ""
 	if os.Getenv("FIRECRACKER_DEBUG_CONSOLE") != "" {
@@ -79,6 +93,7 @@ func DefaultBootArgs(guestIP, gatewayIP string) string {
 	}
 	return fmt.Sprintf(
 		"%sreboot=k panic=1 pci=off i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd "+
+			"no-kvmapf "+
 			"ip=%s::%s:255.255.255.252::eth0:off "+
 			"init=/usr/bin/sbxguest",
 		console, guestIP, gatewayIP,

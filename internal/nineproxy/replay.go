@@ -191,6 +191,40 @@ func (s *Session) replayWalk(conn io.ReadWriter, target uint32, names []string) 
 	return nil
 }
 
+// ResendOutstanding re-delivers, in original send order, every request whose
+// reply never arrived. Called by Reconnect after Replay has re-established the
+// session, while the pumps are still parked, so these writes cannot interleave
+// with new kernel traffic.
+//
+// This closes the resume-loss window: a request written into the dying host
+// connection just before its RST lands "succeeds" locally and evaporates, and
+// the kernel then waits forever on the tag (p9_client_rpc, D state — the
+// huge-pages turn wedge). The requests keep their original kernel tags, so the
+// pump forwards the new server's replies straight to the waiting kernel; fid
+// references resolve because Replay re-established every tracked fid, and a fid
+// minted by an outstanding request (e.g. a Twalk's newfid) is never referenced
+// by the kernel until that request's own reply arrives.
+//
+// Re-execution is safe here: Reconnect runs only after a resume, when the old
+// server died with the old connection, so a re-delivered request cannot have
+// been executed already — the alternative to re-delivery is a permanently
+// parked guest process.
+func (s *Session) ResendOutstanding(conn io.Writer) error {
+	tags := make([]uint16, 0, len(s.outstanding))
+	for tag := range s.outstanding {
+		tags = append(tags, tag)
+	}
+	sort.Slice(tags, func(i, j int) bool {
+		return s.outstanding[tags[i]].seq < s.outstanding[tags[j]].seq
+	})
+	for _, tag := range tags {
+		if _, err := conn.Write(s.outstanding[tag].raw); err != nil {
+			return fmt.Errorf("nineproxy: resend tag %d: %w", tag, err)
+		}
+	}
+	return nil
+}
+
 func sortedFids(m map[uint32]*fidState) []uint32 {
 	out := make([]uint32, 0, len(m))
 	for f := range m {

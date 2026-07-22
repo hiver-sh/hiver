@@ -106,6 +106,68 @@ an ordinary container (lighter, shared kernel). To move every pool, set
 > you must supply the entire list. `sandboxServices:` is a map, so it's exempt —
 > see [Adding a service](#adding-a-service).
 
+### Memory backend
+
+Control how a **resumed** microVM
+gets its guest memory back. They matter only for pools that resume from a
+vm snapshot.
+
+- **`memBackend: uffd`** — serve guest memory from a userfaultfd handler that
+  populates it in the background, instead of letting firecracker map
+  `mem.bin` and demand-page it in 4KiB at a time. This is the knob to reach
+  for first: measured on the claude pool it trades ~15ms of extra snapshot-load
+  time for ~725ms less first-token latency (~15,545 faults / ~740ms down to 15
+  faults / ~125ms). Costs residency — the guest becomes fully resident on
+  resume (~514MiB vs ~271MiB measured here) instead of paging in its working
+  set, so budget the whole guest per concurrent VM, not just its working set.
+- **`hugePages: "2M"`** (or `"1G"`) — back guest memory with hugetlbfs pages
+  instead of 4KiB ones, shrinking the same working set to ~48 faults at 2MiB
+  granularity. **Implies `memBackend: uffd` on its own** — firecracker cannot
+  map a hugetlbfs-backed snapshot through the plain `File` backend — so don't
+  set `memBackend` alongside it unless you like redundant config.
+- **`hugePagesLimit`** — overrides the size of the pod's `hugepages-2Mi` (or
+  `-1Gi`) resource limit, which the chart otherwise derives from
+  `resources.requests.memory` (one guest's worth). Hugepage memory is a hard,
+  non-reclaimable allocation, separate from `resources.limits.memory`, and a
+  pool pod runs **several microVMs concurrently** — so the derived default
+  under-sizes any pool with concurrency > 1. Set it explicitly to cover peak
+  concurrent VMs per pod, or firecracker fails later VM boots once the
+  allocation is exhausted (no fallback to 4KiB pages).
+
+```yaml
+sandboxServices:
+  claude:
+    hugePages: "2M"      # implies memBackend: uffd
+    hugePagesLimit: 2Gi  # e.g. 4 concurrent VMs x 512Mi guest each
+```
+
+**Before enabling `hugePages`, two things have to be true or the guest fails
+to boot:**
+
+1. **The node has a preallocated hugetlb pool.** The chart only sets the
+   container's resource *limit* — it does not provision the node, and a guest
+   fails to boot with ENOMEM until this exists separately. On GKE, set the
+   [`hugepages_2m_count`](../gke/variables.tf) Terraform variable on the node
+   pool. This must happen at **node boot**: kubelet enumerates hugepages at
+   startup, so a pool added afterward shows up in `/proc/meminfo` but stays 0
+   in `kubectl get node -o jsonpath='{.status.capacity}'`, and pods can never
+   request it.
+2. **Any existing snapshot is re-captured.** `hugePages` is boot-time guest
+   state baked into the VM snapshot at capture time, so an existing base
+   snapshot must be re-captured before a resume sees any benefit (or boots
+   correctly at all).
+
+**When to use which:**
+
+- Default (neither set) — fine for pools that mostly cold-boot, or where
+  first-token latency on resume doesn't matter.
+- `memBackend: uffd` alone — the common case for a warmed, frequently-resumed
+  pool: faster resume without a node-level hugepage carve-out to manage.
+- `hugePages` — squeeze out the remaining fault overhead on high-concurrency
+  resume-heavy pools, in exchange for permanently reserving node memory that
+  can't be reclaimed for anything else, and remembering to keep
+  `hugePagesLimit` sized as concurrency changes.
+
 ## Upgrading
 
 `helm upgrade --install` is idempotent so the same command installs a fresh

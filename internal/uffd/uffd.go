@@ -25,6 +25,11 @@ type Options struct {
 	// Workers splits each region across N goroutines. 0 or 1 copies serially.
 	// A single UFFDIO_COPY stream does not saturate memory bandwidth.
 	Workers int
+	// HugePageSize is the guest's page size in bytes when its memory is backed by
+	// hugetlbfs (e.g. 2MiB), or 0 for ordinary 4KiB pages. UFFDIO_COPY operates
+	// at page granularity, so this is how far the handler must step when it lands
+	// on a page the guest already faulted in.
+	HugePageSize uint64
 }
 
 // Stats reports what population actually cost, for tuning Options.
@@ -36,4 +41,9 @@ type Stats struct {
 	ResidualFaults int64
 	// BytesCopied is the total moved into guest memory.
 	BytesCopied int64
+	// Misaligned counts kernel-reported byte counts that were not a multiple of
+	// the guest page size. Nonzero means the guard in advance() fired, i.e. a
+	// naive resume-at-reported-offset would have written snapshot bytes to the
+	// wrong guest addresses.
+	Misaligned int64
 }

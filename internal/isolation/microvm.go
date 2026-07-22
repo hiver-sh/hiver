@@ -1296,7 +1296,22 @@ func (m *microvm) ResumeReady(ctx context.Context) error {
 	// File path exactly as it was.
 	backend, backendPath := firecracker.MemBackendFile, m.memFile
 	if m.hugePages != "" || strings.EqualFold(m.memBackend, "uffd") {
-		h, err := uffd.Listen(filepath.Join(m.jailDir, "uffd.sock"), m.memFile, uffd.Options{Background: true, Workers: 4})
+		// Background/Workers are env-tunable so the population strategy can be
+		// changed without a rebuild. Defaults come from measuring resume against a
+		// real snapshot: background copying keeps the copy off the critical path
+		// (~20ms load vs ~95ms synchronous) and 4 workers is where residual faults
+		// stop improving. FIRECRACKER_UFFD_SYNC=1 forces the synchronous path,
+		// which is the conservative shape when a guest must not observe partially
+		// populated memory.
+		opts := uffd.Options{
+			Background: !boolEnv("FIRECRACKER_UFFD_SYNC"),
+			Workers:    intEnv("FIRECRACKER_UFFD_WORKERS", 4),
+			// UFFDIO_COPY works at guest page granularity, so the handler needs to
+			// know when that is 2MiB rather than 4KiB to step over pages the guest
+			// has already faulted in.
+			HugePageSize: hugePageBytes(m.hugePages),
+		}
+		h, err := uffd.Listen(filepath.Join(m.jailDir, "uffd.sock"), m.memFile, opts)
 		if err != nil {
 			return fmt.Errorf("start uffd handler: %w", err)
 		}
@@ -1701,6 +1716,37 @@ func envSlice(imageEnv []string, extra map[string]string) []string {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// hugePageBytes converts a MachineConfig.HugePages value ("2M", "1G") into
+// bytes, returning 0 when huge pages are off.
+func hugePageBytes(hugePages string) uint64 {
+	switch strings.ToUpper(hugePages) {
+	case "2M":
+		return 2 << 20
+	case "1G":
+		return 1 << 30
+	}
+	return 0
+}
+
+// boolEnv reports whether key is set to a truthy value ("1", "true", "yes").
+func boolEnv(key string) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// intEnv reads key as an int, falling back to def when unset or unparseable.
+func intEnv(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

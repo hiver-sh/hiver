@@ -104,6 +104,65 @@ overrides: `controller.image` / `gateway.image` (pin different control-plane
 images), `gatewayUrl` (the callback URL injected into sandboxes), and
 `proxyPassthroughAll` (disable TLS MITM in the egress proxy).
 
+### Memory backend
+
+Controls how a **resumed** microVM
+gets its guest memory back (see [Resume from a snapshot](/docs/runtime/microvm#resume-from-a-snapshot)).
+They only matter for pools that resume from a snapshot — a pool that only ever
+cold-boots has nothing for either knob to speed up.
+
+- **`memBackend: uffd`** — serve guest memory from a userfaultfd handler that
+  populates it in the background, instead of letting Firecracker map the
+  snapshot's memory file and demand-page it in 4KiB at a time. This is the
+  knob to reach for first: measured on a real pool it traded ~15ms of extra
+  snapshot-load time for ~725ms less first-token latency (~15,545 page faults
+  down to 15). It costs residency — the guest becomes fully resident on resume
+  instead of paging in its working set — so budget the whole guest's memory
+  per concurrent VM, not just its working set.
+- **`hugePages: "2M"`** (or `"1G"`) — back guest memory with hugetlbfs pages
+  instead of 4KiB ones, shrinking that same fault count roughly 300x at 2MiB
+  granularity. **Implies `memBackend: uffd` on its own** — Firecracker cannot
+  map a hugetlbfs-backed snapshot through the plain file-mapped backend — so
+  there's no need to set `memBackend` alongside it.
+- **`hugePagesLimit`** — overrides the size of the pod's `hugepages-2Mi` (or
+  `-1Gi`) resource limit, which otherwise defaults to `resources.requests.memory`
+  (one guest's worth). Hugepage memory is a hard, non-reclaimable allocation
+  kept separate from the pod's regular `memory` limit, and a pool pod runs
+  **several microVMs concurrently** — so the derived default under-sizes any
+  pool with concurrency greater than one. Set it explicitly to cover peak
+  concurrent VMs per pod, or Firecracker fails later VM boots once the
+  allocation is exhausted (there's no fallback to 4KiB pages).
+
+```yaml values.yaml
+sandboxServices:
+  claude:
+    hugePages: "2M" # implies memBackend: uffd
+    hugePagesLimit: 2Gi # e.g. 4 concurrent VMs x 512Mi guest each
+```
+
+Enabling `hugePages` also requires two things outside the chart, or the guest
+fails to boot:
+
+1. **A preallocated hugetlb pool on the node.** The chart only sets the
+   container's resource *limit* — it doesn't provision the node, and a guest
+   fails to boot with ENOMEM until a matching pool exists. This has to be
+   configured at **node boot** (on GKE, via the node pool's hugepage node
+   config): kubelet enumerates hugepages at startup, so a pool added
+   afterward shows up in `/proc/meminfo` but stays `0` in
+   `kubectl get node -o jsonpath='{.status.capacity}'`, and pods can never
+   request it.
+2. **Any existing snapshot re-captured.** `hugePages` is boot-time guest state
+   baked into the VM snapshot at capture time, so an existing base snapshot
+   must be re-captured before a resume sees any benefit — or boots correctly
+   at all.
+
+<Callout>Use `memBackend: uffd` alone for the common case: a warmed,
+frequently-resumed pool that wants faster resume without a node-level
+hugepage carve-out to manage. Reach for `hugePages` on top of it only for
+high-concurrency, resume-heavy pools where the remaining fault overhead
+matters enough to justify permanently reserving node memory that can't be
+reclaimed for anything else.</Callout>
+
 ## Adding your own service
 
 You can add a pool for your own image. It takes two steps:

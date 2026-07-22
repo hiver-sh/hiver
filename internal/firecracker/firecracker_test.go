@@ -158,7 +158,9 @@ func TestDefaultBootArgs(t *testing.T) {
 	if strings.Contains(got, "console=ttyS0") {
 		t.Errorf("boot args %q should not contain console=ttyS0 by default", got)
 	}
-	for _, want := range []string{"ip=172.16.0.2::172.16.0.1:", "init=/usr/bin/sbxguest"} {
+	// no-kvmapf keeps guest tasks from parking on KVM async-PF tokens whose
+	// "page ready" wake can be lost across a uffd snapshot resume.
+	for _, want := range []string{"ip=172.16.0.2::172.16.0.1:", "init=/usr/bin/sbxguest", "no-kvmapf"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("boot args %q missing %q", got, want)
 		}

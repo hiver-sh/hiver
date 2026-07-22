@@ -16,9 +16,16 @@
 // re-walk + re-open every live fid using the SAME fid numbers the kernel still
 // holds — then resumes proxying. The mount, and the workload's cwd, never break.
 //
-// Correctness assumption: the guest is quiesced before the snapshot (the snapshot
-// action flushes first), so no request is in flight across the cut. fid mutations
-// are committed only on a successful reply, matched by tag.
+// Requests in flight when the host connection dies are NOT lost: every
+// unanswered request's raw bytes are kept (Session.outstanding) and re-delivered
+// on the new connection after the session replay. This matters on resume — the
+// guest can issue a request in the window between the VM resuming and the dead
+// connection's RST arriving; that write succeeds into the doomed socket buffer
+// and evaporates, and kernel v9fs would otherwise wait forever on the tag
+// (p9_client_rpc, D state), wedging the requesting process. The snapshot action
+// still quiesces the guest before the cut (fid mutations are committed only on a
+// successful reply, matched by tag), so re-delivery cannot double-execute: the
+// old server died with the old connection before executing anything unanswered.
 package nineproxy
 
 import (
@@ -39,6 +46,7 @@ const (
 	tRattach    = 105
 	tTwalk      = 110
 	tRwalk      = 111
+	tTflush     = 108
 	tTclunk     = 120
 	tRclunk     = 121
 	tTremove    = 122
@@ -70,15 +78,33 @@ type Session struct {
 
 	// attach params, captured from the first successful Tattach so Replay can
 	// reissue the exact same attach.
-	rootFid uint32
-	afid    uint32
-	uname   string
-	aname   string
-	nUname  uint32
+	rootFid    uint32
+	afid       uint32
+	uname      string
+	aname      string
+	nUname     uint32
 	haveAttach bool
 
 	fids    map[uint32]*fidState
-	pending map[uint16]*pending // outstanding requests by tag
+	pending map[uint16]*pending // outstanding fid mutations by tag
+
+	// outstanding holds the raw bytes of EVERY client request whose reply has
+	// not yet arrived, in send order. This is what makes a resume survivable for
+	// a request the dying host connection swallowed: a TCP write into a
+	// dead-but-not-yet-RST'd connection SUCCEEDS locally and the bytes evaporate,
+	// so the kernel waits forever on a tag the server never saw. 9p has no
+	// client-side timeout — that wait is p9_client_rpc in D state, wedging
+	// whatever guest process touched the workspace (the huge-pages turn-failure
+	// signature). Reconnect re-delivers these after Replay.
+	outstanding map[uint16]outstandingReq
+	outSeq      uint64
+}
+
+// outstandingReq is one unanswered client request: its raw framed bytes and a
+// send-order sequence so re-delivery preserves the original order.
+type outstandingReq struct {
+	seq uint64
+	raw []byte
 }
 
 // pending is an in-flight request whose fid mutation is applied only when its
@@ -98,15 +124,18 @@ type pending struct {
 	// version
 	msize   uint32
 	version string
+	// flush
+	oldtag uint16
 }
 
 // NewSession returns an empty tracker.
 func NewSession() *Session {
 	return &Session{
-		msize:   defaultMsize,
-		version: versionString,
-		fids:    map[uint32]*fidState{},
-		pending: map[uint16]*pending{},
+		msize:       defaultMsize,
+		version:     versionString,
+		fids:        map[uint32]*fidState{},
+		pending:     map[uint16]*pending{},
+		outstanding: map[uint16]outstandingReq{},
 	}
 }
 
@@ -152,12 +181,17 @@ func msgTag(m []byte) uint16  { return binary.LittleEndian.Uint16(m[5:]) }
 func msgBody(m []byte) []byte { return m[headerLen:] }
 
 // ObserveClient updates pending state from a host→… T-message (kernel→server).
-// It records the intended mutation; ObserveServer commits it on success.
+// It records the intended mutation; ObserveServer commits it on success. Every
+// request — including types this parser passes through opaquely, like Tgetattr
+// and Tread — is also recorded in outstanding until its reply settles the tag,
+// so a reconnect can re-deliver what the dead connection swallowed.
 func (s *Session) ObserveClient(m []byte) {
 	if len(m) < headerLen {
 		return
 	}
 	tag := msgTag(m)
+	s.outSeq++
+	s.outstanding[tag] = outstandingReq{seq: s.outSeq, raw: m}
 	c := &cursor{b: msgBody(m)}
 	switch msgType(m) {
 	case tTversion:
@@ -195,6 +229,13 @@ func (s *Session) ObserveClient(m []byte) {
 	case tTremove:
 		fid := c.u32()
 		s.pending[tag] = &pending{typ: tTremove, fid: fid}
+	case tTflush:
+		// The kernel is cancelling oldtag. Its Rflush settles BOTH tags: the
+		// server will never answer oldtag after acking the flush, so oldtag must
+		// not linger in outstanding (a reconnect would resurrect a request the
+		// kernel no longer waits on).
+		oldtag := c.u16()
+		s.pending[tag] = &pending{typ: tTflush, oldtag: oldtag}
 	case tTxattrwalk:
 		// An xattr fid is created on newfid; we cannot cleanly re-walk it. Mark
 		// newfid untracked so Replay skips it (xattr fids are short-lived and very
@@ -204,12 +245,14 @@ func (s *Session) ObserveClient(m []byte) {
 }
 
 // ObserveServer commits or discards a pending mutation based on a …→host
-// R-message (server→kernel).
+// R-message (server→kernel). Any reply settles its tag's outstanding entry,
+// whether or not the request type was parsed.
 func (s *Session) ObserveServer(m []byte) {
 	if len(m) < headerLen {
 		return
 	}
 	tag := msgTag(m)
+	delete(s.outstanding, tag)
 	p := s.pending[tag]
 	if p == nil {
 		return
@@ -221,6 +264,13 @@ func (s *Session) ObserveServer(m []byte) {
 	// Tremove clunks its fid regardless of success/failure.
 	if p.typ == tTremove {
 		delete(s.fids, p.fid)
+		return
+	}
+	// Rflush: the server promises never to answer oldtag; drop it everywhere so
+	// a reconnect doesn't re-deliver a cancelled request.
+	if p.typ == tTflush {
+		delete(s.outstanding, p.oldtag)
+		delete(s.pending, p.oldtag)
 		return
 	}
 	if typ == tRlerror {
