@@ -365,10 +365,11 @@ export function buildRows(
     } else if (
       event.type === "system.start" ||
       event.type === "system.config-changed" ||
+      event.type === "system.vm-resumed" ||
       event.type === "system.shutdown"
     ) {
-      // Lifecycle transitions (start / config-changed / shutdown) render as
-      // point markers on a single row grouped under Resources.
+      // Lifecycle transitions (start / config-changed / vm-resumed / shutdown)
+      // render as point markers on a single row grouped under Resources.
       getOrCreateRow("system", "system", "lifecycle", undefined, true).bars.push(
         {
           id: event.id,

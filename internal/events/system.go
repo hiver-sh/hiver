@@ -26,6 +26,16 @@ func SystemShutdown() Factory {
 	}
 }
 
+// SystemVmResumed builds a Factory for the `system.vm-resumed` lifecycle event —
+// a microVM was resumed from a snapshot instead of cold booting.
+func SystemVmResumed() Factory {
+	return func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromSystemVmResumedEvent(gen.SystemVmResumedEvent{Id: int(id), Timestamp: ts})
+		return ev
+	}
+}
+
 // SystemConfigChanged builds a Factory for the `system.config-changed` lifecycle
 // event, recording the full config as of the change.
 func SystemConfigChanged(cfg gen.SandboxConfig) Factory {

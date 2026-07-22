@@ -453,10 +453,16 @@ class IngressResponseEvent(_SandboxEventBase):
 class SystemEvent(_SandboxEventBase):
     """A sandbox lifecycle transition: ``system.start`` when the request to start
     the VM or container is first received, ``system.config-changed`` when the
-    config is updated (``config`` carries the new config), and ``system.shutdown``
-    when the sandbox expires its TTL without activity."""
+    config is updated (``config`` carries the new config), ``system.vm-resumed``
+    when a microVM is resumed from a snapshot instead of cold booting, and
+    ``system.shutdown`` when the sandbox expires its TTL without activity."""
 
-    type: Literal["system.start", "system.config-changed", "system.shutdown"]
+    type: Literal[
+        "system.start",
+        "system.config-changed",
+        "system.vm-resumed",
+        "system.shutdown",
+    ]
     config: Optional[SandboxConfig] = None
 
 

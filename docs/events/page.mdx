@@ -42,6 +42,7 @@ The stream auto-reconnects on network drops (exponential backoff). Pass a `signa
 | `exec.response` | `request_id` | Exec call completed |
 | `system.start` | — | The request to start the VM or container was received |
 | `system.config-changed` | `config` | Config was updated; `config` is the new config |
+| `system.vm-resumed` | — | A microVM was resumed from a snapshot instead of cold booting |
 | `system.shutdown` | — | The sandbox expired its TTL without activity and is shutting down |
 
 `access` on `egress.request` and `fs.request` is `"allowed"` or `"denied"`.

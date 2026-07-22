@@ -775,6 +775,7 @@ function RowDetailPanelInner({
   if (
     req.type === "system.start" ||
     req.type === "system.config-changed" ||
+    req.type === "system.vm-resumed" ||
     req.type === "system.shutdown"
   ) {
     const label = req.type.slice("system.".length);

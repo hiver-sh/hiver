@@ -601,6 +601,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 				return failVM("resume snapshot: %w", rErr)
 			}
 			phase.mark("pack " + key + ": snapshot resume")
+			broker.PublishSilent(events.SystemVmResumed())
 		}
 	} else {
 		agentBin, agentArgs, lerr := iso.LaunchAgent(isolation.AgentConfig{

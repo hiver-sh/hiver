@@ -404,6 +404,15 @@ type SystemStartEvent struct {
 	Type      string    `json:"type"`
 }
 
+// SystemVmResumedEvent defines model for SystemVmResumedEvent.
+type SystemVmResumedEvent struct {
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id        int       `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
 // AsConfigApplyEvent returns the union data inside the SandboxEvent as a ConfigApplyEvent
 func (t SandboxEvent) AsConfigApplyEvent() (ConfigApplyEvent, error) {
 	var body ConfigApplyEvent
@@ -824,6 +833,34 @@ func (t *SandboxEvent) MergeSystemConfigChangedEvent(v SystemConfigChangedEvent)
 	return err
 }
 
+// AsSystemVmResumedEvent returns the union data inside the SandboxEvent as a SystemVmResumedEvent
+func (t SandboxEvent) AsSystemVmResumedEvent() (SystemVmResumedEvent, error) {
+	var body SystemVmResumedEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSystemVmResumedEvent overwrites any union data inside the SandboxEvent as the provided SystemVmResumedEvent
+func (t *SandboxEvent) FromSystemVmResumedEvent(v SystemVmResumedEvent) error {
+	v.Type = "system.vm-resumed"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSystemVmResumedEvent performs a merge with any union data inside the SandboxEvent, using the provided SystemVmResumedEvent
+func (t *SandboxEvent) MergeSystemVmResumedEvent(v SystemVmResumedEvent) error {
+	v.Type = "system.vm-resumed"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsSystemShutdownEvent returns the union data inside the SandboxEvent as a SystemShutdownEvent
 func (t SandboxEvent) AsSystemShutdownEvent() (SystemShutdownEvent, error) {
 	var body SystemShutdownEvent
@@ -898,6 +935,8 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 		return t.AsSystemShutdownEvent()
 	case "system.start":
 		return t.AsSystemStartEvent()
+	case "system.vm-resumed":
+		return t.AsSystemVmResumedEvent()
 	default:
 		return nil, errors.New("unknown discriminator value: " + discriminator)
 	}

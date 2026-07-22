@@ -76,6 +76,8 @@ function eventBadge(event: SandboxEvent): {
       return { label: "start", variant: "orange" };
     case "system.config-changed":
       return { label: "config-changed", variant: "orange" };
+    case "system.vm-resumed":
+      return { label: "vm-resumed", variant: "orange" };
     case "system.shutdown":
       return { label: "shutdown", variant: "orange" };
     default:
@@ -249,6 +251,12 @@ function EventDetail({ event }: { event: SandboxEvent }) {
       return (
         <span className="font-mono text-xs text-muted-foreground">
           config updated
+        </span>
+      );
+    case "system.vm-resumed":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          vm resumed from snapshot
         </span>
       );
     case "system.shutdown":

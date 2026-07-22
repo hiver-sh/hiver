@@ -21,6 +21,7 @@ components:
         - $ref: '#/components/schemas/IngressChunkEvent'
         - $ref: '#/components/schemas/SystemStartEvent'
         - $ref: '#/components/schemas/SystemConfigChangedEvent'
+        - $ref: '#/components/schemas/SystemVmResumedEvent'
         - $ref: '#/components/schemas/SystemShutdownEvent'
       discriminator:
         propertyName: type
@@ -40,6 +41,7 @@ components:
           ingress.chunk: '#/components/schemas/IngressChunkEvent'
           system.start: '#/components/schemas/SystemStartEvent'
           system.config-changed: '#/components/schemas/SystemConfigChangedEvent'
+          system.vm-resumed: '#/components/schemas/SystemVmResumedEvent'
           system.shutdown: '#/components/schemas/SystemShutdownEvent'
 
     SandboxEventBase:
@@ -568,6 +570,23 @@ components:
               access: allow
               methods: [GET]
               paths: [/repos/*]
+
+    SystemVmResumedEvent:
+      description: |
+        Emitted when a microVM is resumed from a snapshot instead of cold
+        booting. Not emitted for container isolation or cold-boot microVMs.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              const: system.vm-resumed
+      example:
+        type: system.vm-resumed
+        id: 2
+        timestamp: "2026-06-02T14:22:00Z"
 
     SystemShutdownEvent:
       description: |

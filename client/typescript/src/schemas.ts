@@ -908,13 +908,18 @@ type _AssertIngressChunkEvent = Expect<
 >;
 
 export interface SystemEvent extends SandboxEventBase {
-  type: "system.start" | "system.config-changed" | "system.shutdown";
+  type:
+    | "system.start"
+    | "system.config-changed"
+    | "system.vm-resumed"
+    | "system.shutdown";
   config?: SandboxConfig;
 }
 export const SystemEvent = SandboxEventBase.extend({
   type: z.enum([
     "system.start",
     "system.config-changed",
+    "system.vm-resumed",
     "system.shutdown",
   ]),
   config: SandboxConfig.optional(),

@@ -127,7 +127,11 @@ type SandboxEventVariant =
   | {
       id: number;
       timestamp: string;
-      type: "system.start" | "system.config-changed" | "system.shutdown";
+      type:
+        | "system.start"
+        | "system.config-changed"
+        | "system.vm-resumed"
+        | "system.shutdown";
       // Present on system.config-changed: the config in effect after the change.
       config?: unknown;
     };
