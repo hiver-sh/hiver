@@ -205,7 +205,10 @@ hiver bundle ./docker/mytool --entrypoint="tail -f /dev/null" --microvm \
 ```
 
 - `--entrypoint` sets the command each sandbox starts with — use a long-running
-  one like `tail -f /dev/null` for a general-purpose pool you exec into.
+  one like `tail -f /dev/null` for a general-purpose pool you exec into. Omit it
+  for an image with its own resident entrypoint that should launch
+  automatically (e.g. a server the sandbox proxies to) — passing `--entrypoint`
+  there silently replaces that process with the keepalive and it never starts.
 - `--microvm` builds the microvm variant; omit it for the container variant.
   Build only the variant(s) your pool's `isolation` uses.
 - `--tag` names the result; `--push --platform ...` publishes it as a multi-arch

@@ -322,51 +322,76 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # entrypoint: "tail -f /dev/null" marks a generic exec-into pool whose
+          # real workload arrives per-sandbox as a SandboxConfig entrypoint
+          # override. browser is NOT one of these: it ships its own resident
+          # ENTRYPOINT (chromehost) baked into ./docker/browser/Dockerfile and
+          # must launch automatically, so it's bundled with no override — same
+          # as the Makefile's bundle-sandbox-images/bundle-microvm-sandbox-images
+          # targets already do. Applying the keepalive override here too would
+          # silently replace chromehost with a no-op and the browser image would
+          # never start (see incident: browser sandboxes 502ing on port 9223).
           - source: ./docker/agent-base
             tag: hiversh/agent-base:latest
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/claude
             tag: hiversh/claude:latest
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/codex
             tag: hiversh/codex:latest
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/copilot
             tag: hiversh/copilot:latest
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/openclaw
             tag: hiversh/openclaw:latest
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/antigravity
             tag: hiversh/antigravity:latest
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/browser
             tag: hiversh/browser:latest
           - source: python:3.13-alpine
             tag: hiversh/python:3.13-alpine
+            entrypoint: "tail -f /dev/null"
           - source: node:alpine
             tag: hiversh/node:alpine
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/agent-base
             tag: hiversh/agent-base:latest-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/claude
             tag: hiversh/claude:latest-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/codex
             tag: hiversh/codex:latest-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/copilot
             tag: hiversh/copilot:latest-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/openclaw
             tag: hiversh/openclaw:latest-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/antigravity
             tag: hiversh/antigravity:latest-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
           - source: ./docker/browser
             tag: hiversh/browser:latest-microvm
             bundler-flags: "--microvm"
           - source: python:3.13-alpine
             tag: hiversh/python:3.13-alpine-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
           - source: node:alpine
             tag: hiversh/node:alpine-microvm
             bundler-flags: "--microvm"
+            entrypoint: "tail -f /dev/null"
     steps:
       - uses: actions/checkout@v4
 
@@ -401,6 +426,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.current }}
           TAG: ${{ matrix.tag }}
+          ENTRYPOINT: ${{ matrix.entrypoint }}
         run: |
           # Idempotent re-runs (e.g. finishing a half-completed release): skip if
           # this image's versioned tag already exists, so we don't re-bundle and
@@ -417,8 +443,14 @@ jobs:
             echo "${repo}:${vt} already exists, skipping bundle of ${TAG}."
             exit 0
           fi
+          # ENTRYPOINT is empty for images (browser) that ship their own resident
+          # entrypoint and must launch it automatically — see the matrix comment.
+          entrypoint_flag=()
+          if [ -n "$ENTRYPOINT" ]; then
+            entrypoint_flag=(--entrypoint="$ENTRYPOINT")
+          fi
           hiver bundle ${{ matrix.source }} \
-            --entrypoint="tail -f /dev/null" \
+            "${entrypoint_flag[@]}" \
             ${{ matrix.bundler-flags }} \
             --tag "${TAG}" \
             --push \
