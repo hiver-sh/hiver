@@ -159,7 +159,10 @@ func (h *SandboxHandlers) StreamPodEvents(c *gin.Context) {
 // JSON request body; an empty/absent body yields a default config.
 func (h *SandboxHandlers) CreateSandbox(c *gin.Context, key gen.Key) {
 	if sb, ok := h.sup.Sandbox(key); ok {
-		c.JSON(http.StatusOK, h.sandboxRef(sb))
+		ref := h.sandboxRef(sb)
+		c.Header("x-hiver-sandbox-id", ref.Id.String())
+		c.Header("x-hiver-sandbox-key", ref.Key)
+		c.JSON(http.StatusOK, ref)
 		return
 	}
 
@@ -182,7 +185,17 @@ func (h *SandboxHandlers) CreateSandbox(c *gin.Context, key gen.Key) {
 		}
 		return
 	}
-	c.JSON(http.StatusCreated, h.sandboxRef(sb))
+	ref := h.sandboxRef(sb)
+	// Mirror the controller's GetOrCreateSandbox (controller_handlers.go): the
+	// inspector's nested-sandbox detection (relayLinkedSandboxEvents.ts) watches
+	// egress.response events for these headers to discover sandboxes spawned by
+	// another sandbox. Creates routed straight to this pod (Kubernetes/microVM,
+	// see sandboxRef's doc comment) bypass the controller entirely, so without
+	// this the headers never reach that egress.response event and detection
+	// silently fails on that backend.
+	c.Header("x-hiver-sandbox-id", ref.Id.String())
+	c.Header("x-hiver-sandbox-key", ref.Key)
+	c.JSON(http.StatusCreated, ref)
 }
 
 // sandboxRef builds the create response: the host pod's routing id, the sandbox
