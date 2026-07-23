@@ -2,6 +2,31 @@ apiVersion: v1
 entries:
   hiver:
   - apiVersion: v2
+    appVersion: 0.1.42
+    created: "2026-07-23T19:43:23.921215383Z"
+    description: 'Hiver control plane (controller + Envoy gateway) plus the per-service
+      sandbox pools. The gateway''s per-service Envoy routes/clusters and the Deployment+Service
+      are both generated from a single .Values.sandboxServices map, so adding a service
+      is one entry. Each service selects its runtime isolation (microvm or container)
+      with a per-service isolation field. '
+    digest: e5b9fea355a0fe85222ea5fb88892d1760669fc11319ada1678b4a6062be233a
+    home: https://github.com/hiver-sh/hiver
+    keywords:
+    - sandbox
+    - ai-agents
+    - envoy
+    - microvm
+    maintainers:
+    - name: hiver-sh
+      url: https://github.com/hiver-sh
+    name: hiver
+    sources:
+    - https://github.com/hiver-sh/hiver
+    type: application
+    urls:
+    - https://github.com/hiver-sh/hiver/releases/download/v0.1.42/hiver-0.1.42.tgz
+    version: 0.1.42
+  - apiVersion: v2
     appVersion: 0.1.41
     created: "2026-07-23T06:13:59.427289746Z"
     description: 'Hiver control plane (controller + Envoy gateway) plus the per-service
@@ -296,4 +321,4 @@ entries:
     urls:
     - https://github.com/hiver-sh/hiver/releases/download/v0.1.30/hiver-0.1.30.tgz
     version: 0.1.30
-generated: "2026-07-23T06:13:59.42615217Z"
+generated: "2026-07-23T19:43:23.920039093Z"
