@@ -94,7 +94,7 @@ export const COMMANDS: CommandSpec[] = [
   },
   {
     name: "bundle",
-    summary: "Add runtime to OCI image",
+    summary: "Prepare OCI image",
     entry: "bundle/index.ts",
     usage: [
       "hiver bundle <image>",

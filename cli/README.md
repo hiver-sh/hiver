@@ -30,7 +30,7 @@ npx -y @hiver.sh/cli
     list     List the sandboxes
     events   Stream a sandbox's events live as they happen
     inspect  Launch the inspector
-    bundle   Add runtime to OCI image
+    bundle   Prepare OCI image
 ```
 
 ### Hiver Inspector

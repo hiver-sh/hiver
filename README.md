@@ -61,7 +61,7 @@ The CLI manages sandboxes, streams live events, and launches the inspector:
     list           List the sandboxes
     events         Stream a sandbox's events live as they happen
     inspect        Launch the inspector
-    bundle         Add runtime to OCI image
+    bundle         Prepare OCI image
 
   Run hiver <command> --help for command details.
 ```
