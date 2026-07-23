@@ -27,9 +27,11 @@ async function main() {
 
   const content = fs.readFileSync(src);
 
-  const sandbox = await getOrCreateSandbox('browser-vm', {
+  const key = process.env.BROWSER_SANDBOX_KEY || 'browser-vm';
+  const snapshotKey = process.env.BROWSER_SNAPSHOT_KEY || 'browser-vm';
+  const sandbox = await getOrCreateSandbox(key, {
     image: 'browser',
-    snapshot: { vm: { key: 'browser-vm' } }
+    snapshot: { vm: { key: snapshotKey } }
   });
 
   const destPath = path.posix.join(DESTINATION, filename);

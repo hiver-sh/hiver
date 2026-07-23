@@ -10,9 +10,11 @@ const SOCKET_PATH = '/tmp/cdp.sock';
 try { fs.unlinkSync(SOCKET_PATH); } catch {}
 
 async function main() {
-  const sandbox = await getOrCreateSandbox('browser-vm', {
+  const key = process.env.BROWSER_SANDBOX_KEY || 'browser-vm';
+  const snapshotKey = process.env.BROWSER_SNAPSHOT_KEY || 'browser-vm';
+  const sandbox = await getOrCreateSandbox(key, {
     image: 'browser',
-    snapshot: { vm: { key: 'browser-vm' } }
+    snapshot: { vm: { key: snapshotKey } }
   });
 
   const wsUrl = sandbox.proxyUrl(9223).replace(/^http/, 'ws') + 'cdp';

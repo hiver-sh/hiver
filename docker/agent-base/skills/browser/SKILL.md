@@ -1,6 +1,6 @@
 ---
 name: browser
-description: Drive a real headless Chrome in a sandbox via the Chrome DevTools Protocol (CDP). Use when you need to load JavaScript-heavy or login-gated pages, click/type/scroll, fill forms, or extract content that a plain HTTP fetch can't render. Prefer reading the accessibility tree to understand a page; screenshots are a last resort. Not for simple static-page fetches.
+description: Drive a headless browser via the Chrome DevTools Protocol (CDP). Use when you need to load JavaScript-heavy or login-gated pages, click/type/scroll, fill forms, or extract content that a plain HTTP fetch can't render. Prefer reading the accessibility tree to understand a page; screenshots are a last resort. Not for simple static-page fetches.
 ---
 
 # Browser
