@@ -178,6 +178,15 @@ func (m *mountManager) maybeRestore(sp *spec.Spec) {
 	}
 	log.Printf("sandboxd: snapshot: restoring %s", src)
 	if err := m.iso.RestoreSnapshot(src, f.Include); err != nil {
-		log.Fatalf("snapshot restore: %v", err)
+		// A restore failure must never bring the daemon down: sandboxd is shared by
+		// every co-tenant pack in the pod, so log.Fatal here would kill the egress
+		// proxy and all their sandboxes over one bad snapshot. Corrupt/truncated
+		// tarballs are already handled inside snapshot.Restore, but the overlay-image
+		// loop-mount can still fail (e.g. a dirty/corrupt ext4 → "structure needs
+		// cleaning"). Treat any such failure like "no snapshot": log and continue, so
+		// this one pack cold-boots on the base image state (losing only its
+		// snapshotted /workspace + transcript) instead of cascading pod-wide.
+		log.Printf("sandboxd: snapshot: restore %s failed (%v); starting fresh", src, err)
+		return
 	}
 }
