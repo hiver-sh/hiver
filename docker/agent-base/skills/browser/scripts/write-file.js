@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { getOrCreateSandbox } = require('@hiver.sh/client');
+const { loadBrowserConfig } = require('./browser-config');
 
 // Mount the file lands under. Must match a configured fs[].mount on the browser
 // image; /workspace is the default agent-visible mount.
@@ -27,11 +28,10 @@ async function main() {
 
   const content = fs.readFileSync(src);
 
-  const key = process.env.BROWSER_SANDBOX_KEY || 'browser-vm';
-  const snapshotKey = process.env.BROWSER_SNAPSHOT_KEY || 'browser-vm';
-  const sandbox = await getOrCreateSandbox(key, {
+  const { sandboxKey, snapshotVmKey } = loadBrowserConfig();
+  const sandbox = await getOrCreateSandbox(sandboxKey, {
     image: 'browser',
-    snapshot: { vm: { key: snapshotKey } }
+    snapshot: { vm: { key: snapshotVmKey } }
   });
 
   const destPath = path.posix.join(DESTINATION, filename);

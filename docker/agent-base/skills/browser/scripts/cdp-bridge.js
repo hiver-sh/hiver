@@ -5,16 +5,16 @@ const { execSync } = require('child_process');
 
 const { getOrCreateSandbox } = require('@hiver.sh/client');
 const WebSocket = require('ws');
+const { loadBrowserConfig } = require('./browser-config');
 
 const SOCKET_PATH = '/tmp/cdp.sock';
 try { fs.unlinkSync(SOCKET_PATH); } catch {}
 
 async function main() {
-  const key = process.env.BROWSER_SANDBOX_KEY || 'browser-vm';
-  const snapshotKey = process.env.BROWSER_SNAPSHOT_KEY || 'browser-vm';
-  const sandbox = await getOrCreateSandbox(key, {
+  const { sandboxKey, snapshotVmKey } = loadBrowserConfig();
+  const sandbox = await getOrCreateSandbox(sandboxKey, {
     image: 'browser',
-    snapshot: { vm: { key: snapshotKey } }
+    snapshot: { vm: { key: snapshotVmKey } }
   });
 
   const wsUrl = sandbox.proxyUrl(9223).replace(/^http/, 'ws') + 'cdp';
