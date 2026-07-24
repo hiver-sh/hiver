@@ -5,7 +5,32 @@ description: Drive a headless browser via the Chrome DevTools Protocol (CDP). Us
 
 # Browser
 
-Start the bridge by running `cdp-bridge.js`:
+## Quick start — open a URL in one step
+
+Start the bridge in the background and open your target URL in a **single command**.
+`cdp-open.js` retries the socket until the bridge is up, then attaches to the page,
+navigates, waits for load, and prints the page's `sessionId`:
+
+```bash
+node /home/agent/.claude/skills/browser/scripts/cdp-bridge.js > /tmp/cdp-bridge.log 2>&1 &
+echo $! > /tmp/cdp-bridge.pid
+node /home/agent/.claude/skills/browser/scripts/cdp-open.js "https://mail.google.com/mail/u/0/#inbox"
+# -> {"sessionId":"<SID>","url":"https://mail.google.com/mail/u/0/#inbox"}
+```
+
+Keep that `<SID>` — pass it to `cdp-eval.js` / `cdp-send.js` for every later
+interaction (see below). Because `cdp-open.js` already did the attach, you do **not**
+need a separate `Target.attachToTarget` step. To navigate again later, just call
+`cdp-open.js "<url>"` again.
+
+Do the whole opening in **one** tool call — launching the bridge and running
+`cdp-open.js` back-to-back — rather than as separate steps; each extra step is an
+extra model round-trip before the page even starts loading.
+
+## Starting the bridge manually
+
+If you need the bridge without immediately navigating (e.g. to drive an
+already-open page), start it alone:
 
 ```bash
 node /home/agent/.claude/skills/browser/scripts/cdp-bridge.js > /tmp/cdp-bridge.log 2>&1 &
@@ -27,6 +52,10 @@ node /home/agent/.claude/skills/browser/scripts/cdp-send.js '{"id":1,"method":"B
 ```
 
 ### Attach to the page target first (mandatory, once per session)
+
+If you opened the page with `cdp-open.js`, it already attached and printed the
+`sessionId` — reuse that and **skip this section**. Only do the manual attach below
+when you started the bridge without navigating.
 
 Before any `Runtime.evaluate` / DOM work you **must** attach to the page target and
 then pass its `sessionId` on **every** subsequent command. Skipping this doesn't
