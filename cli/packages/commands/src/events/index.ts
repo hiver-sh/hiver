@@ -13,10 +13,19 @@ const cmd = withGateway(
 )
   .argument("<sandbox-key>", "sandbox to stream events from")
   .option("--start-event-id <id>", "start streaming from this event id")
+  .option(
+    "--jq <filter>",
+    "filter/transform each event through a jq expression",
+  )
   .option("-f, --follow", "keep streaming and reconnect if the server closes");
 run(cmd);
 const key = cmd.args[0];
-const { gatewayUrl: gatewayFlag, startEventId, follow } = cmd.opts();
+const {
+  gatewayUrl: gatewayFlag,
+  startEventId,
+  jq: jqFilter,
+  follow,
+} = cmd.opts();
 let gatewayUrl = resolveGatewayUrl(gatewayFlag);
 gatewayUrl = await ensureGateway(gatewayUrl);
 
@@ -39,6 +48,39 @@ process.on("SIGINT", () => {
   ac.abort();
   process.exit(0);
 });
+
+// `emit` renders one event to stdout. Without `--jq` that's the raw JSON line;
+// with it, each event is run through jq (the real thing, compiled to WASM) as
+// its own single-document input — so `select(...)` drops events, `.foo` projects
+// a field, and a filter yielding multiple values prints one line each, matching
+// how `hiver events <key> | jq <filter>` would behave.
+let emit = (obj: unknown) => console.log(JSON.stringify(obj));
+if (jqFilter !== undefined) {
+  const { loadJq } = await import("jq-wasm");
+  const jq = await loadJq();
+  // Fail fast on a malformed program. jq-wasm reports a compile/syntax error as
+  // exit code 3; probe once against `null` and surface only that. A runtime
+  // error there (exit 5) is expected — it says nothing about the real events —
+  // so we let it pass.
+  const probe = jq.raw(null, jqFilter);
+  if (probe.exitCode === 3) {
+    console.error(
+      `\n  ${red("✖")} invalid jq filter: ${dim(probe.stderr.trim())}\n`,
+    );
+    process.exit(1);
+  }
+  emit = (obj: unknown) => {
+    const { stdout, stderr, exitCode } = jq.raw(obj as object, jqFilter);
+    if (exitCode !== 0) {
+      // Per-event runtime error (e.g. the filter hits a field of the wrong type
+      // on this event). Report it but keep the stream going.
+      console.error(`  ${red("✖")} jq: ${dim(stderr.trim())}`);
+      return;
+    }
+    // jq produces no output for a non-matching `select`; skip those entirely.
+    if (stdout !== "") console.log(stdout);
+  };
+}
 
 const tty = process.stdout.isTTY;
 if (tty) console.log();
@@ -73,7 +115,7 @@ for (const event of stored) {
   const raw: Record<string, unknown> = { ...event };
   delete raw.sandbox_id;
   delete raw.sandbox_key;
-  console.log(JSON.stringify(raw));
+  emit(raw);
 }
 
 try {
@@ -92,7 +134,7 @@ try {
     } catch {
       // best-effort — a write failure must not interrupt the stream
     }
-    console.log(JSON.stringify(event));
+    emit(event);
   }
   if (tty) console.log();
 } catch (err) {

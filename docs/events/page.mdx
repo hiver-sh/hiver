@@ -103,3 +103,35 @@ for await (const event of sandbox.getEventsStream()) {
   }
 }
 ```
+
+## From the CLI
+
+`hiver events <sandbox-key>` streams the same events to your terminal as JSON, one per line:
+
+```sh
+hiver events my-sandbox            # replay history, then stream live
+hiver events my-sandbox --follow   # keep streaming and reconnect on close
+```
+
+Pass `--jq <filter>` to run each event through a [jq](https://jqlang.org/) expression before it's printed. The filter is applied to **one event at a time**, so `select(...)` drops events, `.field` projects, and a filter that yields multiple values prints one line each — the same as piping to `jq`, but built in:
+
+```sh
+# only denied egress requests
+hiver events my-sandbox --jq 'select(.type == "egress.request" and .access == "denied")'
+
+# a set of event types
+hiver events my-sandbox --jq 'select(.type | IN("exec.request","fs.request","stdio"))'
+
+# just the command of each exec call
+hiver events my-sandbox --jq 'select(.type == "exec.request") | .command'
+```
+
+A non-matching `select` produces no output, so those events are dropped from the stream. Wrap the filter in single quotes so the shell leaves the double quotes inside intact. An invalid filter fails fast with a syntax error; a filter that errors on a particular event is reported to stderr while the stream keeps going.
+
+Because the output is a JSON stream, you can also pipe it straight into another tool — for example, into an LLM for a plain-English summary:
+
+```sh
+hiver events my-sandbox \
+  --jq 'select(.type | IN("exec.request","egress.request","fs.request","stdio"))' \
+  | claude -p "what did the agent do?"
+```

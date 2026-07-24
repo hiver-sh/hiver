@@ -80,6 +80,7 @@ export const COMMANDS: CommandSpec[] = [
     usage: [
       "hiver events <sandbox-key>",
       "hiver events <sandbox-key> --gateway-url <url>",
+      'hiver events <sandbox-key> --jq \'select(.type == "log")\'',
     ],
   },
   {

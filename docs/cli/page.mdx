@@ -106,6 +106,15 @@ hiver events agent-1
 hiver events agent-1 --gateway-url https://gateway.example.com
 ```
 
+Pass `--jq <filter>` to run each event through a [jq](https://jqlang.org/) expression before it's printed. The filter is applied to one event at a time, so `select(...)` drops events, `.field` projects, and a filter that yields multiple values prints one line each:
+
+```bash
+# only log events
+hiver events agent-1 --jq 'select(.type == "log")'
+# just the command of each exec event
+hiver events agent-1 --jq 'select(.type == "exec") | .cmd'
+```
+
 ## Inspector
 
 Launch the [Inspector](/docs/inspector) in your browser. Add `--record` to capture a session for later replay.

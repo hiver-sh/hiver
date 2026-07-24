@@ -165,11 +165,21 @@ Every sandbox emits a structured, ordered, replayable stream of audit events. St
 hiver events agent-1 --follow
 ```
 
+Pass `--jq <filter>` to run each event through a [jq](https://jqlang.org/) expression before it's printed — the filter is applied one event at a time, so `select(...)` drops events, `.field` projects, and a filter yielding multiple values prints one line each:
+
+```sh
+# only the interesting event types
+hiver events agent-1 --jq 'select(.type | IN("exec.request","egress.request","fs.request","stdio"))'
+
+# just the command of each exec event
+hiver events agent-1 --jq 'select(.type == "exec.request") | .cmd'
+```
+
 Then, pipe the event backlog into an LLM to get a plain-English summary of what the agent did:
 
 ```sh
 hiver events agent-1 \
-  | jq -c 'select(.type | IN("exec.request","egress.request","fs.request","stdio"))' \
+  --jq 'select(.type | IN("exec.request","egress.request","fs.request","stdio"))' \
   | claude -p "what did the agent do?"
 ```
 
