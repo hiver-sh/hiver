@@ -12,7 +12,7 @@ import type { SandboxEvent, SandboxTarget } from "@/types";
 import type { TimelineBar } from "./TimelineView";
 import { CodeViewer } from "./CodeViewer";
 import { SegmentedControl } from "./SegmentedControl";
-import { humanDuration } from "@/lib/utils";
+import { formatWallClock, humanDuration } from "@/lib/utils";
 import { matchProvider, parseSummaryCached } from "@/lib/llmProviders";
 import type { LLMSummaryData } from "@/lib/llmProviders";
 import { LLMSummary } from "./LLMSummary";
@@ -645,7 +645,7 @@ function RowDetailPanelInner({
     return () => observer.disconnect();
   }, []);
 
-  const ts = new Date(req.timestamp).toISOString().slice(11, 23);
+  const ts = formatWallClock(req.timestamp);
 
   if (bar.tool) {
     return (

@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { filterEvents, type FilterState } from "@/components/TimelineView";
+import { formatWallClock } from "@/lib/utils";
 import type { SandboxEvent } from "@/types";
 
 interface Props {
@@ -292,7 +293,7 @@ export function EventFeed({ events, filter }: Props) {
       <div className="space-y-0.5 p-2 font-mono text-xs">
         {filtered.map((event) => {
           const { label, variant } = eventBadge(event);
-          const ts = new Date(event.timestamp).toISOString().slice(11, 23);
+          const ts = formatWallClock(event.timestamp);
           return (
             <div
               key={event.id}

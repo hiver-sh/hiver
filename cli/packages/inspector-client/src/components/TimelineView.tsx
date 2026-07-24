@@ -8,7 +8,7 @@ import {
 } from "react-mosaic-component";
 import "react-mosaic-component/react-mosaic-component.css";
 import type { SandboxEvent, SandboxTarget } from "@/types";
-import { humanDuration } from "@/lib/utils";
+import { formatWallClock, humanDuration } from "@/lib/utils";
 import { useTransport } from "@/lib/transport";
 import {
   LLM_PROVIDERS,
@@ -1258,7 +1258,7 @@ function groupRowSummary(bar: TimelineBar): {
   duration: string;
 } {
   const req = bar.rawEvents[0];
-  const time = req ? new Date(req.timestamp).toISOString().slice(11, 23) : "";
+  const time = req ? formatWallClock(req.timestamp) : "";
 
   // Tool bars wrap LLM egress events, so rawEvents[0] is the invoking LLM
   // request — render the tool call itself (name / input / completion) instead
