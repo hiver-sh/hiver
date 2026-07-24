@@ -1,6 +1,6 @@
 {
   "name": "@hiver.sh/cli",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "description": "CLI for the [Hiver](https://hiver.sh) agent runtime.",
   "type": "module",
   "homepage": "https://hiver.sh/docs",
