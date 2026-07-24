@@ -1,3 +1,4 @@
+from .controller import sandbox_config_with_defaults
 from .schemas import EgressOverride, EgressRule, SandboxConfig
 
 
@@ -56,7 +57,10 @@ def allow_sandbox(
 
     Add the returned rules to the outer ``SandboxConfig.egress``.
     """
-    body = config.model_dump(exclude_none=True)
+    # The pinned body replaces the nested create's body verbatim, bypassing
+    # get_or_create_sandbox's defaulting — apply the same defaults here so the
+    # nested sandbox comes up exactly as a direct create with ``config`` would.
+    body = sandbox_config_with_defaults(config).model_dump(exclude_none=True)
     rules: list[EgressRule] = []
     for host in ("gateway", "gateway.hiver"):
         rules.extend(

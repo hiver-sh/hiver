@@ -21,6 +21,10 @@ import "strings"
 //
 // Add the returned rules to SandboxConfig.Egress.
 func AllowSandbox(sandboxKey string, config SandboxConfig, allowedDirs ...string) []EgressRule {
+	// The pinned body replaces the nested create's body verbatim, bypassing
+	// GetOrCreateSandbox's defaulting — apply the same defaults here so the
+	// nested sandbox comes up exactly as a direct create with config would.
+	config = sandboxConfigWithDefaults(config)
 	var rules []EgressRule
 	for _, host := range []string{"gateway", "gateway.hiver"} {
 		rules = append(rules,

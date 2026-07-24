@@ -1,4 +1,5 @@
 import { EgressRule, SandboxConfig } from "./schemas";
+import { sandboxConfigWithDefaults } from "./controller";
 
 export function allowedPythonPackages(...packages: string[]): EgressRule[] {
   return [
@@ -50,6 +51,10 @@ export function allowSandbox(
   config: SandboxConfig,
   allowedDirs: string[] | undefined = undefined,
 ): EgressRule[] {
+  // The pinned body replaces the nested create's body verbatim, bypassing
+  // getOrCreateSandbox's defaulting — apply the same defaults here so the
+  // nested sandbox comes up exactly as a direct create with `config` would.
+  const pinned = sandboxConfigWithDefaults(config);
   const allowedPaths = allowedDirs?.map((dir) => `/sandbox/*/v1/${sandboxKey}/file/${dir.replace(/^\//, "")}/**`);
   const paths: EgressRule[] = allowedDirs ? [
     // docker
@@ -73,7 +78,7 @@ export function allowSandbox(
       paths: [`/v1/sandboxes/${sandboxKey}`],
       methods: ["POST"],
       override: {
-        body: { ...config },
+        body: { ...pinned },
         body_strategy: "replace",
       },
     },
@@ -89,7 +94,7 @@ export function allowSandbox(
       paths: [`/v1/sandboxes/${sandboxKey}`],
       methods: ["POST"],
       override: {
-        body: { ...config },
+        body: { ...pinned },
         body_strategy: "replace",
       },
     },

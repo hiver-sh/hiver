@@ -78,6 +78,25 @@ func NewClient(gatewayURL string, opts ...Option) *Client {
 	return c
 }
 
+// sandboxConfigWithDefaults applies the client-side config defaults every
+// create carries: an empty FS becomes the standard /workspace local mount and
+// an empty Egress opens all hosts. Shared by GetOrCreateSandbox and
+// AllowSandbox — a config pinned into an egress override replaces the nested
+// create's body verbatim, so it must carry the same defaults a direct create
+// would, or the sandbox comes up without a workspace while a resumed VM
+// snapshot still holds the 9p mount.
+func sandboxConfigWithDefaults(config SandboxConfig) SandboxConfig {
+	if len(config.FS) == 0 {
+		config.FS = []FileSystem{
+			{Mount: "/workspace", Backend: "local", ACLs: []ACLRule{{Path: "/workspace/**", Access: "rw"}}},
+		}
+	}
+	if len(config.Egress) == 0 {
+		config.Egress = []EgressRule{{Access: "allow", Host: "*"}}
+	}
+	return config
+}
+
 // GetOrCreateSandbox creates a sandbox, or fetches the existing one when key
 // is already in use. The key acts as an idempotency key: calling again with
 // the same key returns the same sandbox and leaves config unapplied. It blocks
@@ -90,14 +109,7 @@ func (c *Client) GetOrCreateSandbox(ctx context.Context, key string, config Sand
 		return nil, fmt.Errorf("GetOrCreateSandbox: key %q must match %s", key, sandboxKeyPattern)
 	}
 
-	if len(config.FS) == 0 {
-		config.FS = []FileSystem{
-			{Mount: "/workspace", Backend: "local", ACLs: []ACLRule{{Path: "/workspace/**", Access: "rw"}}},
-		}
-	}
-	if len(config.Egress) == 0 {
-		config.Egress = []EgressRule{{Access: "allow", Host: "*"}}
-	}
+	config = sandboxConfigWithDefaults(config)
 
 	body, err := json.Marshal(config)
 	if err != nil {

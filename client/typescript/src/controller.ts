@@ -53,16 +53,17 @@ const DEFAULT_TIMEOUT_MS = 60_000;
  * the same sandbox and leaves the supplied `config` unapplied. Resolves once
  * the sandbox is ready to accept requests.
  */
-export async function getOrCreateSandbox(
-  key: string,
+/**
+ * Apply the client-side config defaults every create carries: an unset `fs`
+ * becomes the standard `/workspace` local mount and an unset `egress` opens all
+ * hosts. Shared by {@link getOrCreateSandbox} and `allowSandbox` — a config
+ * pinned into an egress override replaces the nested create's body verbatim, so
+ * it must carry the same defaults a direct create would, or the sandbox comes
+ * up without a workspace while a resumed VM snapshot still holds the 9p mount.
+ */
+export function sandboxConfigWithDefaults(
   config: SandboxConfig = {},
-  opts: GatewayOptions = {},
-): Promise<Sandbox> {
-  if (!SANDBOX_KEY_PATTERN.test(key)) {
-    throw new Error(
-      `getOrCreateSandbox: key ${JSON.stringify(key)} must match ${SANDBOX_KEY_PATTERN}`,
-    );
-  }
+): SandboxConfig {
   // Drop keys whose value is null/undefined so an explicitly-null field (e.g.
   // `fs: null` from a serialized config where an unset optional became null)
   // falls back to the default below instead of clobbering it and failing
@@ -70,7 +71,7 @@ export async function getOrCreateSandbox(
   const provided = Object.fromEntries(
     Object.entries(config).filter(([, v]) => v != null),
   );
-  const validated = SandboxConfig.parse({
+  return SandboxConfig.parse({
     fs: [
       {
         backend: "local",
@@ -81,6 +82,19 @@ export async function getOrCreateSandbox(
     egress: [{ host: "*", access: "allow" }],
     ...provided,
   });
+}
+
+export async function getOrCreateSandbox(
+  key: string,
+  config: SandboxConfig = {},
+  opts: GatewayOptions = {},
+): Promise<Sandbox> {
+  if (!SANDBOX_KEY_PATTERN.test(key)) {
+    throw new Error(
+      `getOrCreateSandbox: key ${JSON.stringify(key)} must match ${SANDBOX_KEY_PATTERN}`,
+    );
+  }
+  const validated = sandboxConfigWithDefaults(config);
   const gatewayBase = resolveGatewayUrl(opts.gatewayUrl).replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;

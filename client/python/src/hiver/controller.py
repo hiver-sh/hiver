@@ -32,6 +32,29 @@ _SANDBOX_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _DEFAULT_TIMEOUT_S = 60.0
 
 
+def sandbox_config_with_defaults(config: SandboxConfig) -> SandboxConfig:
+    """Apply the client-side config defaults every create carries: an unset
+    ``fs`` becomes the standard ``/workspace`` local mount.
+
+    Shared by :func:`get_or_create_sandbox` and :func:`hiver.allow_sandbox` — a
+    config pinned into an egress override replaces the nested create's body
+    verbatim, so it must carry the same defaults a direct create would, or the
+    sandbox comes up without a workspace while a resumed VM snapshot still
+    holds the 9p mount.
+    """
+    data = {
+        "fs": [
+            {
+                "backend": "local",
+                "mount": "/workspace",
+                "acls": [{"path": "/workspace/**", "access": "rw"}],
+            }
+        ],
+        **config.model_dump(exclude_none=True),
+    }
+    return SandboxConfig.model_validate(data)
+
+
 async def get_or_create_sandbox(
     key: str,
     config: SandboxConfig = SandboxConfig(),
@@ -49,17 +72,7 @@ async def get_or_create_sandbox(
         raise ValueError(
             f"get_or_create_sandbox: key {key!r} must match {_SANDBOX_KEY_PATTERN.pattern}"
         )
-    data = {
-        "fs": [
-            {
-                "backend": "local",
-                "mount": "/workspace",
-                "acls": [{"path": "/workspace/**", "access": "rw"}],
-            }
-        ],
-        **config.model_dump(exclude_none=True),
-    }
-    validated = SandboxConfig.model_validate(data)
+    validated = sandbox_config_with_defaults(config)
     base = resolve_gateway_url(gateway_url).rstrip("/")
     owns_client = client is None
     http = client or httpx.AsyncClient()
