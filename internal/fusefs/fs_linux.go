@@ -308,6 +308,23 @@ func (s *Server) cachePut(p string, info remotefs.FileInfo) {
 	s.statCache.put(p, info)
 }
 
+// cachePutNegative records a "remote has no such path" tombstone, with
+// the same dirty-path guard as [cachePut]: a path with a pending oplog
+// write must never be tombstoned, or a follow-up read would report the
+// agent's own just-written file as absent.
+func (s *Server) cachePutNegative(p string) {
+	if s.cfg.Oplog != nil {
+		virt := strings.TrimPrefix(p, s.cfg.MountPoint)
+		if virt == "" {
+			virt = "/"
+		}
+		if s.cfg.Oplog.IsDirty(virt) {
+			return
+		}
+	}
+	s.statCache.putNegative(p)
+}
+
 // trackNode registers n in liveNodes so Rename can find it by virt-path
 // and update n.vp when the file is moved. Called from Lookup, Create,
 // Mkdir, and Symlink after the node is confirmed to exist.
@@ -450,12 +467,19 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 			ac.response()
 			return nil
 		}
-		info, err := n.s.cfg.Remote.Stat(ctx, n.virtPath())
-		if err == nil {
-			n.s.cachePut(n.absPath(), info)
-			fillAttrFromRemote(a, info)
-			ac.response()
-			return nil
+		// A tombstone means the remote already answered "no such path";
+		// skip the round-trip and fall straight through to local Lstat.
+		if !n.s.statCache.knownAbsent(n.absPath()) {
+			info, err := n.s.cfg.Remote.Stat(ctx, n.virtPath())
+			if err == nil {
+				n.s.cachePut(n.absPath(), info)
+				fillAttrFromRemote(a, info)
+				ac.response()
+				return nil
+			}
+			if errors.Is(err, remotefs.ErrNotExist) {
+				n.s.cachePutNegative(n.absPath())
+			}
 		}
 		// Remote ErrNotExist or transient failure → fall through to
 		// local Lstat. The local fallback is what makes "Create then
@@ -504,12 +528,19 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 			n.s.trackNode(child)
 			return child, nil
 		}
-		info, err := n.s.cfg.Remote.Stat(ctx, child.virtPath())
-		if err == nil {
-			n.s.cachePut(child.absPath(), info)
-			ac.response()
-			n.s.trackNode(child)
-			return child, nil
+		// A tombstone means the remote already answered "no such path";
+		// skip the round-trip and fall straight through to local Lstat.
+		if !n.s.statCache.knownAbsent(child.absPath()) {
+			info, err := n.s.cfg.Remote.Stat(ctx, child.virtPath())
+			if err == nil {
+				n.s.cachePut(child.absPath(), info)
+				ac.response()
+				n.s.trackNode(child)
+				return child, nil
+			}
+			if errors.Is(err, remotefs.ErrNotExist) {
+				n.s.cachePutNegative(child.absPath())
+			}
 		}
 		// Remote ErrNotExist or transient failure → fall through to local
 		// Lstat. This is how a freshly-Create'd file (no enqueue, no
