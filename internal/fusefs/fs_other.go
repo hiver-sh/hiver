@@ -20,6 +20,7 @@ type Config struct {
 	Audit      io.Writer
 	Oplog      *Oplog
 	Remote     remotefs.Store
+	Async      bool
 }
 
 // AuditEvent is the schema for filesystem audit events.

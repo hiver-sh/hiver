@@ -206,6 +206,7 @@ func (m *mountManager) start(f spec.FS) error {
 		spec.Remote = string(f.Backend)
 		spec.RemoteConfig = string(blob)
 		spec.Mark = m.soMark
+		spec.Async = f.Async
 	}
 
 	// Register before issuing the mount so this mount's audit events resolve to

@@ -14,12 +14,19 @@ class ACLRule(BaseModel):
 
 
 class _FileSystemBase(BaseModel):
+    # `async` is a Python keyword, so the field is `async_` with an alias.
+    # populate_by_name lets callers construct with `async_=True` in Python;
+    # the config serializers dump with by_alias=True so the wire key is `async`.
+    model_config = ConfigDict(populate_by_name=True)
+
     mount: str
     """Absolute path at which the file system appears to the agent."""
     acls: Optional[list[ACLRule]] = None
     """Access control rules for paths under ``mount``."""
     internal: Optional[bool] = None
     """When true, the file system is mounted inside the sandbox runtime but hidden from the agent workload. Use it for storage the sandbox needs but the agent must not see, e.g. a remote-backed snapshot target referenced by ``Snapshot.mount``. Because the agent cannot reach the mount, ``acls`` are ignored for internal file systems."""
+    async_: Optional[bool] = Field(default=None, alias="async")
+    """When true, a remote-backed mount treats the local buffer as authoritative and never blocks agent file operations on the backend: metadata reads are served locally and the workspace is pulled by a background bootstrap, so the mount is ready instantly. The trade-off is eventual consistency. Ignored for ``local`` backends. (``async`` is a Python keyword, so this field is ``async_`` in code and serializes as ``async``.)"""
 
     @field_validator("mount")
     @classmethod

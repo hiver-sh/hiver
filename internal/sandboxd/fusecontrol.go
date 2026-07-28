@@ -42,6 +42,7 @@ type fuseMountSpec struct {
 	RemoteConfig string `json:"remote_config,omitempty"`
 	Mark         int    `json:"mark,omitempty"`
 	OplogDepth   int    `json:"oplog_depth,omitempty"`
+	Async        bool   `json:"async,omitempty"`
 }
 
 // startFuseControl spawns the pod's shared `sbxfuse -control` process. It wires an

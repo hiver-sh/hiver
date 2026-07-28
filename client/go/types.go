@@ -93,6 +93,12 @@ type FileSystem struct {
 	// referenced by Snapshot.Mount. Because the agent cannot reach the mount,
 	// ACLs are ignored for internal file systems.
 	Internal bool `json:"internal,omitempty"`
+	// Async, when true, runs a remote-backed mount in local-authoritative mode:
+	// metadata reads are served from the local buffer and the workspace is
+	// pulled from the backend by a background bootstrap, so agent file
+	// operations never block on the backend (at the cost of eventual
+	// consistency). Ignored for the local backend.
+	Async bool `json:"async,omitempty"`
 
 	// Origin (local backend) is the local path to mount into this sandbox.
 	// Supported only with the local Docker runtime — helpful for development,

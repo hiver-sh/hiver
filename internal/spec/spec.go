@@ -134,6 +134,12 @@ type FS struct {
 	// remote-backed snapshot target referenced by Snapshot.Mount.
 	Internal bool `json:"internal,omitempty"`
 
+	// Async, when true, runs a remote-backed mount in local-authoritative mode:
+	// metadata reads are served from the local buffer and the workspace is
+	// pulled from the backend by a background bootstrap, so agent file
+	// operations never block on the backend. Ignored for local backends.
+	Async bool `json:"async,omitempty"`
+
 	// Per-backend extras live inline with a backend-name prefix so it's
 	// obvious from the YAML which backend a field belongs to. Only the
 	// fields matching `backend` are read; the rest are ignored.

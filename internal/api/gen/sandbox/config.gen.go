@@ -348,6 +348,22 @@ type AzureBlobFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async *bool `json:"async,omitempty"`
+
 	// AzureAccount Storage account name. Required unless `azure_connection_string`
 	// or `azure_endpoint` is set (both carry the account).
 	AzureAccount *string `json:"azure_account,omitempty"`
@@ -570,7 +586,23 @@ type ExternalFileSystem struct {
 	// Acls Access control rules for paths under `mount`. When omitted,
 	// a single default rule `{ path: "<mount>/**", access: "rw" }`
 	// is applied, granting full read-write access to the entire mount.
-	Acls    *[]ACLRule                `json:"acls,omitempty"`
+	Acls *[]ACLRule `json:"acls,omitempty"`
+
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async   *bool                     `json:"async,omitempty"`
 	Backend ExternalFileSystemBackend `json:"backend"`
 
 	// Host Base URL of the host implementing the external file
@@ -613,6 +645,22 @@ type FileSystemBase struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async *bool `json:"async,omitempty"`
+
 	// Backend Storage type for a file system.
 	//   * `local`    — sandbox-local storage with no external dependency.
 	//   * `gdrive`   — backed by Google Drive.
@@ -640,7 +688,23 @@ type GCSFileSystem struct {
 	// Acls Access control rules for paths under `mount`. When omitted,
 	// a single default rule `{ path: "<mount>/**", access: "rw" }`
 	// is applied, granting full read-write access to the entire mount.
-	Acls    *[]ACLRule           `json:"acls,omitempty"`
+	Acls *[]ACLRule `json:"acls,omitempty"`
+
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async   *bool                `json:"async,omitempty"`
 	Backend GCSFileSystemBackend `json:"backend"`
 
 	// GcsBucket GCS bucket name.
@@ -677,7 +741,23 @@ type GDriveFileSystem struct {
 	// Acls Access control rules for paths under `mount`. When omitted,
 	// a single default rule `{ path: "<mount>/**", access: "rw" }`
 	// is applied, granting full read-write access to the entire mount.
-	Acls    *[]ACLRule              `json:"acls,omitempty"`
+	Acls *[]ACLRule `json:"acls,omitempty"`
+
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async   *bool                   `json:"async,omitempty"`
 	Backend GDriveFileSystemBackend `json:"backend"`
 
 	// GdriveAccessToken OAuth access token.
@@ -729,7 +809,23 @@ type LocalFileSystem struct {
 	// Acls Access control rules for paths under `mount`. When omitted,
 	// a single default rule `{ path: "<mount>/**", access: "rw" }`
 	// is applied, granting full read-write access to the entire mount.
-	Acls    *[]ACLRule             `json:"acls,omitempty"`
+	Acls *[]ACLRule `json:"acls,omitempty"`
+
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async   *bool                  `json:"async,omitempty"`
 	Backend LocalFileSystemBackend `json:"backend"`
 
 	// Internal When true, the file system is mounted inside the sandbox runtime
@@ -755,7 +851,23 @@ type OneDriveFileSystem struct {
 	// Acls Access control rules for paths under `mount`. When omitted,
 	// a single default rule `{ path: "<mount>/**", access: "rw" }`
 	// is applied, granting full read-write access to the entire mount.
-	Acls    *[]ACLRule                `json:"acls,omitempty"`
+	Acls *[]ACLRule `json:"acls,omitempty"`
+
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async   *bool                     `json:"async,omitempty"`
 	Backend OneDriveFileSystemBackend `json:"backend"`
 
 	// Internal When true, the file system is mounted inside the sandbox runtime
@@ -805,7 +917,23 @@ type S3FileSystem struct {
 	// Acls Access control rules for paths under `mount`. When omitted,
 	// a single default rule `{ path: "<mount>/**", access: "rw" }`
 	// is applied, granting full read-write access to the entire mount.
-	Acls    *[]ACLRule          `json:"acls,omitempty"`
+	Acls *[]ACLRule `json:"acls,omitempty"`
+
+	// Async When true, a remote-backed mount treats the local buffer as
+	// authoritative and never blocks agent file operations on the
+	// backend. Every read — `stat`, directory listing, and file
+	// content — is served from the local buffer; the backend is touched
+	// only by a background bootstrap that pulls the workspace in after
+	// the mount comes up (so the mount is ready instantly) and by the
+	// background uploader that drains writes. No agent file operation
+	// ever waits on a backend round-trip.
+	//
+	// The trade-off is eventual consistency: a path the bootstrap has
+	// not pulled yet — or one created out-of-band on the backend — reads
+	// as absent until the bootstrap reaches it. Use it when the
+	// workspace is effectively owned by one sandbox at a time. Ignored
+	// for `local` backends, which have no backend to sync with.
+	Async   *bool               `json:"async,omitempty"`
 	Backend S3FileSystemBackend `json:"backend"`
 
 	// Internal When true, the file system is mounted inside the sandbox runtime

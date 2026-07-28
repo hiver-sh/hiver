@@ -3,7 +3,7 @@ package isolation
 import "testing"
 
 func TestContainerFilesHostPath(t *testing.T) {
-	f := containerFiles{upperDir: "/mnt/scratch/upper"}
+	f := containerFiles{mergedDir: "/mnt/merged"}
 	// /workspace is local-backed (reads the -backend buffer, ACL-bypass);
 	// /data is remote-backed (reads the FUSE mount point so already-flushed
 	// files the oplog evicted from the buffer are still visible).
@@ -20,10 +20,10 @@ func TestContainerFilesHostPath(t *testing.T) {
 		// remote mount → mount point itself, no -backend suffix
 		{"/data", "/data"},
 		{"/data/sub/file.txt", "/data/sub/file.txt"},
-		{"/home/user/notes.md", "/mnt/scratch/upper/home/user/notes.md"},
-		{"/", "/mnt/scratch/upper"},
+		{"/home/user/notes.md", "/mnt/merged/home/user/notes.md"},
+		{"/", "/mnt/merged"},
 		// not a mount prefix despite the shared "/work" string
-		{"/workspaces/x", "/mnt/scratch/upper/workspaces/x"},
+		{"/workspaces/x", "/mnt/merged/workspaces/x"},
 	}
 	for _, c := range cases {
 		if got := f.hostPath(c.path, mounts); got != c.want {

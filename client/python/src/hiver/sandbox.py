@@ -177,10 +177,10 @@ class Sandbox:
         ApplyResult's ``applied`` field reports whether it was committed or
         rolled back, and ``changes`` details what was added or removed.
         """
-        validated = SandboxConfig.model_validate(config.model_dump(exclude_none=True))
+        validated = SandboxConfig.model_validate(config.model_dump(exclude_none=True, by_alias=True))
         res = await self._client.put(
             f"{self.api_server_url}/v1/{self.key}/config",
-            json=validated.model_dump(exclude_none=True),
+            json=validated.model_dump(exclude_none=True, by_alias=True),
         )
         if not res.is_success:
             raise _to_error(res, "apply_config")
@@ -196,7 +196,7 @@ class Sandbox:
         validated = Snapshot.model_validate(request.model_dump(exclude_none=True))
         res = await self._client.post(
             f"{self.api_server_url}/v1/{self.key}/snapshot",
-            json=validated.model_dump(exclude_none=True),
+            json=validated.model_dump(exclude_none=True, by_alias=True),
         )
         if not res.is_success:
             raise _to_error(res, "snapshot")

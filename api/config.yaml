@@ -332,6 +332,24 @@ components:
             not access, e.g. a remote-backed snapshot target referenced by
             `snapshot.mount`. Because the agent cannot reach the mount, `acls`
             are ignored for internal file systems.
+        async:
+          type: boolean
+          default: false
+          description: |
+            When true, a remote-backed mount treats the local buffer as
+            authoritative and never blocks agent file operations on the
+            backend. Every read — `stat`, directory listing, and file
+            content — is served from the local buffer; the backend is touched
+            only by a background bootstrap that pulls the workspace in after
+            the mount comes up (so the mount is ready instantly) and by the
+            background uploader that drains writes. No agent file operation
+            ever waits on a backend round-trip.
+
+            The trade-off is eventual consistency: a path the bootstrap has
+            not pulled yet — or one created out-of-band on the backend — reads
+            as absent until the bootstrap reaches it. Use it when the
+            workspace is effectively owned by one sandbox at a time. Ignored
+            for `local` backends, which have no backend to sync with.
 
     LocalFileSystem:
       description: Sandbox-local storage with no external dependency.

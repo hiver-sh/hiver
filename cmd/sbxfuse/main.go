@@ -43,6 +43,7 @@ func main() {
 		remoteConfig = flag.String("remote-config", "", "JSON config consumed by the remote backend (per-impl schema; see remotefs.GoogleDriveConfig).")
 		oplogDepth   = flag.Int("oplog-depth", 1024, "oplog queue size; Enqueue blocks when full")
 		outboundMark = flag.Int("mark", 0, "SO_MARK to stamp on outbound TCP from the remote backend's HTTP client; needed inside the sandbox-pod to escape iptables OUTPUT REDIRECT.")
+		async        = flag.Bool("async", false, "local-authoritative mode for a remote mount: serve reads from the local buffer and pull the backend in a background bootstrap, so agent file ops never block on the backend.")
 		control      = flag.Bool("control", false, "control mode: serve N workspaces in one process, driven by mount/unmount/reacl commands read as JSON lines on stdin (set by sandboxd; -mount/-backend/-acls ignored)")
 	)
 	flag.Parse()
@@ -113,8 +114,9 @@ func main() {
 		// fusefs handlers (see Lookup/Attr/ReadDirAll/Open).
 		cfg.Oplog = fusefs.NewOplog(store, *oplogDepth)
 		cfg.Remote = store
-		log.Printf("sbxfuse: remote-backed mount (%q) — local %s is a write buffer; reads go to upstream",
-			*remoteName, *backendDir)
+		cfg.Async = *async
+		log.Printf("sbxfuse: remote-backed mount (%q, async=%v) — local %s is a write buffer; reads go to upstream",
+			*remoteName, *async, *backendDir)
 	}
 
 	srv, err := fusefs.Mount(cfg)
@@ -170,6 +172,7 @@ type ctrlCmd struct {
 	RemoteConfig string `json:"remote_config"` // remote backend JSON config
 	Mark         int    `json:"mark"`          // SO_MARK for the remote backend's HTTP client
 	OplogDepth   int    `json:"oplog_depth"`   // oplog queue size; 0 = use default
+	Async        bool   `json:"async"`         // local-authoritative mode: reads local, remote pulled in background
 }
 
 // lockedWriter serializes concurrent writes from the N fusefs.Servers that share
@@ -292,6 +295,7 @@ func controlMount(ctx context.Context, audit io.Writer, defaultOplogDepth int, c
 		}
 		cfg.Oplog = fusefs.NewOplog(store, depth)
 		cfg.Remote = store
+		cfg.Async = cmd.Async
 	}
 	srv, err := fusefs.Mount(cfg)
 	if err != nil {

@@ -452,7 +452,7 @@ func (c *container) snapshotMounts() []snapshot.MountSource {
 }
 
 func (c *container) Files() FileBridge {
-	return containerFiles{upperDir: c.overlay.Upper, wsMountRoot: c.wsMountRoot, wsBackendRoot: c.wsBackendRoot}
+	return containerFiles{mergedDir: c.overlay.Merged, wsMountRoot: c.wsMountRoot, wsBackendRoot: c.wsBackendRoot}
 }
 
 func (c *container) LaunchAgent(cfg AgentConfig) (string, []string, error) {
@@ -797,8 +797,14 @@ func parsePPIDStat(s string) (int, bool) {
 
 // containerFiles serves the management file API from the host: paths under a
 // configured FUSE mount resolve to that mount's backend dir; everything else
-// falls back to the overlay upper layer. Both bypass sbxfuse ACLs — the file
-// API is a higher-privilege control surface than the workload.
+// falls back to the mounted overlay (merged), NEVER the upper layer directly —
+// modifying an overlayfs layer while the overlay is mounted is undefined
+// behavior: the workload's cached dentries keep serving the lower (image) file
+// so the write never becomes visible, and the orphaned upper entries later
+// wedge the path (creates through the overlay fail ENOTEMPTY). Going through
+// merged also makes lower-layer (baked image) files readable, which the upper
+// dir alone never was. Both routes bypass sbxfuse ACLs — the file API is a
+// higher-privilege control surface than the workload.
 // workspaceSlug mirrors spec.FS.Slug: a filename-safe id for a mount path, used
 // to locate a packed sandbox's per-key host dir (/run/sandboxd/<key>/.../<slug>).
 func workspaceSlug(mount string) string {
@@ -810,7 +816,9 @@ func workspaceSlug(mount string) string {
 }
 
 type containerFiles struct {
-	upperDir string
+	// mergedDir is the mounted overlay root (Overlay.Merged) — the workload's
+	// live view. See the type comment for why this must not be the upper dir.
+	mergedDir string
 	// wsMountRoot/wsBackendRoot, when set (packed sandbox), relocate workspace
 	// paths to the per-key host dirs instead of the default <mount>-backend.
 	wsMountRoot   string
@@ -902,7 +910,7 @@ func (f containerFiles) Save(agentDir, name string, mounts []MountRoute, r io.Re
 //     only a write buffer the oplog evicts after flushing to the remote, so it
 //     would miss already-flushed files; the FUSE mount serves the merged
 //     remote+local view (and routes writes back through the oplog).
-//   - no match → the overlay upper layer.
+//   - no match → the mounted overlay (merged), the workload's live view.
 func (f containerFiles) hostPath(agentPath string, mounts []MountRoute) string {
 	cleaned := filepath.Clean(agentPath)
 	var matched MountRoute
@@ -929,5 +937,5 @@ func (f containerFiles) hostPath(agentPath string, mounts []MountRoute) string {
 		}
 		return filepath.Join(matched.Mount+spec.BackendSuffix, rel)
 	}
-	return filepath.Join(f.upperDir, cleaned)
+	return filepath.Join(f.mergedDir, cleaned)
 }

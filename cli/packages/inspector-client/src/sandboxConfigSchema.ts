@@ -205,6 +205,12 @@ export const SANDBOX_CONFIG_SCHEMA = {
           description:
             "When true, the file system is mounted inside the sandbox runtime but hidden from the agent workload. Use it for storage the sandbox needs but the agent must not access, e.g. a remote-backed snapshot target referenced by snapshot.mount. Because the agent cannot reach the mount, acls are ignored for internal file systems.",
         },
+        async: {
+          type: "boolean",
+          default: false,
+          description:
+            "When true, a remote-backed mount treats the local buffer as authoritative and never blocks agent file operations on the backend: metadata reads are served locally and the workspace is pulled from the backend by a background bootstrap, so the mount is ready instantly. The trade-off is eventual consistency. Ignored for local backends.",
+        },
       },
     },
 

@@ -53,11 +53,20 @@ export interface FileSystemBase {
    * ignored for internal file systems.
    */
   internal?: boolean;
+  /**
+   * When true, a remote-backed mount treats the local buffer as authoritative
+   * and never blocks agent file operations on the backend: metadata reads are
+   * served from the local buffer and the workspace is pulled from the backend
+   * by a background bootstrap, so the mount is ready instantly. The trade-off
+   * is eventual consistency. Ignored for `local` backends.
+   */
+  async?: boolean;
 }
 const FileSystemBase = z.object({
   mount: z.string().regex(/^\/.+/, "mount must be an absolute path"),
   acls: z.array(ACLRule).optional(),
   internal: z.boolean().optional(),
+  async: z.boolean().optional(),
 });
 
 /** Sandbox-local storage with no external dependency. */

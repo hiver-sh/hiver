@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -57,6 +58,13 @@ type Config struct {
 	// invalidated by every mutating handler. Zero defaults to
 	// [defaultRemoteStatTTL]; negative disables the cache.
 	RemoteStatTTL time.Duration
+	// Async runs a remote-backed mount in local-authoritative mode: the
+	// read-side handlers serve the local buffer instead of consulting
+	// Remote synchronously, and [Server.Serve] starts a background
+	// bootstrap that pulls the store into the buffer. Agent file
+	// operations never block on the backend. Requires Remote != nil;
+	// ignored otherwise. See [Server.bootstrap].
+	Async bool
 }
 
 // defaultRemoteStatTTL is the cache window used when Config.RemoteStatTTL
@@ -198,6 +206,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	} else {
 		close(oplogDone)
 	}
+	// Async mount: pull the remote into the local buffer in the background
+	// so reads are served locally. Best-effort — the mount is already usable
+	// (reads fall back to the remote for anything not yet pulled), so we
+	// don't wait for it and a ctx cancel just stops it.
+	if s.cfg.Async && s.cfg.Remote != nil {
+		go s.bootstrap(ctx)
+	}
 	err := bazilfs.Serve(s.conn, &fileSystem{s: s})
 	<-oplogDone
 	return err
@@ -207,6 +222,94 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) Unmount() error {
 	_ = fuse.Unmount(s.cfg.MountPoint)
 	return s.conn.Close()
+}
+
+// bootstrap pulls every object the remote store holds into the local
+// buffer so an async mount serves reads locally. It runs on its own
+// goroutine from [Server.Serve], so the mount is usable immediately and
+// the workspace fills in as objects download. Errors on individual
+// objects are logged and skipped — one unreadable object must not abort
+// warming the rest — and a ctx cancel stops the walk.
+func (s *Server) bootstrap(ctx context.Context) {
+	paths, err := s.cfg.Remote.List(ctx, "")
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("fusefs: async bootstrap list %s: %v", s.cfg.MountPoint, err)
+		}
+		return
+	}
+	for _, p := range paths {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.bootstrapOne(ctx, p); err != nil && ctx.Err() == nil {
+			log.Printf("fusefs: async bootstrap %s: %v", p, err)
+		}
+	}
+}
+
+// bootstrapOne materializes one store-relative path into the local buffer.
+// It skips paths that are dirty (a pending upload) or already present
+// locally (an agent write or a prior on-demand fetch), and writes
+// atomically via a temp + rename so a partial download never leaves a
+// half-file a read could see. The dirty/exists checks are repeated just
+// before the rename to avoid clobbering a file the agent created while the
+// download was in flight.
+func (s *Server) bootstrapOne(ctx context.Context, virt string) error {
+	if s.isDirtyVirt(virt) {
+		return nil
+	}
+	host := s.hostPathFor(virt)
+	if _, err := os.Lstat(host); err == nil {
+		return nil // already local
+	}
+	rc, err := s.cfg.Remote.Get(ctx, virt)
+	if err != nil {
+		if errors.Is(err, remotefs.ErrNotExist) {
+			return nil // listed, then vanished — nothing to pull
+		}
+		return err
+	}
+	defer rc.Close()
+	if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(host), ".sbxfuse-boot-*")
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(tmp, rc); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	// The agent may have created or started writing this path while the
+	// download ran — never clobber its data with the older remote copy.
+	if s.isDirtyVirt(virt) {
+		os.Remove(tmp.Name())
+		return nil
+	}
+	if _, err := os.Lstat(host); err == nil {
+		os.Remove(tmp.Name())
+		return nil
+	}
+	return os.Rename(tmp.Name(), host)
+}
+
+// hostPathFor maps a store-relative (virt) path to its local buffer path,
+// matching node.hostPath so the bootstrap writes where the read handlers read.
+func (s *Server) hostPathFor(virt string) string {
+	rel := filepath.FromSlash(path.Clean(virt))
+	return filepath.Join(s.cfg.Backend, filepath.Clean(string(filepath.Separator)+rel))
+}
+
+// isDirtyVirt reports whether the oplog has a pending write for virt.
+func (s *Server) isDirtyVirt(virt string) bool {
+	return s.cfg.Oplog != nil && s.cfg.Oplog.IsDirty(virt)
 }
 
 func (s *Server) audit(e AuditEvent) {
@@ -461,6 +564,22 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 		return syscall.ENOENT
 	}
 	ac.allow()
+	// Async (local-authoritative): serve the buffer only — never touch the
+	// backend on the read path. The background bootstrap is the sole thing
+	// that pulls from the remote, so an attr never blocks on it. A miss is a
+	// plain ENOENT (instant, no round-trip): a non-existent path stays absent,
+	// and a real path the bootstrap hasn't reached yet is briefly invisible
+	// until it lands (the eventual consistency an async mount opts into).
+	if n.s.cfg.Async {
+		st, err := os.Lstat(n.hostPath())
+		if err != nil {
+			ac.responseError(err)
+			return mapErr(err)
+		}
+		fillAttr(a, st)
+		ac.response()
+		return nil
+	}
 	if n.s.cfg.Remote != nil && !n.isDirty() {
 		if info, ok := n.s.statCache.get(n.absPath()); ok {
 			fillAttrFromRemote(a, info)
@@ -522,6 +641,19 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 		return nil, syscall.ENOENT
 	}
 	ac.allow()
+	// Async (local-authoritative): resolve the child from the local buffer
+	// only — the read path never touches the backend, so a lookup never
+	// blocks on it. A miss is an instant ENOENT; the background bootstrap is
+	// what makes remote paths appear locally (eventual consistency).
+	if n.s.cfg.Async {
+		if _, err := os.Lstat(child.hostPath()); err != nil {
+			ac.responseError(err)
+			return nil, mapErr(err)
+		}
+		ac.response()
+		n.s.trackNode(child)
+		return child, nil
+	}
 	if n.s.cfg.Remote != nil && !child.isDirty() {
 		if _, ok := n.s.statCache.get(child.absPath()); ok {
 			ac.response()
@@ -571,7 +703,10 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	ac.allow()
 	seen := map[string]fuse.DirentType{}
 
-	if n.s.cfg.Remote != nil {
+	// Async (local-authoritative): list the local buffer only. The
+	// background bootstrap fills the directory in, so a listing taken mid-
+	// bootstrap is partial rather than blocking on a backend ListDir.
+	if n.s.cfg.Remote != nil && !n.s.cfg.Async {
 		infos, err := n.s.cfg.Remote.ListDir(ctx, n.virtPath())
 		if err != nil && !errors.Is(err, remotefs.ErrNotExist) {
 			ac.responseError(err)
@@ -664,6 +799,22 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		return nil, syscall.EROFS
 	}
 	ac.allow()
+	// Async (local-authoritative): serve straight from the local buffer —
+	// never fetch on the read path. For a directory, ensure the buffer dir
+	// exists so ReadDirAll has somewhere to list; for a file, the local copy
+	// (pulled by the bootstrap, or the agent's own write) is opened by Read.
+	// A file the bootstrap hasn't pulled yet would already have failed Lookup,
+	// so Open isn't reached for it.
+	if n.s.cfg.Async {
+		if req.Dir {
+			if err := os.MkdirAll(n.hostPath(), 0o755); err != nil {
+				ac.responseError(err)
+				return nil, mapErr(err)
+			}
+		}
+		ac.response()
+		return n, nil
+	}
 	if n.s.cfg.Remote != nil && !n.isDirty() {
 		// Directory opens (req.Dir = OPENDIR) don't need a remote Stat:
 		// the kernel only OPENDIRs a node it already knows is a dir

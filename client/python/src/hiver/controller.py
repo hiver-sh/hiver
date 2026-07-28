@@ -50,7 +50,7 @@ def sandbox_config_with_defaults(config: SandboxConfig) -> SandboxConfig:
                 "acls": [{"path": "/workspace/**", "access": "rw"}],
             }
         ],
-        **config.model_dump(exclude_none=True),
+        **config.model_dump(exclude_none=True, by_alias=True),
     }
     return SandboxConfig.model_validate(data)
 
@@ -82,7 +82,7 @@ async def get_or_create_sandbox(
         try:
             res = await http.post(
                 f"{base}/v1/sandboxes/{key}",
-                json=validated.model_dump(exclude_none=True),
+                json=validated.model_dump(exclude_none=True, by_alias=True),
                 headers={
                     "x-hiver-image": validated.image or DEFAULT_IMAGE_NAME,
                     # The gateway consistent-hashes the create onto a pack host
