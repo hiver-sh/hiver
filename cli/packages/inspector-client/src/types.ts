@@ -134,6 +134,22 @@ type SandboxEventVariant =
         | "system.shutdown";
       // Present on system.config-changed: the config in effect after the change.
       config?: unknown;
+    }
+  | {
+      id: number;
+      timestamp: string;
+      type: "system.fs-sync-request";
+      backend: string;
+      operation: "list" | "list-dir" | "stat" | "get" | "put" | "delete" | "move";
+      path: string;
+    }
+  | {
+      id: number;
+      timestamp: string;
+      type: "system.fs-sync-response";
+      request_id: number;
+      duration_ms: number;
+      error?: string;
     };
 
 export type SandboxEvent = SandboxEventVariant & {

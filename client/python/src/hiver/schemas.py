@@ -166,6 +166,8 @@ EventType = Literal[
     "system.config-changed",
     "system.vm-resumed",
     "system.shutdown",
+    "system.fs-sync-request",
+    "system.fs-sync-response",
 ]
 """A ``SandboxEvent`` discriminator value, used to restrict ``SandboxConfig.events`` to a subset of the event stream."""
 
@@ -491,6 +493,28 @@ class SystemEvent(_SandboxEventBase):
     config: Optional[SandboxConfig] = None
 
 
+class SystemFsSyncRequestEvent(_SandboxEventBase):
+    """Emitted immediately before the FUSE layer issues a request to an external
+    file-system backend (e.g. GCS, S3, Google Drive) to sync a workspace path.
+    Only fires for remote-backed mounts; a purely local workspace emits none."""
+
+    type: Literal["system.fs-sync-request"]
+    backend: Literal["local", "gdrive", "gcs", "s3", "azure", "onedrive", "external"]
+    operation: Literal["list", "list-dir", "stat", "get", "put", "delete", "move"]
+    path: str
+
+
+class SystemFsSyncResponseEvent(_SandboxEventBase):
+    """Emitted when a request to an external file-system backend completes.
+    ``request_id`` matches the originating ``SystemFsSyncRequestEvent``; ``error``
+    is set when the backend interaction failed."""
+
+    type: Literal["system.fs-sync-response"]
+    request_id: int
+    duration_ms: int
+    error: Optional[str] = None
+
+
 SandboxEvent = Annotated[
     Union[
         ConfigApplyEvent,
@@ -506,6 +530,8 @@ SandboxEvent = Annotated[
         IngressRequestEvent,
         IngressResponseEvent,
         SystemEvent,
+        SystemFsSyncRequestEvent,
+        SystemFsSyncResponseEvent,
     ],
     Field(discriminator="type"),
 ]

@@ -161,6 +161,10 @@ export function buildRows(
     number,
     Extract<SandboxEvent, { type: "exec.response" }>
   >();
+  const fsSyncResMap = new Map<
+    number,
+    Extract<SandboxEvent, { type: "system.fs-sync-response" }>
+  >();
   const rowMap = new Map<string, TimelineRow>();
   const rowOrder: string[] = [];
 
@@ -177,6 +181,8 @@ export function buildRows(
       fsResMap.set(event.request_id, event);
     } else if (event.type === "exec.response") {
       execResMap.set(event.request_id, event);
+    } else if (event.type === "system.fs-sync-response") {
+      fsSyncResMap.set(event.request_id, event);
     }
   }
 
@@ -380,6 +386,31 @@ export function buildRows(
           rawEvents: [event],
         },
       );
+    } else if (event.type === "system.fs-sync-request") {
+      // External-backend syncs (GCS/S3/Drive/…) are lifecycle events too:
+      // they render as duration bars on their own system-type row, keyed by
+      // backend + operation, so they sit under the lifecycle group beside the
+      // start/shutdown markers. The paired system.fs-sync-response supplies
+      // the duration and any error.
+      const res = fsSyncResMap.get(event.id);
+      const key = `fs-sync:${event.backend}:${event.operation}`;
+      const row = getOrCreateRow(
+        key,
+        "system",
+        event.backend,
+        event.operation,
+        false,
+        `fs-sync:${event.backend}`,
+      );
+      row.bars.push({
+        id: event.id,
+        sandboxKey,
+        startTime: new Date(event.timestamp).getTime(),
+        durationMs: res?.duration_ms ?? 0,
+        error: res?.error,
+        pending: !res,
+        rawEvents: res ? [event, res] : [event],
+      });
     }
   }
 
@@ -659,6 +690,9 @@ function barClass(bar: TimelineBar, type: TimelineRow["type"]): string {
       ? "bg-red-400/70"
       : "bg-zinc-500/70";
   }
+  // fs-sync bars share the File System purple, not the lifecycle amber.
+  if (bar.rawEvents[0]?.type === "system.fs-sync-request")
+    return "bg-purple-500/65";
   if (type === "system") return "bg-amber-500/70";
   return "bg-purple-500/65";
 }
@@ -671,6 +705,8 @@ function methodClass(row: TimelineRow): string {
   if (row.type === "exec") return "text-emerald-500 dark:text-emerald-400";
   if (row.type === "tool") return "text-indigo-600 dark:text-indigo-400";
   if (row.type === "fs") return "text-purple-600 dark:text-purple-400";
+  // fs-sync rows share the File System purple, not the lifecycle amber.
+  if (isFsSyncRow(row)) return "text-purple-600 dark:text-purple-400";
   if (row.type === "resource")
     return row.key === "resource:cpu"
       ? "text-sky-600 dark:text-sky-400"
@@ -780,7 +816,7 @@ export function applyFilter(
     // selecting Egress + LLM is the same set as Egress alone.
     out = out.filter(
       (r) =>
-        (kinds.has("fs") && r.type === "fs") ||
+        (kinds.has("fs") && (r.type === "fs" || isFsSyncRow(r))) ||
         (kinds.has("tools") && r.type === "tool") ||
         (kinds.has("egress") && r.type === "egress") ||
         (kinds.has("ingress") && r.type === "ingress") ||
@@ -912,10 +948,19 @@ const CATEGORY_LABELS: Record<Category, string> = {
   resource: "Resources",
 };
 
+// isFsSyncRow reports whether a row carries external-backend sync events
+// (system.fs-sync-request/response). These are system-typed rows but belong
+// with the File System category, not Resources.
+function isFsSyncRow(row: TimelineRow): boolean {
+  return row.bars[0]?.rawEvents[0]?.type === "system.fs-sync-request";
+}
+
 function getRowCategory(row: TimelineRow): Category {
   if (row.type === "tool") return "tools";
   if (row.type === "stdio" || row.type === "exec") return "stdio";
   if (row.type === "fs") return "fs";
+  // fs-sync (external-backend) rows sit under File System alongside fs rows.
+  if (isFsSyncRow(row)) return "fs";
   if (row.type === "resource" || row.type === "system") return "resource";
   if (row.type === "ingress") return "ingress";
   const e = row.bars[0]?.rawEvents[0];
@@ -927,6 +972,9 @@ function getRowCategory(row: TimelineRow): Category {
 
 function getSubgroupKey(row: TimelineRow): string | null {
   if (row.type === "fs") return row.label;
+  // Cluster a backend's sync ops (row.group is `fs-sync:<backend>`) together
+  // within File System, distinct from the per-mount local fs subgroups.
+  if (isFsSyncRow(row)) return row.group ?? row.label;
   if (row.type === "egress") {
     const e = row.bars[0]?.rawEvents[0];
     return e?.type === "egress.request" ? e.host : null;
@@ -1288,6 +1336,9 @@ function groupRowSummary(bar: TimelineBar): {
   } else if (req?.type === "fs.request") {
     method = req.operation;
     primary = req.path;
+  } else if (req?.type === "system.fs-sync-request") {
+    method = req.operation;
+    primary = req.path;
   } else if (req?.type === "exec.request") {
     method = "exec";
     primary = req.command;
@@ -1326,12 +1377,23 @@ function groupRowSummary(bar: TimelineBar): {
       status = "allowed";
       statusCls = "text-green-600 dark:text-green-400";
     }
+  } else if (req?.type === "system.fs-sync-request") {
+    // fs-sync has no ACL/HTTP status — only success/failure of the backend call.
+    if (bar.error) {
+      status = bar.error;
+      statusCls = "text-red-600 dark:text-red-400";
+    } else if (bar.pending) {
+      status = "pending";
+      statusCls = "text-muted-foreground/60";
+    }
   }
 
-  // Duration is the request→response round-trip, meaningful for egress and
-  // ingress.
+  // Duration is the request→response round-trip, meaningful for egress,
+  // ingress, and the fs-sync backend call.
   const duration =
-    (req?.type === "egress.request" || req?.type === "ingress.request") &&
+    (req?.type === "egress.request" ||
+      req?.type === "ingress.request" ||
+      req?.type === "system.fs-sync-request") &&
     bar.durationMs > 0
       ? humanDuration(bar.durationMs)
       : "";

@@ -59,6 +59,10 @@ func main() {
 		defer f.Close()
 		auditOut = f
 	}
+	// Serialize the filesystem audit encoder and the sync-audit encoder
+	// (see NewAuditedStore below) so their JSON event lines never interleave
+	// on the shared sink.
+	auditSink := &lockedWriter{w: auditOut}
 
 	// Control mode: one sbxfuse process per pod serving every sandbox's
 	// workspaces, so the pod has a single shared FUSE daemon (design §9). sandboxd
@@ -81,7 +85,7 @@ func main() {
 		MountPoint: *mountPoint,
 		Backend:    *backendDir,
 		ACLs:       fusefs.Compile(rules),
-		Audit:      auditOut,
+		Audit:      auditSink,
 	}
 
 	log.Printf("sbxfuse: starting (remote=%q, mount=%s, backend=%s, mark=0x%x)",
@@ -97,6 +101,11 @@ func main() {
 		log.Fatalf("remote: %v", err)
 	}
 	if store != nil {
+		// Wrap the store so every external-backend request emits a
+		// system.fs-sync-request / -response pair on audit. Both the Oplog
+		// (write-back) and Config.Remote (reads) use the wrapped store, so
+		// uploads and reads alike are surfaced.
+		store = fusefs.NewAuditedStore(store, *remoteName, *mountPoint, auditSink)
 		// Wire the store as both write-back target (Oplog) and read-side
 		// authority (Config.Remote). The local backend dir is now a write
 		// buffer only — no Bootstrap pre-fetch, no read cache. Reads on
@@ -153,14 +162,14 @@ func main() {
 // emits these as keyed sandboxes' workspaces come and go; the JSON shape mirrors
 // the single-mount flags plus an op selector.
 type ctrlCmd struct {
-	Op           string `json:"op"`             // "mount" | "unmount" | "reacl"
-	Mount        string `json:"mount"`          // host FUSE mount point (the key in the live set)
-	Backend      string `json:"backend"`        // host directory backing the workspace (mount)
-	ACLs         string `json:"acls"`           // path to the mount's ACL JSON file (mount/reacl)
-	Remote       string `json:"remote"`         // remote backend name; blank = local-only
-	RemoteConfig string `json:"remote_config"`  // remote backend JSON config
-	Mark         int    `json:"mark"`           // SO_MARK for the remote backend's HTTP client
-	OplogDepth   int    `json:"oplog_depth"`    // oplog queue size; 0 = use default
+	Op           string `json:"op"`            // "mount" | "unmount" | "reacl"
+	Mount        string `json:"mount"`         // host FUSE mount point (the key in the live set)
+	Backend      string `json:"backend"`       // host directory backing the workspace (mount)
+	ACLs         string `json:"acls"`          // path to the mount's ACL JSON file (mount/reacl)
+	Remote       string `json:"remote"`        // remote backend name; blank = local-only
+	RemoteConfig string `json:"remote_config"` // remote backend JSON config
+	Mark         int    `json:"mark"`          // SO_MARK for the remote backend's HTTP client
+	OplogDepth   int    `json:"oplog_depth"`   // oplog queue size; 0 = use default
 }
 
 // lockedWriter serializes concurrent writes from the N fusefs.Servers that share
@@ -274,6 +283,9 @@ func controlMount(ctx context.Context, audit io.Writer, defaultOplogDepth int, c
 		return fmt.Errorf("remote: %w", err)
 	}
 	if store != nil {
+		// audit is the pod-wide lockedWriter shared by every mount's fusefs
+		// server, so the sync-audit encoder serializes against them too.
+		store = fusefs.NewAuditedStore(store, cmd.Remote, cmd.Mount, audit)
 		depth := cmd.OplogDepth
 		if depth == 0 {
 			depth = defaultOplogDepth

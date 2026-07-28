@@ -63,7 +63,7 @@ func TestResolveMount(t *testing.T) {
 // which is the case for lightweight/early-lifecycle handlers.
 func TestEmitFSEventNilBroker(t *testing.T) {
 	h := &Sandbox{}
-	done := h.emitFSEvent(gen.SandboxConfig{}, gen.Write, "/workspace/x")
+	done := h.emitFSEvent(gen.SandboxConfig{}, gen.FSRequestEventOperationWrite, "/workspace/x")
 	done(nil) // must not panic
 }
 
@@ -81,13 +81,13 @@ func TestEmitFSEventOnlyMountedPaths(t *testing.T) {
 	}
 
 	// Path outside any mount: no events.
-	h.emitFSEvent(cfg, gen.Write, "/etc/passwd")(nil)
+	h.emitFSEvent(cfg, gen.FSRequestEventOperationWrite, "/etc/passwd")(nil)
 	if got := count(); got != 0 {
 		t.Fatalf("unmounted path published %d events, want 0", got)
 	}
 
 	// Path under /workspace: exactly the request + response pair.
-	h.emitFSEvent(cfg, gen.Write, "/workspace/test.txt")(nil)
+	h.emitFSEvent(cfg, gen.FSRequestEventOperationWrite, "/workspace/test.txt")(nil)
 	if got := count(); got != 2 {
 		t.Fatalf("mounted path published %d events, want 2", got)
 	}

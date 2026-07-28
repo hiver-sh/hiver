@@ -81,6 +81,13 @@ function eventBadge(event: SandboxEvent): {
       return { label: "vm-resumed", variant: "orange" };
     case "system.shutdown":
       return { label: "shutdown", variant: "orange" };
+    case "system.fs-sync-request":
+      return { label: `fs-sync.req ${event.operation}`.trim(), variant: "purple" };
+    case "system.fs-sync-response":
+      return {
+        label: `fs-sync.res ${event.error ? "✗" : ""}`.trim(),
+        variant: event.error ? "red" : "indigo",
+      };
     default:
       return { label: "unknown", variant: "default" };
   }
@@ -264,6 +271,28 @@ function EventDetail({ event }: { event: SandboxEvent }) {
       return (
         <span className="font-mono text-xs text-muted-foreground">
           ttl expired · shutting down
+        </span>
+      );
+    case "system.fs-sync-request":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          <span className="text-zinc-500">#{event.id}</span>{" "}
+          <span className="text-purple-600 dark:text-purple-400">
+            {event.backend} {event.operation}
+          </span>{" "}
+          {event.path}
+        </span>
+      );
+    case "system.fs-sync-response":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          req#{event.request_id} {event.duration_ms}ms
+          {event.error ? (
+            <span className="text-red-600 dark:text-red-400">
+              {" "}
+              {event.error}
+            </span>
+          ) : null}
         </span>
       );
   }

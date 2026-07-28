@@ -14,6 +14,7 @@ import (
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 	"github.com/hiver-sh/hiver/internal/events"
+	"github.com/hiver-sh/hiver/internal/fusefs"
 )
 
 // fuseControl drives the single, pod-wide sbxfuse process (design §9). Instead of
@@ -109,6 +110,10 @@ type fuseMountReg struct {
 	backend    gen.Backend
 	broker     *events.Broker
 	corr       *correlator
+	// syncCorr is a separate correlator for the fs-sync audit stream
+	// (system.fs-sync-request/response). Its request_id namespace is
+	// independent of the filesystem stream's, so it can't share corr.
+	syncCorr *correlator
 }
 
 // sharedFuseTranslator demultiplexes the single audit stream from the pod-wide
@@ -127,7 +132,7 @@ func newSharedFuseTranslator() *sharedFuseTranslator {
 
 func (s *sharedFuseTranslator) register(hostMount, guestMount string, backend gen.Backend, broker *events.Broker) {
 	s.mu.Lock()
-	s.mounts[hostMount] = &fuseMountReg{guestMount: guestMount, backend: backend, broker: broker, corr: newCorrelator()}
+	s.mounts[hostMount] = &fuseMountReg{guestMount: guestMount, backend: backend, broker: broker, corr: newCorrelator(), syncCorr: newCorrelator()}
 	s.mu.Unlock()
 }
 
@@ -163,6 +168,13 @@ func (s *sharedFuseTranslator) handle(raw map[string]any) {
 	// Rewrite the host FUSE path to the guest-visible path the agent used, so the
 	// SSE event reports /workspace/… rather than /run/sandboxd/<key>/mnt/….
 	raw["path"] = reg.guestMount + strings.TrimPrefix(path, hostMount)
-	t := &fuseTranslator{broker: reg.broker, mount: reg.guestMount, backend: reg.backend, corr: reg.corr}
-	t.handle(raw)
+	// fs-sync events (external-backend requests) ride the same stream but map
+	// onto system.fs-sync-request/response, not fs.request/response.
+	if t, _ := raw["type"].(string); t == fusefs.SyncAuditType {
+		st := &syncTranslator{broker: reg.broker, mount: reg.guestMount, backend: reg.backend, corr: reg.syncCorr}
+		st.handle(raw)
+		return
+	}
+	tr := &fuseTranslator{broker: reg.broker, mount: reg.guestMount, backend: reg.backend, corr: reg.corr}
+	tr.handle(raw)
 }

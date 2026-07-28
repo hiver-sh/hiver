@@ -49,19 +49,52 @@ func (e FSRequestEventAccess) Valid() bool {
 
 // Defines values for FSRequestEventOperation.
 const (
-	Delete FSRequestEventOperation = "delete"
-	Read   FSRequestEventOperation = "read"
-	Write  FSRequestEventOperation = "write"
+	FSRequestEventOperationDelete FSRequestEventOperation = "delete"
+	FSRequestEventOperationRead   FSRequestEventOperation = "read"
+	FSRequestEventOperationWrite  FSRequestEventOperation = "write"
 )
 
 // Valid indicates whether the value is a known member of the FSRequestEventOperation enum.
 func (e FSRequestEventOperation) Valid() bool {
 	switch e {
-	case Delete:
+	case FSRequestEventOperationDelete:
 		return true
-	case Read:
+	case FSRequestEventOperationRead:
 		return true
-	case Write:
+	case FSRequestEventOperationWrite:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SystemFsSyncRequestEventOperation.
+const (
+	SystemFsSyncRequestEventOperationDelete  SystemFsSyncRequestEventOperation = "delete"
+	SystemFsSyncRequestEventOperationGet     SystemFsSyncRequestEventOperation = "get"
+	SystemFsSyncRequestEventOperationList    SystemFsSyncRequestEventOperation = "list"
+	SystemFsSyncRequestEventOperationListDir SystemFsSyncRequestEventOperation = "list-dir"
+	SystemFsSyncRequestEventOperationMove    SystemFsSyncRequestEventOperation = "move"
+	SystemFsSyncRequestEventOperationPut     SystemFsSyncRequestEventOperation = "put"
+	SystemFsSyncRequestEventOperationStat    SystemFsSyncRequestEventOperation = "stat"
+)
+
+// Valid indicates whether the value is a known member of the SystemFsSyncRequestEventOperation enum.
+func (e SystemFsSyncRequestEventOperation) Valid() bool {
+	switch e {
+	case SystemFsSyncRequestEventOperationDelete:
+		return true
+	case SystemFsSyncRequestEventOperationGet:
+		return true
+	case SystemFsSyncRequestEventOperationList:
+		return true
+	case SystemFsSyncRequestEventOperationListDir:
+		return true
+	case SystemFsSyncRequestEventOperationMove:
+		return true
+	case SystemFsSyncRequestEventOperationPut:
+		return true
+	case SystemFsSyncRequestEventOperationStat:
 		return true
 	default:
 		return false
@@ -382,6 +415,67 @@ type SystemConfigChangedEvent struct {
 	// Id Monotonic event id. Pass via the `lastEventId` query
 	// parameter on `GET /v1/events` to resume after this event.
 	Id        int       `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
+// SystemFsSyncRequestEvent defines model for SystemFsSyncRequestEvent.
+type SystemFsSyncRequestEvent struct {
+	// Backend Storage type for a file system.
+	//   * `local`    — sandbox-local storage with no external dependency.
+	//   * `gdrive`   — backed by Google Drive.
+	//   * `gcs`      — backed by Google Cloud Storage.
+	//   * `s3`       — backed by Amazon S3 or an S3-compatible service.
+	//   * `azure`    — backed by Azure Blob Storage.
+	//   * `onedrive` — backed by Microsoft OneDrive.
+	//   * `external` — backed by an HTTP host (see `external_file_system.yaml`).
+	Backend Backend `json:"backend"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// Operation The backend interaction being performed.
+	//   * `list`     — enumerate object paths under a prefix.
+	//   * `list-dir` — list the immediate children of a directory.
+	//   * `stat`     — fetch metadata for a single path.
+	//   * `get`      — download an object's content.
+	//   * `put`      — upload (create or replace) an object.
+	//   * `delete`   — remove an object.
+	//   * `move`     — rename/move an object.
+	Operation SystemFsSyncRequestEventOperation `json:"operation"`
+
+	// Path Agent-visible path the sync targets. For `move` this is the
+	// source path.
+	Path      string    `json:"path"`
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`
+}
+
+// SystemFsSyncRequestEventOperation The backend interaction being performed.
+//   - `list`     — enumerate object paths under a prefix.
+//   - `list-dir` — list the immediate children of a directory.
+//   - `stat`     — fetch metadata for a single path.
+//   - `get`      — download an object's content.
+//   - `put`      — upload (create or replace) an object.
+//   - `delete`   — remove an object.
+//   - `move`     — rename/move an object.
+type SystemFsSyncRequestEventOperation string
+
+// SystemFsSyncResponseEvent defines model for SystemFsSyncResponseEvent.
+type SystemFsSyncResponseEvent struct {
+	// DurationMs Wall-clock duration of the backend request, in milliseconds.
+	DurationMs int `json:"duration_ms"`
+
+	// Error Backend error message. Set when the sync failed.
+	Error *string `json:"error,omitempty"`
+
+	// Id Monotonic event id. Pass via the `lastEventId` query
+	// parameter on `GET /v1/events` to resume after this event.
+	Id int `json:"id"`
+
+	// RequestId Unique identifier correlating this result to its `SystemFsSyncRequestEvent`.
+	RequestId int       `json:"request_id"`
 	Timestamp time.Time `json:"timestamp"`
 	Type      string    `json:"type"`
 }
@@ -889,6 +983,62 @@ func (t *SandboxEvent) MergeSystemShutdownEvent(v SystemShutdownEvent) error {
 	return err
 }
 
+// AsSystemFsSyncRequestEvent returns the union data inside the SandboxEvent as a SystemFsSyncRequestEvent
+func (t SandboxEvent) AsSystemFsSyncRequestEvent() (SystemFsSyncRequestEvent, error) {
+	var body SystemFsSyncRequestEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSystemFsSyncRequestEvent overwrites any union data inside the SandboxEvent as the provided SystemFsSyncRequestEvent
+func (t *SandboxEvent) FromSystemFsSyncRequestEvent(v SystemFsSyncRequestEvent) error {
+	v.Type = "system.fs-sync-request"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSystemFsSyncRequestEvent performs a merge with any union data inside the SandboxEvent, using the provided SystemFsSyncRequestEvent
+func (t *SandboxEvent) MergeSystemFsSyncRequestEvent(v SystemFsSyncRequestEvent) error {
+	v.Type = "system.fs-sync-request"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSystemFsSyncResponseEvent returns the union data inside the SandboxEvent as a SystemFsSyncResponseEvent
+func (t SandboxEvent) AsSystemFsSyncResponseEvent() (SystemFsSyncResponseEvent, error) {
+	var body SystemFsSyncResponseEvent
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSystemFsSyncResponseEvent overwrites any union data inside the SandboxEvent as the provided SystemFsSyncResponseEvent
+func (t *SandboxEvent) FromSystemFsSyncResponseEvent(v SystemFsSyncResponseEvent) error {
+	v.Type = "system.fs-sync-response"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSystemFsSyncResponseEvent performs a merge with any union data inside the SandboxEvent, using the provided SystemFsSyncResponseEvent
+func (t *SandboxEvent) MergeSystemFsSyncResponseEvent(v SystemFsSyncResponseEvent) error {
+	v.Type = "system.fs-sync-response"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 func (t SandboxEvent) Discriminator() (string, error) {
 	var discriminator struct {
 		Discriminator string `json:"type"`
@@ -931,6 +1081,10 @@ func (t SandboxEvent) ValueByDiscriminator() (interface{}, error) {
 		return t.AsStdioEvent()
 	case "system.config-changed":
 		return t.AsSystemConfigChangedEvent()
+	case "system.fs-sync-request":
+		return t.AsSystemFsSyncRequestEvent()
+	case "system.fs-sync-response":
+		return t.AsSystemFsSyncResponseEvent()
 	case "system.shutdown":
 		return t.AsSystemShutdownEvent()
 	case "system.start":

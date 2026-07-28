@@ -521,13 +521,15 @@ function RowDetailPanelInner({
           | "egress.response"
           | "ingress.response"
           | "fs.response"
-          | "exec.response";
+          | "exec.response"
+          | "system.fs-sync-response";
       }
     > =>
       e.type === "egress.response" ||
       e.type === "ingress.response" ||
       e.type === "fs.response" ||
-      e.type === "exec.response",
+      e.type === "exec.response" ||
+      e.type === "system.fs-sync-response",
   );
   const chunks = bar.rawEvents.filter(
     (e): e is Extract<SandboxEvent, { type: "egress.chunk" | "ingress.chunk" }> =>
@@ -973,6 +975,13 @@ function RowDetailPanelInner({
                     )}
                   </>
                 )}
+                {req.type === "system.fs-sync-request" && (
+                  <>
+                    <KV label="backend" value={req.backend} />
+                    <KV label="op" value={req.operation} />
+                    <KV label="path" value={req.path} />
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -1031,6 +1040,23 @@ function RowDetailPanelInner({
                   {res.type === "fs.response" && (
                     <>
                       <KV label="backend" value={res.backend} />
+                      {effectiveDurationMs != null && (
+                        <KV
+                          label="duration"
+                          value={humanDuration(effectiveDurationMs)}
+                        />
+                      )}
+                      {res.error && (
+                        <KV
+                          label="error"
+                          value={res.error}
+                          cls="text-red-600 dark:text-red-400"
+                        />
+                      )}
+                    </>
+                  )}
+                  {res.type === "system.fs-sync-response" && (
+                    <>
                       {effectiveDurationMs != null && (
                         <KV
                           label="duration"

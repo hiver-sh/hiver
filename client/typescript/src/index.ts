@@ -36,6 +36,8 @@ export {
   SnapshotPartResult,
   StdioEvent,
   SystemEvent,
+  SystemFsSyncRequestEvent,
+  SystemFsSyncResponseEvent,
 } from "./schemas";
 
 export {

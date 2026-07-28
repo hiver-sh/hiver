@@ -494,11 +494,12 @@ type SandboxEvent struct {
 	// egress.chunk, ingress.chunk (Body carries the chunk bytes)
 	Label string `json:"label,omitempty"` // "up" for client→upstream, "down" for upstream→client (WebSocket only)
 
-	// fs.request
+	// fs.request. For system.fs-sync-request, Operation is one of "list",
+	// "list-dir", "stat", "get", "put", "delete", or "move".
 	Mount     string `json:"mount,omitempty"`
 	Operation string `json:"operation,omitempty"` // "read", "write", or "delete"
 
-	// fs.response
+	// fs.response, system.fs-sync-request/response (Backend, Error).
 	Backend string `json:"backend,omitempty"`
 	Error   string `json:"error,omitempty"`
 
@@ -515,8 +516,11 @@ type SandboxEvent struct {
 	Command string `json:"command,omitempty"`
 
 	// system.config-changed. Type is one of "system.start",
-	// "system.config-changed", "system.vm-resumed", or "system.shutdown";
-	// Config carries the post-change config for "system.config-changed" and
-	// is nil otherwise.
+	// "system.config-changed", "system.vm-resumed", "system.shutdown",
+	// "system.fs-sync-request", or "system.fs-sync-response". Config carries
+	// the post-change config for "system.config-changed" and is nil otherwise.
+	// The fs-sync events describe a request to an external file-system backend:
+	// the request carries Backend, Operation, and Path; the response carries
+	// RequestID, DurationMs, and (on failure) Error.
 	Config *SandboxConfig `json:"config,omitempty"`
 }

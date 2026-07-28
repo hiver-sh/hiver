@@ -23,6 +23,8 @@ components:
         - $ref: '#/components/schemas/SystemConfigChangedEvent'
         - $ref: '#/components/schemas/SystemVmResumedEvent'
         - $ref: '#/components/schemas/SystemShutdownEvent'
+        - $ref: '#/components/schemas/SystemFsSyncRequestEvent'
+        - $ref: '#/components/schemas/SystemFsSyncResponseEvent'
       discriminator:
         propertyName: type
         mapping:
@@ -43,6 +45,8 @@ components:
           system.config-changed: '#/components/schemas/SystemConfigChangedEvent'
           system.vm-resumed: '#/components/schemas/SystemVmResumedEvent'
           system.shutdown: '#/components/schemas/SystemShutdownEvent'
+          system.fs-sync-request: '#/components/schemas/SystemFsSyncRequestEvent'
+          system.fs-sync-response: '#/components/schemas/SystemFsSyncResponseEvent'
 
     SandboxEventBase:
       type: object
@@ -604,3 +608,78 @@ components:
         type: system.shutdown
         id: 512
         timestamp: "2026-06-02T14:30:00Z"
+
+    SystemFsSyncRequestEvent:
+      description: |
+        Emitted immediately before the FUSE layer issues a request to an
+        external file-system backend (for example, Google Cloud Storage,
+        S3, Google Drive) to sync a workspace path. `operation` describes
+        the backend interaction; the paired `SystemFsSyncResponseEvent`
+        (correlated by this event's `id`) reports when it completed.
+
+        These fire only for remote-backed mounts — a purely local
+        workspace never reaches an external backend and emits none.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, backend, operation, path]
+          properties:
+            type:
+              type: string
+              const: system.fs-sync-request
+            backend:
+              $ref: './config.yaml#/components/schemas/Backend'
+            operation:
+              type: string
+              enum: [list, list-dir, stat, get, put, delete, move]
+              description: |
+                The backend interaction being performed.
+                  * `list`     — enumerate object paths under a prefix.
+                  * `list-dir` — list the immediate children of a directory.
+                  * `stat`     — fetch metadata for a single path.
+                  * `get`      — download an object's content.
+                  * `put`      — upload (create or replace) an object.
+                  * `delete`   — remove an object.
+                  * `move`     — rename/move an object.
+            path:
+              type: string
+              description: |
+                Agent-visible path the sync targets. For `move` this is the
+                source path.
+      example:
+        type: system.fs-sync-request
+        id: 250
+        timestamp: "2026-06-02T14:25:00Z"
+        backend: gcs
+        operation: put
+        path: /workspace/report.md
+
+    SystemFsSyncResponseEvent:
+      description: |
+        Emitted when a request to an external file-system backend
+        completes. The `request_id` matches the `id` of the originating
+        `SystemFsSyncRequestEvent`. `error` is set when the backend
+        interaction failed.
+      allOf:
+        - $ref: '#/components/schemas/SandboxEventBase'
+        - type: object
+          required: [type, request_id, duration_ms]
+          properties:
+            type:
+              type: string
+              const: system.fs-sync-response
+            request_id:
+              type: integer
+              description: Unique identifier correlating this result to its `SystemFsSyncRequestEvent`.
+            duration_ms:
+              type: integer
+              description: Wall-clock duration of the backend request, in milliseconds.
+            error:
+              type: string
+              description: Backend error message. Set when the sync failed.
+      example:
+        type: system.fs-sync-response
+        id: 251
+        timestamp: "2026-06-02T14:25:00Z"
+        request_id: 250
+        duration_ms: 214

@@ -313,7 +313,9 @@ export type EventType =
   | "system.start"
   | "system.config-changed"
   | "system.vm-resumed"
-  | "system.shutdown";
+  | "system.shutdown"
+  | "system.fs-sync-request"
+  | "system.fs-sync-response";
 export const EventType = z.enum([
   "config.apply",
   "egress.request",
@@ -332,6 +334,8 @@ export const EventType = z.enum([
   "system.config-changed",
   "system.vm-resumed",
   "system.shutdown",
+  "system.fs-sync-request",
+  "system.fs-sync-response",
 ]);
 type _AssertEventType = Expect<Equal<z.infer<typeof EventType>, EventType>>;
 
@@ -986,6 +990,46 @@ type _AssertSystemEvent = Expect<
   Equal<z.infer<typeof SystemEvent>, SystemEvent>
 >;
 
+export interface SystemFsSyncRequestEvent extends SandboxEventBase {
+  type: "system.fs-sync-request";
+  backend: Backend;
+  operation: "list" | "list-dir" | "stat" | "get" | "put" | "delete" | "move";
+  path: string;
+}
+export const SystemFsSyncRequestEvent = SandboxEventBase.extend({
+  type: z.literal("system.fs-sync-request"),
+  backend: Backend,
+  operation: z.enum([
+    "list",
+    "list-dir",
+    "stat",
+    "get",
+    "put",
+    "delete",
+    "move",
+  ]),
+  path: z.string(),
+});
+type _AssertSystemFsSyncRequestEvent = Expect<
+  Equal<z.infer<typeof SystemFsSyncRequestEvent>, SystemFsSyncRequestEvent>
+>;
+
+export interface SystemFsSyncResponseEvent extends SandboxEventBase {
+  type: "system.fs-sync-response";
+  request_id: number;
+  duration_ms: number;
+  error?: string;
+}
+export const SystemFsSyncResponseEvent = SandboxEventBase.extend({
+  type: z.literal("system.fs-sync-response"),
+  request_id: z.number().int(),
+  duration_ms: z.number().int(),
+  error: z.string().optional(),
+});
+type _AssertSystemFsSyncResponseEvent = Expect<
+  Equal<z.infer<typeof SystemFsSyncResponseEvent>, SystemFsSyncResponseEvent>
+>;
+
 export type SandboxEvent =
   | ConfigApplyEvent
   | EgressRequestEvent
@@ -1000,7 +1044,9 @@ export type SandboxEvent =
   | IngressRequestEvent
   | IngressResponseEvent
   | IngressChunkEvent
-  | SystemEvent;
+  | SystemEvent
+  | SystemFsSyncRequestEvent
+  | SystemFsSyncResponseEvent;
 export const SandboxEvent = z.discriminatedUnion("type", [
   ConfigApplyEvent,
   EgressRequestEvent,
@@ -1016,6 +1062,8 @@ export const SandboxEvent = z.discriminatedUnion("type", [
   IngressResponseEvent,
   IngressChunkEvent,
   SystemEvent,
+  SystemFsSyncRequestEvent,
+  SystemFsSyncResponseEvent,
 ]);
 type _AssertSandboxEvent = Expect<
   Equal<z.infer<typeof SandboxEvent>, SandboxEvent>

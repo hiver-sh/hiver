@@ -42,6 +42,8 @@ from .schemas import (
     SnapshotVM,
     StdioEvent,
     SystemEvent,
+    SystemFsSyncRequestEvent,
+    SystemFsSyncResponseEvent,
 )
 from .utils import allow_sandbox, allowed_npm_packages, allowed_python_packages
 
@@ -92,6 +94,8 @@ __all__ = [
     "SnapshotVM",
     "StdioEvent",
     "SystemEvent",
+    "SystemFsSyncRequestEvent",
+    "SystemFsSyncResponseEvent",
     # utils
     "allow_sandbox",
     "allowed_npm_packages",

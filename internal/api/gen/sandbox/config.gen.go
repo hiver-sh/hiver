@@ -116,23 +116,25 @@ func (e EgressRuleOverrideBodyStrategy) Valid() bool {
 
 // Defines values for EventType.
 const (
-	EventTypeConfigApply         EventType = "config.apply"
-	EventTypeEgressChunk         EventType = "egress.chunk"
-	EventTypeEgressRequest       EventType = "egress.request"
-	EventTypeEgressResponse      EventType = "egress.response"
-	EventTypeExecRequest         EventType = "exec.request"
-	EventTypeExecResponse        EventType = "exec.response"
-	EventTypeFsRequest           EventType = "fs.request"
-	EventTypeFsResponse          EventType = "fs.response"
-	EventTypeIngressChunk        EventType = "ingress.chunk"
-	EventTypeIngressRequest      EventType = "ingress.request"
-	EventTypeIngressResponse     EventType = "ingress.response"
-	EventTypeResourceUsage       EventType = "resource.usage"
-	EventTypeStdio               EventType = "stdio"
-	EventTypeSystemConfigChanged EventType = "system.config-changed"
-	EventTypeSystemShutdown      EventType = "system.shutdown"
-	EventTypeSystemStart         EventType = "system.start"
-	EventTypeSystemVmResumed     EventType = "system.vm-resumed"
+	EventTypeConfigApply          EventType = "config.apply"
+	EventTypeEgressChunk          EventType = "egress.chunk"
+	EventTypeEgressRequest        EventType = "egress.request"
+	EventTypeEgressResponse       EventType = "egress.response"
+	EventTypeExecRequest          EventType = "exec.request"
+	EventTypeExecResponse         EventType = "exec.response"
+	EventTypeFsRequest            EventType = "fs.request"
+	EventTypeFsResponse           EventType = "fs.response"
+	EventTypeIngressChunk         EventType = "ingress.chunk"
+	EventTypeIngressRequest       EventType = "ingress.request"
+	EventTypeIngressResponse      EventType = "ingress.response"
+	EventTypeResourceUsage        EventType = "resource.usage"
+	EventTypeStdio                EventType = "stdio"
+	EventTypeSystemConfigChanged  EventType = "system.config-changed"
+	EventTypeSystemFsSyncRequest  EventType = "system.fs-sync-request"
+	EventTypeSystemFsSyncResponse EventType = "system.fs-sync-response"
+	EventTypeSystemShutdown       EventType = "system.shutdown"
+	EventTypeSystemStart          EventType = "system.start"
+	EventTypeSystemVmResumed      EventType = "system.vm-resumed"
 )
 
 // Valid indicates whether the value is a known member of the EventType enum.
@@ -165,6 +167,10 @@ func (e EventType) Valid() bool {
 	case EventTypeStdio:
 		return true
 	case EventTypeSystemConfigChanged:
+		return true
+	case EventTypeSystemFsSyncRequest:
+		return true
+	case EventTypeSystemFsSyncResponse:
 		return true
 	case EventTypeSystemShutdown:
 		return true
@@ -869,7 +875,7 @@ type SandboxConfig struct {
 	// Env Additional environment variables as a key/value map. This cannot be changed after the sandbox is initialized.
 	Env *map[string]string `json:"env,omitempty"`
 
-	// Events Restricts which event types are observed on the sandbox's event stream (`GET /v1/events`). When omitted (the default), every event type is observed. When set, only the listed types are observed — an empty array observes nothing. Excluded event types are not just hidden from the stream: the sandbox also skips the work of capturing them (for example, request/response body capture for `ingress.chunk`), so narrowing this list can reduce overhead for high-volume traffic. Reconciled at runtime, like `fs` and `egress`.
+	// Events Restricts which event types are observed on the sandbox's event stream. When omitted (the default), every event type is observed. When set, only the listed types are observed — an empty array observes nothing. Excluded event types are not just hidden from the stream: the sandbox also skips the work of capturing them (for example, request/response body capture for `ingress.chunk`), so narrowing this list can reduce overhead for high-volume traffic. Reconciled at runtime, like `fs` and `egress`.
 	Events *[]EventType `json:"events,omitempty"`
 
 	// ExtraHosts Additional /etc/hosts entries injected before the sandbox starts, in `hostname:ip` form. The special value `host-gateway` resolves to the host machine's IP on the container network (equivalent to Docker's `--add-host` flag). Cannot be changed after the sandbox is initialized.
@@ -888,8 +894,7 @@ type SandboxConfig struct {
 	// Snapshot/resume: like cpu, the guest RAM size is a boot-time property baked into a VM snapshot at capture. A sandbox resumed from a snapshot gets the RAM the guest had when the snapshot was CREATED — set memory when creating the snapshot to size guest RAM. On resume this value applies the VMM's cgroup memory limit but does not resize an already-captured guest. As with cpu, a warm workload captured once and resumed per request (e.g. a resident browser) should set memory both when the snapshot is created and on resume.
 	Memory *int `json:"memory,omitempty"`
 
-	// Mitm Whether outbound TLS connections are intercepted (man-in-the- middle) so egress rules can inspect and enforce method, path, headers, body, and `override`/`override_script`. When true (the default), the sandbox CA terminates the agent's TLS and re-encrypts upstream, giving `egress.request`/`egress.response`/ `egress.chunk` events full visibility.
-	//
+	// Mitm Whether outbound TLS connections are intercepted (man-in-the- middle) so egress rules can inspect and enforce method, path, headers, body, and `override`/`override_script`. When true (the default).
 	// When false, TLS connections are never intercepted: egress rules still match on `host` (from the TLS SNI) and `ports`, but `methods`, `paths`, `override`, and `override_script` are not enforced — the encrypted byte stream is forwarded end-to-end unmodified. Use this for upstreams whose TLS fingerprint or certificate pinning rejects the proxy's intercepted connection. Plain HTTP (unencrypted) egress is unaffected either way.
 	Mitm *bool `json:"mitm,omitempty"`
 

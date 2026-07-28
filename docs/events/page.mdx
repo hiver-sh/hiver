@@ -44,8 +44,19 @@ The stream auto-reconnects on network drops (exponential backoff). Pass a `signa
 | `system.config-changed` | `config` | Config was updated; `config` is the new config |
 | `system.vm-resumed` | — | A microVM was resumed from a snapshot instead of cold booting |
 | `system.shutdown` | — | The sandbox expired its TTL without activity and is shutting down |
+| `system.fs-sync-request` | `backend`, `operation`, `path` | Request to an external file-system backend (e.g. GCS, S3) is starting |
+| `system.fs-sync-response` | `request_id`, `duration_ms`, `error?` | The external-backend request completed |
 
 `access` on `egress.request` and `fs.request` is `"allowed"` or `"denied"`.
+
+`fs.request`/`fs.response` describe the agent's file operations against a
+mount. `system.fs-sync-request`/`system.fs-sync-response` are one level down:
+they fire around each request the FUSE layer makes to an **external** backend
+(Google Cloud Storage, S3, Google Drive, OneDrive, Azure, or an external HTTP
+host) to sync a path — `operation` is one of `list`, `list-dir`, `stat`,
+`get`, `put`, `delete`, or `move`. Purely local mounts have no external
+backend and emit none. Pair a response to its request via `request_id`, which
+matches the request event's `id`.
 
 ## Restricting which events are observed
 

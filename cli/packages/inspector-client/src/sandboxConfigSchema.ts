@@ -618,6 +618,8 @@ export const SANDBOX_CONFIG_SCHEMA = {
         "system.config-changed",
         "system.vm-resumed",
         "system.shutdown",
+        "system.fs-sync-request",
+        "system.fs-sync-response",
       ],
     },
   },

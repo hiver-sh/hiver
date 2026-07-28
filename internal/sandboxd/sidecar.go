@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hiver-sh/hiver/internal/events"
+	"github.com/hiver-sh/hiver/internal/fusefs"
 
 	gen "github.com/hiver-sh/hiver/internal/api/gen/sandbox"
 )
@@ -235,11 +236,24 @@ func intField(ev map[string]any, key string) int {
 	return 0
 }
 
-// formatFuseEvent renders an internal/fusefs.AuditEvent map.
+// formatFuseEvent renders an internal/fusefs.AuditEvent map. It also
+// renders the fs-sync stream (external-backend requests) which shares the
+// sink but carries type="fs-sync".
 func formatFuseEvent(ev map[string]any) string {
 	op, _ := ev["op"].(string)
 	path, _ := ev["path"].(string)
 	phase, _ := ev["phase"].(string)
+	if t, _ := ev["type"].(string); t == fusefs.SyncAuditType {
+		backend, _ := ev["backend"].(string)
+		if phase == "response" {
+			durMs := intField(ev, "duration_ms")
+			if errStr, ok := ev["err"].(string); ok && errStr != "" {
+				return fmt.Sprintf("sync  resp  %-8s %-8s %s %dms err=%s", backend, op, path, durMs, errStr)
+			}
+			return fmt.Sprintf("sync  resp  %-8s %-8s %s %dms", backend, op, path, durMs)
+		}
+		return fmt.Sprintf("sync  req   %-8s %-8s %s", backend, op, path)
+	}
 	if phase == "response" {
 		durMs := intField(ev, "duration_ms")
 		if errStr, ok := ev["err"].(string); ok && errStr != "" {
@@ -612,17 +626,98 @@ func fuseResponseFactory(raw map[string]any, backend gen.Backend, requestID int)
 	}
 }
 
+// syncTranslator turns fs-sync AuditEvents (emitted by sbxfuse's audited
+// remote store around every external-backend call) into
+// system.fs-sync-request / system.fs-sync-response SandboxEvents.
+//
+// Unlike the filesystem stream there is no ACL verdict and no op
+// filtering — every backend request is surfaced. Each request phase is
+// published and its SSE id stashed in the correlator; the paired response
+// phase looks it up to set request_id.
+type syncTranslator struct {
+	broker  *events.Broker
+	mount   string
+	backend gen.Backend
+	corr    *correlator
+}
+
+func (t *syncTranslator) handle(raw map[string]any) {
+	phase, _ := raw["phase"].(string)
+	internalID, _ := raw["request_id"].(string)
+	switch phase {
+	case "request":
+		f := syncRequestFactory(raw, t.backend)
+		if f == nil {
+			return
+		}
+		sseID := t.broker.Publish(f)
+		t.corr.put(internalID, sseID)
+	case "response":
+		sseID, ok := t.corr.take(internalID)
+		if !ok {
+			return // paired request was filtered out
+		}
+		f := syncResponseFactory(raw, int(sseID))
+		if f != nil {
+			t.broker.Publish(f)
+		}
+	}
+}
+
+// syncRequestFactory builds a system.fs-sync-request event. The path has
+// already been rewritten host→guest by sharedFuseTranslator.
+func syncRequestFactory(raw map[string]any, backend gen.Backend) events.Factory {
+	op, _ := raw["op"].(string)
+	operation := gen.SystemFsSyncRequestEventOperation(op)
+	if !operation.Valid() {
+		return nil
+	}
+	path, _ := raw["path"].(string)
+	return func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		_ = ev.FromSystemFsSyncRequestEvent(gen.SystemFsSyncRequestEvent{
+			Id:        int(id),
+			Timestamp: ts,
+			Backend:   backend,
+			Operation: operation,
+			Path:      path,
+		})
+		return ev
+	}
+}
+
+// syncResponseFactory builds a system.fs-sync-response event. `requestID`
+// is the SSE event id of the paired request, from the correlator.
+func syncResponseFactory(raw map[string]any, requestID int) events.Factory {
+	durationMs := intField(raw, "duration_ms")
+	errStr, _ := raw["err"].(string)
+	return func(id int64, ts time.Time) gen.SandboxEvent {
+		var ev gen.SandboxEvent
+		out := gen.SystemFsSyncResponseEvent{
+			Id:         int(id),
+			Timestamp:  ts,
+			RequestId:  requestID,
+			DurationMs: durationMs,
+		}
+		if errStr != "" {
+			out.Error = &errStr
+		}
+		_ = ev.FromSystemFsSyncResponseEvent(out)
+		return ev
+	}
+}
+
 // fuseOpKind buckets a fuse Op into read/write for the SSE schema.
 // Returns "" for ops that don't map (e.g. metadata-only ops we choose
 // not to surface yet).
 func fuseOpKind(op string) gen.FSRequestEventOperation {
 	switch op {
 	case "attr", "lookup", "readdir", "open", "read":
-		return gen.Read
+		return gen.FSRequestEventOperationRead
 	case "open-write", "write", "create", "mkdir", "truncate":
-		return gen.Write
+		return gen.FSRequestEventOperationWrite
 	case "remove":
-		return gen.Delete
+		return gen.FSRequestEventOperationDelete
 	}
 	return ""
 }

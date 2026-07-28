@@ -137,7 +137,7 @@ func (h *Sandbox) UploadFile(c *gin.Context, path string) {
 		return
 	}
 
-	done := h.emitFSEvent(cfg, gen.Write, cleaned)
+	done := h.emitFSEvent(cfg, gen.FSRequestEventOperationWrite, cleaned)
 	n, err := h.iso.Files().Save(dir, name, h.mountRoutes(cfg), c.Request.Body)
 	done(err)
 	if err != nil {
@@ -168,7 +168,7 @@ func (h *Sandbox) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) 
 		return
 	}
 
-	done := h.emitFSEvent(cfg, gen.Read, cleaned)
+	done := h.emitFSEvent(cfg, gen.FSRequestEventOperationRead, cleaned)
 	entries, err := h.iso.Files().List(cleaned, h.mountRoutes(cfg))
 	done(err)
 	if err != nil {
@@ -232,7 +232,7 @@ func (h *Sandbox) GetFile(c *gin.Context, path string) {
 		return
 	}
 
-	done := h.emitFSEvent(cfg, gen.Read, cleaned)
+	done := h.emitFSEvent(cfg, gen.FSRequestEventOperationRead, cleaned)
 	rc, size, err := h.iso.Files().Open(cleaned, h.mountRoutes(cfg))
 	done(err)
 	if err != nil {
@@ -264,7 +264,7 @@ func (h *Sandbox) DeleteFile(c *gin.Context, path string) {
 		return
 	}
 
-	done := h.emitFSEvent(cfg, gen.Write, cleaned)
+	done := h.emitFSEvent(cfg, gen.FSRequestEventOperationWrite, cleaned)
 	err = h.iso.Files().Delete(cleaned, h.mountRoutes(cfg))
 	done(err)
 	if err != nil {
