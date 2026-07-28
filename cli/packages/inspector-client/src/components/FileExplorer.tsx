@@ -425,12 +425,12 @@ function FileExplorerInner({ sandboxId, sandboxKey, serverUrl, events, refreshRe
           {node.is_dir ? (
             <>
               {node.expanded ? (
-                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-foreground" />
               ) : (
-                <Folder className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               )}
               {isCloudMount && (
-                <Cloud className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                <Cloud className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               )}
             </>
           ) : (

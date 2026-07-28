@@ -1,21 +1,11 @@
 import {
-  Activity,
-  Camera,
-  Check,
   Filter,
-  FolderTree,
-  Globe,
   GripVertical,
-  Loader2,
   LocateFixed,
-  Menu,
   Pause,
   Play,
   Plus,
-  Power,
   RefreshCw,
-  SlidersHorizontal,
-  SquareTerminal,
   Trash2,
   X,
 } from "lucide-react";
@@ -35,7 +25,6 @@ import {
 import { Mosaic, MosaicWindow } from "react-mosaic-component";
 import "react-mosaic-component/react-mosaic-component.css";
 import { useSearchParams } from "react-router-dom";
-import { Button } from "@/components/ui/button";
 import { SandboxConfigDialog } from "@/components/SandboxConfigDialog";
 import type { ConfigProposal } from "@/components/SandboxConfigDialog";
 import { Terminal, type TerminalSink } from "@/components/Terminal";
@@ -45,9 +34,7 @@ import {
   type BrowserSink,
   type BrowserTab,
 } from "@/components/BrowserView";
-import { PortUsageDialog } from "@/components/PortUsageDialog";
 import { PlaybackControls } from "@/components/PlaybackControls";
-import { SnapshotDialog } from "@/components/SnapshotDialog";
 import { FileExplorer, type TreeNode } from "@/components/FileExplorer";
 import {
   TimelineView,
@@ -403,9 +390,8 @@ export function SandboxDetail({
   // so the hover-reveal also works when SandboxDetail is consumed via the
   // exported library (e.g. the embed), where App never mounts.
   useScrollbarVisibility();
-  const { transport, player, gatewayUrl, notifyFirstEvent, seekEpoch } =
-    useTransport();
-  const { prefs, setPref, showHeader } = useUserPreferences();
+  const { transport, player, notifyFirstEvent, seekEpoch } = useTransport();
+  const { prefs, setPref } = useUserPreferences();
   // The event feed lives in an external store, not React state, so appending an
   // event re-renders only the components that subscribe to it (timeline, file
   // tree, event counter) — not SandboxDetail and its whole panel tree. See
@@ -416,17 +402,11 @@ export function SandboxDetail({
   useEffect(() => {
     onConnectedChange?.(connected);
   }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [shutdownLoading, setShutdownLoading] = useState(false);
-  // Shutting down = either our request is in flight, or the lifecycle stream
-  // has reported the sandbox is no longer running.
+  // Shutting down = the lifecycle stream has reported the sandbox is no longer
+  // running. Shutdown is initiated from the sidebar's per-sandbox menu now, so
+  // the detail view reacts purely to the streamed status.
   const isShuttingDown =
-    shutdownLoading || sandbox.status === "stop" || sandbox.status === "die";
-  const [ports, setPorts] = useState<number[]>([]);
-  const [isolation, setIsolation] = useState<string | null>(null);
-  // null = dialog closed; { port } = open for that port (port null = no exposed ports).
-  const [portDialog, setPortDialog] = useState<{ port: number | null } | null>(
-    null,
-  );
+    sandbox.status === "stop" || sandbox.status === "die";
   const [searchParams, setSearchParams] = useSearchParams();
   const [zoomWindow, setZoomWindow] = useState<{
     realStart: number;
@@ -489,17 +469,15 @@ export function SandboxDetail({
       { replace: true },
     );
   }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Panel visibility is driven by global view prefs; the toggles that flip them
+  // now live in the sidebar's per-sandbox menu, so only the getters are read here.
   const showTerminal = prefs.showTerminal;
-  const setShowTerminal = (v: boolean) => setPref("showTerminal", v);
   const showFiles = prefs.showFiles;
-  const setShowFiles = (v: boolean) => setPref("showFiles", v);
   const showTimeline = prefs.showTimeline;
-  const setShowTimeline = (v: boolean) => setPref("showTimeline", v);
   // Whether this sandbox exposes a CDP endpoint (detected server-side). The
   // browser panel and its toggle only exist when one is available.
   const [browserAvailable, setBrowserAvailable] = useState(false);
   const showBrowser = prefs.showBrowser && browserAvailable;
-  const setShowBrowser = (v: boolean) => setPref("showBrowser", v);
   // The browser tab strip is hoisted into the panel header, so tab state lives
   // here (fed from the shared stream) rather than inside BrowserView.
   const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([]);
@@ -516,7 +494,6 @@ export function SandboxDetail({
   // The tiling tree Mosaic renders, plus its persist-on-release handler.
   const { layout, setLayout, persistLayout } = usePanelLayout(visiblePanels);
   const [showConfig, setShowConfig] = useState(false);
-  const [showSnapshot, setShowSnapshot] = useState(false);
   const [configProposal, setConfigProposal] = useState<
     ConfigProposal | undefined
   >();
@@ -566,27 +543,6 @@ export function SandboxDetail({
   // restored instantly instead of collapsing and re-fetching. See FileExplorer.
   const filesTreeCacheRef = useRef<Map<string, TreeNode[]>>(new Map());
 
-  // Load the sandbox's exposed ports (image EXPOSE directives) for the header.
-  useEffect(() => {
-    let cancelled = false;
-    setPorts([]);
-    const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/ports`,
-    );
-    transport
-      .fetch(url)
-      .then((r) => r.json() as Promise<{ ports?: number[] }>)
-      .then((data) => {
-        if (!cancelled) setPorts(data.ports ?? []);
-      })
-      .catch(() => {
-        /* ignore */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sandbox.id, sandbox.key, serverUrl, transport]);
-
   // Browser availability is discovered from the shared stream, not a separate
   // probe: the server attaches the browser (from the primary sandbox OR a nested
   // one it spawned) and emits `browser:connected`, which flips this on. Reset it
@@ -601,29 +557,6 @@ export function SandboxDetail({
     lastBrowserNavRef.current = null;
     setBrowserTabs([]);
   }, [sandbox.id, sandbox.key]);
-
-  // Load the sandbox's isolation mechanism (container/microvm) for the header.
-  // Isolation is determined at boot from the image, not configured, so it comes
-  // from the sandbox's /info endpoint rather than its config.
-  useEffect(() => {
-    let cancelled = false;
-    setIsolation(null);
-    const url = new URL(
-      `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/info`,
-    );
-    transport
-      .fetch(url)
-      .then((r) => r.json() as Promise<{ isolation?: string }>)
-      .then((info) => {
-        if (!cancelled) setIsolation(info.isolation ?? "container");
-      })
-      .catch(() => {
-        /* ignore */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sandbox.id, sandbox.key, serverUrl, transport]);
 
   // Events are persisted server-side (SQLite) now, so "clear" and shutdown
   // wipe them through the server rather than a local store.
@@ -940,25 +873,6 @@ export function SandboxDetail({
     };
   }, [startStream]);
 
-  async function handleShutdown() {
-    if (!confirm(`Shut down sandbox "${sandbox.key}"?`)) return;
-    // Gray the panel and show a "shutting down…" status instead of yanking the
-    // user back to the home view. We don't navigate or guess at timing here:
-    // useSandboxLifecycleEvents streams the sandbox's real status (stop/die)
-    // and drops it from the list once it's gone, which drives the UI below.
-    setShutdownLoading(true);
-    try {
-      const url = new URL(
-        `${serverUrl}/api/sandboxes/${encodeURIComponent(sandbox.id)}/${encodeURIComponent(sandbox.key)}/shutdown`,
-      );
-      await transport.fetch(url, { method: "POST" });
-      clearStoredEvents();
-    } catch {
-      // Shutdown failed — drop the overlay so the panel is usable again.
-      setShutdownLoading(false);
-    }
-  }
-
   // The timeline panel's header controls (event count + filter + pause + follow
   // + clear), hoisted into the mosaic panel header. `onMouseDown` stops the
   // mosaic from starting a drag when a control is pressed, and `normal-case`
@@ -1144,134 +1058,6 @@ export function SandboxDetail({
       )}
       aria-busy={isShuttingDown}
     >
-      {/* Header */}
-      {showHeader && <div className="flex h-12 items-center justify-between gap-4 px-4 border-b border-border">
-        <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-base font-semibold">{sandbox.key}</h2>
-          {isolation && (
-            <span
-              title={`Isolation: ${isolation}`}
-              className="shrink-0 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
-            >
-              {isolation}
-            </span>
-          )}
-          {isShuttingDown && (
-            <span className="flex shrink-0 items-center gap-1.5 rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              shutting down…
-            </span>
-          )}
-          <div className="flex shrink-0 items-center gap-1">
-            {ports.length > 0 ? (
-              ports.map((port) => (
-                <button
-                  key={port}
-                  onClick={() => setPortDialog({ port })}
-                  title={`Exposed port ${port} — show SDK usage`}
-                  className="rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  :{port}
-                </button>
-              ))
-            ) : (
-              <button
-                onClick={() => setPortDialog({ port: null })}
-                title="No exposed ports — show SDK usage"
-                className="rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                :
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button size="sm" variant="ghost" title="View">
-                <Menu className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-48 p-1">
-              {[
-                {
-                  label: "Timeline",
-                  icon: Activity,
-                  active: showTimeline,
-                  onToggle: () => setShowTimeline(!showTimeline),
-                },
-                {
-                  label: "Terminal",
-                  icon: SquareTerminal,
-                  active: showTerminal,
-                  onToggle: () => setShowTerminal(!showTerminal),
-                },
-                ...(browserAvailable
-                  ? [
-                      {
-                        label: "Browser",
-                        icon: Globe,
-                        active: showBrowser,
-                        onToggle: () => setShowBrowser(!prefs.showBrowser),
-                      },
-                    ]
-                  : []),
-                {
-                  label: "Files",
-                  icon: FolderTree,
-                  active: showFiles,
-                  onToggle: () => setShowFiles(!showFiles),
-                },
-              ].map(({ label, icon: Icon, active, onToggle }) => (
-                <button
-                  key={label}
-                  onClick={onToggle}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60 transition-colors"
-                >
-                  <Check
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0",
-                      active ? "opacity-100" : "opacity-0",
-                    )}
-                  />
-                  <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  {label}
-                </button>
-              ))}
-              <div className="my-1 h-px bg-border" />
-              <button
-                onClick={() => setShowSnapshot(true)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60 transition-colors"
-              >
-                <span className="w-3.5 shrink-0" />
-                <Camera className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                Capture snapshot
-              </button>
-              <button
-                onClick={() => setShowConfig(true)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60 transition-colors"
-              >
-                <span className="w-3.5 shrink-0" />
-                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                Sandbox config
-              </button>
-            </PopoverContent>
-          </Popover>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={handleShutdown}
-            disabled={isShuttingDown}
-          >
-            {isShuttingDown ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Power className="h-4 w-4" />
-            )}
-          </Button>
-        </div>
-      </div>}
-
       {/* Content: a tiling mosaic — drag a panel's header onto another panel's
           edge to split (side-by-side) or stack (in a column); drag the splitters
           to resize. Layout persists to prefs. */}
@@ -1315,7 +1101,8 @@ export function SandboxDetail({
           )}
           zeroStateView={
             <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
-              No panels shown — enable one from the toolbar above.
+              No panels shown — enable one from the sandbox’s ⋮ menu in the
+              sidebar.
             </div>
           }
         />
@@ -1348,17 +1135,6 @@ export function SandboxDetail({
         </DialogContent>
       </Dialog>
 
-      <PortUsageDialog
-        sandboxId={sandbox.id}
-        sandboxKey={sandbox.key}
-        gatewayUrl={gatewayUrl}
-        open={portDialog !== null}
-        port={portDialog?.port ?? null}
-        onOpenChange={(open) => {
-          if (!open) setPortDialog(null);
-        }}
-      />
-
       <SandboxConfigDialog
         sandboxId={sandbox.id}
         sandboxKey={sandbox.key}
@@ -1369,15 +1145,6 @@ export function SandboxDetail({
           if (!open) setConfigProposal(undefined);
         }}
         proposal={configProposal}
-      />
-
-      <SnapshotDialog
-        sandboxId={sandbox.id}
-        sandboxKey={sandbox.key}
-        serverUrl={serverUrl}
-        gatewayUrl={gatewayUrl}
-        open={showSnapshot}
-        onOpenChange={setShowSnapshot}
       />
       </div>
     </EventStoreProvider>

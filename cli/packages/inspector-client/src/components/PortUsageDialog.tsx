@@ -32,8 +32,7 @@ function proxyUrl(
 
 function tsSnippet(key: string, port: number | null, gateway: string | null): string {
   const opts = gateway ? `, {}, { gatewayUrl: ${JSON.stringify(gateway)} }` : "";
-  const head = `// npm install --save @hiver.sh/client
-import * as hiver from "@hiver.sh/client";
+  const head = `import * as hiver from "@hiver.sh/client";
 
 const sandbox = await hiver.getOrCreateSandbox(${JSON.stringify(key)}${opts});`;
   if (port === null) return head;
@@ -48,8 +47,7 @@ console.log(res.status, await res.text());`;
 function pySnippet(key: string, port: number | null, gateway: string | null): string {
   const opts = gateway ? `, gateway_url=${JSON.stringify(gateway)}` : "";
   if (port === null) {
-    return `# pip install hiver-py
-import asyncio
+    return `import asyncio
 import hiver
 
 async def main():
@@ -57,8 +55,7 @@ async def main():
 
 asyncio.run(main())`;
   }
-  return `# pip install hiver-py
-import asyncio
+  return `import asyncio
 import httpx
 import hiver
 
@@ -74,8 +71,7 @@ asyncio.run(main())`;
 }
 
 function goSnippet(key: string, port: number | null, gateway: string): string {
-  const head = `// go get github.com/hiver-sh/hiver/client
-import "github.com/hiver-sh/hiver/client"
+  const head = `import "github.com/hiver-sh/hiver/client"
 
 c := client.NewClient(${JSON.stringify(gateway)})
 sandbox, _ := c.GetOrCreateSandbox(context.Background(), ${JSON.stringify(key)}, client.SandboxConfig{})`;
@@ -200,10 +196,15 @@ export function PortUsageDialog({
         <DialogTitle className="text-base font-semibold">Connect</DialogTitle>
 
         <p className="text-sm text-muted-foreground">
-          Open an interactive shell with the Hiver CLI:
+          Open interactive shell:
         </p>
         <CopyLine text={`hiver shell ${sandboxKey}`} />
-        
+
+        <p className="text-sm text-muted-foreground">
+          Fetch events:
+        </p>
+        <CopyLine text={`hiver events ${sandboxKey}`} />
+
         {url !== null && (
           <>
             <p className="text-sm text-muted-foreground">
@@ -213,7 +214,7 @@ export function PortUsageDialog({
           </>
         )}
         <p className="text-sm text-muted-foreground">
-          Connect with the Hiver client:
+          Connect with client:
         </p>
         <CodeTabs
           examples={{
