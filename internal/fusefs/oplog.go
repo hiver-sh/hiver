@@ -55,6 +55,13 @@ type Oplog struct {
 	store remotefs.Store
 	queue chan OplogEntry
 
+	// keepBuffer disables the post-Put eviction of the local buffer file.
+	// Set (before Run starts) for async mounts, where the read handlers
+	// serve the local buffer exclusively and never fall back to the
+	// remote — evicting would make every flushed file vanish from the
+	// agent's view. See [Mount].
+	keepBuffer bool
+
 	mu    sync.Mutex
 	dead  []OplogEntry
 	dirty map[string]int // agent-visible path → outstanding Op count
@@ -171,7 +178,9 @@ func (o *Oplog) drainOnShutdown() {
 // keeping a copy in the write buffer would just make the buffer dir
 // double as a stale read cache (the very thing we explicitly removed
 // when we deleted Bootstrap). Subsequent reads consult the remote
-// directly via [Config.Remote].
+// directly via [Config.Remote]. Async mounts are the exception: their
+// read handlers never consult the remote, so keepBuffer leaves the
+// local copy in place — there, the buffer IS the authoritative view.
 func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
 	// Detach the remote operation from ctx's cancellation. ctx is the uploader's
 	// lifecycle context: it is cancelled at shutdown, which is exactly when an
@@ -194,7 +203,7 @@ func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
 				//   1. A previous flush for the same path already
 				//      uploaded + evicted the buffer (e.g. a Create
 				//      enqueue followed by a Write enqueue, both for
-				//      the same path).
+				//      the same path; never with keepBuffer set).
 				//   2. The agent removed the file between Write and
 				//      our flush.
 				// Either way the remote either already has the latest
@@ -222,7 +231,7 @@ func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
 		o.mu.Unlock()
 		return
 	}
-	if e.Type == OpPut && e.BufferPath != "" {
+	if e.Type == OpPut && e.BufferPath != "" && !o.keepBuffer {
 		if rmErr := os.Remove(e.BufferPath); rmErr != nil && !os.IsNotExist(rmErr) {
 			log.Printf("oplog: evict buffer %s: %v", e.BufferPath, rmErr)
 		}

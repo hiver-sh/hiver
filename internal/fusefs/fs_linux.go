@@ -175,6 +175,12 @@ func Mount(cfg Config) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit), liveNodes: make(map[string]*node), written: make(map[string]struct{})}
 	s.SetACLs(cfg.ACLs)
+	// Async serves reads from the local buffer only, so the oplog must not
+	// evict a buffer file once its Put lands — eviction would make the file
+	// vanish from the mount (the remote is never consulted on reads).
+	if cfg.Async && cfg.Oplog != nil {
+		cfg.Oplog.keepBuffer = true
+	}
 	if cfg.Remote != nil {
 		ttl := cfg.RemoteStatTTL
 		if ttl == 0 {

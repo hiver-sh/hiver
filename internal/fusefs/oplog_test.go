@@ -96,6 +96,84 @@ func TestOplogReplaysFsMutations(t *testing.T) {
 	waitForAbsent(t, store, filepath.Clean(mountPoint+"/renamed.txt"))
 }
 
+// TestOplogAsyncKeepsBuffer regression-tests the async-mount write path:
+// the oplog must NOT evict the local buffer copy after a successful Put,
+// because async read handlers serve the buffer exclusively — with
+// eviction, a written file would vanish from the mount the moment the
+// uploader flushed it.
+func TestOplogAsyncKeepsBuffer(t *testing.T) {
+	requiresFUSE(t)
+
+	mountPoint := t.TempDir()
+	backend := t.TempDir()
+	remoteDir := t.TempDir()
+	auditBuf := &bytes.Buffer{}
+
+	store, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	oplog := fusefs.NewOplog(store, 16)
+
+	rules := []fusefs.Rule{
+		{Path: filepath.Clean(mountPoint), Access: fusefs.AccessRW},
+		{Path: filepath.Clean(mountPoint) + "/**", Access: fusefs.AccessRW},
+	}
+
+	srv, err := fusefs.Mount(fusefs.Config{
+		MountPoint: mountPoint,
+		Backend:    backend,
+		ACLs:       fusefs.Compile(rules),
+		Audit:      auditBuf,
+		Oplog:      oplog,
+		Remote:     store,
+		Async:      true,
+	})
+	if err != nil {
+		t.Skipf("fusefs.Mount: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	defer func() {
+		cancel()
+		_ = srv.Unmount()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(mountPoint); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	src := filepath.Join(mountPoint, "kept.txt")
+	if err := os.WriteFile(src, []byte("still here"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Wait until the Put lands on the store — the point where the old code
+	// evicted the buffer.
+	waitForRemote(t, store, filepath.Clean(mountPoint+"/kept.txt"), "still here")
+
+	// The buffer copy must survive the flush…
+	if _, err := os.Stat(filepath.Join(backend, "kept.txt")); err != nil {
+		t.Fatalf("buffer copy evicted after Put: %v", err)
+	}
+	// …and the file must still be readable through the mount.
+	got, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read through mount after flush: %v", err)
+	}
+	if string(got) != "still here" {
+		t.Fatalf("read through mount after flush: got %q, want %q", got, "still here")
+	}
+}
+
 // waitForRemote polls the store until path appears with the expected
 // content, or fails the test after a short timeout. Uses polling
 // because the oplog drains asynchronously.
