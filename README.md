@@ -13,7 +13,7 @@ Reliable Agents. Fast.
 </p>
 
 <p>
-Hiver is an open-source runtime for executing AI agents and  the apps they generate in fast, isolated sandboxes. It captures a structured, replayable trace of each run, including process lifecycle events, model calls, browser actions, file operations, network requests, and tool invocations.
+Hiver is an open-source runtime for executing AI agents and  the apps they generate in fast, isolated sandboxes. It captures a structured, replayable trace of each run, including process lifecycle events, model calls, subagents, browser actions, file operations, network requests, and tool invocations.
 </p>
 
 <p>
@@ -92,9 +92,9 @@ Bring your own image too — bundle any Docker image with `hiver bundle` (see [I
 
 ## Examples
 
-Find [**runnable examples**](https://github.com/hiver-sh/examples) in TypeScript and Python — Agent SDK servers, CLI and browser drivers, and lower-level client SDK recipes.
+**⭐ [Open Work](https://github.com/hiver-sh/work)** — a full Next.js app demonstrating a complete agent with security, elicitation, full-stack app generation and a Web browser.
 
-**⭐ [Open Work](https://github.com/hiver-sh/work)** — a full Next.js app demonstrating a complete agent with security, elicitation, content collaboration with AI and a Web browser.
+Find [**runnable examples**](https://github.com/hiver-sh/examples) in TypeScript and Python — Agent SDK servers, CLI and browser drivers, and lower-level client SDK recipes.
 
 ### Run a project directory
 
