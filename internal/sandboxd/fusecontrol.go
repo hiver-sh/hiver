@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -29,7 +30,28 @@ type fuseControl struct {
 	stdin io.WriteCloser
 	cmd   *exec.Cmd
 	trans *sharedFuseTranslator
+
+	// ctx is the process's lifecycle context; Unmount stops waiting for an ack
+	// once it's cancelled (pod shutdown), since the process is being torn down.
+	ctx context.Context
+
+	// waiters lets Unmount block until sbxfuse acks that a mount's oplog has
+	// drained. Keyed by host mount; the ack event (routed by the events loop to
+	// ackUnmount) closes and removes the channel.
+	wmu     sync.Mutex
+	waiters map[string]chan struct{}
+
+	// baseEvent is the standard audit translation/logging callback, wrapped by
+	// onEvent so control-channel acks are intercepted first.
+	baseEvent func(map[string]any)
 }
+
+// unmountAckTimeout caps how long Unmount waits for sbxfuse's drain-complete ack
+// before proceeding anyway. It must exceed sbxfuse's own oplog drain bound
+// (fusefs shutdownDrainTimeout, 5s) so a healthy drain always acks in time;
+// past it we assume the ack was lost and let teardown continue rather than
+// stall the pod.
+const unmountAckTimeout = 8 * time.Second
 
 // fuseMountSpec is one command on the control channel. Its JSON shape must match
 // sbxfuse's ctrlCmd.
@@ -64,7 +86,15 @@ func startFuseControl(ctx context.Context, wg *sync.WaitGroup, fuseBin string) (
 		_ = child.Close()
 		return nil, err
 	}
-	fc := &fuseControl{stdin: stdin, enc: json.NewEncoder(stdin), cmd: cmd, trans: newSharedFuseTranslator()}
+	fc := &fuseControl{
+		stdin:   stdin,
+		enc:     json.NewEncoder(stdin),
+		cmd:     cmd,
+		trans:   newSharedFuseTranslator(),
+		ctx:     ctx,
+		waiters: map[string]chan struct{}{},
+	}
+	fc.baseEvent = sidecarOnEvent(formatFuseEvent, fc.trans.handle)
 	// superviseStdio starts the process; sbxfuse's stdout/stderr is operational
 	// logging (mount messages), surfaced as prefixed pod-log lines, not events.
 	if _, err := superviseStdio(wg, "sbxfuse", cmd, nil); err != nil {
@@ -76,9 +106,32 @@ func startFuseControl(ctx context.Context, wg *sync.WaitGroup, fuseBin string) (
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ingestEvents(ctx, parent, "sbxfuse", sidecarOnEvent(formatFuseEvent, fc.trans.handle))
+		ingestEvents(ctx, parent, "sbxfuse", fc.onEvent)
 	}()
 	return fc, nil
+}
+
+// onEvent is the events-stream callback for the shared sbxfuse. It intercepts
+// the control-channel unmount-done ack (releasing the Unmount waiter) and passes
+// every other record to the standard audit translation/logging path.
+func (fc *fuseControl) onEvent(raw map[string]any) {
+	if t, _ := raw["type"].(string); t == fusefs.ControlUnmountDoneType {
+		mount, _ := raw["mount"].(string)
+		fc.ackUnmount(mount)
+		return
+	}
+	fc.baseEvent(raw)
+}
+
+// ackUnmount releases the Unmount call waiting on mount's drain-complete ack.
+func (fc *fuseControl) ackUnmount(mount string) {
+	fc.wmu.Lock()
+	ch, ok := fc.waiters[mount]
+	if ok {
+		delete(fc.waiters, mount)
+		close(ch)
+	}
+	fc.wmu.Unlock()
 }
 
 func (fc *fuseControl) send(spec fuseMountSpec) error {
@@ -94,9 +147,46 @@ func (fc *fuseControl) Mount(spec fuseMountSpec) error {
 	return fc.send(spec)
 }
 
-// Unmount removes a workspace. The caller unregisters from the translator after.
+// Unmount removes a workspace and blocks until sbxfuse acks that the mount's
+// oplog has drained, so the caller can tear down the mount's local write buffer
+// knowing pending remote writes (e.g. a write-on-shutdown snapshot) are durable.
+// The wait is bounded by unmountAckTimeout and released early on process
+// shutdown; on either it returns without error and lets teardown proceed. The
+// caller unregisters from the translator after.
 func (fc *fuseControl) Unmount(hostMount string) error {
-	return fc.send(fuseMountSpec{Op: "unmount", Mount: hostMount})
+	ch := make(chan struct{})
+	fc.wmu.Lock()
+	fc.waiters[hostMount] = ch
+	fc.wmu.Unlock()
+
+	if err := fc.send(fuseMountSpec{Op: "unmount", Mount: hostMount}); err != nil {
+		fc.wmu.Lock()
+		delete(fc.waiters, hostMount)
+		fc.wmu.Unlock()
+		return err
+	}
+
+	timer := time.NewTimer(unmountAckTimeout)
+	defer timer.Stop()
+	select {
+	case <-ch:
+	case <-fc.ctx.Done():
+		// Process is shutting down; its own SIGTERM drain covers durability.
+		fc.clearWaiter(hostMount)
+	case <-timer.C:
+		log.Printf("sandboxd: sbxfuse unmount %s: no drain ack after %s; proceeding", hostMount, unmountAckTimeout)
+		fc.clearWaiter(hostMount)
+	}
+	return nil
+}
+
+// clearWaiter drops hostMount's ack channel if it's still registered (the ack
+// never arrived — timeout or shutdown). A no-op if ackUnmount already consumed
+// it, so it can't race a close.
+func (fc *fuseControl) clearWaiter(hostMount string) {
+	fc.wmu.Lock()
+	delete(fc.waiters, hostMount)
+	fc.wmu.Unlock()
 }
 
 // ReACL tells the process to reload a mount's ACL file (already rewritten on disk).

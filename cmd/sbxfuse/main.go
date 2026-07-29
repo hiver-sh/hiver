@@ -193,6 +193,31 @@ type ctrlMount struct {
 	srv     *fusefs.Server
 	cancel  context.CancelFunc
 	aclPath string
+	// done is closed once the mount's fusefs.Server (and thus its oplog drain)
+	// has fully returned after cancel. The unmount handler waits on it before
+	// acking, so sandboxd learns the mount's pending writes are durable.
+	done chan struct{}
+}
+
+// unmountAck is the record sbxfuse writes onto the audit sink after a mount's
+// oplog has drained; sandboxd blocks its Unmount on it. Shape matches
+// [fusefs.ControlUnmountDoneType].
+type unmountAck struct {
+	Type  string `json:"type"`
+	Mount string `json:"mount"`
+}
+
+// ackUnmount emits the drain-complete acknowledgement for mount through the
+// shared, serialized audit sink so it interleaves cleanly with mounts' audit
+// events on the same stream.
+func ackUnmount(audit io.Writer, mount string) {
+	b, err := json.Marshal(unmountAck{Type: fusefs.ControlUnmountDoneType, Mount: mount})
+	if err != nil {
+		return
+	}
+	// One Write so the lockedWriter emits the line atomically against concurrent
+	// audit events (json.Decoder on the far side is newline-tolerant).
+	_, _ = audit.Write(append(b, '\n'))
 }
 
 // runControl is the control-mode event loop: it reads ctrlCmds from stdin and
@@ -236,7 +261,22 @@ func runControl(ctx context.Context, audit io.Writer, defaultOplogDepth int) {
 			mu.Unlock()
 			if in != nil {
 				in.cancel()
-				log.Printf("sbxfuse: control: unmounted %s", cmd.Mount)
+				// Ack only after the mount's oplog has drained (in.done), so
+				// sandboxd's Unmount unblocks once this mount's pending remote
+				// writes are durable — before it removes the local write buffer.
+				// Done off the command loop so a slow drain can't stall other
+				// sandboxes' mount/unmount commands.
+				mount := cmd.Mount
+				go func() {
+					<-in.done
+					ackUnmount(aw, mount)
+					log.Printf("sbxfuse: control: unmounted %s (oplog drained)", mount)
+				}()
+			} else {
+				// Unknown mount (never registered, or already unmounted): nothing
+				// to drain, but sandboxd is still blocked on the ack — send it now
+				// so its Unmount doesn't wait out the full timeout.
+				ackUnmount(aw, cmd.Mount)
 			}
 		case "reacl":
 			mu.Lock()
@@ -258,10 +298,19 @@ func runControl(ctx context.Context, audit io.Writer, defaultOplogDepth int) {
 	}
 
 	mu.Lock()
+	dones := make([]chan struct{}, 0, len(mounts))
 	for _, in := range mounts {
 		in.cancel()
+		dones = append(dones, in.done)
 	}
 	mu.Unlock()
+	// Wait for every mount's oplog to drain before returning (and letting the
+	// process exit), so a pod-wide SIGTERM doesn't drop in-flight uploads. Each
+	// drain is self-bounded (Oplog.shutdownDrainTimeout) and they run
+	// concurrently; sandboxd's WaitDelay caps the total.
+	for _, d := range dones {
+		<-d
+	}
 }
 
 // controlMount builds and starts one FUSE server for a mount command, registering
@@ -302,13 +351,15 @@ func controlMount(ctx context.Context, audit io.Writer, defaultOplogDepth int, c
 		return err
 	}
 	mctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := srv.Serve(mctx); err != nil && mctx.Err() == nil {
 			log.Printf("sbxfuse: control: serve %s: %v", cmd.Mount, err)
 		}
 	}()
 	mu.Lock()
-	mounts[cmd.Mount] = &ctrlMount{srv: srv, cancel: cancel, aclPath: cmd.ACLs}
+	mounts[cmd.Mount] = &ctrlMount{srv: srv, cancel: cancel, aclPath: cmd.ACLs, done: done}
 	mu.Unlock()
 	return nil
 }

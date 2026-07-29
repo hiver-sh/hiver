@@ -19,6 +19,15 @@ import (
 // translator switches on Type to tell the two streams apart.
 const SyncAuditType = "fs-sync"
 
+// ControlUnmountDoneType is the Type of the control-channel acknowledgement
+// sbxfuse writes onto the audit sink once a mount's oplog has fully drained in
+// response to an "unmount" command. It carries a "mount" field (the host mount
+// point). sandboxd blocks its Unmount on this event so a mount's pending remote
+// writes (e.g. a write-on-shutdown snapshot tarball) are durable before the
+// mount's local write buffer is torn down. The translators ignore it — it is
+// control signalling, not a sandbox-visible event.
+const ControlUnmountDoneType = "control-unmount-done"
+
 // SyncAuditEvent is one record describing a request to an external
 // storage backend (a [remotefs.Store]) — e.g. a GCS Put or an S3 Get.
 //
