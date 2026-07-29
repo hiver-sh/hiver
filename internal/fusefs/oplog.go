@@ -230,6 +230,64 @@ func (o *Oplog) forcePending(path string) {
 	o.queue <- OplogEntry{Type: OpPut, Path: path, BufferPath: p.bufferPath, At: time.Now()}
 }
 
+// RenameParkedPut redirects a still-parked OpPut from oldPath to newPath, whose
+// content now lives at newBufferPath — the local buffer was just renamed by a
+// FUSE Rename. It reports whether a parked Put for oldPath existed and was
+// redirected; when it did, the caller must NOT also enqueue an OpMove.
+//
+// This is the temp-file-then-rename atomic write (editors, snapshot.Capture):
+// the source's whole-object Put is still debounced, so nothing was uploaded to
+// the remote under the temp name — an OpMove would reference a remote object
+// that doesn't exist, and the parked Put's BufferPath (the temp) no longer
+// exists locally either (Rename moved it to newBufferPath). Redirecting the
+// write to land directly as newPath is both correct and optimal: one whole-
+// object PUT of the final name, no phantom temp upload + move.
+//
+// The redirected write is enqueued immediately rather than re-parked: a rename
+// is a deliberate commit point, not the incremental-append burst coalescing
+// exists to absorb, so there is nothing to gain by holding it longer. Returns
+// false when no Put is parked for oldPath (its Put already reached the queue or
+// the remote), leaving the caller to fall back to an OpMove.
+func (o *Oplog) RenameParkedPut(oldPath, newPath, newBufferPath string) bool {
+	o.pendMu.Lock()
+	p, ok := o.pending[oldPath]
+	if !ok {
+		o.pendMu.Unlock()
+		return false
+	}
+	delete(o.pending, oldPath)
+	p.timer.Stop()
+	// A parked Put for the destination (renaming over a not-yet-uploaded file)
+	// is superseded by this content — drop it so it doesn't double-upload, and
+	// reuse its dirty count for the single Put we enqueue below.
+	newHadParked := false
+	if q, ok2 := o.pending[newPath]; ok2 {
+		q.timer.Stop()
+		delete(o.pending, newPath)
+		newHadParked = true
+	}
+	o.pendMu.Unlock()
+
+	// Retire the temp's dirty count (its Put is dropped, never flushed) and give
+	// newPath exactly one outstanding count, matched by the markClean when the
+	// enqueued Put flushes — so IsDirty stays balanced and reads keep serving the
+	// local buffer until the upload lands.
+	o.mu.Lock()
+	if o.dirty[oldPath] > 0 {
+		o.dirty[oldPath]--
+		if o.dirty[oldPath] == 0 {
+			delete(o.dirty, oldPath)
+		}
+	}
+	if !newHadParked {
+		o.dirty[newPath]++
+	}
+	o.mu.Unlock()
+
+	o.queue <- OplogEntry{Type: OpPut, Path: newPath, BufferPath: newBufferPath, At: time.Now()}
+	return true
+}
+
 // takePending removes and returns every debounced Put as a ready-to-flush
 // entry, stopping its timer. Used by the shutdown drain, which flushes them
 // directly rather than via the queue (Run has stopped consuming, so a full

@@ -1222,6 +1222,17 @@ func (n *node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir bazil
 		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(oldVirt)
 		if dirty {
 			done()
+			// If the source's whole-object Put is still parked on the coalesce
+			// window, it was never uploaded under the old name — and the local
+			// rename above just moved its buffer to newHost. Redirect that parked
+			// Put to land as newVirt instead of enqueueing an OpMove against a
+			// remote object that doesn't exist (the temp-file-then-rename atomic
+			// write: snapshot.Capture, editors' safe-save). Falls through to
+			// OpMove when nothing is parked (the Put already reached the queue or
+			// the remote), where the source does exist remotely.
+			if localRenamed && n.s.cfg.Oplog.RenameParkedPut(oldVirt, newVirt, newHost) {
+				return nil
+			}
 			n.s.enqueueMove(oldVirt, newVirt)
 			return nil
 		}
