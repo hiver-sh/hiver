@@ -11,8 +11,9 @@ Reliable Agents. Fast.
 <p align="center">
 <img src="./docs/replay.gif" alt="Replaying an agent run in the Hiver inspector">
 </p>
+
 <p>
-Hiver is an open-source runtime for executing AI agents in fast, isolated sandboxes. It captures a structured, replayable trace of each run, including process lifecycle events, model calls, browser actions, file operations, network requests, and tool invocations.
+Hiver is an open-source runtime for executing AI agents and  the apps they generate in fast, isolated sandboxes. It captures a structured, replayable trace of each run, including process lifecycle events, model calls, browser actions, file operations, network requests, and tool invocations.
 </p>
 
 <p>
