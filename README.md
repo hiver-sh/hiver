@@ -5,20 +5,23 @@
 <h1 align="center">Hiver</h1>
 
 <h3 align="center">
-Replayable Sandboxes for AI Agents
+Reliable Agents. Fast.
 </h3>
 
 <p align="center">
 <img src="./docs/replay.gif" alt="Replaying an agent run in the Hiver inspector">
 </p>
+<p>
+Hiver is an open-source runtime for executing AI agents in fast, isolated sandboxes. It captures a structured, replayable trace of each run, including process lifecycle events, model calls, browser actions, file operations, network requests, and tool invocations.
+</p>
 
-Improving agent performance requires a mini-RL loop: run, evaluate, update policy, repeat. Unfortunately, this isn’t very straightforward as agents have become stateful, distributed systems. Turning behavior into evals isn’t always simple as every state mutation to the environment makes the reproduction much harder.
+<p>
+By combining execution and observability, Hiver gives you the data needed to diagnose failures and optimize the full stack—from token usage and tool latency to sandbox startup time, network behavior, and policy enforcement.
+</p>
 
-Hiver combines the sandbox and observability, so every agent run can be turned into insights to improve future runs.
-
-It’s composed of a secure sandbox that works locally and in the cloud with different levels of isolation, an inspector web interface with live telemetry and a CLI that is used by a coding agent to improve the agent itself.
-
-Hiver doesn’t require an API key or a specific cloud service.
+<p>
+Hiver runs locally or in your own cloud. No Hiver API key or hosted control plane is required.
+</p>
 
 ## 🚀 Getting Started
 
