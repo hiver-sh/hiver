@@ -62,19 +62,70 @@ type Oplog struct {
 	// agent's view. See [Mount].
 	keepBuffer bool
 
+	// coalesceWindow debounces OpPut replay per path. A remote object store
+	// has no append: every write-through is a full-object PUT. An agent that
+	// builds a file incrementally — open, append a chunk, close, repeat —
+	// closes the handle N times, and each close is one whole-object upload,
+	// so an N-append file costs N PUTs and re-uploads O(N²) bytes. The window
+	// holds a freshly enqueued Put back this long, and a follow-up Put to the
+	// same path within the window collapses into it (the buffer file already
+	// holds the latest bytes, read at flush time), so the burst becomes a
+	// single upload. coalesceMax caps the total hold so a file under sustained
+	// appends (a log) still syncs periodically instead of never. A zero window
+	// disables coalescing — Puts enqueue immediately (the pre-coalesce path).
+	// Delete/Move force a path's pending Put out ahead of them, preserving the
+	// store's Put-before-mutation ordering.
+	coalesceWindow time.Duration
+	coalesceMax    time.Duration
+
+	pendMu  sync.Mutex
+	pending map[string]*pendingPut // agent-visible path → debounced OpPut
+
 	mu    sync.Mutex
 	dead  []OplogEntry
 	dirty map[string]int // agent-visible path → outstanding Op count
 }
 
+// pendingPut is an OpPut parked on the coalesce window. bufferPath tracks the
+// latest write's buffer location — content is read at flush time, so a
+// coalesced group always uploads the newest bytes. firstAt anchors the
+// coalesceMax cap; timer fires the deferred enqueue.
+type pendingPut struct {
+	bufferPath string
+	firstAt    time.Time
+	timer      *time.Timer
+}
+
+// DefaultCoalesceWindow / DefaultCoalesceMax tune OpPut debouncing (see
+// Oplog.coalesceWindow). The window is wide enough to absorb a typical
+// incremental-append burst (closes hundreds of ms apart) into one upload,
+// while the cap guarantees a continuously appended file still syncs at least
+// this often.
+const (
+	DefaultCoalesceWindow = 750 * time.Millisecond
+	DefaultCoalesceMax    = 3 * time.Second
+)
+
 // NewOplog returns an Oplog that will replay to store. depth is the
 // channel buffer; an Enqueue on a full queue blocks the FUSE handler.
+// OpPut coalescing is on by default (see [Oplog.SetCoalesce]).
 func NewOplog(store remotefs.Store, depth int) *Oplog {
 	return &Oplog{
-		store: store,
-		queue: make(chan OplogEntry, depth),
-		dirty: make(map[string]int),
+		store:          store,
+		queue:          make(chan OplogEntry, depth),
+		dirty:          make(map[string]int),
+		pending:        make(map[string]*pendingPut),
+		coalesceWindow: DefaultCoalesceWindow,
+		coalesceMax:    DefaultCoalesceMax,
 	}
+}
+
+// SetCoalesce overrides the OpPut debounce window and cap. A window <= 0
+// disables coalescing, so every Put enqueues immediately. Must be called
+// before Run (and before any Enqueue), while the Oplog is idle.
+func (o *Oplog) SetCoalesce(window, max time.Duration) {
+	o.coalesceWindow = window
+	o.coalesceMax = max
 }
 
 // Enqueue submits an entry to the uploader. Blocks if the queue is full.
@@ -86,8 +137,115 @@ func (o *Oplog) Enqueue(e OplogEntry) {
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
+	if o.coalesceWindow > 0 && e.Type == OpPut {
+		o.debouncePut(e)
+		return
+	}
+	// A Delete or Move must not overtake a still-debounced Put for the same
+	// path, or the store would apply them out of order (delete-then-put
+	// resurrects the file; move-then-put drops the moved content). Force any
+	// pending Put(s) into the queue first, so the store still sees
+	// Put-before-mutation.
+	switch e.Type {
+	case OpDelete:
+		o.forcePending(e.Path)
+	case OpMove:
+		o.forcePending(e.Path)
+		if e.NewPath != "" {
+			o.forcePending(e.NewPath)
+		}
+	}
 	o.markDirty(e)
 	o.queue <- e
+}
+
+// debouncePut coalesces an OpPut. If a Put for the same path is already
+// parked, it points the group at the latest write's buffer and extends the
+// window (bounded by coalesceMax from the group's start). Otherwise it marks
+// the path dirty once — matched by the single markClean when the group's Put
+// finally flushes, so IsDirty stays balanced and reads keep serving the local
+// buffer until the upload lands — and starts the timer.
+func (o *Oplog) debouncePut(e OplogEntry) {
+	o.pendMu.Lock()
+	defer o.pendMu.Unlock()
+	if p, ok := o.pending[e.Path]; ok {
+		p.bufferPath = e.BufferPath
+		p.timer.Reset(o.debounceDelay(p.firstAt))
+		return
+	}
+	path := e.Path
+	p := &pendingPut{bufferPath: e.BufferPath, firstAt: e.At}
+	p.timer = time.AfterFunc(o.debounceDelay(p.firstAt), func() { o.firePending(path) })
+	o.pending[path] = p
+	o.markDirty(e)
+}
+
+// debounceDelay is how long a group that started at firstAt still waits: the
+// full window, unless that overruns the coalesceMax cap, in which case it
+// fires at the cap (never negative).
+func (o *Oplog) debounceDelay(firstAt time.Time) time.Duration {
+	d := o.coalesceWindow
+	if rem := time.Until(firstAt.Add(o.coalesceMax)); rem < d {
+		d = rem
+	}
+	if d < 0 {
+		d = 0
+	}
+	return d
+}
+
+// firePending is the debounce-timer callback: it removes the pending Put for
+// path and hands it to the uploader. A no-op if the entry was already taken
+// (by forcePending or the shutdown drain). The path stays dirty — it was
+// marked when the group began; the flush's markClean balances it. The queue
+// send is done outside pendMu so a full queue can't stall a concurrent
+// debouncePut/forcePending.
+func (o *Oplog) firePending(path string) {
+	o.pendMu.Lock()
+	p, ok := o.pending[path]
+	if ok {
+		delete(o.pending, path)
+	}
+	o.pendMu.Unlock()
+	if !ok {
+		return
+	}
+	o.queue <- OplogEntry{Type: OpPut, Path: path, BufferPath: p.bufferPath, At: time.Now()}
+}
+
+// forcePending flushes any debounced Put for path into the queue immediately,
+// used before a Delete/Move so the store applies operations in order. No-op if
+// nothing is parked for path.
+func (o *Oplog) forcePending(path string) {
+	o.pendMu.Lock()
+	p, ok := o.pending[path]
+	if ok {
+		delete(o.pending, path)
+		p.timer.Stop()
+	}
+	o.pendMu.Unlock()
+	if !ok {
+		return
+	}
+	o.queue <- OplogEntry{Type: OpPut, Path: path, BufferPath: p.bufferPath, At: time.Now()}
+}
+
+// takePending removes and returns every debounced Put as a ready-to-flush
+// entry, stopping its timer. Used by the shutdown drain, which flushes them
+// directly rather than via the queue (Run has stopped consuming, so a full
+// queue would deadlock). A timer that already fired may have queued its entry;
+// deleting from the map makes that firePending a no-op, and a duplicate
+// whole-object Put is idempotent, so no write is lost.
+func (o *Oplog) takePending() []OplogEntry {
+	o.pendMu.Lock()
+	defer o.pendMu.Unlock()
+	out := make([]OplogEntry, 0, len(o.pending))
+	for path, p := range o.pending {
+		p.timer.Stop()
+		out = append(out, OplogEntry{Type: OpPut, Path: path, BufferPath: p.bufferPath, At: time.Now()})
+	}
+	o.pending = make(map[string]*pendingPut)
+	return out
 }
 
 // IsDirty reports whether path has at least one Op pending or in flight
@@ -152,7 +310,15 @@ const shutdownDrainTimeout = 5 * time.Second
 func (o *Oplog) drainOnShutdown() {
 	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
 	defer cancel()
-	drained := 0
+	// Coalesced Puts still parked on their debounce timers haven't reached the
+	// queue. Stop the timers and flush them directly — routing through the
+	// queue would deadlock, since Run (the only consumer) has already returned
+	// into this drain.
+	pending := o.takePending()
+	for _, e := range pending {
+		o.flush(drainCtx, e)
+	}
+	drained := len(pending)
 	for {
 		select {
 		case e := <-o.queue:

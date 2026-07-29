@@ -5,14 +5,132 @@ package fusefs_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hiver-sh/hiver/internal/fusefs"
 	"github.com/hiver-sh/hiver/internal/remotefs"
 )
+
+// countingStore wraps a [remotefs.Store] and counts Put calls per path so a
+// test can assert how many whole-object uploads a burst of writes produced.
+type countingStore struct {
+	remotefs.Store
+	mu   sync.Mutex
+	puts map[string]int
+}
+
+func newCountingStore(inner remotefs.Store) *countingStore {
+	return &countingStore{Store: inner, puts: map[string]int{}}
+}
+
+func (c *countingStore) Put(ctx context.Context, path string, content io.Reader) error {
+	c.mu.Lock()
+	c.puts[path]++
+	c.mu.Unlock()
+	return c.Store.Put(ctx, path, content)
+}
+
+func (c *countingStore) putCount(path string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.puts[path]
+}
+
+// TestOplogCoalescesPutBurst drives the Oplog directly: a burst of OpPuts for
+// the same path enqueued inside the coalesce window must collapse to a single
+// store Put (the file an agent builds by repeated append-then-close), yet the
+// remote must end up holding the newest bytes.
+func TestOplogCoalescesPutBurst(t *testing.T) {
+	remoteDir := t.TempDir()
+	bufDir := t.TempDir()
+
+	inner, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	store := newCountingStore(inner)
+
+	oplog := fusefs.NewOplog(store, 64)
+	// Wide window, small max so the burst below (10 puts ~5ms apart) coalesces
+	// but the test doesn't wait seconds.
+	oplog.SetCoalesce(200*time.Millisecond, time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go oplog.Run(ctx)
+
+	const path = "/workspace/output/poem.html"
+	bufPath := filepath.Join(bufDir, "poem.html")
+
+	// 10 appends: each rewrites the whole buffer (as the FUSE layer's buffer
+	// does) then enqueues an OpPut, all inside one window.
+	var last string
+	for i := 0; i < 10; i++ {
+		last += "line\n"
+		if err := os.WriteFile(bufPath, []byte(last), 0o644); err != nil {
+			t.Fatalf("write buffer: %v", err)
+		}
+		oplog.Enqueue(fusefs.OplogEntry{Type: fusefs.OpPut, Path: path, BufferPath: bufPath})
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// After the window elapses the coalesced Put lands with the final content.
+	waitForRemote(t, store, path, last)
+
+	if got := store.putCount(path); got != 1 {
+		t.Fatalf("coalesced burst produced %d store Puts, want 1", got)
+	}
+}
+
+// TestOplogCoalesceDisabled verifies the escape hatch: with the window off,
+// every OpPut enqueues immediately, so N appends produce N store Puts (the
+// pre-coalesce behavior).
+func TestOplogCoalesceDisabled(t *testing.T) {
+	remoteDir := t.TempDir()
+	bufDir := t.TempDir()
+
+	inner, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	store := newCountingStore(inner)
+
+	oplog := fusefs.NewOplog(store, 64)
+	oplog.SetCoalesce(0, 0) // disabled
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const path = "/workspace/notes.txt"
+
+	// Each append gets its own buffer file — the real FUSE layer re-creates
+	// the buffer before every append, so a Put's post-flush eviction never
+	// starves the next. With coalescing off, the three enqueues are three Puts.
+	var last string
+	for i := 0; i < 3; i++ {
+		last += "x"
+		bufPath := filepath.Join(bufDir, "notes."+string(rune('a'+i)))
+		if err := os.WriteFile(bufPath, []byte(last), 0o644); err != nil {
+			t.Fatalf("write buffer: %v", err)
+		}
+		oplog.Enqueue(fusefs.OplogEntry{Type: fusefs.OpPut, Path: path, BufferPath: bufPath})
+	}
+	go oplog.Run(ctx)
+
+	waitForRemote(t, store, path, last)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && store.putCount(path) < 3 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := store.putCount(path); got != 3 {
+		t.Fatalf("coalescing-disabled produced %d store Puts, want 3", got)
+	}
+}
 
 // TestOplogReplaysFsMutations writes / renames / removes through a
 // FUSE mount whose Config carries an Oplog targeting a [remotefs.Store].
