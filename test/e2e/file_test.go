@@ -60,6 +60,30 @@ func TestFileE2E(t *testing.T) {
 		if !bytes.Equal(got, content) {
 			t.Errorf("downloaded content=%q, want %q", got, content)
 		}
+
+		// Reading from an offset returns the tail from that byte onward.
+		const off = 6 // len("hello ")
+		tail, err := sbx.ReadFile(ctx, "/workspace/greeting.txt", off)
+		if err != nil {
+			t.Fatalf("ReadFile(offset=%d): %v", off, err)
+		}
+		if want := content[off:]; !bytes.Equal(tail, want) {
+			t.Errorf("offset read=%q, want %q", tail, want)
+		}
+
+		// An offset at EOF is a valid empty read.
+		empty, err := sbx.ReadFile(ctx, "/workspace/greeting.txt", int64(len(content)))
+		if err != nil {
+			t.Fatalf("ReadFile(offset=len): %v", err)
+		}
+		if len(empty) != 0 {
+			t.Errorf("offset-at-EOF read=%q, want empty", empty)
+		}
+
+		// An offset past EOF is rejected.
+		if _, err := sbx.ReadFile(ctx, "/workspace/greeting.txt", int64(len(content))+1); err == nil {
+			t.Error("ReadFile with offset past EOF: expected error, got nil")
+		}
 	})
 
 	t.Run("exec_verifies_upload", func(t *testing.T) {

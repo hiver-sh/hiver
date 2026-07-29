@@ -287,9 +287,13 @@ func (h *SandboxHandlers) ListDirectory(c *gin.Context, key gen.Key, params gen.
 	}
 }
 
-func (h *SandboxHandlers) GetFile(c *gin.Context, key gen.Key, path string) {
+func (h *SandboxHandlers) GetFile(c *gin.Context, key gen.Key, path string, params gen.GetFileParams) {
 	if sb, ok := h.resolve(c, key); ok {
-		sb.GetFile(c, path)
+		var offset int64
+		if params.Offset != nil {
+			offset = *params.Offset
+		}
+		sb.GetFile(c, path, offset)
 	}
 }
 

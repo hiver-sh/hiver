@@ -24,6 +24,16 @@ export interface RequestOptions {
   timeoutMs?: number;
 }
 
+export interface ReadFileOptions extends RequestOptions {
+  /**
+   * Byte offset (0-based) to start reading from. Leading bytes before this
+   * position are skipped and the remainder of the file is returned. Defaults
+   * to `0` (the whole file); an offset past the end of the file is rejected by
+   * the server with a 400.
+   */
+  offset?: number;
+}
+
 export interface ExecOptions {
   /** Working directory to run the command in. When omitted, the sandbox's working directory is used. */
   cwd?: string;
@@ -483,10 +493,22 @@ export class Sandbox {
   /**
    * Download a file from a sandbox mount. `path` is the agent-visible
    * absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
+   *
+   * `opts.offset` skips that many leading bytes and returns the remainder of
+   * the file — handy for resuming a partial download or tailing a growing
+   * file. It defaults to `0` (the whole file); an offset past the end of the
+   * file is rejected by the server with a 400.
    */
-  async readFile(path: string, opts?: RequestOptions): Promise<Uint8Array> {
+  async readFile(path: string, opts?: ReadFileOptions): Promise<Uint8Array> {
     const signal = requestTimeoutSignal(opts?.timeoutMs);
-    const res = await this.fetchImpl(this.fileUrl(path), { signal });
+    const url = this.fileUrl(path);
+    if (opts?.offset !== undefined) {
+      if (!Number.isInteger(opts.offset) || opts.offset < 0) {
+        throw new RangeError("offset must be a non-negative integer");
+      }
+      if (opts.offset > 0) url.searchParams.set("offset", String(opts.offset));
+    }
+    const res = await this.fetchImpl(url, { signal });
     if (!res.ok) throw await toError(res, "readFile");
     return new Uint8Array(await res.arrayBuffer());
   }

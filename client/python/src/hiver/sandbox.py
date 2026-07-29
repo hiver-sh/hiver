@@ -364,12 +364,20 @@ class Sandbox:
         segments = "/".join(quote(seg, safe="") for seg in path.split("/") if seg)
         return f"{self.api_server_url}/v1/{self.key}/file/{segments}"
 
-    async def read_file(self, path: str) -> bytes:
+    async def read_file(self, path: str, offset: int = 0) -> bytes:
         """
         Download a file from a sandbox mount. `path` is the agent-visible
         absolute path (e.g. `/workspace/data.csv`). Returns the raw bytes.
+
+        `offset` skips that many leading bytes and returns the remainder of
+        the file — handy for resuming a partial download or tailing a growing
+        file. It defaults to `0` (the whole file); an offset past the end of
+        the file is rejected by the server with a 400.
         """
-        res = await self._client.get(self._file_url(path))
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        params = {"offset": offset} if offset else None
+        res = await self._client.get(self._file_url(path), params=params)
         if not res.is_success:
             raise _to_error(res, "read_file")
         return res.content

@@ -48,6 +48,7 @@ export {
   type ExecOptions,
   type ExecPipeEvent,
   type ExecStreamOptions,
+  type ReadFileOptions,
   type SandboxOptions,
 } from "./sandbox";
 

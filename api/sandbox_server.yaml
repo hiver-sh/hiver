@@ -207,12 +207,33 @@ paths:
         agent-visible absolute path (e.g. `/workspace/data.csv`) and must
         resolve to a regular file beneath one of the configured mount roots.
 
+        The optional `offset` query parameter skips that many leading bytes
+        and streams from there to end-of-file, so a caller can resume a
+        partial download or tail a growing file without re-reading the head.
+
         Like `POST /v1/{key}/file/{path}`, the read bypasses the destination
         mount's ACLs — the control-plane is higher privilege than
         the workload.
+      parameters:
+        - in: query
+          name: offset
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+          description: |
+            Byte offset (0-based) to start reading from. Leading bytes before
+            this position are skipped and the response streams from `offset`
+            to the end of the file; `Content-Length` reflects the remaining
+            byte count. Defaults to `0` (the whole file). An offset equal to
+            the file size yields an empty body; one greater is rejected with
+            `400`.
+          example: 1024
       responses:
         '200':
-          description: The file contents.
+          description: The file contents, starting at `offset`.
           headers:
             Content-Disposition:
               schema:
@@ -226,7 +247,9 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: The request is malformed (missing `path`, traversal, …).
+          description: |
+            The request is malformed (missing `path`, traversal, a negative
+            `offset`, or an `offset` past the end of the file, …).
           content:
             application/json:
               schema: { $ref: './config.yaml#/components/schemas/Error' }

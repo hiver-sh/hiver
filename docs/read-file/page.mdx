@@ -48,6 +48,27 @@ png, err := sandbox.ReadFile(ctx, "/workspace/chart.png")
 os.WriteFile("chart.png", png, 0o644)
 ```
 
+## Read from an offset
+
+Pass a byte `offset` to skip that many leading bytes and read from there to the end of the file. It defaults to `0` (the whole file), and is handy for resuming an interrupted download or tailing a file that's still growing. An offset equal to the file size returns an empty result; one past the end is rejected with a `400`.
+
+Polling from an advancing offset is how you **stream a file as it's written** — for example, live-rendering **HTML or Markdown as an LLM emits it** into the sandbox. Read only the new bytes each time and render as they arrive; see [File streaming](/docs/file-streaming) for the full pattern.
+
+```typescript
+// Skip the first 1 KiB, read the rest.
+const tail = await sandbox.readFile("/workspace/app.log", { offset: 1024 });
+```
+
+```python
+# Skip the first 1 KiB, read the rest.
+tail = await sandbox.read_file("/workspace/app.log", offset=1024)
+```
+
+```go
+// Skip the first 1 KiB, read the rest.
+tail, err := sandbox.ReadFile(ctx, "/workspace/app.log", 1024)
+```
+
 To discover what's available first, [list a directory](/docs/list-directory).
 
 <Callout>These calls run as the **operator**, not the agent, they read files directly and **bypass the per-mount [ACLs](/docs/file-policy)** that govern what code inside the sandbox can touch. They read through whatever backend the mount uses, so `readFile` on a [GCS or Drive mount](/docs/remote-file-systems) returns the object's current contents.</Callout>

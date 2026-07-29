@@ -30,7 +30,6 @@ func TestSandbox_ProxyURL(t *testing.T) {
 	}
 }
 
-
 func TestSandbox_Ping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertMethod(t, r, http.MethodGet)
@@ -205,6 +204,51 @@ func TestSandbox_ReadFile(t *testing.T) {
 	}
 	if string(data) != "col1,col2\n1,2\n" {
 		t.Errorf("got %q", data)
+	}
+}
+
+func TestSandbox_ReadFile_Offset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/sandbox/k/v1/test-key/file/workspace/data.csv")
+		if got := r.URL.Query().Get("offset"); got != "10" {
+			t.Errorf("offset query = %q, want 10", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("1,2\n"))
+	}))
+	defer srv.Close()
+
+	data, err := newTestSandbox(srv, "k").ReadFile(context.Background(), "/workspace/data.csv", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "1,2\n" {
+		t.Errorf("got %q", data)
+	}
+}
+
+func TestSandbox_ReadFile_OffsetZeroOmitsQuery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Errorf("offset 0 should send no query, got %q", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if _, err := newTestSandbox(srv, "k").ReadFile(context.Background(), "/workspace/data.csv", 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSandbox_ReadFile_NegativeOffset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("negative offset must fail before any request is sent")
+	}))
+	defer srv.Close()
+
+	if _, err := newTestSandbox(srv, "k").ReadFile(context.Background(), "/workspace/data.csv", -1); err == nil {
+		t.Fatal("expected error for negative offset")
 	}
 }
 

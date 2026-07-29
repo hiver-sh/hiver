@@ -291,8 +291,8 @@ func (s *Sandbox) ExecStream(ctx context.Context, req ExecStreamRequest) (*ExecP
 		return nil, fmt.Errorf("ExecStream: encode: %w", err)
 	}
 
-	streamURL := s.keyed("/exec-stream/"+execID)
-	stdinURL := s.keyed("/exec-stream/"+execID+"/stdin")
+	streamURL := s.keyed("/exec-stream/" + execID)
+	stdinURL := s.keyed("/exec-stream/" + execID + "/stdin")
 
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, streamURL, bytes.NewReader(body))
 	if err != nil {
@@ -397,8 +397,26 @@ func (s *Sandbox) ListDirectory(ctx context.Context, path string) ([]DirEntry, e
 
 // ReadFile returns the raw bytes of the file at path.
 // path is the agent-visible absolute path (e.g. /workspace/data.csv).
-func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.fileURL(path), nil)
+//
+// An optional byte offset skips that many leading bytes and returns the
+// remainder of the file (offset 0, the default, returns the whole file); it is
+// useful for resuming a partial download or tailing a growing file. Only the
+// first offset is used; passing more than one is a programmer error and panics.
+func (s *Sandbox) ReadFile(ctx context.Context, path string, offset ...int64) ([]byte, error) {
+	u := s.fileURL(path)
+	switch len(offset) {
+	case 0:
+	case 1:
+		if offset[0] < 0 {
+			return nil, fmt.Errorf("ReadFile: offset must be non-negative")
+		}
+		if offset[0] > 0 {
+			u += "?offset=" + strconv.FormatInt(offset[0], 10)
+		}
+	default:
+		panic("ReadFile: at most one offset may be given")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}

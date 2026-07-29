@@ -47,6 +47,7 @@ const docsNav = [
       { href: "/docs/examples/bash-sandbox", label: "Bash" },
       { href: "/docs/examples/oci-image", label: "OCI Image" },
       { href: "/docs/mocking", label: "Mocking" },
+      { href: "/docs/file-streaming", label: "File streaming" },
     ],
   },
   {

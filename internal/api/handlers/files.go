@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -214,10 +215,15 @@ func (h *Sandbox) ListDirectory(c *gin.Context, params gen.ListDirectoryParams) 
 }
 
 // GetFile streams a file from the sandbox filesystem via the backend's
-// FileBridge, bypassing sbxfuse ACLs.
-func (h *Sandbox) GetFile(c *gin.Context, path string) {
+// FileBridge, bypassing sbxfuse ACLs. offset skips that many leading bytes
+// (0 = whole file); the response streams from offset to EOF.
+func (h *Sandbox) GetFile(c *gin.Context, path string, offset int64) {
 	if path == "" {
 		c.JSON(http.StatusBadRequest, gen.Error{Error: "missing path"})
+		return
+	}
+	if offset < 0 {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "offset must be non-negative"})
 		return
 	}
 	cleaned := filepath.Clean(path)
@@ -241,9 +247,29 @@ func (h *Sandbox) GetFile(c *gin.Context, path string) {
 	}
 	defer rc.Close()
 
+	if offset > size {
+		c.JSON(http.StatusBadRequest, gen.Error{Error: "offset beyond end of file"})
+		return
+	}
+	// Advance past the first offset bytes. An *os.File (container backend)
+	// seeks in place; anything else (the microvm backend hands back an
+	// in-memory buffer) is skipped by discarding the leading bytes.
+	if offset > 0 {
+		if seeker, ok := rc.(io.Seeker); ok {
+			if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
+				c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+				return
+			}
+		} else if _, err := io.CopyN(io.Discard, rc, offset); err != nil {
+			c.JSON(http.StatusInternalServerError, gen.Error{Error: err.Error()})
+			return
+		}
+	}
+
+	remaining := size - offset
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filepath.Base(cleaned)))
-	c.Header("Content-Length", strconv.FormatInt(size, 10))
-	c.DataFromReader(http.StatusOK, size, "application/octet-stream", rc, nil)
+	c.Header("Content-Length", strconv.FormatInt(remaining, 10))
+	c.DataFromReader(http.StatusOK, remaining, "application/octet-stream", rc, nil)
 }
 
 // DeleteFile removes a file or empty directory at the given agent-visible path.

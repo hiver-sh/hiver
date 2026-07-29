@@ -1,0 +1,246 @@
+export const metadata = { title: "File streaming" }
+
+# File streaming
+
+Watch a file **as it's being written** and relay it straight to a browser. The pipeline has three parts, all shown below:
+
+- **[A producer](#stream-an-llms-output-to-a-file)** inside the sandbox appends output to a file — here, an LLM streaming an HTML page token by token.
+- **[A tail loop](#follow-the-file-with-write-events)** in your client follows the file using the sandbox's [event stream](/docs/events): each `fs.request` write wakes it up, and it reads only the new bytes with a byte [`offset`](/docs/read-file#read-from-an-offset) — no polling.
+- **[A chunked response](#render-it-live-over-a-chunked-response)** forwards each new slice to the browser with `Transfer-Encoding: chunked`, so the page paints as the model types it.
+
+It's ideal for showing an agent's work live: streaming HTML or Markdown from an LLM, a report that fills in section by section, or a log that grows as a long job runs.
+
+## Stream an LLM's output to a file
+
+The producer is any process that appends to a file. This one asks Claude for a self-contained HTML page and writes each streamed token straight to `/workspace/poem.html`, flushing so a reader sees every chunk immediately:
+
+```python generate.py
+# Runs inside the sandbox. Streams an HTML page from Claude into a file.
+import anthropic
+
+client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the sandbox env
+
+with open("/workspace/poem.html", "w") as f, client.messages.stream(
+    model="claude-opus-4-8",
+    max_tokens=2000,
+    messages=[{
+        "role": "user",
+        "content": "Write a complete, self-contained HTML page with a short poem "
+                   "and simple inline CSS. Output only the HTML, no preamble.",
+    }],
+) as stream:
+    for text in stream.text_stream:
+        f.write(text)
+        f.flush()  # flush each token so the tailing reader sees it right away
+```
+
+The sandbox needs the `anthropic` package (`pip install anthropic`, or bake it into your [image](/docs/getting-started)), the `ANTHROPIC_API_KEY` in its environment, and [egress](/docs/network) to `api.anthropic.com` — all wired up when you create the sandbox below.
+
+<Callout>To stream **Markdown** instead, change the prompt and the file name to `poem.md`, then pipe the accumulated text through your Markdown renderer. The tail loop is identical.</Callout>
+
+## Follow the file with write events
+
+Every file operation surfaces on the sandbox's [event stream](/docs/events) as an `fs.request`. Watch for a `write` on your path and read the new bytes on each one — an event-driven tail with no polling. `readFile(path, { offset })` returns the file's bytes from `offset` onward, so tracking how many bytes you've consumed gives you exactly what's new:
+
+```typescript
+// Follow `path`, driven by the sandbox's write events. Reads the new bytes each
+// time the file is written; ends when `signal` aborts.
+async function* tail(sandbox, path, signal) {
+  let offset = 0;
+  const readNew = async () => {
+    const chunk = await sandbox.readFile(path, { offset });
+    offset += chunk.length;
+    return chunk;
+  };
+  let chunk = await readNew(); // whatever's already there
+  if (chunk.length) yield chunk;
+  try {
+    for await (const e of sandbox.getEventsStream({ signal })) {
+      // React to writes only — our own readFile calls emit `read` events too.
+      if (e.type === "fs.request" && e.operation === "write" && e.path === path) {
+        chunk = await readNew();
+        if (chunk.length) yield chunk;
+      }
+    }
+  } finally {
+    chunk = await readNew(); // final catch-up after the stream ends
+    if (chunk.length) yield chunk;
+  }
+}
+```
+
+```python
+# Follow `path`, driven by the sandbox's write events. Reads the new bytes each
+# time the file is written; ends when `abort` is set.
+async def tail(sandbox, path, abort):
+    offset = 0
+
+    async def read_new():
+        nonlocal offset
+        chunk = await sandbox.read_file(path, offset=offset)
+        offset += len(chunk)
+        return chunk
+
+    chunk = await read_new()  # whatever's already there
+    if chunk:
+        yield chunk
+    try:
+        async for e in sandbox.get_events_stream(abort=abort):
+            # React to writes only — our own reads emit `read` events too.
+            if e.type == "fs.request" and e.operation == "write" and e.path == path:
+                chunk = await read_new()
+                if chunk:
+                    yield chunk
+    finally:
+        chunk = await read_new()  # final catch-up after the stream ends
+        if chunk:
+            yield chunk
+```
+
+```go
+// tail follows path, driven by the sandbox's write events. It sends each new
+// slice on out and returns once ctx is cancelled (the generator has exited).
+func tail(ctx context.Context, sandbox *client.Sandbox, path string, out chan<- []byte) {
+    defer close(out)
+    var offset int64
+    readNew := func(rctx context.Context) {
+        if chunk, err := sandbox.ReadFile(rctx, path, offset); err == nil && len(chunk) > 0 {
+            offset += int64(len(chunk))
+            out <- chunk
+        }
+    }
+    readNew(ctx) // whatever's already there
+    events, _ := sandbox.WatchEvents(ctx, -1)
+    for {
+        select {
+        case e, ok := <-events:
+            if !ok {
+                return
+            }
+            // React to writes only — our own reads emit `read` events too.
+            if e.Type == "fs.request" && e.Operation == "write" && e.Path == path {
+                readNew(ctx)
+            }
+        case <-ctx.Done():
+            // Final catch-up with a fresh context, since ctx is now cancelled.
+            fresh, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+            readNew(fresh)
+            cancel()
+            return
+        }
+    }
+}
+```
+
+## Render it live over a chunked response
+
+Now serve it. Create the sandbox, start the generator, and forward each slice from `tail` into an HTTP response. Omitting `Content-Length` makes the server use `Transfer-Encoding: chunked`, so the browser renders the HTML incrementally — open the URL and watch the page paint as the model writes it. `GENERATE_PY` holds the script from the [first step](#stream-an-llms-output-to-a-file).
+
+```typescript
+import { createServer } from "node:http";
+import { getOrCreateSandbox } from "@hiver.sh/client";
+
+createServer(async (_req, res) => {
+  const sandbox = await getOrCreateSandbox("streaming-demo", {
+    image: "python",
+    env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
+    egress: [{ access: "allow", host: "api.anthropic.com" }],
+  });
+  const path = "/workspace/poem.html";
+  await sandbox.writeFile(path, ""); // create it so the first read has something to follow
+  await sandbox.writeFile("/workspace/generate.py", GENERATE_PY);
+
+  // No Content-Length → Node uses chunked transfer encoding.
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+
+  // Start the generator; stop tailing once it exits.
+  const controller = new AbortController();
+  const running = sandbox
+    .exec(["python", "/workspace/generate.py"])
+    .finally(() => controller.abort());
+
+  for await (const chunk of tail(sandbox, path, controller.signal)) {
+    res.write(chunk); // flush each slice to the browser
+  }
+  await running;
+  res.end();
+}).listen(3000, () => console.log("open http://localhost:3000"));
+```
+
+```python
+import asyncio, os
+from aiohttp import web
+from hiver import get_or_create_sandbox, SandboxConfig, EgressRule
+
+async def handler(request):
+    sandbox = await get_or_create_sandbox("streaming-demo", SandboxConfig(
+        image="python",
+        env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+        egress=[EgressRule(access="allow", host="api.anthropic.com")],
+    ))
+    path = "/workspace/poem.html"
+    await sandbox.write_file(path, "")  # create it so the first read has something to follow
+    await sandbox.write_file("/workspace/generate.py", GENERATE_PY)
+
+    # No Content-Length → aiohttp uses chunked transfer encoding.
+    res = web.StreamResponse(headers={"Content-Type": "text/html; charset=utf-8"})
+    await res.prepare(request)
+
+    # Start the generator; stop tailing once it exits.
+    abort = asyncio.Event()
+    async def run():
+        try:
+            await sandbox.exec(["python", "/workspace/generate.py"])
+        finally:
+            abort.set()
+    task = asyncio.create_task(run())
+
+    async for chunk in tail(sandbox, path, abort):
+        await res.write(chunk)  # flush each slice to the browser
+    await task
+    await res.write_eof()
+    return res
+
+app = web.Application()
+app.router.add_get("/", handler)
+web.run_app(app, port=3000)  # open http://localhost:3000
+```
+
+```go
+http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+    sandbox, _ := c.GetOrCreateSandbox(r.Context(), "streaming-demo", client.SandboxConfig{
+        Image:  "python",
+        Env:    map[string]string{"ANTHROPIC_API_KEY": os.Getenv("ANTHROPIC_API_KEY")},
+        Egress: []client.EgressRule{{Access: "allow", Host: "api.anthropic.com"}},
+    })
+    path := "/workspace/poem.html"
+    sandbox.WriteFile(r.Context(), path, nil) // create it so the first read has something to follow
+    sandbox.WriteFile(r.Context(), "/workspace/generate.py", []byte(generatePy))
+
+    // No Content-Length → net/http uses chunked transfer encoding; Flush pushes
+    // each slice to the browser as it arrives.
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    flusher := w.(http.Flusher)
+
+    // Start the generator; cancel the tail's context once it exits.
+    tctx, cancel := context.WithCancel(r.Context())
+    go func() {
+        defer cancel()
+        _, _ = sandbox.Exec(r.Context(), client.ExecRequest{Command: []string{"python", "/workspace/generate.py"}})
+    }()
+
+    out := make(chan []byte)
+    go tail(tctx, sandbox, path, out)
+    for chunk := range out {
+        w.Write(chunk) // flush each slice to the browser
+        flusher.Flush()
+    }
+})
+http.ListenAndServe(":3000", nil) // open http://localhost:3000
+```
+
+<Callout>Reads are served from the sandbox's own filesystem, so the tail sees each write as soon as it's flushed — you don't wait on any [remote sync](/docs/remote-file-systems). On a GCS- or Drive-backed mount the incremental writes are coalesced into whole-object uploads in the background, so streaming token-by-token into a synced file doesn't spray one upload per token. The events tell you *when* to read; the byte `offset` tells you *from where* — `readFile` at end-of-file just returns an empty result.</Callout>
+
+---
+
+Next: [Execution](/docs/execution)

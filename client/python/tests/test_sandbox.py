@@ -213,6 +213,38 @@ async def test_read_file_sends_get_with_path_in_url_and_returns_bytes() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_read_file_forwards_offset_query() -> None:
+    route = respx.get(f"{SANDBOX_V1}/file/workspace/app.log").mock(
+        return_value=httpx.Response(200, content=b"lo")
+    )
+    async with httpx.AsyncClient() as client:
+        result = await make_sandbox(client).read_file("/workspace/app.log", offset=1024)
+
+    assert result == b"lo"
+    assert route.calls[0].request.url.params.get("offset") == "1024"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_file_offset_zero_omits_query() -> None:
+    route = respx.get(f"{SANDBOX_V1}/file/workspace/app.log").mock(
+        return_value=httpx.Response(200, content=b"")
+    )
+    async with httpx.AsyncClient() as client:
+        await make_sandbox(client).read_file("/workspace/app.log")
+
+    assert "offset" not in route.calls[0].request.url.params
+
+
+@pytest.mark.asyncio
+async def test_read_file_negative_offset_raises() -> None:
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ValueError):
+            await make_sandbox(client).read_file("/workspace/app.log", offset=-1)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_read_file_raises_sandbox_error_on_non_200() -> None:
     respx.get(f"{SANDBOX_V1}/file/workspace/missing.txt").mock(
         return_value=httpx.Response(404, json={"error": "not found"})

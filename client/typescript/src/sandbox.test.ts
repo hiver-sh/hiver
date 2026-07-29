@@ -192,6 +192,35 @@ it("readFile sends GET /v1/file?path=<encoded> and returns Uint8Array", async ()
   expect(result).toEqual(content);
 });
 
+it("readFile forwards offset as a query param", async () => {
+  const content = new Uint8Array([108, 111]);
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(
+      new Response(content.buffer as ArrayBuffer, { status: 200 }),
+    );
+  await makeSandbox(mockFetch).readFile("/workspace/app.log", { offset: 1024 });
+  const [url] = mockFetch.mock.calls[0] as [URL];
+  expect(url.toString()).toBe(`${SANDBOX_V1}/file/workspace/app.log?offset=1024`);
+});
+
+it("readFile omits the offset query when offset is 0", async () => {
+  const mockFetch = vi
+    .fn()
+    .mockResolvedValue(new Response(new Uint8Array().buffer, { status: 200 }));
+  await makeSandbox(mockFetch).readFile("/workspace/app.log", { offset: 0 });
+  const [url] = mockFetch.mock.calls[0] as [URL];
+  expect(url.toString()).toBe(`${SANDBOX_V1}/file/workspace/app.log`);
+});
+
+it("readFile rejects a negative offset before fetching", async () => {
+  const mockFetch = vi.fn();
+  await expect(
+    makeSandbox(mockFetch).readFile("/workspace/app.log", { offset: -1 }),
+  ).rejects.toBeInstanceOf(RangeError);
+  expect(mockFetch).not.toHaveBeenCalled();
+});
+
 it("readFile throws SandboxError on non-200", async () => {
   const mockFetch = vi
     .fn()
