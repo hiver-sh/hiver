@@ -846,7 +846,10 @@ func (f containerFiles) List(agentPath string, mounts []MountRoute) ([]FileEntry
 }
 
 func (f containerFiles) Open(agentPath string, mounts []MountRoute) (io.ReadCloser, int64, error) {
-	host := f.hostPath(agentPath, mounts)
+	host, err := f.resolveHost(agentPath, mounts)
+	if err != nil {
+		return nil, 0, err
+	}
 	info, err := os.Stat(host)
 	if err != nil {
 		return nil, 0, err
@@ -862,7 +865,10 @@ func (f containerFiles) Open(agentPath string, mounts []MountRoute) (io.ReadClos
 }
 
 func (f containerFiles) Stat(agentPath string, mounts []MountRoute) (FileEntry, error) {
-	host := f.hostPath(agentPath, mounts)
+	host, err := f.resolveHost(agentPath, mounts)
+	if err != nil {
+		return FileEntry{}, err
+	}
 	info, err := os.Stat(host)
 	if err != nil {
 		return FileEntry{}, err
@@ -872,6 +878,36 @@ func (f containerFiles) Stat(agentPath string, mounts []MountRoute) (FileEntry, 
 		size = info.Size()
 	}
 	return FileEntry{Name: filepath.Base(host), IsDir: info.IsDir(), Size: size}, nil
+}
+
+// resolveHost maps an agent path to its host location, following symlinks across
+// mounts. A symlink in one mount can target an agent path in another (e.g.
+// /workspace/output/x -> /library/x); os.Stat/os.Open would follow the link on
+// the host, where the target's absolute agent path doesn't exist, so we resolve
+// each hop ourselves and re-route the target back through hostPath. Bounded to
+// avoid a symlink loop.
+func (f containerFiles) resolveHost(agentPath string, mounts []MountRoute) (string, error) {
+	cleaned := filepath.Clean(agentPath)
+	for i := 0; i < 40; i++ {
+		host := f.hostPath(cleaned, mounts)
+		li, err := os.Lstat(host)
+		if err != nil {
+			return "", err
+		}
+		if li.Mode()&os.ModeSymlink == 0 {
+			return host, nil // regular file or dir — done
+		}
+		target, err := os.Readlink(host)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			cleaned = filepath.Clean(target) // agent-absolute (e.g. /library/x)
+		} else {
+			cleaned = filepath.Clean(filepath.Join(filepath.Dir(cleaned), target))
+		}
+	}
+	return "", fmt.Errorf("too many levels of symbolic links: %s", agentPath)
 }
 
 func (f containerFiles) Delete(agentPath string, mounts []MountRoute) error {

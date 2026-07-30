@@ -262,6 +262,11 @@ func (s *Server) bootstrap(ctx context.Context) {
 // before the rename to avoid clobbering a file the agent created while the
 // download was in flight.
 func (s *Server) bootstrapOne(ctx context.Context, virt string) error {
+	// A <name>.symlink object is a persisted symlink (see [SymlinkSuffix]);
+	// materialize it as a real symlink rather than a regular file.
+	if strings.HasSuffix(virt, SymlinkSuffix) {
+		return s.bootstrapSymlink(ctx, virt)
+	}
 	if s.isDirtyVirt(virt) {
 		return nil
 	}
@@ -304,6 +309,53 @@ func (s *Server) bootstrapOne(ctx context.Context, virt string) error {
 		return nil
 	}
 	return os.Rename(tmp.Name(), host)
+}
+
+// bootstrapSymlink materializes a persisted symlink into the local buffer: the
+// remote object at <link>.symlink holds the link target as its body, so we read
+// it and recreate a real symlink at <link>. Like bootstrapOne it skips a link
+// the agent already has locally or is mid-write on, and re-checks just before
+// creating so it never clobbers a fresher local entry.
+func (s *Server) bootstrapSymlink(ctx context.Context, virt string) error {
+	linkVirt := strings.TrimSuffix(virt, SymlinkSuffix)
+	if s.isDirtyVirt(linkVirt) {
+		return nil
+	}
+	host := s.hostPathFor(linkVirt)
+	if _, err := os.Lstat(host); err == nil {
+		return nil // already local
+	}
+	rc, err := s.cfg.Remote.Get(ctx, virt)
+	if err != nil {
+		if errors.Is(err, remotefs.ErrNotExist) {
+			return nil // listed, then vanished
+		}
+		return err
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return err
+	}
+	target := strings.TrimRight(string(body), "\n")
+	if target == "" {
+		return nil // malformed pointer — nothing to link to
+	}
+	if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
+		return err
+	}
+	// Re-check under the same races bootstrapOne guards: the agent may have
+	// created this link (or a file at the same path) while the Get was in flight.
+	if s.isDirtyVirt(linkVirt) {
+		return nil
+	}
+	if _, err := os.Lstat(host); err == nil {
+		return nil
+	}
+	if err := os.Symlink(target, host); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return nil
 }
 
 // hostPathFor maps a store-relative (virt) path to its local buffer path,
@@ -465,6 +517,15 @@ func (s *Server) enqueueMove(srcAbs, dstAbs string) {
 		return
 	}
 	s.cfg.Oplog.Enqueue(OplogEntry{Type: OpMove, Path: srcAbs, NewPath: dstAbs})
+}
+
+// enqueueSymlink persists a symlink at virt (target) to the remote as a
+// <virt>.symlink object (see [SymlinkSuffix]). No-op without a journal.
+func (s *Server) enqueueSymlink(virt, target string) {
+	if s.cfg.Oplog == nil {
+		return
+	}
+	s.cfg.Oplog.Enqueue(OplogEntry{Type: OpSymlink, Path: virt, Target: target})
 }
 
 // markWritten records that virt has unflushed content owing an upload. Called
@@ -728,6 +789,16 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		n.s.cachePut(n.absPath(), remotefs.FileInfo{Path: n.absPath(), IsDir: true, Mtime: time.Now()})
 		for _, info := range infos {
 			name := path.Base(info.Path)
+			// A <name>.symlink object is a persisted symlink (see [SymlinkSuffix]);
+			// surface it under its plain name as a link, not as a regular file.
+			if strings.HasSuffix(name, SymlinkSuffix) && !info.IsDir {
+				link := strings.TrimSuffix(name, SymlinkSuffix)
+				if n.s.currentACLs().Eval(n.childAbs(link)) == AccessDeny {
+					continue
+				}
+				seen[link] = fuse.DT_Link
+				continue
+			}
 			childAbs := n.childAbs(name)
 			if n.s.currentACLs().Eval(childAbs) == AccessDeny {
 				continue
@@ -1063,6 +1134,13 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	}
 	ac.allow()
 	hostChild := filepath.Join(n.hostPath(), req.Name)
+	// A symlink is stored on the remote as <name>.symlink (see [SymlinkSuffix]),
+	// so its delete must target that key. Detect it before the local unlink.
+	li, lerr := os.Lstat(hostChild)
+	remoteKey := childVirt
+	if lerr == nil && li.Mode()&os.ModeSymlink != 0 {
+		remoteKey = childVirt + SymlinkSuffix
+	}
 	localErr := os.Remove(hostChild)
 	if localErr != nil && !os.IsNotExist(localErr) {
 		ac.responseError(localErr)
@@ -1076,15 +1154,15 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	if n.s.cfg.Remote != nil {
 		dirty := n.s.cfg.Oplog != nil && n.s.cfg.Oplog.IsDirty(childVirt)
 		if dirty {
-			// A pending OpPut for this path is queued or in flight.
-			// Enqueue OpDelete so the FIFO queue runs Put-then-Delete
-			// against the remote (the wasted upload is cheaper than
-			// stalling the FUSE handler waiting for the Put to finish).
+			// A pending OpPut/OpSymlink for this path is queued or in flight.
+			// Enqueue OpDelete so the FIFO queue runs write-then-delete against
+			// the remote (the wasted upload is cheaper than stalling the FUSE
+			// handler waiting for it to finish).
 			ac.response()
-			n.s.enqueueDelete(childVirt)
+			n.s.enqueueDelete(remoteKey)
 			return nil
 		}
-		if err := n.s.cfg.Remote.Delete(ctx, childVirt); err != nil && !errors.Is(err, remotefs.ErrNotExist) {
+		if err := n.s.cfg.Remote.Delete(ctx, remoteKey); err != nil && !errors.Is(err, remotefs.ErrNotExist) {
 			ac.responseError(err)
 			return mapErr(err)
 		}
@@ -1274,6 +1352,9 @@ func (n *node) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (bazilfs.N
 	}
 	ac.response()
 	n.s.statCache.invalidate(child.absPath())
+	// Persist the link to the remote as a <name>.symlink object (a blob store has
+	// no symlink type), so it survives eviction/resume like any other file.
+	n.s.enqueueSymlink(child.virtPath(), req.Target)
 	n.s.trackNode(child)
 	return child, nil
 }
