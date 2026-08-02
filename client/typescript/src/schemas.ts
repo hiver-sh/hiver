@@ -448,7 +448,7 @@ export interface SnapshotVM {
   key: string;
 }
 export const SnapshotVM = z.object({
-  key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  key: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
 });
 type _AssertSnapshotVM = Expect<Equal<z.infer<typeof SnapshotVM>, SnapshotVM>>;
 
@@ -472,7 +472,7 @@ export interface SnapshotFiles {
   mount?: string;
 }
 export const SnapshotFiles = z.object({
-  key: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  key: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
   write_on_shutdown: z.boolean().optional(),
   include: z.array(z.string()).min(1).optional(),
   mount: z.string().regex(/^\/.+/).optional(),

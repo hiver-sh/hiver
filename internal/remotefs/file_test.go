@@ -76,3 +76,62 @@ func TestFileStoreRoundTrip(t *testing.T) {
 		t.Errorf("idempotent Delete: %v", err)
 	}
 }
+
+// TestFileStoreSymlink pins the symlink contract on the native-FS backend:
+// Symlink creates it, Stat/ListDir report it with the Symlink bit + target,
+// and Readlink returns the target.
+func TestFileStoreSymlink(t *testing.T) {
+	s, err := remotefs.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := s.Symlink(ctx, "/dir/link", "/library/poem.html"); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	// Stat types it as a symlink with the target length and target.
+	fi, err := s.Stat(ctx, "/dir/link")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if !fi.Symlink || fi.IsDir {
+		t.Errorf("Stat: got Symlink=%v IsDir=%v, want true/false", fi.Symlink, fi.IsDir)
+	}
+	if fi.LinkTarget != "/library/poem.html" {
+		t.Errorf("Stat LinkTarget = %q, want /library/poem.html", fi.LinkTarget)
+	}
+	if fi.Size != int64(len("/library/poem.html")) {
+		t.Errorf("Stat Size = %d, want %d", fi.Size, len("/library/poem.html"))
+	}
+
+	// ListDir surfaces the same bit.
+	entries, err := s.ListDir(ctx, "/dir")
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	if len(entries) != 1 || !entries[0].Symlink || entries[0].LinkTarget != "/library/poem.html" {
+		t.Errorf("ListDir: got %+v, want one symlink to /library/poem.html", entries)
+	}
+
+	// Readlink returns the target; a non-symlink is ErrNotExist.
+	target, err := s.Readlink(ctx, "/dir/link")
+	if err != nil || target != "/library/poem.html" {
+		t.Errorf("Readlink = %q, %v; want /library/poem.html", target, err)
+	}
+	if err := s.Put(ctx, "/dir/regular.txt", bytes.NewBufferString("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := s.Readlink(ctx, "/dir/regular.txt"); !errors.Is(err, remotefs.ErrNotExist) {
+		t.Errorf("Readlink of regular file: got %v, want ErrNotExist", err)
+	}
+
+	// Delete removes the link.
+	if err := s.Delete(ctx, "/dir/link"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Stat(ctx, "/dir/link"); !errors.Is(err, remotefs.ErrNotExist) {
+		t.Errorf("after Delete: got %v, want ErrNotExist", err)
+	}
+}

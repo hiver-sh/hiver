@@ -13,6 +13,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 )
 
@@ -155,8 +156,11 @@ func (a *AzureBlob) ListDir(ctx context.Context, dir string) ([]FileInfo, error)
 		dirKey += "/"
 	}
 	var out []FileInfo
+	// Include.Metadata makes the list return each blob's custom metadata, so a
+	// symlink is typed from the same page — no per-child GetProperties.
 	pager := a.client.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{
-		Prefix: to.Ptr(dirKey),
+		Prefix:  to.Ptr(dirKey),
+		Include: container.ListBlobsInclude{Metadata: true},
 	})
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
@@ -180,10 +184,32 @@ func (a *AzureBlob) ListDir(ctx context.Context, dir string) ([]FileInfo, error)
 					fi.Mtime = *b.Properties.LastModified
 				}
 			}
+			applyAzSymlinkMeta(&fi, b.Metadata)
 			out = append(out, fi)
 		}
 	}
 	return out, nil
+}
+
+// applyAzSymlinkMeta flips fi to a symlink when the blob's custom metadata
+// carries the marker. Azure metadata keys are case-insensitive and some
+// service/SDK versions echo them title-cased, so the lookup is case-folded.
+func applyAzSymlinkMeta(fi *FileInfo, meta map[string]*string) {
+	get := func(key string) string {
+		for k, v := range meta {
+			if strings.EqualFold(k, key) && v != nil {
+				return *v
+			}
+		}
+		return ""
+	}
+	if get(symlinkMetaKey) == "" {
+		return
+	}
+	fi.Symlink = true
+	fi.IsDir = false
+	fi.LinkTarget = get(symlinkTargetMetaKey)
+	fi.Size = int64(len(fi.LinkTarget))
 }
 
 // Stat returns metadata for the blob at p. Azure has no native directory
@@ -200,6 +226,7 @@ func (a *AzureBlob) Stat(ctx context.Context, p string) (FileInfo, error) {
 		if props.LastModified != nil {
 			fi.Mtime = *props.LastModified
 		}
+		applyAzSymlinkMeta(&fi, props.Metadata)
 		return fi, nil
 	}
 	if !isAzNotFound(err) {
@@ -240,6 +267,31 @@ func (a *AzureBlob) Get(ctx context.Context, p string) (io.ReadCloser, error) {
 func (a *AzureBlob) Put(ctx context.Context, p string, content io.Reader) error {
 	_, err := a.client.NewBlockBlobClient(a.key(p)).UploadStream(ctx, content, nil)
 	return err
+}
+
+// Symlink writes an empty blob at p carrying the symlink marker and target in
+// custom metadata, read back by Stat/ListDir in one call.
+func (a *AzureBlob) Symlink(ctx context.Context, p, target string) error {
+	_, err := a.client.NewBlockBlobClient(a.key(p)).UploadStream(ctx, strings.NewReader(""),
+		&blockblob.UploadStreamOptions{
+			Metadata: map[string]*string{
+				symlinkMetaKey:       to.Ptr("1"),
+				symlinkTargetMetaKey: to.Ptr(target),
+			},
+		})
+	return err
+}
+
+// Readlink returns the symlink target from the blob's custom metadata.
+func (a *AzureBlob) Readlink(ctx context.Context, p string) (string, error) {
+	fi, err := a.Stat(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	if !fi.Symlink {
+		return "", ErrNotExist
+	}
+	return fi.LinkTarget, nil
 }
 
 func (a *AzureBlob) Delete(ctx context.Context, p string) error {

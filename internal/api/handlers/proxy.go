@@ -63,6 +63,8 @@ func (w *streamingWriter) Write(b []byte) (int, error) {
 	// semantics); publish the response first so the chunk correlates.
 	w.ensureResponse(http.StatusOK)
 	if w.logBody && len(b) > 0 {
+		// Cap before the []byte->string copy so a large write doesn't allocate a
+		// full-size string only to have publishIngressChunk (the backstop) trim it.
 		body := b
 		if len(body) > maxBodyCapture {
 			body = body[:maxBodyCapture]
@@ -397,7 +399,21 @@ func (h *Sandbox) publishIngressResponse(requestID int64, status, durationMs int
 // publishIngressChunk emits one ingress.chunk carrying a slice of the proxied
 // response body as it streams back. label is "up"/"down" for WebSocket frame
 // directions and empty for HTTP/SSE, matching EgressChunkEvent.
+//
+// The body is capped at maxBodyCapture here, not just at the call sites. The
+// HTTP path truncates in streamingWriter.Write, but the WebSocket tunnel
+// (proxyWebSocket) forwards whole application frames — and a chatty channel like
+// a CDP Page.screencastFrame stream can push hundreds of multi-hundred-KB frames
+// per second. Left unbounded, every frame would be copied verbatim into an event
+// and fanned out to all SSE subscribers, turning the observability plane into a
+// firehose (a single `hiver events` stream can balloon into hundreds of MB).
+// Enforcing the cap at the sole publish point makes it impossible for any caller
+// to bypass. Aggregate frame *rate* is bounded upstream by the browser provider
+// (screencast fan-out / startScreencast throttling), not here.
 func (h *Sandbox) publishIngressChunk(requestID int64, body, label string) {
+	if len(body) > maxBodyCapture {
+		body = body[:maxBodyCapture]
+	}
 	h.broker.Publish(func(id int64, ts time.Time) gen.SandboxEvent {
 		var ev gen.SandboxEvent
 		e := gen.IngressChunkEvent{

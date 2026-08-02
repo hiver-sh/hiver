@@ -27,7 +27,7 @@ def resolve_gateway_url(gateway_url: Optional[str] = None) -> str:
     """
     return gateway_url or os.environ.get(GATEWAY_URL_ENV) or DEFAULT_GATEWAY_URL
 
-_SANDBOX_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SANDBOX_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 _DEFAULT_TIMEOUT_S = 60.0
 

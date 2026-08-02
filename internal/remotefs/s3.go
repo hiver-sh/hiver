@@ -156,6 +156,19 @@ func (s *S3) ListDir(ctx context.Context, dir string) ([]FileInfo, error) {
 				continue // directory marker
 			}
 			var mtime = aws.ToTime(obj.LastModified)
+			// ListObjectsV2 doesn't return user metadata, so S3 can't type a
+			// symlink from a metadata bit in the listing; it keeps the sidecar
+			// "<name>.symlink" object (see Symlink) and folds it back here into
+			// a symlink under the plain name. The suffix never leaves this call.
+			if strings.HasSuffix(key, symlinkSuffix) {
+				out = append(out, FileInfo{
+					Path:    s.storePath(strings.TrimSuffix(key, symlinkSuffix)),
+					Size:    aws.ToInt64(obj.Size), // body is the target: len == target length
+					Mtime:   mtime,
+					Symlink: true,
+				})
+				continue
+			}
 			out = append(out, FileInfo{
 				Path:  s.storePath(key),
 				Size:  aws.ToInt64(obj.Size),
@@ -180,6 +193,15 @@ func (s *S3) Stat(ctx context.Context, p string) (FileInfo, error) {
 	}
 	if !isS3NotFound(err) {
 		return FileInfo{}, err
+	}
+	// Not a direct object — it may be a sidecar symlink "<p>.symlink".
+	if sh, serr := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.key(p) + symlinkSuffix),
+	}); serr == nil {
+		return FileInfo{Path: canon, Size: aws.ToInt64(sh.ContentLength), Mtime: aws.ToTime(sh.LastModified), Symlink: true}, nil
+	} else if !isS3NotFound(serr) {
+		return FileInfo{}, serr
 	}
 	// Not a direct object — check for children to detect a directory prefix.
 	prefix := s.key(p)
@@ -224,23 +246,65 @@ func (s *S3) Put(ctx context.Context, p string, content io.Reader) error {
 	return err
 }
 
+// Symlink stores the link as a sidecar object "<p>.symlink" whose body is the
+// target. S3's ListObjectsV2 can't return user metadata, so — unlike the
+// metadata-native backends — the type has to live in a listable place, i.e.
+// the object name; Stat/ListDir fold it back to a plain-named symlink.
+func (s *S3) Symlink(ctx context.Context, p, target string) error {
+	return s.Put(ctx, p+symlinkSuffix, strings.NewReader(target))
+}
+
+// Readlink reads the sidecar object body (the target).
+func (s *S3) Readlink(ctx context.Context, p string) (string, error) {
+	rc, err := s.Get(ctx, p+symlinkSuffix)
+	if err != nil {
+		return "", err // ErrNotExist when p is not a symlink
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 func (s *S3) Delete(ctx context.Context, p string) error {
 	// S3 DeleteObject is already idempotent — deleting a missing key
-	// returns success — so no NotFound special-casing is needed.
-	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(s.key(p)),
-	})
-	return err
+	// returns success — so no NotFound special-casing is needed. Delete both
+	// the canonical object and the sidecar symlink key so removing a symlink
+	// (whose object lives at <key>.symlink) doesn't leave the link visible.
+	for _, key := range []string{s.key(p), s.key(p) + symlinkSuffix} {
+		if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Move copies src to dst then deletes the source. S3 has no native rename.
+// A symlink's object lives at <key>.symlink, so when the canonical key is
+// absent Move retries on the sidecar key — renaming a symlink moves the link.
 func (s *S3) Move(ctx context.Context, src, dst string) error {
+	if err := s.moveKey(ctx, s.key(src), s.key(dst)); err != nil {
+		if errors.Is(err, ErrNotExist) {
+			return s.moveKey(ctx, s.key(src)+symlinkSuffix, s.key(dst)+symlinkSuffix)
+		}
+		return err
+	}
+	return nil
+}
+
+// moveKey copies one object key to another then deletes the source, mapping a
+// missing source to [ErrNotExist].
+func (s *S3) moveKey(ctx context.Context, srcKey, dstKey string) error {
 	// CopySource is "<bucket>/<key>", URL-path-escaped by the SDK.
 	_, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     aws.String(s.bucket),
-		Key:        aws.String(s.key(dst)),
-		CopySource: aws.String(s.bucket + "/" + s.key(src)),
+		Key:        aws.String(dstKey),
+		CopySource: aws.String(s.bucket + "/" + srcKey),
 	})
 	if err != nil {
 		if isS3NotFound(err) {
@@ -250,7 +314,7 @@ func (s *S3) Move(ctx context.Context, src, dst string) error {
 	}
 	if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
-		Key:    aws.String(s.key(src)),
+		Key:    aws.String(srcKey),
 	}); err != nil {
 		return fmt.Errorf("s3 move delete src: %w", err)
 	}

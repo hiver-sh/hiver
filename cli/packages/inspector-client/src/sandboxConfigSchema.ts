@@ -126,7 +126,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
       properties: {
         key: {
           type: "string",
-          pattern: "^[A-Za-z0-9_-]{1,64}$",
+          pattern: "^[A-Za-z0-9._-]{1,64}$",
           description: "Key identifying the VM-state snapshot.",
         },
       },
@@ -141,7 +141,7 @@ export const SANDBOX_CONFIG_SCHEMA = {
       properties: {
         key: {
           type: "string",
-          pattern: "^[A-Za-z0-9_-]{1,64}$",
+          pattern: "^[A-Za-z0-9._-]{1,64}$",
           description: "Key identifying the files snapshot.",
         },
         write_on_shutdown: {

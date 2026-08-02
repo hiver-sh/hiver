@@ -218,14 +218,14 @@ class EgressRule(BaseModel):
 class SnapshotVM(BaseModel):
     """microVM-state snapshot. When a VM snapshot exists under ``key``, a get-or-create resumes it instead of cold-booting; otherwise the VM cold-boots and the client captures the snapshot explicitly. Ignored by the container backend."""
 
-    key: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    key: str = Field(..., pattern=r'^[A-Za-z0-9._-]{1,64}$')
     """Key identifying the VM-state snapshot."""
 
 
 class SnapshotFiles(BaseModel):
     """Writable-filesystem snapshot, captured as a portable gzip-tar. Restored when the sandbox starts and written by the snapshot action (or on shutdown when ``write_on_shutdown`` is set)."""
 
-    key: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    key: str = Field(..., pattern=r'^[A-Za-z0-9._-]{1,64}$')
     """Key identifying the files snapshot."""
     write_on_shutdown: Optional[bool] = None
     """When true, the files snapshot is captured on shutdown or termination. When false (the default), files are captured only by an explicit snapshot action."""

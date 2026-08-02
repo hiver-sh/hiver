@@ -25,6 +25,7 @@ info:
       * `PUT  /v1/file`        — create or replace a file
       * `DELETE /v1/file`      — remove a file (idempotent)
       * `POST /v1/move`        — rename within the store
+      * `POST /v1/symlink`     — create a symbolic link
 
     ## Errors
 
@@ -258,6 +259,40 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /v1/symlink:
+    post:
+      summary: Create a symbolic link.
+      operationId: symlink
+      description: |
+        Creates a symbolic link at `path` pointing at `target`, replacing
+        whatever was there. The host owns the representation, but a
+        subsequent `GET /v1/stat` (and `GET /v1/directory`) for `path` MUST
+        report it with `symlink: true` and `link_target` set to `target`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, target]
+              additionalProperties: false
+              properties:
+                path:
+                  type: string
+                  description: Forward-slash path of the link to create.
+                  example: /workspace/output/report.html
+                target:
+                  type: string
+                  description: The link's target path.
+                  example: /library/report.html
+      responses:
+        '204':
+          description: The symbolic link was created.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
 components:
   schemas:
     FileInfo:
@@ -285,6 +320,17 @@ components:
         is_dir:
           type: boolean
           description: True when the entry is a directory.
+        symlink:
+          type: boolean
+          description: |
+            True when the entry is a symbolic link. Mutually exclusive with
+            `is_dir`. When true, `link_target` holds the target and `size`
+            is the target's byte length. Omit (or send `false`) otherwise.
+        link_target:
+          type: string
+          description: |
+            The link's target path; present only when `symlink` is true.
+          example: /library/report.html
 
     Error:
       type: object

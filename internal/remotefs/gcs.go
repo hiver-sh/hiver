@@ -125,7 +125,9 @@ func (g *GoogleCloudStorage) List(ctx context.Context, prefix string) ([]string,
 
 // ListDir returns the immediate children of dir. A "/" delimiter gives GCS
 // single-level semantics; common prefixes (sub-directories) come back as
-// IsDir FileInfo entries with zero size and mtime.
+// IsDir FileInfo entries with zero size and mtime. objects.list returns each
+// object's custom metadata, so a symlink is typed from the same page — no
+// per-child probe.
 func (g *GoogleCloudStorage) ListDir(ctx context.Context, dir string) ([]FileInfo, error) {
 	dirKey := g.key(dir)
 	if dirKey != "" && !strings.HasSuffix(dirKey, "/") {
@@ -141,16 +143,37 @@ func (g *GoogleCloudStorage) ListDir(ctx context.Context, dir string) ([]FileInf
 				if strings.HasSuffix(obj.Name, "/") {
 					continue // directory marker
 				}
+				// Hide any legacy "<name>.symlink" sidecar objects left by a
+				// pre-metadata build so they don't surface as stray files
+				// (clean cutover: new symlinks carry the metadata bit instead).
+				if strings.HasSuffix(obj.Name, symlinkSuffix) {
+					continue
+				}
 				mtime, _ := time.Parse(time.RFC3339, obj.Updated)
-				out = append(out, FileInfo{
+				fi := FileInfo{
 					Path:  g.storePath(obj.Name),
 					Size:  int64(obj.Size),
 					Mtime: mtime,
-				})
+				}
+				applyGCSSymlinkMeta(&fi, obj.Metadata)
+				out = append(out, fi)
 			}
 			return nil
 		})
 	return out, err
+}
+
+// applyGCSSymlinkMeta flips fi to a symlink when the object's custom metadata
+// carries the symlink marker, populating LinkTarget and setting Size to the
+// target length (the object body is empty for a metadata-backed symlink).
+func applyGCSSymlinkMeta(fi *FileInfo, meta map[string]string) {
+	if meta == nil || meta[symlinkMetaKey] == "" {
+		return
+	}
+	fi.Symlink = true
+	fi.IsDir = false
+	fi.LinkTarget = meta[symlinkTargetMetaKey]
+	fi.Size = int64(len(fi.LinkTarget))
 }
 
 // Stat returns metadata for the object at p. GCS has no native directory
@@ -161,7 +184,9 @@ func (g *GoogleCloudStorage) Stat(ctx context.Context, p string) (FileInfo, erro
 	obj, err := g.svc.Get(g.bucket, g.key(p)).Context(ctx).Do()
 	if err == nil {
 		mtime, _ := time.Parse(time.RFC3339, obj.Updated)
-		return FileInfo{Path: canon, Size: int64(obj.Size), Mtime: mtime}, nil
+		fi := FileInfo{Path: canon, Size: int64(obj.Size), Mtime: mtime}
+		applyGCSSymlinkMeta(&fi, obj.Metadata)
+		return fi, nil
 	}
 	var ge *googleapi.Error
 	if !errors.As(err, &ge) || ge.Code != http.StatusNotFound {
@@ -200,6 +225,32 @@ func (g *GoogleCloudStorage) Put(ctx context.Context, p string, content io.Reade
 		Media(content).
 		Do()
 	return err
+}
+
+// Symlink writes an empty object at p carrying the symlink marker and target
+// in custom metadata. Stat/ListDir read them back in one call, so no separate
+// "<p>.symlink" object — and no second key probe — is ever needed.
+func (g *GoogleCloudStorage) Symlink(ctx context.Context, p, target string) error {
+	_, err := g.svc.Insert(g.bucket, &storagev1.Object{
+		Name:     g.key(p),
+		Metadata: map[string]string{symlinkMetaKey: "1", symlinkTargetMetaKey: target},
+	}).
+		Context(ctx).
+		Media(strings.NewReader("")).
+		Do()
+	return err
+}
+
+// Readlink returns the symlink target from the object's custom metadata.
+func (g *GoogleCloudStorage) Readlink(ctx context.Context, p string) (string, error) {
+	fi, err := g.Stat(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	if !fi.Symlink {
+		return "", ErrNotExist
+	}
+	return fi.LinkTarget, nil
 }
 
 func (g *GoogleCloudStorage) Delete(ctx context.Context, p string) error {

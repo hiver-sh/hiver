@@ -425,7 +425,7 @@ function FileExplorerInner({ sandboxId, sandboxKey, serverUrl, events, refreshRe
           {node.is_dir ? (
             <>
               {node.expanded ? (
-                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-foreground" />
+                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
               ) : (
                 <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               )}

@@ -86,7 +86,7 @@ sandbox, err := c.GetOrCreateSandbox(context.Background(), "agent-1", client.San
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `image` | `string` | Container image to launch (e.g. `"claude"`). Defaults to the Hiver base image. Cannot be changed after initialization. The image also selects the isolation mechanism, a microVM image ships its own guest kernel. |
+| `image` | `string` | Image to launch. Select a preconfigured image (`"claude"`, `"codex"`, `"copilot"`, `"openclaw"`, `"antigravity"`, `"browser"`), or the tag of any OCI image — local, Docker Hub, GHCR, or a private registry — bundled with [`hiver bundle`](/docs/examples/oci-image), which wraps the Hiver runtime around it so it can run as a sandbox. Defaults to the Hiver base image. Cannot be changed after initialization. The image also selects the isolation mechanism — a microVM image ships its own guest kernel. |
 | `cpu` | `number` | Virtual CPUs allocated to the sandbox (may be fractional, e.g. `0.5`). Defaults to `1`. Cannot be changed after initialization. |
 | `memory` | `number` | Memory in MiB. Defaults to `512`. Cannot be changed after initialization. |
 | `entrypoint` | `string` | Override the image's default entrypoint. |

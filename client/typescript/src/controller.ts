@@ -20,7 +20,7 @@ export function resolveGatewayUrl(gatewayUrl?: string): string {
   return gatewayUrl ?? fromEnv ?? DEFAULT_GATEWAY_URL;
 }
 
-const SANDBOX_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const SANDBOX_KEY_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
 /**
  * Logical image name the gateway routes on when `config.image` is unset. The

@@ -348,20 +348,22 @@ type AzureBlobFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async *bool `json:"async,omitempty"`
 
 	// AzureAccount Storage account name. Required unless `azure_connection_string`
@@ -588,20 +590,22 @@ type ExternalFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async   *bool                     `json:"async,omitempty"`
 	Backend ExternalFileSystemBackend `json:"backend"`
 
@@ -645,20 +649,22 @@ type FileSystemBase struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async *bool `json:"async,omitempty"`
 
 	// Backend Storage type for a file system.
@@ -690,20 +696,22 @@ type GCSFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async   *bool                `json:"async,omitempty"`
 	Backend GCSFileSystemBackend `json:"backend"`
 
@@ -743,20 +751,22 @@ type GDriveFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async   *bool                   `json:"async,omitempty"`
 	Backend GDriveFileSystemBackend `json:"backend"`
 
@@ -811,20 +821,22 @@ type LocalFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async   *bool                  `json:"async,omitempty"`
 	Backend LocalFileSystemBackend `json:"backend"`
 
@@ -853,20 +865,22 @@ type OneDriveFileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async   *bool                     `json:"async,omitempty"`
 	Backend OneDriveFileSystemBackend `json:"backend"`
 
@@ -919,20 +933,22 @@ type S3FileSystem struct {
 	// is applied, granting full read-write access to the entire mount.
 	Acls *[]ACLRule `json:"acls,omitempty"`
 
-	// Async When true, a remote-backed mount treats the local buffer as
-	// authoritative and never blocks agent file operations on the
-	// backend. Every read — `stat`, directory listing, and file
-	// content — is served from the local buffer; the backend is touched
-	// only by a background bootstrap that pulls the workspace in after
-	// the mount comes up (so the mount is ready instantly) and by the
-	// background uploader that drains writes. No agent file operation
-	// ever waits on a backend round-trip.
+	// Async When true, a remote-backed mount fetches content lazily and
+	// caches it. Nothing is pulled up front — startup issues no GET.
+	// Metadata (`stat`, directory listing) is served synchronously from
+	// the backend on demand, and a file's content is fetched — one
+	// synchronous GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET
+	// happens only in response to a read, never eagerly. Writes are
+	// buffered and uploaded in the background.
 	//
-	// The trade-off is eventual consistency: a path the bootstrap has
-	// not pulled yet — or one created out-of-band on the backend — reads
-	// as absent until the bootstrap reaches it. Use it when the
-	// workspace is effectively owned by one sandbox at a time. Ignored
-	// for `local` backends, which have no backend to sync with.
+	// The trade-off is eventual consistency for content: a file already
+	// cached in the local buffer is not re-fetched if it changes
+	// out-of-band on the backend. Use it when the workspace is
+	// effectively owned by one sandbox at a time and you want backend
+	// durability without paying download latency up front or on every
+	// repeated read. Ignored for `local` backends, which have no backend
+	// to sync with.
 	Async   *bool               `json:"async,omitempty"`
 	Backend S3FileSystemBackend `json:"backend"`
 

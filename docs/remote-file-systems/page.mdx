@@ -287,15 +287,16 @@ An external host that serves fixtures from memory is the easy way to hand an age
 
 Set `internal: true` on any file system to mount it for the sandbox runtime but hide it from the agent. ACLs are ignored (the agent can't reach it at all). This is used for storage the sandbox needs but the agent must not see, for example, a remote-backed [snapshot store](/docs/snapshots#store-snapshots-in-a-remote-drive).
 
-## Non-blocking mounts (`async`)
+## Lazy, cached mounts (`async`)
 
-By default a cloud-backed mount is **read-through**: the agent always sees the latest backend state, but every metadata check (`stat`, directory listing) and content read is a synchronous round-trip to the backend, so file operations block on backend latency.
+By default a cloud-backed mount is **read-through**: the agent always sees the latest backend state, and every content read is a fresh synchronous round-trip — the same file re-downloads on every open, so the agent never observes a stale copy.
 
-Set `async: true` to run the mount in **local-authoritative** mode instead. The mount comes up instantly and a background bootstrap pulls the workspace from the backend, so agent file operations never block on it:
+Set `async: true` to run the mount in **fetch-on-read, cache-after** mode:
 
-- **Every read** — `stat`, directory listing, and file content — is served from the local buffer. Nothing on the read path touches the backend, so a probe for a file that isn't there (e.g. `.gitignore`, `CLAUDE.md`) is an instant local miss instead of a backend round-trip.
-- **Content** is pulled by the background bootstrap after the mount comes up.
-- **Writes** upload in the background as usual.
+- **Nothing is fetched up front.** The mount comes up instantly; startup issues no `GET`. (There is no eager background pull — the mount does not walk the backend downloading objects.)
+- **Metadata is synchronous, on demand.** `stat` and directory listings hit the backend when asked (results are briefly cached), so the agent sees what exists without downloading anything.
+- **Content is fetched lazily and synchronously, on the first explicit read.** Opening a file for reading pays exactly one `GET`; the bytes land in the local buffer and every later read of that file is served locally — no repeat `GET`.
+- **Writes** are buffered and uploaded in the background (the buffer is kept, so a file you wrote reads back from the buffer without a fetch).
 
 ```ts
 {
@@ -306,7 +307,39 @@ Set `async: true` to run the mount in **local-authoritative** mode instead. The 
 }
 ```
 
-The trade-off is **eventual consistency**: files still being pulled — or created out-of-band on the backend — aren't visible until the bootstrap reaches them. Use it when the workspace is effectively owned by one sandbox at a time (the common agent case) and you want the backend for durability without paying its latency on every file op. Leave it off (the default) when the agent must see out-of-band backend changes live. It has no effect on `local` backends, which have no backend to sync with.
+The contract in one line: **a `GET` (content download) happens only in response to an explicit read, never before.**
+
+### Worked example — what hits the backend, when
+
+Given a backend holding `/workspace/report.md` and `/workspace/data/big.csv`, on a fresh async mount:
+
+```text
+mount                       → (nothing — no GET)
+ls /workspace               → LIST            (metadata only)
+stat /workspace/report.md   → STAT            (metadata only; no content)
+cat /workspace/report.md    → GET report.md   (first read: one content fetch → cached)
+cat /workspace/report.md    → (served from local buffer — no GET)
+echo hi > /workspace/note   → (buffered locally; PUT note uploads in the background)
+cat /workspace/note         → (served from local buffer — no GET)
+```
+
+`big.csv` is never downloaded unless something actually reads it.
+
+### Symlinks
+
+A symlink has no native object type in a blob store, so it is persisted as a companion object at `<path>.symlink` whose body is the link target. This round-trips through `async` without ever downloading a linked file eagerly:
+
+```text
+ln -s /library/x.md out.md  → PUT out.md.symlink  (body = "/library/x.md")
+ls /workspace/output        → LIST → out.md shown as a symlink   (no GET)
+stat out.md                 → STAT out.md.symlink (metadata only; reported as a link)
+readlink out.md             → GET out.md.symlink  (explicit read of the link → target)
+cat out.md                  → GET x.md            (reads the *target*, resolved lazily)
+```
+
+### Trade-off
+
+Because content is cached after the first read, an async mount is **eventually consistent** for content: an out-of-band change to a file already in the local buffer isn't re-fetched. Use `async` when the workspace is effectively owned by one sandbox at a time (the common agent case) and you want backend durability without paying download latency up front or on every repeated read. Leave it off (the default read-through) when the agent must observe out-of-band backend content changes live. It has no effect on `local` backends, which have no backend to sync with.
 
 ---
 

@@ -26,6 +26,8 @@ func TestFuseOpKind(t *testing.T) {
 		{"create", gen.FSRequestEventOperationWrite},
 		{"mkdir", gen.FSRequestEventOperationWrite},
 		{"truncate", gen.FSRequestEventOperationWrite},
+		{"symlink", gen.FSRequestEventOperationWrite}, // link creation surfaces as a write
+
 		{"remove", gen.FSRequestEventOperationDelete}, // unlink and the source half of a rename
 		{"rename", ""}, // renames are decomposed into write+remove, never emitted directly
 		{"bogus", ""},

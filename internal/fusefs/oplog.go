@@ -5,20 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hiver-sh/hiver/internal/remotefs"
 )
-
-// SymlinkSuffix is how a symlink is represented on the remote store. Object
-// stores (GCS, S3, …) have no symlink type, so a symlink at <path> is persisted
-// as a regular object at <path>.symlink whose body is the link target. The
-// Symlink handler uploads it (OpSymlink), and the async bootstrap restores it as
-// a real symlink in the local buffer — so within the sandbox a symlink is an
-// ordinary POSIX symlink; only its on-remote encoding differs.
-const SymlinkSuffix = ".symlink"
 
 // OpType names the kind of mutation an [OplogEntry] encodes.
 type OpType string
@@ -457,10 +448,11 @@ func (o *Oplog) flush(ctx context.Context, e OplogEntry) {
 	case OpMove:
 		err = o.store.Move(opCtx, e.Path, e.NewPath)
 	case OpSymlink:
-		// A blob store has no symlink type; persist it as a regular object at
-		// <path>.symlink whose body is the link target. The async bootstrap
-		// reads it back and recreates the local symlink.
-		err = o.store.Put(opCtx, e.Path+SymlinkSuffix, strings.NewReader(e.Target))
+		// The store persists the link however suits it (native symlink, blob
+		// custom-metadata, a Drive appProperty, or a sidecar object); the FUSE
+		// layer neither knows nor cares which. The async bootstrap reads it back
+		// via Readlink and recreates the local symlink.
+		err = o.store.Symlink(opCtx, e.Path, e.Target)
 	default:
 		err = fmt.Errorf("unknown op %q", e.Type)
 	}

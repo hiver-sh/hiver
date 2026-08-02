@@ -8,9 +8,9 @@ import {
   LayoutGrid,
   MoreVertical,
   Plug,
-  Power,
   SlidersHorizontal,
   SquareTerminal,
+  Trash2,
 } from "lucide-react";
 import { useState } from "react";
 import { CreateSandboxDialog } from "@/components/CreateSandboxDialog";
@@ -212,8 +212,8 @@ export function SandboxList({
                     }}
                     className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-sidebar-accent/60 transition-colors"
                   >
-                    <Power className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    Shutdown
+                    <Trash2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    Delete
                   </button>
                 </PopoverContent>
               </Popover>

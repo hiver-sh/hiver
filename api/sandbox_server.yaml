@@ -807,7 +807,7 @@ components:
           example: 1e9d6c3a-8f4b-4c2e-9a7d-2b5f0c8e1a34
         key:
           type: string
-          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
           description: The caller-chosen key supplied at creation.
           example: agent-1
         status: { $ref: '#/components/schemas/SandboxStatus' }

@@ -11,11 +11,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hiver-sh/hiver/internal/fusefs"
+	"github.com/hiver-sh/hiver/internal/remotefs"
 )
 
 // requiresFUSE skips a test when /dev/fuse isn't available (CI without
@@ -330,5 +332,289 @@ func TestFUSEDeniedDirEntriesHidden(t *testing.T) {
 		if e.Name() == "hidden" {
 			t.Errorf("denied entry %q leaked into directory listing", e.Name())
 		}
+	}
+}
+
+// countingRemote wraps a Store and tallies the Stat and ListDir round-trips
+// the FUSE read path makes, so a test can assert how a probe storm maps onto
+// backend calls.
+type countingRemote struct {
+	remotefs.Store
+	mu      sync.Mutex
+	stat    int
+	listDir int
+}
+
+func (c *countingRemote) Stat(ctx context.Context, p string) (remotefs.FileInfo, error) {
+	c.mu.Lock()
+	c.stat++
+	c.mu.Unlock()
+	return c.Store.Stat(ctx, p)
+}
+
+func (c *countingRemote) ListDir(ctx context.Context, dir string) ([]remotefs.FileInfo, error) {
+	c.mu.Lock()
+	c.listDir++
+	c.mu.Unlock()
+	return c.Store.ListDir(ctx, dir)
+}
+
+func (c *countingRemote) counts() (statN, listN int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stat, c.listDir
+}
+
+func (c *countingRemote) reset() {
+	c.mu.Lock()
+	c.stat, c.listDir = 0, 0
+	c.mu.Unlock()
+}
+
+// startFUSERemote mounts a remote-backed workspace: reads consult the remote
+// once (served thereafter through the permanent stat cache), and remoteDir is
+// the upstream store's backing directory the test seeds objects into.
+func startFUSERemote(t *testing.T, remote remotefs.Store) (mountPoint string, stop func()) {
+	t.Helper()
+	requiresFUSE(t)
+	backend := t.TempDir()
+	mountPoint = t.TempDir()
+	srv, err := fusefs.Mount(fusefs.Config{
+		MountPoint: mountPoint,
+		Backend:    backend,
+		ACLs:       fusefs.Compile([]fusefs.Rule{{Path: path.Clean(mountPoint), Access: fusefs.AccessRW}, {Path: path.Clean(mountPoint + "/**"), Access: fusefs.AccessRW}}),
+		Audit:      &bytes.Buffer{},
+		Remote:     remote,
+	})
+	if err != nil {
+		t.Skipf("fusefs.Mount: %v (FUSE may not be available)", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(mountPoint); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	stop = func() {
+		cancel()
+		_ = srv.Unmount()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return mountPoint, stop
+}
+
+// TestFUSEProbeStormCollapsesToOneListDir pins the fix for the negative-lookup
+// storm: a tool probing a directory for a batch of config files that don't
+// exist (CLAUDE.md, .mcp.json, .rgignore, .git, …) must cost ONE ListDir, not a
+// Remote.Stat per name plus a speculative <name>.symlink probe on every miss.
+func TestFUSEProbeStormCollapsesToOneListDir(t *testing.T) {
+	remoteDir := t.TempDir()
+	inner, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	remote := &countingRemote{Store: inner}
+	// Seed one real file so the warm listing has content to cache, proving an
+	// existing sibling is found from the same ListDir (no extra Stat).
+	if err := os.WriteFile(filepath.Join(remoteDir, "real.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	mp, stop := startFUSERemote(t, remote)
+	defer stop()
+
+	remote.reset()
+	probes := []string{"CLAUDE.md", ".mcp.json", ".rgignore", ".git", "HEAD", ".ignore"}
+	for _, name := range probes {
+		if _, err := os.Stat(filepath.Join(mp, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Stat(%s) err = %v, want ErrNotExist", name, err)
+		}
+	}
+	statN, listN := remote.counts()
+	if listN != 1 {
+		t.Errorf("probe storm made %d ListDir calls, want 1", listN)
+	}
+	if statN != 0 {
+		t.Errorf("probe storm made %d per-child Stat calls, want 0 (incl. no .symlink probes)", statN)
+	}
+
+	// The real sibling resolves from the same warm listing — no new round-trips.
+	remote.reset()
+	if _, err := os.Stat(filepath.Join(mp, "real.txt")); err != nil {
+		t.Fatalf("Stat(real.txt) = %v, want success", err)
+	}
+	if statN, listN := remote.counts(); statN != 0 || listN != 0 {
+		t.Errorf("existing sibling cost stat=%d list=%d round-trips, want 0/0", statN, listN)
+	}
+
+	// Re-probing the misses stays local (dirListed oracle) — still no round-trips.
+	remote.reset()
+	for _, name := range probes {
+		_, _ = os.Stat(filepath.Join(mp, name))
+	}
+	if statN, listN := remote.counts(); statN != 0 || listN != 0 {
+		t.Errorf("re-probe cost stat=%d list=%d round-trips, want 0/0", statN, listN)
+	}
+}
+
+// TestFUSECreateThenReadBurstNoRelist pins the incremental-cache fix: a local
+// create (mkdir/create/symlink) records the new child positively and keeps the
+// parent's listing marker, so the common `mkdir -p a b; stat a b` burst re-lists
+// the parent ZERO times after the initial warm. Before the fix each create
+// dropped the parent marker (invalidate), so every following lookup re-listed.
+func TestFUSECreateThenReadBurstNoRelist(t *testing.T) {
+	remoteDir := t.TempDir()
+	inner, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	remote := &countingRemote{Store: inner}
+
+	mp, stop := startFUSERemote(t, remote)
+	defer stop()
+
+	// Warm the parent's listing once (one cold miss lists the mount root).
+	remote.reset()
+	if _, err := os.Stat(filepath.Join(mp, "probe")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("warm Stat err = %v, want ErrNotExist", err)
+	}
+	if _, listN := remote.counts(); listN != 1 {
+		t.Fatalf("warm cost %d ListDir, want 1", listN)
+	}
+
+	// The create-then-read burst mirrors the observed `mkdir -p input output;
+	// ln -sf … poem.html; stat …` sequence: additive creates followed by reads
+	// of the new children and an absent sibling — none of it may touch the
+	// backend, because each create records its child and keeps the parent marker.
+	remote.reset()
+	for _, d := range []string{"input", "output"} {
+		if err := os.Mkdir(filepath.Join(mp, d), 0o755); err != nil {
+			t.Fatalf("Mkdir(%s): %v", d, err)
+		}
+	}
+	if err := os.Symlink("/library/poem.html", filepath.Join(mp, "poem.html")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	for _, name := range []string{"input", "output", "poem.html"} {
+		if _, err := os.Lstat(filepath.Join(mp, name)); err != nil {
+			t.Errorf("Lstat(%s) after create = %v, want success", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(mp, "absent")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Stat(absent) err = %v, want ErrNotExist", err)
+	}
+
+	statN, listN := remote.counts()
+	if listN != 0 {
+		t.Errorf("create-then-read burst made %d ListDir calls, want 0 (parent marker preserved)", listN)
+	}
+	if statN != 0 {
+		t.Errorf("create-then-read burst made %d Stat calls, want 0", statN)
+	}
+}
+
+// TestFUSEReadDirServesStoreOnce pins the read-through listing cache: a repeat
+// readdir of the same directory reuses the first ListDir instead of hitting the
+// backend again ("read the store once, then serve the local copy"), and a local
+// mkdir between reads still appears — via the local-buffer merge — without
+// forcing a re-list.
+func TestFUSEReadDirServesStoreOnce(t *testing.T) {
+	remoteDir := t.TempDir()
+	inner, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remoteDir, "seed.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	remote := &countingRemote{Store: inner}
+
+	mp, stop := startFUSERemote(t, remote)
+	defer stop()
+
+	readNames := func() map[string]bool {
+		t.Helper()
+		ents, err := os.ReadDir(mp)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		names := map[string]bool{}
+		for _, e := range ents {
+			names[e.Name()] = true
+		}
+		return names
+	}
+
+	remote.reset()
+	if n := readNames(); !n["seed.txt"] {
+		t.Fatalf("first readdir missing seed.txt: %v", n)
+	}
+	// Second readdir of the same directory is served from the cached listing.
+	if n := readNames(); !n["seed.txt"] {
+		t.Fatalf("second readdir missing seed.txt: %v", n)
+	}
+	if _, listN := remote.counts(); listN != 1 {
+		t.Errorf("two readdirs made %d ListDir calls, want 1 (store read once)", listN)
+	}
+
+	// A local mkdir must appear in the next readdir via the local-buffer merge,
+	// with no extra ListDir — the additive create keeps the cached listing.
+	if err := os.Mkdir(filepath.Join(mp, "made-locally"), 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	n := readNames()
+	if !n["made-locally"] || !n["seed.txt"] {
+		t.Errorf("readdir after local mkdir = %v, want both seed.txt and made-locally", n)
+	}
+	if _, listN := remote.counts(); listN != 1 {
+		t.Errorf("readdir after local mkdir made %d total ListDir calls, want 1", listN)
+	}
+}
+
+// TestFUSESymlinkServedFromListing pins that a symlink the store reports via
+// FileInfo.Symlink is resolved through the FUSE layer with no representation
+// knowledge, and — once seen — served from cache without a second round-trip.
+func TestFUSESymlinkServedFromListing(t *testing.T) {
+	remoteDir := t.TempDir()
+	inner, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	remote := &countingRemote{Store: inner}
+	// The local FileStore backs symlinks natively, so seed one directly. The
+	// FUSE layer only ever sees the FileInfo.Symlink bit the store returns.
+	if err := os.Symlink("/library/poem.html", filepath.Join(remoteDir, "link")); err != nil {
+		t.Fatalf("seed symlink: %v", err)
+	}
+
+	mp, stop := startFUSERemote(t, remote)
+	defer stop()
+
+	remote.reset()
+	fi, err := os.Lstat(filepath.Join(mp, "link"))
+	if err != nil {
+		t.Fatalf("Lstat(link) = %v, want success", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link reported mode %v, want symlink", fi.Mode())
+	}
+	// Readlink returns the target with no suffix probe on our side.
+	if target, err := os.Readlink(filepath.Join(mp, "link")); err != nil || target != "/library/poem.html" {
+		t.Fatalf("Readlink(link) = %q, %v; want /library/poem.html", target, err)
+	}
+	// A second Lstat is served from the symlink cache entry — no new round-trips.
+	remote.reset()
+	if _, err := os.Lstat(filepath.Join(mp, "link")); err != nil {
+		t.Fatalf("second Lstat(link) = %v", err)
+	}
+	if statN, listN := remote.counts(); statN != 0 || listN != 0 {
+		t.Errorf("cached symlink cost stat=%d list=%d round-trips, want 0/0", statN, listN)
 	}
 }

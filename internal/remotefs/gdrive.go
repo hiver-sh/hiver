@@ -321,7 +321,7 @@ func (g *GoogleDrive) Stat(ctx context.Context, p string) (FileInfo, error) {
 	}
 	f, err := g.svc.Files.Get(id).
 		Context(ctx).
-		Fields("id,name,mimeType,size,modifiedTime").
+		Fields("id,name,mimeType,size,modifiedTime,appProperties").
 		SupportsAllDrives(true).
 		Do()
 	if err != nil {
@@ -333,12 +333,27 @@ func (g *GoogleDrive) Stat(ctx context.Context, p string) (FileInfo, error) {
 		return FileInfo{}, err
 	}
 	mtime, _ := time.Parse(time.RFC3339, f.ModifiedTime)
-	return FileInfo{
+	fi := FileInfo{
 		Path:  path.Clean("/" + strings.TrimPrefix(p, "/")),
 		Size:  f.Size,
 		Mtime: mtime,
 		IsDir: f.MimeType == driveFolderMime,
-	}, nil
+	}
+	applyDriveSymlinkProps(&fi, f.AppProperties)
+	return fi, nil
+}
+
+// applyDriveSymlinkProps flips fi to a symlink when the file's appProperties
+// carry the marker. appProperties ride along in the files.get/list fields
+// mask, so the bit and target come back with no extra call.
+func applyDriveSymlinkProps(fi *FileInfo, props map[string]string) {
+	if props == nil || props[symlinkMetaKey] == "" {
+		return
+	}
+	fi.Symlink = true
+	fi.IsDir = false
+	fi.LinkTarget = props[symlinkTargetMetaKey]
+	fi.Size = int64(len(fi.LinkTarget))
 }
 
 // ListDir returns the immediate children of dir (one Drive page request,
@@ -355,7 +370,7 @@ func (g *GoogleDrive) ListDir(ctx context.Context, dir string) ([]FileInfo, erro
 		resp, err := g.svc.Files.List().
 			Context(ctx).
 			Q(fmt.Sprintf("'%s' in parents and trashed = false", folderID)).
-			Fields("nextPageToken, files(id,name,mimeType,size,modifiedTime)").
+			Fields("nextPageToken, files(id,name,mimeType,size,modifiedTime,appProperties)").
 			PageToken(pageToken).
 			SupportsAllDrives(true).
 			IncludeItemsFromAllDrives(true).
@@ -366,12 +381,14 @@ func (g *GoogleDrive) ListDir(ctx context.Context, dir string) ([]FileInfo, erro
 		for _, f := range resp.Files {
 			childPath := path.Join(dirCanon, f.Name)
 			mtime, _ := time.Parse(time.RFC3339, f.ModifiedTime)
-			out = append(out, FileInfo{
+			fi := FileInfo{
 				Path:  childPath,
 				Size:  f.Size,
 				Mtime: mtime,
 				IsDir: f.MimeType == driveFolderMime,
-			})
+			}
+			applyDriveSymlinkProps(&fi, f.AppProperties)
+			out = append(out, fi)
 			// Warm the path → ID cache so a follow-up Stat/Get on this
 			// child doesn't re-issue a findChild call.
 			g.cacheMu.Lock()
@@ -431,6 +448,49 @@ func (g *GoogleDrive) Put(ctx context.Context, p string, content io.Reader) erro
 	g.pathToID[path.Clean("/"+strings.TrimPrefix(p, "/"))] = f.Id
 	g.cacheMu.Unlock()
 	return nil
+}
+
+// Symlink stores an empty Drive file at p whose appProperties carry the
+// symlink marker and target. appProperties come back in the files.get/list
+// fields mask, so Stat/ListDir type it without a second call.
+func (g *GoogleDrive) Symlink(ctx context.Context, p, target string) error {
+	parentID, err := g.ensureFolder(ctx, path.Dir(p))
+	if err != nil {
+		return err
+	}
+	name := path.Base(p)
+	props := map[string]string{symlinkMetaKey: "1", symlinkTargetMetaKey: target}
+	if id, err := g.findChild(ctx, parentID, name); err == nil {
+		_, uerr := g.svc.Files.Update(id, &drive.File{AppProperties: props}).
+			Context(ctx).Fields("id").SupportsAllDrives(true).Do()
+		return uerr
+	} else if !errors.Is(err, ErrNotExist) {
+		return err
+	}
+	f, err := g.svc.Files.Create(&drive.File{
+		Name:          name,
+		Parents:       []string{parentID},
+		AppProperties: props,
+	}).Context(ctx).Media(strings.NewReader("")).Fields("id").SupportsAllDrives(true).Do()
+	if err != nil {
+		return err
+	}
+	g.cacheMu.Lock()
+	g.pathToID[path.Clean("/"+strings.TrimPrefix(p, "/"))] = f.Id
+	g.cacheMu.Unlock()
+	return nil
+}
+
+// Readlink returns the symlink target from the file's appProperties.
+func (g *GoogleDrive) Readlink(ctx context.Context, p string) (string, error) {
+	fi, err := g.Stat(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	if !fi.Symlink {
+		return "", ErrNotExist
+	}
+	return fi.LinkTarget, nil
 }
 
 func (g *GoogleDrive) Delete(ctx context.Context, p string) error {

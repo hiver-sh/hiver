@@ -15,7 +15,7 @@ import (
 	"github.com/hiver-sh/hiver/internal/proxy"
 )
 
-var snapshotKeyRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var snapshotKeyRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // BackendSuffix is appended to a mount path to derive the host-side
 // backend directory (e.g. "/workspace" → "/workspace-backend").
@@ -134,10 +134,13 @@ type FS struct {
 	// remote-backed snapshot target referenced by Snapshot.Mount.
 	Internal bool `json:"internal,omitempty"`
 
-	// Async, when true, runs a remote-backed mount in local-authoritative mode:
-	// metadata reads are served from the local buffer and the workspace is
-	// pulled from the backend by a background bootstrap, so agent file
-	// operations never block on the backend. Ignored for local backends.
+	// Async, when true, runs a remote-backed mount in fetch-on-read, cache-after
+	// mode: nothing is pulled up front, metadata (stat/list) is served
+	// synchronously from the backend on demand, and a file's content is fetched
+	// — synchronously, one GET — only on its first explicit read, then cached in
+	// the local buffer so later reads never re-download it. A GET happens only in
+	// response to a read, never eagerly. The trade-off is eventual consistency
+	// for content already cached. Ignored for local backends.
 	Async bool `json:"async,omitempty"`
 
 	// Per-backend extras live inline with a backend-name prefix so it's

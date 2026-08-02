@@ -61,6 +61,51 @@ func ingressFixture(t *testing.T, backend *httptest.Server) (frontURL, port stri
 	return front.URL, port, drain
 }
 
+// publishIngressChunk must cap the body at maxBodyCapture so a chatty WebSocket
+// tunnel (e.g. a CDP Page.screencastFrame stream pushing hundreds of large
+// frames per second) can't fan multi-hundred-KB payloads out to every SSE
+// subscriber unbounded. The HTTP path pre-trims, but the WS tunnel publishes
+// whole frames directly, so the cap has to live in publishIngressChunk itself.
+func TestPublishIngressChunkCapsBody(t *testing.T) {
+	b := events.New(0, 0)
+	_, ch, cancel := b.Subscribe(0)
+	t.Cleanup(cancel)
+
+	s := NewSandbox("k", 0)
+	s.SetBroker(b)
+
+	cases := []struct {
+		name    string
+		bodyLen int
+		wantLen int
+	}{
+		{"oversize frame truncated", maxBodyCapture + 4096, maxBodyCapture},
+		{"exact limit kept", maxBodyCapture, maxBodyCapture},
+		{"small body untouched", 5, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s.publishIngressChunk(1, strings.Repeat("x", tc.bodyLen), "down")
+			select {
+			case e := <-ch:
+				v, err := e.Event.ValueByDiscriminator()
+				if err != nil {
+					t.Fatalf("decode event: %v", err)
+				}
+				chunk, ok := v.(gen.IngressChunkEvent)
+				if !ok {
+					t.Fatalf("got %T, want IngressChunkEvent", v)
+				}
+				if len(chunk.Body) != tc.wantLen {
+					t.Errorf("body len = %d, want %d", len(chunk.Body), tc.wantLen)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("no event published")
+			}
+		})
+	}
+}
+
 func TestIngressSSEStreamsChunks(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

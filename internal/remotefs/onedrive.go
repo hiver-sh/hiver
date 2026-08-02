@@ -243,16 +243,26 @@ func (o *OneDrive) getItem(ctx context.Context, p string) (*driveItem, error) {
 }
 
 func (o *OneDrive) Stat(ctx context.Context, p string) (FileInfo, error) {
+	canon := path.Clean("/" + strings.TrimPrefix(p, "/"))
 	item, err := o.getItem(ctx, p)
-	if err != nil {
+	if err == nil {
+		return FileInfo{
+			Path:  canon,
+			Size:  item.Size,
+			Mtime: item.mtime(),
+			IsDir: item.isDir(),
+		}, nil
+	}
+	if !errors.Is(err, ErrNotExist) {
 		return FileInfo{}, err
 	}
-	return FileInfo{
-		Path:  path.Clean("/" + strings.TrimPrefix(p, "/")),
-		Size:  item.Size,
-		Mtime: item.mtime(),
-		IsDir: item.isDir(),
-	}, nil
+	// Graph's children listing can't return custom properties, so OneDrive
+	// keeps the sidecar "<p>.symlink" representation (see Symlink); check for
+	// it before reporting the path missing.
+	if sItem, serr := o.getItem(ctx, p+symlinkSuffix); serr == nil {
+		return FileInfo{Path: canon, Size: sItem.Size, Mtime: sItem.mtime(), Symlink: true}, nil
+	}
+	return FileInfo{}, ErrNotExist
 }
 
 // ListDir returns the immediate children of dir (paginated via @odata.nextLink).
@@ -274,6 +284,17 @@ func (o *OneDrive) ListDir(ctx context.Context, dir string) ([]FileInfo, error) 
 		}
 		for i := range page.Value {
 			item := &page.Value[i]
+			// Fold the sidecar "<name>.symlink" object back into a symlink under
+			// the plain name (the suffix never leaves this call).
+			if strings.HasSuffix(item.Name, symlinkSuffix) {
+				out = append(out, FileInfo{
+					Path:    path.Join(dirCanon, strings.TrimSuffix(item.Name, symlinkSuffix)),
+					Size:    item.Size,
+					Mtime:   item.mtime(),
+					Symlink: true,
+				})
+				continue
+			}
 			out = append(out, FileInfo{
 				Path:  path.Join(dirCanon, item.Name),
 				Size:  item.Size,
@@ -344,6 +365,28 @@ func (o *OneDrive) Get(ctx context.Context, p string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("onedrive: download %s: %s: %s", p, resp.Status, strings.TrimSpace(string(body)))
 	}
 	return resp.Body, nil
+}
+
+// Symlink stores the link as a sidecar item "<p>.symlink" whose body is the
+// target — Graph's children listing can't return custom item properties, so
+// (like S3) the type lives in a listable place, the item name. Stat/ListDir
+// fold it back to a plain-named symlink.
+func (o *OneDrive) Symlink(ctx context.Context, p, target string) error {
+	return o.Put(ctx, p+symlinkSuffix, strings.NewReader(target))
+}
+
+// Readlink reads the sidecar item body (the target).
+func (o *OneDrive) Readlink(ctx context.Context, p string) (string, error) {
+	rc, err := o.Get(ctx, p+symlinkSuffix)
+	if err != nil {
+		return "", err // ErrNotExist when p is not a symlink
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // simpleUploadMaxBytes is the size at or below which a single PUT to
@@ -494,21 +537,36 @@ func readerSize(r io.Reader) (int64, bool) {
 }
 
 func (o *OneDrive) Delete(ctx context.Context, p string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, o.itemURL(p), nil)
-	if err != nil {
-		return err
+	// Delete both the canonical item and the sidecar symlink item so removing
+	// a symlink (whose item lives at <p>.symlink) doesn't leave it visible.
+	for _, target := range []string{p, p + symlinkSuffix} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, o.itemURL(target), nil)
+		if err != nil {
+			return err
+		}
+		if err := o.doJSON(req, nil); err != nil && !errors.Is(err, ErrNotExist) {
+			return err // a missing item is fine (idempotent)
+		}
 	}
-	if err := o.doJSON(req, nil); err != nil {
+	return nil
+}
+
+// Move renames src to dst via a single PATCH (OneDrive has a native rename).
+// A symlink's item lives at <src>.symlink, so when the canonical item is
+// absent Move retries on the sidecar — renaming a symlink moves the link.
+func (o *OneDrive) Move(ctx context.Context, src, dst string) error {
+	if err := o.moveItem(ctx, src, dst); err != nil {
 		if errors.Is(err, ErrNotExist) {
-			return nil // idempotent
+			return o.moveItem(ctx, src+symlinkSuffix, dst+symlinkSuffix)
 		}
 		return err
 	}
 	return nil
 }
 
-// Move renames src to dst via a single PATCH (OneDrive has a native rename).
-func (o *OneDrive) Move(ctx context.Context, src, dst string) error {
+// moveItem PATCHes one item's name/parent, mapping a missing source to
+// [ErrNotExist].
+func (o *OneDrive) moveItem(ctx context.Context, src, dst string) error {
 	parentID, err := o.ensureFolder(ctx, path.Dir(dst))
 	if err != nil {
 		return err

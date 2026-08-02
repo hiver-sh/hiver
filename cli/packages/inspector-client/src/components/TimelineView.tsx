@@ -1420,6 +1420,13 @@ function GroupEventsTable({
     () => [...bars].sort((a, b) => a.startTime - b.startTime),
     [bars],
   );
+  // Total work in the group: each event's duration summed, not the wall-clock
+  // span. Shown beside the event count so a collapsed group reads as "N events ·
+  // T", where T is the combined time spent (overlapping events still add up).
+  const spanMs = useMemo(
+    () => bars.reduce((sum, b) => sum + b.durationMs, 0),
+    [bars],
+  );
   // Every event in a merge group shares the same row (and thus type), so the
   // Status/Duration columns are either all-populated or all-empty. Drop them
   // when empty (e.g. stdio) so Detail gets the full width instead of leaving a
@@ -1439,6 +1446,9 @@ function GroupEventsTable({
         <div className="flex items-center gap-2 px-3 py-2">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
             {bars.length} events
+            <span className="ml-1.5 text-muted-foreground/60 normal-case tracking-normal">
+              · {humanDuration(spanMs)}
+            </span>
           </span>
           {!expandedView && onExpand && (
             <Button
@@ -3016,7 +3026,7 @@ function TimelineViewInner({
                                           className={`h-full w-full rounded-sm transition-none overflow-hidden relative ${isLive ? liveBarClass(vl.row) : barClass(first, vl.row.type)}`}
                                           title={
                                             group.bars.length > 1
-                                              ? `${group.bars.length} events`
+                                              ? `${group.bars.length} events · ${humanDuration(group.bars.reduce((sum, b) => sum + b.durationMs, 0))}`
                                               : isLive
                                                 ? "in-flight"
                                                 : first.pending

@@ -61,14 +61,16 @@ func NewExternal(_ context.Context, cfg ExternalConfig, outboundMark int, reques
 // Kept separate from [FileInfo] because the wire form is snake-cased and
 // carries the mtime as an RFC 3339 string.
 type fileInfoJSON struct {
-	Path  string    `json:"path"`
-	Size  int64     `json:"size"`
-	Mtime time.Time `json:"mtime"`
-	IsDir bool      `json:"is_dir"`
+	Path       string    `json:"path"`
+	Size       int64     `json:"size"`
+	Mtime      time.Time `json:"mtime"`
+	IsDir      bool      `json:"is_dir"`
+	Symlink    bool      `json:"symlink,omitempty"`
+	LinkTarget string    `json:"link_target,omitempty"`
 }
 
 func (fi fileInfoJSON) toFileInfo() FileInfo {
-	return FileInfo{Path: fi.Path, Size: fi.Size, Mtime: fi.Mtime, IsDir: fi.IsDir}
+	return FileInfo{Path: fi.Path, Size: fi.Size, Mtime: fi.Mtime, IsDir: fi.IsDir, Symlink: fi.Symlink, LinkTarget: fi.LinkTarget}
 }
 
 // canon normalizes p to a Store-canonical forward-slash path rooted at /.
@@ -202,6 +204,43 @@ func (e *External) Delete(ctx context.Context, p string) error {
 	}
 	defer resp.Body.Close()
 	return errFor(resp, "delete")
+}
+
+// Symlink creates a symbolic link at path → target via POST /v1/symlink. The
+// external host owns the representation; a subsequent Stat/ListDir must report
+// the path with symlink=true and link_target=target.
+func (e *External) Symlink(ctx context.Context, p, target string) error {
+	payload, err := json.Marshal(struct {
+		Path   string `json:"path"`
+		Target string `json:"target"`
+	}{Path: canon(p), Target: target})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.urlFor("/v1/symlink", nil), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return errFor(resp, "symlink")
+}
+
+// Readlink returns the target reported by Stat (link_target), issuing no
+// extra request type beyond the stat the host already answers.
+func (e *External) Readlink(ctx context.Context, p string) (string, error) {
+	fi, err := e.Stat(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	if !fi.Symlink {
+		return "", ErrNotExist
+	}
+	return fi.LinkTarget, nil
 }
 
 func (e *External) Move(ctx context.Context, src, dst string) error {

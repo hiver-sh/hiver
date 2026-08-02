@@ -37,7 +37,7 @@ func ResolveGatewayURL(gatewayURL string) string {
 // DefaultImageName is the image used when SandboxConfig.Image is empty.
 const DefaultImageName = "agent-base"
 
-var sandboxKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var sandboxKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 const defaultTimeout = 60 * time.Second
 

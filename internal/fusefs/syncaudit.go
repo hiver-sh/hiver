@@ -160,3 +160,17 @@ func (s *auditedStore) Move(ctx context.Context, src, dst string) error {
 	done(err)
 	return err
 }
+
+func (s *auditedStore) Symlink(ctx context.Context, p, target string) error {
+	done := s.begin("symlink", p)
+	err := s.inner.Symlink(ctx, p, target)
+	done(err)
+	return err
+}
+
+func (s *auditedStore) Readlink(ctx context.Context, p string) (string, error) {
+	done := s.begin("readlink", p)
+	out, err := s.inner.Readlink(ctx, p)
+	done(err)
+	return out, err
+}

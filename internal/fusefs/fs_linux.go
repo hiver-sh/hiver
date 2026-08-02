@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -49,15 +48,6 @@ type Config struct {
 	// is reduced to a write buffer for in-flight Puts. Leave nil
 	// for local-only mounts (no upstream).
 	Remote remotefs.Store
-	// RemoteStatTTL controls how long ReadDirAll-populated metadata
-	// stays cached for follow-up Attr/Lookup calls. The motivating
-	// pattern is `ls -la <dir>`: kernel issues 1 readdir + N attrs,
-	// and without the cache each attr is its own Remote.Stat round-
-	// trip. The cache is consulted only when the path is not dirty
-	// (pending oplog writes always defer to the local buffer), and
-	// invalidated by every mutating handler. Zero defaults to
-	// [defaultRemoteStatTTL]; negative disables the cache.
-	RemoteStatTTL time.Duration
 	// Async runs a remote-backed mount in local-authoritative mode: the
 	// read-side handlers serve the local buffer instead of consulting
 	// Remote synchronously, and [Server.Serve] starts a background
@@ -66,12 +56,6 @@ type Config struct {
 	// ignored otherwise. See [Server.bootstrap].
 	Async bool
 }
-
-// defaultRemoteStatTTL is the cache window used when Config.RemoteStatTTL
-// is unset. Long enough to coalesce a back-to-back-`ls` workflow into a
-// single Drive call; short enough that out-of-band Drive edits surface
-// within a coffee-sip.
-const defaultRemoteStatTTL = 30 * time.Second
 
 // AuditEvent is one record on the audit.filesystem topic (DESIGN.md §9.1).
 //
@@ -112,9 +96,11 @@ type Server struct {
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
 
-	// statCache memoizes Remote.Stat results within RemoteStatTTL so a
-	// readdir-followed-by-N-stats pattern is one API call instead of N+1.
-	// Nil for pure-local mounts.
+	// statCache memoizes Remote.Stat / Remote.ListDir results for the mount's
+	// lifetime so the store is read once and later reads are served locally (a
+	// readdir-followed-by-N-stats pattern is one API call, and a repeat readdir
+	// none). Dropped per-path only by a local mutation. Nil for pure-local
+	// mounts.
 	statCache *statCache
 
 	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
@@ -182,11 +168,7 @@ func Mount(cfg Config) (*Server, error) {
 		cfg.Oplog.keepBuffer = true
 	}
 	if cfg.Remote != nil {
-		ttl := cfg.RemoteStatTTL
-		if ttl == 0 {
-			ttl = defaultRemoteStatTTL
-		}
-		s.statCache = newStatCache(ttl)
+		s.statCache = newStatCache()
 	}
 	return s, nil
 }
@@ -212,13 +194,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	} else {
 		close(oplogDone)
 	}
-	// Async mount: pull the remote into the local buffer in the background
-	// so reads are served locally. Best-effort — the mount is already usable
-	// (reads fall back to the remote for anything not yet pulled), so we
-	// don't wait for it and a ctx cancel just stops it.
-	if s.cfg.Async && s.cfg.Remote != nil {
-		go s.bootstrap(ctx)
-	}
+	// No eager pull: an async mount fetches nothing at startup. Metadata is
+	// served synchronously from the remote on demand (Lookup/Attr/ReadDirAll),
+	// and a file's content is fetched — synchronously — only on the first
+	// explicit read (Open), then cached in the local buffer. See materializeLocal.
 	err := bazilfs.Serve(s.conn, &fileSystem{s: s})
 	<-oplogDone
 	return err
@@ -228,146 +207,6 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) Unmount() error {
 	_ = fuse.Unmount(s.cfg.MountPoint)
 	return s.conn.Close()
-}
-
-// bootstrap pulls every object the remote store holds into the local
-// buffer so an async mount serves reads locally. It runs on its own
-// goroutine from [Server.Serve], so the mount is usable immediately and
-// the workspace fills in as objects download. Errors on individual
-// objects are logged and skipped — one unreadable object must not abort
-// warming the rest — and a ctx cancel stops the walk.
-func (s *Server) bootstrap(ctx context.Context) {
-	paths, err := s.cfg.Remote.List(ctx, "")
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Printf("fusefs: async bootstrap list %s: %v", s.cfg.MountPoint, err)
-		}
-		return
-	}
-	for _, p := range paths {
-		if ctx.Err() != nil {
-			return
-		}
-		if err := s.bootstrapOne(ctx, p); err != nil && ctx.Err() == nil {
-			log.Printf("fusefs: async bootstrap %s: %v", p, err)
-		}
-	}
-}
-
-// bootstrapOne materializes one store-relative path into the local buffer.
-// It skips paths that are dirty (a pending upload) or already present
-// locally (an agent write or a prior on-demand fetch), and writes
-// atomically via a temp + rename so a partial download never leaves a
-// half-file a read could see. The dirty/exists checks are repeated just
-// before the rename to avoid clobbering a file the agent created while the
-// download was in flight.
-func (s *Server) bootstrapOne(ctx context.Context, virt string) error {
-	// A <name>.symlink object is a persisted symlink (see [SymlinkSuffix]);
-	// materialize it as a real symlink rather than a regular file.
-	if strings.HasSuffix(virt, SymlinkSuffix) {
-		return s.bootstrapSymlink(ctx, virt)
-	}
-	if s.isDirtyVirt(virt) {
-		return nil
-	}
-	host := s.hostPathFor(virt)
-	if _, err := os.Lstat(host); err == nil {
-		return nil // already local
-	}
-	rc, err := s.cfg.Remote.Get(ctx, virt)
-	if err != nil {
-		if errors.Is(err, remotefs.ErrNotExist) {
-			return nil // listed, then vanished — nothing to pull
-		}
-		return err
-	}
-	defer rc.Close()
-	if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(host), ".sbxfuse-boot-*")
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(tmp, rc); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	// The agent may have created or started writing this path while the
-	// download ran — never clobber its data with the older remote copy.
-	if s.isDirtyVirt(virt) {
-		os.Remove(tmp.Name())
-		return nil
-	}
-	if _, err := os.Lstat(host); err == nil {
-		os.Remove(tmp.Name())
-		return nil
-	}
-	return os.Rename(tmp.Name(), host)
-}
-
-// bootstrapSymlink materializes a persisted symlink into the local buffer: the
-// remote object at <link>.symlink holds the link target as its body, so we read
-// it and recreate a real symlink at <link>. Like bootstrapOne it skips a link
-// the agent already has locally or is mid-write on, and re-checks just before
-// creating so it never clobbers a fresher local entry.
-func (s *Server) bootstrapSymlink(ctx context.Context, virt string) error {
-	linkVirt := strings.TrimSuffix(virt, SymlinkSuffix)
-	if s.isDirtyVirt(linkVirt) {
-		return nil
-	}
-	host := s.hostPathFor(linkVirt)
-	if _, err := os.Lstat(host); err == nil {
-		return nil // already local
-	}
-	rc, err := s.cfg.Remote.Get(ctx, virt)
-	if err != nil {
-		if errors.Is(err, remotefs.ErrNotExist) {
-			return nil // listed, then vanished
-		}
-		return err
-	}
-	defer rc.Close()
-	body, err := io.ReadAll(rc)
-	if err != nil {
-		return err
-	}
-	target := strings.TrimRight(string(body), "\n")
-	if target == "" {
-		return nil // malformed pointer — nothing to link to
-	}
-	if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
-		return err
-	}
-	// Re-check under the same races bootstrapOne guards: the agent may have
-	// created this link (or a file at the same path) while the Get was in flight.
-	if s.isDirtyVirt(linkVirt) {
-		return nil
-	}
-	if _, err := os.Lstat(host); err == nil {
-		return nil
-	}
-	if err := os.Symlink(target, host); err != nil && !os.IsExist(err) {
-		return err
-	}
-	return nil
-}
-
-// hostPathFor maps a store-relative (virt) path to its local buffer path,
-// matching node.hostPath so the bootstrap writes where the read handlers read.
-func (s *Server) hostPathFor(virt string) string {
-	rel := filepath.FromSlash(path.Clean(virt))
-	return filepath.Join(s.cfg.Backend, filepath.Clean(string(filepath.Separator)+rel))
-}
-
-// isDirtyVirt reports whether the oplog has a pending write for virt.
-func (s *Server) isDirtyVirt(virt string) bool {
-	return s.cfg.Oplog != nil && s.cfg.Oplog.IsDirty(virt)
 }
 
 func (s *Server) audit(e AuditEvent) {
@@ -486,6 +325,54 @@ func (s *Server) cachePutNegative(p string) {
 	s.statCache.putNegative(p)
 }
 
+// cachePutSymlink records that p is a persisted symlink of the given target
+// length, under the same dirty-path guard as [cachePut] (a path with a
+// pending local write must serve from the buffer, not a remote snapshot).
+func (s *Server) cachePutSymlink(p string, size int64) {
+	if s.cfg.Oplog != nil {
+		virt := strings.TrimPrefix(p, s.cfg.MountPoint)
+		if virt == "" {
+			virt = "/"
+		}
+		if s.cfg.Oplog.IsDirty(virt) {
+			return
+		}
+	}
+	s.statCache.putSymlink(p, size)
+}
+
+// warmDirCache lists dir once and populates the stat cache with every child
+// it finds — regular files, sub-directories, and symlinks — then marks the
+// directory fully listed. It converts a storm of per-child Stat probes into a
+// single ListDir: on a remote-backed mount a cold single stat (say, a tool
+// probing for CLAUDE.md, .mcp.json, .rgignore, .git … in one directory)
+// otherwise costs a Remote.Stat per name — every one a separate round-trip.
+// One ListDir answers existence for all of them: siblings that exist become
+// cache hits and the dirListed marker answers the misses locally. The store
+// reports symlinks with FileInfo.Symlink, so this layer never sees the
+// backend's on-disk representation.
+//
+// Returns true when the listing succeeded (dir is now a listed oracle).
+// Returns false only on a hard ListDir error — the caller then falls back to
+// probing the single child directly, so a transient list failure can never
+// strand an existing file.
+func (s *Server) warmDirCache(ctx context.Context, dir *node) bool {
+	infos, err := s.cfg.Remote.ListDir(ctx, dir.virtPath())
+	if err != nil && !errors.Is(err, remotefs.ErrNotExist) {
+		return false
+	}
+	for _, info := range infos {
+		childAbs := dir.childAbs(path.Base(info.Path))
+		if info.Symlink {
+			s.cachePutSymlink(childAbs, info.Size)
+			continue
+		}
+		s.cachePut(childAbs, info)
+	}
+	s.statCache.putListed(dir.absPath(), infos)
+	return true
+}
+
 // trackNode registers n in liveNodes so Rename can find it by virt-path
 // and update n.vp when the file is moved. Called from Lookup, Create,
 // Mkdir, and Symlink after the node is confirmed to exist.
@@ -519,8 +406,8 @@ func (s *Server) enqueueMove(srcAbs, dstAbs string) {
 	s.cfg.Oplog.Enqueue(OplogEntry{Type: OpMove, Path: srcAbs, NewPath: dstAbs})
 }
 
-// enqueueSymlink persists a symlink at virt (target) to the remote as a
-// <virt>.symlink object (see [SymlinkSuffix]). No-op without a journal.
+// enqueueSymlink persists a symlink at virt (target) to the remote via the
+// store's Symlink method (OpSymlink). No-op without a journal.
 func (s *Server) enqueueSymlink(virt, target string) {
 	if s.cfg.Oplog == nil {
 		return
@@ -631,35 +518,40 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 		return syscall.ENOENT
 	}
 	ac.allow()
-	// Async (local-authoritative): serve the buffer only — never touch the
-	// backend on the read path. The background bootstrap is the sole thing
-	// that pulls from the remote, so an attr never blocks on it. A miss is a
-	// plain ENOENT (instant, no round-trip): a non-existent path stays absent,
-	// and a real path the bootstrap hasn't reached yet is briefly invisible
-	// until it lands (the eventual consistency an async mount opts into).
-	if n.s.cfg.Async {
-		st, err := os.Lstat(n.hostPath())
-		if err != nil {
-			ac.responseError(err)
-			return mapErr(err)
-		}
-		fillAttr(a, st)
-		ac.response()
-		return nil
-	}
+	// Metadata is served from the remote synchronously (cached) for BOTH sync
+	// and async mounts — an async mount fetches no content here, only stats.
+	// A path the agent wrote this session (dirty) or that lives only in the
+	// local buffer falls through to the local Lstat below.
 	if n.s.cfg.Remote != nil && !n.isDirty() {
-		if info, ok := n.s.statCache.get(n.absPath()); ok {
-			fillAttrFromRemote(a, info)
-			ac.response()
-			return nil
-		}
-		// A tombstone means the remote already answered "no such path";
-		// skip the round-trip and fall straight through to local Lstat.
-		if !n.s.statCache.knownAbsent(n.absPath()) {
+		if e, ok := n.s.statCache.getEntry(n.absPath()); ok {
+			switch {
+			case e.symlink:
+				// A persisted symlink: report a link of the target's length
+				// (info.Size) without fetching the body.
+				fillAttrSymlink(a, e.info.Size)
+				ac.response()
+				return nil
+			case !e.negative:
+				fillAttrFromRemote(a, e.info)
+				ac.response()
+				return nil
+			}
+			// Tombstone → fall through to local Lstat.
+		} else if !n.s.statCache.dirListed(path.Dir(n.absPath())) {
+			// No cache entry and the parent wasn't fully listed this window, so
+			// consult the remote. (When the parent was listed, a real object here
+			// would already be cached — skip the Stat and fall straight through to
+			// the local Lstat.) One Stat answers existence AND type: a symlink comes
+			// back with FileInfo.Symlink set, so there is no second key probe.
 			info, err := n.s.cfg.Remote.Stat(ctx, n.virtPath())
 			if err == nil {
-				n.s.cachePut(n.absPath(), info)
-				fillAttrFromRemote(a, info)
+				if info.Symlink {
+					n.s.cachePutSymlink(n.absPath(), info.Size)
+					fillAttrSymlink(a, info.Size)
+				} else {
+					n.s.cachePut(n.absPath(), info)
+					fillAttrFromRemote(a, info)
+				}
 				ac.response()
 				return nil
 			}
@@ -708,43 +600,52 @@ func (n *node) Lookup(ctx context.Context, name string) (bazilfs.Node, error) {
 		return nil, syscall.ENOENT
 	}
 	ac.allow()
-	// Async (local-authoritative): resolve the child from the local buffer
-	// only — the read path never touches the backend, so a lookup never
-	// blocks on it. A miss is an instant ENOENT; the background bootstrap is
-	// what makes remote paths appear locally (eventual consistency).
-	if n.s.cfg.Async {
-		if _, err := os.Lstat(child.hostPath()); err != nil {
-			ac.responseError(err)
-			return nil, mapErr(err)
-		}
-		ac.response()
-		n.s.trackNode(child)
-		return child, nil
-	}
+	// Metadata is served from the remote synchronously (cached) for BOTH sync
+	// and async mounts; content is never fetched here. A locally-buffered or
+	// dirty child falls through to the local Lstat below.
 	if n.s.cfg.Remote != nil && !child.isDirty() {
-		if _, ok := n.s.statCache.get(child.absPath()); ok {
-			ac.response()
-			n.s.trackNode(child)
-			return child, nil
-		}
-		// A tombstone means the remote already answered "no such path";
-		// skip the round-trip and fall straight through to local Lstat.
-		if !n.s.statCache.knownAbsent(child.absPath()) {
-			info, err := n.s.cfg.Remote.Stat(ctx, child.virtPath())
-			if err == nil {
-				n.s.cachePut(child.absPath(), info)
+		if e, ok := n.s.statCache.getEntry(child.absPath()); ok {
+			// A cached positive (regular or symlink) means the child exists;
+			// a tombstone falls through to the local Lstat below.
+			if !e.negative {
 				ac.response()
 				n.s.trackNode(child)
 				return child, nil
 			}
-			if errors.Is(err, remotefs.ErrNotExist) {
-				n.s.cachePutNegative(child.absPath())
+		} else if !n.s.statCache.dirListed(n.absPath()) {
+			// Cold directory: warm it with one ListDir instead of statting this
+			// child on its own — the listing resolves every sibling in the same
+			// round-trip. On a hard list error, fall back to a direct per-child
+			// Stat so a transient failure never strands an existing file.
+			if n.s.warmDirCache(ctx, n) {
+				if e, ok := n.s.statCache.getEntry(child.absPath()); ok && !e.negative {
+					ac.response()
+					n.s.trackNode(child)
+					return child, nil
+				}
+			} else {
+				// One Stat answers existence AND type — a symlink comes back with
+				// FileInfo.Symlink set, so there is no second key probe.
+				info, err := n.s.cfg.Remote.Stat(ctx, child.virtPath())
+				if err == nil {
+					if info.Symlink {
+						n.s.cachePutSymlink(child.absPath(), info.Size)
+					} else {
+						n.s.cachePut(child.absPath(), info)
+					}
+					ac.response()
+					n.s.trackNode(child)
+					return child, nil
+				}
+				if errors.Is(err, remotefs.ErrNotExist) {
+					n.s.cachePutNegative(child.absPath())
+				}
 			}
 		}
-		// Remote ErrNotExist or transient failure → fall through to local
-		// Lstat. This is how a freshly-Create'd file (no enqueue, no
-		// remote presence yet) becomes lookup-able. ENOENT is only the
-		// final answer when both sides come back empty.
+		// Tombstone, or absent from a freshly-listed directory → fall through to
+		// local Lstat. This is how a freshly-Create'd file (no enqueue, no remote
+		// presence yet) becomes lookup-able. ENOENT is only the final answer when
+		// both sides come back empty.
 	}
 	if _, err := os.Lstat(child.hostPath()); err != nil {
 		ac.responseError(err)
@@ -773,11 +674,20 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	// Async (local-authoritative): list the local buffer only. The
 	// background bootstrap fills the directory in, so a listing taken mid-
 	// bootstrap is partial rather than blocking on a backend ListDir.
-	if n.s.cfg.Remote != nil && !n.s.cfg.Async {
-		infos, err := n.s.cfg.Remote.ListDir(ctx, n.virtPath())
-		if err != nil && !errors.Is(err, remotefs.ErrNotExist) {
-			ac.responseError(err)
-			return nil, mapErr(err)
+	if n.s.cfg.Remote != nil {
+		// Read the store once, then serve the local copy: once a directory has
+		// been listed, a repeat readdir reuses the stored listing instead of
+		// another Remote.ListDir — each directory is listed a single time for
+		// the mount's life (until a local mutation drops it). The local-buffer
+		// merge below still runs, so the agent's own pending creates appear.
+		infos, cached := n.s.statCache.cachedListing(n.absPath())
+		if !cached {
+			var err error
+			infos, err = n.s.cfg.Remote.ListDir(ctx, n.virtPath())
+			if err != nil && !errors.Is(err, remotefs.ErrNotExist) {
+				ac.responseError(err)
+				return nil, mapErr(err)
+			}
 		}
 		// Cache the parent's own FileInfo so a follow-up Attr on this
 		// dir is a hit. We don't have the directory's own remote
@@ -789,18 +699,16 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		n.s.cachePut(n.absPath(), remotefs.FileInfo{Path: n.absPath(), IsDir: true, Mtime: time.Now()})
 		for _, info := range infos {
 			name := path.Base(info.Path)
-			// A <name>.symlink object is a persisted symlink (see [SymlinkSuffix]);
-			// surface it under its plain name as a link, not as a regular file.
-			if strings.HasSuffix(name, SymlinkSuffix) && !info.IsDir {
-				link := strings.TrimSuffix(name, SymlinkSuffix)
-				if n.s.currentACLs().Eval(n.childAbs(link)) == AccessDeny {
-					continue
-				}
-				seen[link] = fuse.DT_Link
-				continue
-			}
 			childAbs := n.childAbs(name)
 			if n.s.currentACLs().Eval(childAbs) == AccessDeny {
+				continue
+			}
+			// The store types symlinks via FileInfo.Symlink; surface one as a
+			// link and cache it so the kernel's follow-up Attr (and a later
+			// Lookup) is a hit, not another round-trip.
+			if info.Symlink {
+				seen[name] = fuse.DT_Link
+				n.s.cachePutSymlink(childAbs, info.Size)
 				continue
 			}
 			t := fuse.DT_File
@@ -813,6 +721,13 @@ func (n *node) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 			// metadata we already paid for in this ListDir call. Skips
 			// dirty children — those serve from local Lstat anyway.
 			n.s.cachePut(childAbs, info)
+		}
+		// On a fresh listing, mark the directory fully listed: every remote
+		// object under it is now cached, so a subsequent Lookup/Attr for a name
+		// absent here answers ENOENT without a per-child Stat, and a repeat
+		// readdir reuses the stored listing.
+		if !cached {
+			n.s.statCache.putListed(n.absPath(), infos)
 		}
 	}
 
@@ -876,22 +791,9 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		return nil, syscall.EROFS
 	}
 	ac.allow()
-	// Async (local-authoritative): serve straight from the local buffer —
-	// never fetch on the read path. For a directory, ensure the buffer dir
-	// exists so ReadDirAll has somewhere to list; for a file, the local copy
-	// (pulled by the bootstrap, or the agent's own write) is opened by Read.
-	// A file the bootstrap hasn't pulled yet would already have failed Lookup,
-	// so Open isn't reached for it.
-	if n.s.cfg.Async {
-		if req.Dir {
-			if err := os.MkdirAll(n.hostPath(), 0o755); err != nil {
-				ac.responseError(err)
-				return nil, mapErr(err)
-			}
-		}
-		ac.response()
-		return n, nil
-	}
+	// Content is fetched lazily on this first explicit read and cached in the
+	// local buffer (see materializeLocal); an async mount pays the remote GET
+	// here, on the read, not up front.
 	if n.s.cfg.Remote != nil && !n.isDirty() {
 		// Directory opens (req.Dir = OPENDIR) don't need a remote Stat:
 		// the kernel only OPENDIRs a node it already knows is a dir
@@ -951,6 +853,14 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 // the caller maps that to ENOENT (open of a non-existent file with no
 // O_CREAT, which Lookup should already have caught, but defence in depth).
 func (n *node) materializeLocal(ctx context.Context, flags fuse.OpenFlags) error {
+	// Async caches content: once a file's bytes are in the local buffer (fetched
+	// on a prior read, or written by the agent), the buffer is authoritative —
+	// serve it without another GET. Only the first explicit read pays the fetch.
+	if n.s.cfg.Async {
+		if st, err := os.Lstat(n.hostPath()); err == nil && !st.IsDir() {
+			return nil
+		}
+	}
 	// Try the stat cache first — Attr/Lookup just before this Open
 	// commonly populated it, so re-fetching the same metadata over the
 	// wire is wasted work. On miss, populate the cache so a follow-up
@@ -1100,7 +1010,12 @@ func (n *node) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.C
 	}
 	_ = f.Close()
 	ac.response()
-	n.s.statCache.invalidate(child.absPath())
+	// Record the freshly-created (empty) file positively and keep the parent's
+	// listing marker — a change we fully observed needs no re-list. Overwrites
+	// any tombstone left by an earlier negative lookup of this name. While the
+	// file is dirty (once Write enqueues) the cache is bypassed anyway; the
+	// entry serves existence again after the upload flushes.
+	n.s.statCache.put(child.absPath(), remotefs.FileInfo{Path: child.virtPath()})
 	n.s.trackNode(child)
 	// We deliberately do NOT enqueue a Put here. The common
 	// "open(O_CREAT|O_TRUNC) + Write + Close" sequence would double-
@@ -1134,13 +1049,10 @@ func (n *node) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	}
 	ac.allow()
 	hostChild := filepath.Join(n.hostPath(), req.Name)
-	// A symlink is stored on the remote as <name>.symlink (see [SymlinkSuffix]),
-	// so its delete must target that key. Detect it before the local unlink.
-	li, lerr := os.Lstat(hostChild)
+	// The remote key is always the canonical path — the store's Delete removes
+	// whatever representation it used for a symlink (metadata object, native
+	// link, or sidecar), so this layer needs no symlink special-casing.
 	remoteKey := childVirt
-	if lerr == nil && li.Mode()&os.ModeSymlink != 0 {
-		remoteKey = childVirt + SymlinkSuffix
-	}
 	localErr := os.Remove(hostChild)
 	if localErr != nil && !os.IsNotExist(localErr) {
 		ac.responseError(localErr)
@@ -1189,7 +1101,11 @@ func (n *node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (bazilfs.Node,
 		return nil, mapErr(err)
 	}
 	ac.response()
-	n.s.statCache.invalidate(child.absPath())
+	// A local mkdir is a change we fully observed: record the new directory
+	// positively rather than dropping the parent's listing marker. That keeps
+	// the dirListed oracle valid (listing + this one known child) so a
+	// create-then-read burst in the same directory costs no extra ListDir.
+	n.s.statCache.put(child.absPath(), remotefs.FileInfo{Path: child.virtPath(), IsDir: true})
 	n.s.trackNode(child)
 	return child, nil
 }
@@ -1351,9 +1267,12 @@ func (n *node) Symlink(ctx context.Context, req *fuse.SymlinkRequest) (bazilfs.N
 		return nil, mapErr(err)
 	}
 	ac.response()
-	n.s.statCache.invalidate(child.absPath())
-	// Persist the link to the remote as a <name>.symlink object (a blob store has
-	// no symlink type), so it survives eviction/resume like any other file.
+	// Record the new symlink positively and keep the parent's listing marker —
+	// a change we fully observed. The link is dirty until enqueueSymlink flushes,
+	// during which the cache is bypassed; the entry serves existence afterward.
+	n.s.statCache.putSymlink(child.absPath(), int64(len(req.Target)))
+	// Persist the link to the remote (the store picks its representation) so it
+	// survives eviction/resume like any other file.
 	n.s.enqueueSymlink(child.virtPath(), req.Target)
 	n.s.trackNode(child)
 	return child, nil
@@ -1367,13 +1286,31 @@ func (n *node) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string,
 		return "", syscall.ENOENT
 	}
 	ac.allow()
-	target, err := os.Readlink(n.hostPath())
-	if err != nil {
-		ac.responseError(err)
-		return "", mapErr(err)
+	// A link the agent created this session is in the local buffer.
+	if target, err := os.Readlink(n.hostPath()); err == nil {
+		ac.response()
+		return target, nil
 	}
-	ac.response()
-	return target, nil
+	// Otherwise ask the store for the link target (from metadata, a native
+	// symlink, or a sidecar object — the store's business). Materialize the
+	// local symlink so later reads (and the file API) resolve it without
+	// another round-trip.
+	if n.s.cfg.Remote != nil {
+		target, err := n.s.cfg.Remote.Readlink(ctx, n.virtPath())
+		if err != nil {
+			ac.responseError(err)
+			return "", mapErr(err)
+		}
+		target = strings.TrimRight(target, "\n")
+		host := n.hostPath()
+		if mkErr := os.MkdirAll(filepath.Dir(host), 0o755); mkErr == nil {
+			_ = os.Symlink(target, host)
+		}
+		ac.response()
+		return target, nil
+	}
+	ac.responseError(errors.New("not found"))
+	return "", syscall.ENOENT
 }
 
 // Fsync is a no-op (we write through to the host file).
@@ -1477,6 +1414,16 @@ func fillAttr(a *fuse.Attr, st os.FileInfo) {
 // inode and report root-owned, world-readable permissions — the agent
 // runs as root inside the sandbox-pod and the FUSE layer is the access
 // boundary, not POSIX uid bits.
+// fillAttrSymlink reports a node as a symlink of the given target length. The
+// target itself is fetched only when the kernel issues READLINK (see Readlink),
+// so a stat or listing never pays a content GET for a link.
+func fillAttrSymlink(a *fuse.Attr, size int64) {
+	a.Mode = os.ModeSymlink | 0o777
+	a.Size = uint64(size)
+	a.Nlink = 1
+	a.Valid = 0
+}
+
 func fillAttrFromRemote(a *fuse.Attr, info remotefs.FileInfo) {
 	a.Size = uint64(info.Size)
 	a.Mtime = info.Mtime

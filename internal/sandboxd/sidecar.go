@@ -562,7 +562,7 @@ func (t *fuseTranslator) handle(raw map[string]any) {
 //     Truncate+Write (overwrite); the Write captures the intent.
 func isConcreteFuseOp(op string) bool {
 	switch op {
-	case "read", "readdir", "write", "mkdir", "remove", "rename":
+	case "read", "readdir", "write", "mkdir", "remove", "rename", "symlink":
 		return true
 	}
 	return false
@@ -714,7 +714,7 @@ func fuseOpKind(op string) gen.FSRequestEventOperation {
 	switch op {
 	case "attr", "lookup", "readdir", "open", "read":
 		return gen.FSRequestEventOperationRead
-	case "open-write", "write", "create", "mkdir", "truncate":
+	case "open-write", "write", "create", "mkdir", "truncate", "symlink":
 		return gen.FSRequestEventOperationWrite
 	case "remove":
 		return gen.FSRequestEventOperationDelete

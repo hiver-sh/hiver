@@ -205,7 +205,7 @@ components:
       properties:
         key:
           type: string
-          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
           description: Key identifying the VM-state snapshot.
           example: claude-code-agent-vm
 
@@ -220,7 +220,7 @@ components:
       properties:
         key:
           type: string
-          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          pattern: '^[A-Za-z0-9._-]{1,64}$'
           description: Key identifying the files snapshot.
           example: claude-code-agent-files
         write_on_shutdown:
@@ -336,20 +336,22 @@ components:
           type: boolean
           default: false
           description: |
-            When true, a remote-backed mount treats the local buffer as
-            authoritative and never blocks agent file operations on the
-            backend. Every read — `stat`, directory listing, and file
-            content — is served from the local buffer; the backend is touched
-            only by a background bootstrap that pulls the workspace in after
-            the mount comes up (so the mount is ready instantly) and by the
-            background uploader that drains writes. No agent file operation
-            ever waits on a backend round-trip.
+            When true, a remote-backed mount fetches content lazily and
+            caches it. Nothing is pulled up front — startup issues no GET.
+            Metadata (`stat`, directory listing) is served synchronously from
+            the backend on demand, and a file's content is fetched — one
+            synchronous GET — only on its first explicit read, then cached in
+            the local buffer so later reads never re-download it. A GET
+            happens only in response to a read, never eagerly. Writes are
+            buffered and uploaded in the background.
 
-            The trade-off is eventual consistency: a path the bootstrap has
-            not pulled yet — or one created out-of-band on the backend — reads
-            as absent until the bootstrap reaches it. Use it when the
-            workspace is effectively owned by one sandbox at a time. Ignored
-            for `local` backends, which have no backend to sync with.
+            The trade-off is eventual consistency for content: a file already
+            cached in the local buffer is not re-fetched if it changes
+            out-of-band on the backend. Use it when the workspace is
+            effectively owned by one sandbox at a time and you want backend
+            durability without paying download latency up front or on every
+            repeated read. Ignored for `local` backends, which have no backend
+            to sync with.
 
     LocalFileSystem:
       description: Sandbox-local storage with no external dependency.
