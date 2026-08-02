@@ -302,6 +302,14 @@ type SandboxConfig struct {
 	// Egress is the ordered list of egress rules. The first rule that matches a
 	// request decides the outcome; requests that match no rule are denied.
 	Egress []EgressRule `json:"egress,omitempty"`
+	// EgressDenyWait is the grace period, in seconds, that a would-be-denied
+	// egress request is held before the proxy returns an error. 0 (the default)
+	// returns denials immediately. When greater than 0, a request matching no
+	// allow rule is paused for up to this many seconds, giving the client a
+	// window to update the policy (e.g. via ApplyConfig) to allow it; the moment
+	// a newly-added rule allows the request it proceeds normally. A pointer so an
+	// explicit 0 can be distinguished from "unset".
+	EgressDenyWait *int `json:"egress_deny_wait,omitempty"`
 	// Mitm controls whether outbound TLS connections are intercepted
 	// (man-in-the-middle) so egress rules can inspect and enforce method,
 	// path, headers, body, and Override/OverrideScript. Defaults to true. When

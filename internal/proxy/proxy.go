@@ -192,6 +192,22 @@ type Proxy struct {
 	// reconcile after a config change without restarting the proxy.
 	bySource atomic.Pointer[map[string][]EgressRule]
 
+	// denyWait holds the per-source egress deny grace period (config
+	// egress_deny_wait). Keyed like bySource: the source's own bucket first,
+	// then the "" all-sources fallback, else zero (no wait). When positive, a
+	// request that matches no allow rule is held for up to this duration and
+	// re-evaluated on every policy update before the deny is returned — so a
+	// client can widen the policy just-in-time. Swappable via
+	// SetDenyWaitBySource.
+	denyWait atomic.Pointer[map[string]time.Duration]
+
+	// policyMu guards policyCh, a broadcast channel closed-and-replaced on every
+	// rules update (SetRulesBySource). A pending awaitEgress captures the current
+	// channel before matching, so an update that lands mid-wait always wakes it
+	// to re-evaluate — no lost wakeups. See notifyPolicyChange / policyChan.
+	policyMu sync.Mutex
+	policyCh chan struct{}
+
 	auditMu  sync.Mutex
 	auditEnc *json.Encoder
 
@@ -219,6 +235,22 @@ func (p *Proxy) SetRulesBySource(bySource map[string][]EgressRule) {
 		cp[src] = rs
 	}
 	p.bySource.Store(&cp)
+	// Wake any egress requests waiting out their deny grace period so they
+	// re-evaluate against the rules just installed (see awaitEgress).
+	p.notifyPolicyChange()
+}
+
+// SetDenyWaitBySource atomically replaces the per-source egress deny-wait map
+// (config egress_deny_wait). Keys are workload source IPs; the "" key is the
+// all-sources fallback. A copy is stored, so the caller may mutate its map
+// afterward. Changing the wait does not disturb requests already waiting — a
+// waiter keeps the deadline it started with.
+func (p *Proxy) SetDenyWaitBySource(bySource map[string]time.Duration) {
+	cp := make(map[string]time.Duration, len(bySource))
+	for src, d := range bySource {
+		cp[src] = d
+	}
+	p.denyWait.Store(&cp)
 }
 
 // rulesForSource returns the egress rules that govern srcIP: the source's own
@@ -236,6 +268,102 @@ func (p *Proxy) rulesForSource(srcIP string) []EgressRule {
 		return rs
 	}
 	return nil
+}
+
+// denyWaitForSource returns the egress deny grace period governing srcIP: the
+// source's own bucket if present, else the all-sources "" bucket, else 0 (deny
+// immediately). See awaitEgress.
+func (p *Proxy) denyWaitForSource(srcIP string) time.Duration {
+	m := p.denyWait.Load()
+	if m == nil {
+		return 0
+	}
+	if d, ok := (*m)[srcIP]; ok {
+		return d
+	}
+	if d, ok := (*m)[""]; ok {
+		return d
+	}
+	return 0
+}
+
+// policyChan returns the current policy-change broadcast channel. A waiter must
+// capture it BEFORE reading the rules, so that an update landing between the
+// read and the wait still wakes it (notifyPolicyChange closes this channel after
+// storing the new rules).
+func (p *Proxy) policyChan() chan struct{} {
+	p.policyMu.Lock()
+	defer p.policyMu.Unlock()
+	if p.policyCh == nil {
+		p.policyCh = make(chan struct{})
+	}
+	return p.policyCh
+}
+
+// notifyPolicyChange wakes every pending awaitEgress by closing the current
+// broadcast channel and installing a fresh one. Called after the new rules are
+// stored, so a woken waiter re-reads and sees them.
+func (p *Proxy) notifyPolicyChange() {
+	p.policyMu.Lock()
+	if p.policyCh != nil {
+		close(p.policyCh)
+	}
+	p.policyCh = make(chan struct{})
+	p.policyMu.Unlock()
+}
+
+// awaitEgress evaluates the egress rules for a request and returns the matching
+// allow rule, or nil when the request is denied. It owns the denial's audit
+// emission: on a plain deny (no grace period) it emits the request+response
+// deny pair via ac.deny; when a positive egress_deny_wait is configured for the
+// source it instead emits the phase:"request" deny IMMEDIATELY (ac.denyRequest)
+// and then holds the request up to that duration, re-evaluating on every policy
+// update (SetRulesBySource). Emitting the deny up front is the whole point — a
+// client tailing the event stream can widen the policy while the request is
+// still held; the instant an allow rule appears awaitEgress returns it and the
+// request proceeds normally, no response-deny emitted. If the deadline passes
+// (or ctx is cancelled) still unmatched, it emits the paired response deny
+// (ac.denyResponse) and returns nil. srcIP/method/host/path come from ac; port
+// is passed separately since ac doesn't carry it. reason/status label the deny.
+func (p *Proxy) awaitEgress(ctx context.Context, ac *auditCtx, port int, reason string, status int) *EgressRule {
+	match := func() *EgressRule {
+		r := MatchEgress(p.rulesForSource(ac.srcIP), ac.method, ac.host, port, ac.path)
+		if r != nil && r.Access == "allow" {
+			return r
+		}
+		return nil
+	}
+	if r := match(); r != nil {
+		return r
+	}
+	wait := p.denyWaitForSource(ac.srcIP)
+	if wait <= 0 {
+		ac.deny(reason, status)
+		return nil
+	}
+	// Surface the denial now — before waiting — so the client can react to it
+	// and grant access while the downstream request is still held.
+	ac.denyRequest(reason, status)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		// Capture the change channel before matching so a concurrent update
+		// can't slip through the gap between the match and the select.
+		ch := p.policyChan()
+		if r := match(); r != nil {
+			return r
+		}
+		select {
+		case <-ch:
+			// Policy changed — loop and re-evaluate.
+		case <-timer.C:
+			ac.denyResponse(reason, status)
+			return nil
+		case <-ctx.Done():
+			ac.denyResponse(reason, status)
+			return nil
+		}
+	}
 }
 
 // srcIPOf extracts the host portion of a "host:port" remote address, or returns
@@ -399,9 +527,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ac.requestHeaders = headerMap(r.Header)
-	rule := MatchEgress(p.rulesForSource(srcIPOf(r.RemoteAddr)), r.Method, host, port, r.URL.Path)
-	if rule == nil || rule.Access == "deny" {
-		ac.deny("no matching rule", http.StatusForbidden)
+	rule := p.awaitEgress(r.Context(), ac, port, "no matching rule", http.StatusForbidden)
+	if rule == nil {
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
 	}
@@ -688,9 +815,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host, port := splitHostPort("", r.Host, 443)
 	ac := p.beginAudit(srcIPOf(r.RemoteAddr), "CONNECT", host, "", "")
 	// CONNECT is host-only — body is opaque under TLS.
-	rule := MatchEgress(p.rulesForSource(srcIPOf(r.RemoteAddr)), "CONNECT", host, port, "")
-	if rule == nil || rule.Access == "deny" {
-		ac.deny("no matching rule", http.StatusForbidden)
+	rule := p.awaitEgress(r.Context(), ac, port, "no matching rule", http.StatusForbidden)
+	if rule == nil {
 		http.Error(w, denyHTTPBody(host), http.StatusForbidden)
 		return
 	}
@@ -1125,7 +1251,16 @@ func (p *Proxy) beginAudit(srcIP, method, host, path, query string) *auditCtx {
 // the proxy returns to the client (typically 403), and DurationMs is the
 // wall-clock time spent before the decision was made.
 func (a *auditCtx) deny(reason string, status int) {
-	now := time.Now()
+	a.denyRequest(reason, status)
+	a.denyResponse(reason, status)
+}
+
+// denyRequest emits just the phase:"request" half of a denial. It is emitted
+// immediately — before any egress_deny_wait grace period begins — so a client
+// tailing the event stream sees the blocked host at once and can widen the
+// policy while the request is still held (see awaitEgress). The paired
+// denyResponse finalizes the denial once the grace period elapses.
+func (a *auditCtx) denyRequest(reason string, status int) {
 	a.p.audit(AuditEvent{
 		At: a.start, Type: "network", Phase: "request",
 		RequestID: a.requestID, SrcIP: a.srcIP,
@@ -1134,6 +1269,14 @@ func (a *auditCtx) deny(reason string, status int) {
 		Body:    a.requestBody,
 		Verdict: "deny", Status: status, Reason: reason,
 	})
+}
+
+// denyResponse emits the phase:"response" half of a denial. The response is
+// synthetic (no upstream is reached) — Status carries the HTTP status returned
+// to the client and DurationMs is the wall-clock time to the decision, which
+// includes the egress_deny_wait grace period when one was served.
+func (a *auditCtx) denyResponse(reason string, status int) {
+	now := time.Now()
 	a.p.audit(AuditEvent{
 		At: now, Type: "network", Phase: "response",
 		RequestID: a.requestID, SrcIP: a.srcIP,

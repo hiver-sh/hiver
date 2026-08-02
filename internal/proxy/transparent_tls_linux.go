@@ -44,10 +44,15 @@ func (p *Proxy) handleTransparentTLS(c *net.TCPConn, br *bufio.Reader, origDst s
 	}
 	_, port := splitHostPort("", origDst, 0)
 	srcIP := srcIPOf(c.RemoteAddr().String())
-	rule := MatchEgress(p.rulesForSource(srcIP), "TLS", host, port, "")
-	if rule == nil || rule.Access == "deny" {
+	// Hold a host-level deny for the source's egress_deny_wait grace period,
+	// re-evaluating as the policy changes, before rejecting the TLS connection.
+	// awaitEgress emits the deny audit itself — immediately when a grace period
+	// is served, so a client can grant the host while the handshake is still
+	// held; the ac is created up front to carry that event.
+	ac := p.beginAudit(srcIP, "TLS", host, "", "")
+	rule := p.awaitEgress(context.Background(), ac, port, "no matching rule", 0)
+	if rule == nil {
 		log.Printf("transparent tls: host=%s port=%d denied (no matching rule)", host, port)
-		p.beginAudit(srcIP, "TLS", host, "", "").deny("no matching rule", 0)
 		// Send a fatal TLS Alert so the peer surfaces a concrete error
 		// ("tlsv1 alert access denied") instead of the bare connection close
 		// it would otherwise see as `SSL_ERROR_SYSCALL`.

@@ -1013,6 +1013,10 @@ type SandboxConfig struct {
 	// are denied.
 	Egress *[]EgressRule `json:"egress,omitempty"`
 
+	// EgressDenyWait Grace period, in seconds, that a would-be-denied egress request is held before the proxy replies with an error. `0` (the default) disables the grace period — denials are returned immediately.
+	// When greater than 0, a request that matches no allow rule is not failed straight away: the proxy pauses it for up to this many seconds, giving the client a window to update the policy (e.g. via `applyConfig`) to allow the destination. The `egress.request` deny event is emitted immediately — as soon as the request is held, not when the wait ends — so a client watching the event stream can react to the blocked host and widen the policy while the request is still pending. Every policy update is evaluated immediately against the pending request — the moment a newly-added rule allows it, the request proceeds normally, as if it had been allowed all along. If the window elapses with the request still unmatched, the usual deny error is returned. Reconciled at runtime, like `egress`.
+	EgressDenyWait *int `json:"egress_deny_wait,omitempty"`
+
 	// Entrypoint Override the entrypoint used when the container is run. Accepts either an argv array (each element is a separate argument) or a single string, which is split on whitespace into arguments. When omitted, the image's default entrypoint is used. e.g. ["tail", "-f", "/dev/null"] or "tail -f /dev/null" blocks indefinitely with near-zero CPU.
 	Entrypoint *SandboxConfig_Entrypoint `json:"entrypoint,omitempty"`
 

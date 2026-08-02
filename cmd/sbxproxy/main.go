@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/hiver-sh/hiver/internal/proxy"
 )
@@ -65,7 +66,7 @@ func main() {
 		auditOut = f
 	}
 
-	rules, _ := loadRules(*rulesPath)
+	rules, denyWait, _ := loadRules(*rulesPath)
 	caCert, caKey := loadCA(*caCertPath, *caKeyPath)
 	p, err := proxy.New(proxy.Config{
 		Addr:               *addr,
@@ -78,6 +79,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("proxy.New: %v", err)
 	}
+	p.SetDenyWaitBySource(denyWait)
 	p.SetRulesBySource(rules)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -96,11 +98,15 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-hup:
-				newRules, gen, err := readRules(*rulesPath)
+				newRules, newDenyWait, gen, err := readRules(*rulesPath)
 				if err != nil {
 					log.Printf("sbxproxy: SIGHUP reload failed (keeping current rules): %v", err)
 					continue
 				}
+				// Install the deny-wait map before the rules: SetRulesBySource
+				// wakes any pending waiters, and they must see the new grace
+				// periods when they re-evaluate.
+				p.SetDenyWaitBySource(newDenyWait)
 				p.SetRulesBySource(newRules)
 				log.Printf("sbxproxy: reloaded %d rules across %d source(s) from %s", countRules(newRules), len(newRules), *rulesPath)
 				// Echo the applied generation back to sandboxd so a coalesced
@@ -150,12 +156,12 @@ func main() {
 // loadRules reads the egress rules. An empty path yields a deny-everything
 // proxy, which is the right default if the orchestrator forgot to wire rules in.
 // Errors are fatal — initial load failures shouldn't be papered over.
-func loadRules(path string) (map[string][]proxy.EgressRule, uint64) {
-	rules, gen, err := readRules(path)
+func loadRules(path string) (map[string][]proxy.EgressRule, map[string]time.Duration, uint64) {
+	rules, denyWait, gen, err := readRules(path)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	return rules, gen
+	return rules, denyWait, gen
 }
 
 // readRules is the non-fatal sibling of loadRules; SIGHUP reloads use it so a
@@ -165,48 +171,69 @@ func loadRules(path string) (map[string][]proxy.EgressRule, uint64) {
 //     all-sources "" bucket (generation 0);
 //   - a per-source object `{"<srcIP>": [rule...], ...}` — one allowlist per
 //     sandbox source IP (the multi-sandbox form, design §8), generation 0; and
-//   - a generation envelope `{"generation": N, "sources": {"<srcIP>": [...]}}`
-//     — the pack-mode form, where N lets sandboxd await a coalesced reload.
+//   - a generation envelope `{"generation": N, "sources": {"<srcIP>": [...]},
+//     "deny_wait": {"<srcIP>": seconds}}` — the pack-mode form, where N lets
+//     sandboxd await a coalesced reload and deny_wait carries each source's
+//     egress_deny_wait grace period.
 //
 // The array vs. object split is detected from the first non-space byte; an
 // object carrying a "sources" key is the envelope (no source IP is the literal
 // "sources"). The generation rides inside the same file as its rules, so an
-// echoed generation always corresponds to the rule set just applied.
-func readRules(path string) (map[string][]proxy.EgressRule, uint64, error) {
+// echoed generation always corresponds to the rule set just applied. The
+// returned deny-wait map (seconds → time.Duration) is nil for the array and
+// plain-object shapes, which carry no grace period.
+func readRules(path string) (map[string][]proxy.EgressRule, map[string]time.Duration, uint64, error) {
 	if path == "" {
-		return nil, 0, nil
+		return nil, nil, 0, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read rules %s: %w", path, err)
+		return nil, nil, 0, fmt.Errorf("read rules %s: %w", path, err)
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var rules []proxy.EgressRule
 		if err := json.Unmarshal(trimmed, &rules); err != nil {
-			return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
+			return nil, nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
 		}
-		return map[string][]proxy.EgressRule{"": rules}, 0, nil
+		return map[string][]proxy.EgressRule{"": rules}, nil, 0, nil
 	}
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &probe); err != nil {
-		return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
+		return nil, nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
 	}
 	if _, ok := probe["sources"]; ok {
 		var env struct {
 			Generation uint64                        `json:"generation"`
 			Sources    map[string][]proxy.EgressRule `json:"sources"`
+			DenyWait   map[string]int                `json:"deny_wait"`
 		}
 		if err := json.Unmarshal(trimmed, &env); err != nil {
-			return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
+			return nil, nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
 		}
-		return env.Sources, env.Generation, nil
+		return env.Sources, denyWaitDurations(env.DenyWait), env.Generation, nil
 	}
 	var bySource map[string][]proxy.EgressRule
 	if err := json.Unmarshal(trimmed, &bySource); err != nil {
-		return nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
+		return nil, nil, 0, fmt.Errorf("parse rules %s: %w", path, err)
 	}
-	return bySource, 0, nil
+	return bySource, nil, 0, nil
+}
+
+// denyWaitDurations converts a per-source deny-wait map from wire seconds to
+// time.Duration. Returns nil for an empty input so the proxy's default (no wait)
+// applies. Non-positive values are dropped — they mean "no wait", the default.
+func denyWaitDurations(secs map[string]int) map[string]time.Duration {
+	if len(secs) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Duration, len(secs))
+	for ip, s := range secs {
+		if s > 0 {
+			out[ip] = time.Duration(s) * time.Second
+		}
+	}
+	return out
 }
 
 // countRules totals the rules across all source buckets, for logging.

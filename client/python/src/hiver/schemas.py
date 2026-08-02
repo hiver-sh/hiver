@@ -291,6 +291,8 @@ class SandboxConfig(BaseModel):
     """File systems exposed to the agent. Mount paths must be unique and non-overlapping (a mount path may not be a parent directory of another)."""
     egress: Optional[list[EgressRule]] = None
     """Ordered list of egress rules. The first rule that matches a request decides the outcome; requests that match no rule are denied."""
+    egress_deny_wait: Optional[int] = Field(None, ge=0)
+    """Grace period, in seconds, a would-be-denied egress request is held before the proxy returns an error. ``0`` (the default) returns denials immediately. When greater than 0, a request matching no allow rule is paused for up to this many seconds, giving the client a window to update the policy (e.g. via :meth:`Sandbox.apply_config`) to allow it; the moment a newly-added rule allows the request it proceeds normally. Reconciled at runtime, like ``egress``."""
     mitm: Optional[bool] = None
     """Whether outbound TLS connections are intercepted (man-in-the-middle) so egress rules can inspect and enforce method, path, headers, body, and ``override``/``override_script``. Defaults to true. When false, egress rules still match on ``host`` (from the TLS SNI) and ``ports``, but ``methods``, ``paths``, ``override``, and ``override_script`` are not enforced — the encrypted byte stream is forwarded end-to-end unmodified. Plain HTTP egress is unaffected either way."""
     events: Optional[list[EventType]] = None

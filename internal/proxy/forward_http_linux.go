@@ -169,10 +169,13 @@ func (p *Proxy) applyRequestRule(req *http.Request, host string, port int, srcIP
 		}
 	}
 	ac.requestHeaders = headerMap(req.Header)
-	rule := MatchEgress(p.rulesForSource(srcIP), req.Method, host, port, req.URL.Path)
-	if rule == nil || rule.Access == "deny" {
+	// awaitEgress emits the deny audit (immediately for the source's configured
+	// egress_deny_wait grace period, so a client can widen the policy), holds the
+	// request for that period re-evaluating on every policy update, and returns
+	// nil only if it's still denied. It returns only allow rules.
+	rule := p.awaitEgress(req.Context(), ac, port, "no matching rule", http.StatusForbidden)
+	if rule == nil {
 		log.Printf("applyRequestRule: denied host=%s port=%d method=%s path=%s", host, port, req.Method, req.URL.Path)
-		ac.deny("no matching rule", http.StatusForbidden)
 		if onDeny != nil {
 			onDeny()
 		}

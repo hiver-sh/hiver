@@ -33,7 +33,11 @@ type Spec struct {
 	Env        map[string]string  `json:"env,omitempty"`
 	FS         []FS               `json:"fs"`
 	Egress     []proxy.EgressRule `json:"egress,omitempty"`
-	Snapshot   *Snapshot          `json:"snapshot,omitempty"`
+	// EgressDenyWait is the grace period, in seconds, a would-be-denied egress
+	// request is held before the proxy errors, giving a client time to update
+	// the policy to allow it. 0 (nil) disables the wait. See config.yaml.
+	EgressDenyWait *int      `json:"egress_deny_wait,omitempty"`
+	Snapshot       *Snapshot `json:"snapshot,omitempty"`
 }
 
 // Entrypoint is an argv override for the workload. On the wire it accepts

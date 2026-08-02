@@ -62,11 +62,12 @@ type packState struct {
 	// applied generation from sbxproxy's echo.
 	egressGate *egressGate
 
-	mu     sync.Mutex
-	nextN  int                           // next host octet (172.16.0.<n>), starts at 2
-	freed  []int                         // returned octets to reuse
-	egress map[string][]proxy.EgressRule // srcIP → rules (merged into the proxy file)
-	isoMu  sync.Mutex                    // serialize isolation-backend mutations across keys
+	mu       sync.Mutex
+	nextN    int                           // next host octet (172.16.0.<n>), starts at 2
+	freed    []int                         // returned octets to reuse
+	egress   map[string][]proxy.EgressRule // srcIP → rules (merged into the proxy file)
+	denyWait map[string]int                // srcIP → egress_deny_wait seconds (merged into the proxy file)
+	isoMu    sync.Mutex                    // serialize isolation-backend mutations across keys
 
 	// pool preallocates a fixed set of sandbox network slots (wired netns/veth/
 	// iptables + DNS sink) so a create claims one instead of paying that contended
@@ -147,6 +148,9 @@ const egressReloadTimeout = 3 * time.Second
 type egressFile struct {
 	Generation uint64                        `json:"generation"`
 	Sources    map[string][]proxy.EgressRule `json:"sources"`
+	// DenyWait carries each source's egress_deny_wait grace period in seconds
+	// (config egress_deny_wait). Omitted sources default to 0 (no wait).
+	DenyWait map[string]int `json:"deny_wait,omitempty"`
 }
 
 // egressGate coalesces egress-rule reloads between sandboxd and the shared
@@ -251,9 +255,14 @@ func (p *packState) runEgressReloader(ctx context.Context) {
 		p.mu.Lock()
 		snapshot := make(map[string][]proxy.EgressRule, len(p.egress))
 		maps.Copy(snapshot, p.egress)
+		var denyWait map[string]int
+		if len(p.denyWait) > 0 {
+			denyWait = make(map[string]int, len(p.denyWait))
+			maps.Copy(denyWait, p.denyWait)
+		}
 		p.mu.Unlock()
 
-		if err := writeJSON(p.rulesPath, egressFile{Generation: gen, Sources: snapshot}); err != nil {
+		if err := writeJSON(p.rulesPath, egressFile{Generation: gen, Sources: snapshot, DenyWait: denyWait}); err != nil {
 			log.Printf("sandboxd: pack: write egress rules: %v", err)
 			continue
 		}
@@ -263,27 +272,45 @@ func (p *packState) runEgressReloader(ctx context.Context) {
 	}
 }
 
-// setEgress records (or clears, when rules is nil) the egress allowlist for a
-// source IP, then wakes the coalescing reloader. It returns the reload
-// generation that includes this change; pass it to egressGate.waitApplied to
-// block until sbxproxy has the rules live. Non-blocking itself, so a teardown
-// (rules == nil) need not wait — a removed sandbox briefly still-allowed is
-// harmless since its workload is already gone.
-func (p *packState) setEgress(ip string, rules []proxy.EgressRule) uint64 {
+// setEgress records (or clears, when rules is nil) the egress allowlist and
+// deny-wait grace period (denyWaitSecs, config egress_deny_wait) for a source
+// IP, then wakes the coalescing reloader. It returns the reload generation that
+// includes this change; pass it to egressGate.waitApplied to block until
+// sbxproxy has the rules live. Non-blocking itself, so a teardown (rules == nil)
+// need not wait — a removed sandbox briefly still-allowed is harmless since its
+// workload is already gone.
+func (p *packState) setEgress(ip string, rules []proxy.EgressRule, denyWaitSecs int) uint64 {
 	p.mu.Lock()
 	if p.egress == nil {
 		p.egress = map[string][]proxy.EgressRule{}
 	}
+	if p.denyWait == nil {
+		p.denyWait = map[string]int{}
+	}
 	if rules == nil {
 		delete(p.egress, ip)
+		delete(p.denyWait, ip)
 	} else {
 		p.egress[ip] = rules
+		if denyWaitSecs > 0 {
+			p.denyWait[ip] = denyWaitSecs
+		} else {
+			delete(p.denyWait, ip)
+		}
 	}
 	p.mu.Unlock()
 
 	gen := p.egressGate.bumpDesired()
 	p.egressGate.signal()
 	return gen
+}
+
+// derefInt returns *p, or 0 when p is nil.
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // createPacked brings up a new sandbox for key inside a pack pod: allocate an
@@ -443,7 +470,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		p.releaseSlot(octet, prealloc)
 		return nil, fmt.Errorf("egress: %w", err)
 	}
-	egressGen := p.setEgress(ip, sp.Egress)
+	egressGen := p.setEgress(ip, sp.Egress, derefInt(sp.EgressDenyWait))
 	phase.mark("pack " + key + ": egress (netns + iptables)")
 	// Now the per-VM netns exists, bring up the host-side 9p workspace listeners
 	// (deferred at ExportWorkspace, which ran before the netns). A cold-booting guest
@@ -763,7 +790,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 		// first and unconditionally.
 		_ = iso.UnmountRoot()
 		p.router.unregister(ip)
-		p.setEgress(ip, nil)
+		p.setEgress(ip, nil, 0)
 		p.releaseSlot(octet, prealloc)
 		// Remove this key's host-side workspace tree (mountpoints + backend dirs);
 		// the shared sbxfuse outlives this sandbox, so the per-key dir under
@@ -892,7 +919,7 @@ func (s *supervisor) createPacked(ctx context.Context, key string, cfg gen.Sandb
 					log.Printf("sandboxd: pack %q: reconcile: %v", key, err)
 					continue
 				}
-				p.setEgress(ip, desiredSpec.Egress)
+				p.setEgress(ip, desiredSpec.Egress, derefInt(desiredSpec.EgressDenyWait))
 				if err := mountMgr.Reconcile(desiredSpec); err != nil {
 					log.Printf("sandboxd: pack %q: reconcile fs: %v", key, err)
 				}

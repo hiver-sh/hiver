@@ -597,6 +597,14 @@ export interface SandboxConfig {
    */
   egress?: EgressRule[];
   /**
+   * Grace period, in seconds, a would-be-denied egress request is held before the proxy returns
+   * an error. `0` (the default) returns denials immediately. When greater than 0, a request
+   * matching no allow rule is paused for up to this many seconds, giving the client a window to
+   * update the policy (e.g. via `applyConfig`) to allow it; the moment a newly-added rule allows
+   * the request it proceeds normally. Reconciled at runtime, like `egress`.
+   */
+  egress_deny_wait?: number;
+  /**
    * Whether outbound TLS connections are intercepted (man-in-the-middle) so egress rules can
    * inspect and enforce method, path, headers, body, and `override`/`override_script`. Defaults
    * to true. When false, egress rules still match on `host` (from the TLS SNI) and `ports`, but
@@ -626,6 +634,7 @@ const SandboxConfigObject = z.object({
   ttl: z.number().int().min(0).optional(),
   fs: z.array(FileSystem).min(1).optional(),
   egress: z.array(EgressRule).optional(),
+  egress_deny_wait: z.number().int().min(0).optional(),
   mitm: z.boolean().optional(),
   events: z.array(EventType).optional(),
   snapshot: Snapshot.optional(),

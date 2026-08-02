@@ -211,6 +211,74 @@ _, err := sandbox.ApplyConfig(ctx, *current)
 
 The new rules take effect immediately. In-flight requests that were already allowed are not interrupted.
 
+## Just-in-time approval with a deny grace period
+
+By default a request that matches no allow rule is denied immediately. Set `egress_deny_wait` to a number of **seconds** to instead hold a would-be-denied request for that long before erroring — a window in which you can widen the policy and let the request through, rather than have the agent see a failure and retry.
+
+While a request is paused, every policy update is evaluated against it immediately: the moment a rule you add allows the destination, the request proceeds normally, as if it had been allowed all along. If the window elapses with the request still unmatched, the usual deny error is returned. `0` (the default) disables the wait.
+
+Crucially, the `egress.request` **deny event fires immediately** — the moment the request is held, not when the wait ends — so you actually have the full window to react. This turns a denial into an approval hook: watch the event stream for denied requests, decide whether to allow the host, and call `applyConfig` — all before the paused request times out.
+
+```typescript
+// Hold denied requests for up to 30s so we can approve new hosts on the fly.
+const sandbox = await getOrCreateSandbox("approval-gated", {
+  image: "python",
+  egress_deny_wait: 30,
+  egress: [{ access: "allow", host: "api.github.com" }],
+});
+
+// Elsewhere: when a request to a new host is blocked, allow it in time.
+for await (const event of sandbox.getEventsStream()) {
+  if (event.type === "egress.request" && event.access === "denied") {
+    if (await approve(event.host)) {
+      const cfg = await sandbox.getConfig();
+      await sandbox.applyConfig({
+        ...cfg,
+        egress: [...(cfg.egress ?? []), { access: "allow", host: event.host }],
+      });
+    }
+  }
+}
+```
+
+```python
+# Hold denied requests for up to 30s so we can approve new hosts on the fly.
+sandbox = await get_or_create_sandbox("approval-gated", SandboxConfig(
+    image="python",
+    egress_deny_wait=30,
+    egress=[EgressRule(access="allow", host="api.github.com")],
+))
+
+# Elsewhere: when a request to a new host is blocked, allow it in time.
+async for event in sandbox.get_events_stream():
+    if event.type == "egress.request" and event.access == "denied":
+        if await approve(event.host):
+            cfg = await sandbox.get_config()
+            await sandbox.apply_config(cfg.model_copy(update={
+                "egress": [*(cfg.egress or []), EgressRule(access="allow", host=event.host)],
+            }))
+```
+
+```go
+// Hold denied requests for up to 30s so we can approve new hosts on the fly.
+denyWait := 30
+sandbox, err := c.GetOrCreateSandbox(ctx, "approval-gated", client.SandboxConfig{
+    Image:          "python",
+    EgressDenyWait: &denyWait,
+    Egress:         []client.EgressRule{{Access: "allow", Host: "api.github.com"}},
+})
+
+// Elsewhere: when a request to a new host is blocked, allow it in time.
+events, _ := sandbox.WatchEvents(ctx, -1)
+for evt := range events {
+    if evt.Type == "egress.request" && evt.Access == "denied" && approve(evt.Host) {
+        cfg, _ := sandbox.GetConfig(ctx)
+        cfg.Egress = append(cfg.Egress, client.EgressRule{Access: "allow", Host: evt.Host})
+        _, _ = sandbox.ApplyConfig(ctx, *cfg)
+    }
+}
+```
+
 ## Observing blocked requests
 
 Every outbound request shows up on the event stream as an `egress.request` event with `access` set to `"allowed"` or `"denied"`. Filter for denials to see exactly what your policy is blocking:

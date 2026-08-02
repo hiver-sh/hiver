@@ -88,6 +88,14 @@ export const SANDBOX_CONFIG_SCHEMA = {
             "Ordered list of egress rules. First matching rule wins; unmatched requests are denied.",
           items: { $ref: "#/definitions/EgressRule" },
         },
+        egress_deny_wait: {
+          type: "integer",
+          minimum: 0,
+          default: 0,
+          description:
+            "Grace period, in seconds, a would-be-denied egress request is held before the proxy returns an error. 0 (the default) denies immediately. When greater than 0, a request matching no allow rule is paused for up to this many seconds, giving the client a window to update the policy (e.g. via applyConfig) to allow it. The egress.request deny event is emitted immediately (when the request is held, not when the wait ends), so a client watching the event stream can widen the policy while the request is still pending; the moment a newly-added rule allows the request it proceeds normally. Reconciled at runtime, like egress.",
+          examples: [60],
+        },
         mitm: {
           type: "boolean",
           default: true,
