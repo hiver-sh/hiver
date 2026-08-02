@@ -280,6 +280,12 @@ jobs:
           CURRENT=$(jq -r .version cli/package.json)
           echo "current=$CURRENT" >> $GITHUB_OUTPUT
 
+      # `make build-agent-base` below stages the TS client (npm ci + build + pack)
+      # into the agent-base build context, so this job needs Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
@@ -421,6 +427,13 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The agent-base image COPYs the locally-built TS client from its build
+      # context; stage it (npm ci + build + pack) before bundling that source.
+      # Other sources are FROM agent-base-standalone (already baked) or unrelated.
+      - name: Stage the agent-base client (from local dist)
+        if: matrix.source == './docker/agent-base'
+        run: make stage-agent-base-client
 
       - name: Bundle and push ${{ matrix.tag }}
         env:

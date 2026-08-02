@@ -7,3 +7,7 @@ node_modules
 .DS_Store
 bin
 dist
+
+# Built TS client packed into the agent-base build context (see the Makefile's
+# stage-agent-base-client target); a generated artifact, never committed.
+docker/agent-base/hiver-client.tgz

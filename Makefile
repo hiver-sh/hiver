@@ -3,7 +3,7 @@ CMDS := sandboxd sbxfuse sbxproxy controller sbxvsock sbxguest
 # JS/TS subprojects with their own format/lint npm scripts
 JS_DIRS := cli client/typescript
 
-.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images build-agent-base buildx-builder test e2e test-e2e test-unit gen fmt format lint lint-go staticcheck local-link local-unlink $(CMDS)
+.PHONY: help build build-images bundle-sandbox-images publish-images publish-vmlinux publish-sandbox-images build-agent-base stage-agent-base-client buildx-builder test e2e test-e2e test-unit gen fmt format lint lint-go staticcheck local-link local-unlink $(CMDS)
 
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -22,7 +22,20 @@ KERNEL_VERSION ?= 6.1.102
 # for the per-agent bundle targets below, which all FROM hiversh/agent-base-standalone).
 # This is the plain FROM base, distinct from the bundled `hiversh/agent-base`
 # runtime image (the default sandbox) produced by the bundle targets below.
-build-agent-base: buildx-builder ## Build and push the standalone agent base image (multi-arch)
+# Stage the freshly-built TypeScript client into the agent-base build context, as
+# a packed tarball. Both `docker buildx build docker/agent-base` and `hiver bundle
+# ./docker/agent-base` use that directory as their context, so the artifact has to
+# live inside it for the Dockerfile's COPY to reach it; a tarball (vs. a bare
+# dist/ dir) is what `npm install -g` needs to also pull the client's runtime deps
+# (zod). Any target that builds/bundles agent-base depends on this so the image
+# ships the current local client instead of a pinned npm release. Self-contained
+# (installs client deps + builds) so it works from a clean CI checkout.
+AGENT_BASE_CLIENT_TARBALL := docker/agent-base/hiver-client.tgz
+stage-agent-base-client: ## Build + pack the TS client into the agent-base build context
+	cd client/typescript && npm ci && npm run build && npm pack --pack-destination "$(CURDIR)/docker/agent-base"
+	mv docker/agent-base/hiver.sh-client-*.tgz $(AGENT_BASE_CLIENT_TARBALL)
+
+build-agent-base: buildx-builder stage-agent-base-client ## Build and push the standalone agent base image (multi-arch)
 	docker buildx build \
 		--builder hiver-multiarch \
 		--platform $(PLATFORMS) \
@@ -31,7 +44,7 @@ build-agent-base: buildx-builder ## Build and push the standalone agent base ima
 		docker/agent-base
 
 # Run build-agent-base first so the per-agent images can resolve FROM hiversh/agent-base-standalone.
-bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch)
+bundle-sandbox-images: stage-agent-base-client ## Bundle and push the default sandbox images (multi-arch)
 	hiver bundle ./docker/agent-base --tag hiversh/agent-base:latest --push --platform $(PLATFORMS)
 	hiver bundle ./docker/claude --tag hiversh/claude:latest --push --platform $(PLATFORMS)
 	hiver bundle ./docker/codex --tag hiversh/codex:latest --push --platform $(PLATFORMS)
@@ -42,7 +55,7 @@ bundle-sandbox-images: ## Bundle and push the default sandbox images (multi-arch
 	hiver bundle python:3.13-alpine --entrypoint="tail -f /dev/null" --tag hiversh/python:3.13-alpine --push --platform $(PLATFORMS)
 	hiver bundle node:alpine --entrypoint="tail -f /dev/null" --tag hiversh/node:alpine --push --platform $(PLATFORMS)
 
-bundle-microvm-sandbox-images: ## Bundle and push the microvm sandbox images (multi-arch)
+bundle-microvm-sandbox-images: stage-agent-base-client ## Bundle and push the microvm sandbox images (multi-arch)
 	hiver bundle ./docker/agent-base --microvm --tag hiversh/agent-base:latest-microvm --push --platform $(PLATFORMS)
 	hiver bundle ./docker/claude --microvm --tag hiversh/claude:latest-microvm --push --platform $(PLATFORMS)
 	hiver bundle ./docker/codex --microvm --tag hiversh/codex:latest-microvm --push --platform $(PLATFORMS)
