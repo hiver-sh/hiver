@@ -86,7 +86,7 @@ sandbox, err := c.GetOrCreateSandbox(context.Background(), "agent-1", client.San
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `image` | `string` | Image to launch. Select a preconfigured image (`"claude"`, `"codex"`, `"copilot"`, `"openclaw"`, `"antigravity"`, `"browser"`), or the tag of any OCI image — local, Docker Hub, GHCR, or a private registry — bundled with [`hiver bundle`](/docs/examples/oci-image), which wraps the Hiver runtime around it so it can run as a sandbox. Defaults to the Hiver base image. Cannot be changed after initialization. The image also selects the isolation mechanism — a microVM image ships its own guest kernel. |
+| `image` | `string` | Image to launch. Select a preconfigured image (`"claude"`, `"codex"`, `"copilot"`, `"openclaw"`, `"antigravity"`, `"browser"`), or the tag of any OCI image (local, Docker Hub, GHCR, or a private registry) bundled with [`hiver bundle`](/docs/examples/oci-image). Defaults to the Hiver base image. |
 | `cpu` | `number` | Virtual CPUs allocated to the sandbox (may be fractional, e.g. `0.5`). Defaults to `1`. Cannot be changed after initialization. |
 | `memory` | `number` | Memory in MiB. Defaults to `512`. Cannot be changed after initialization. |
 | `entrypoint` | `string` | Override the image's default entrypoint. |
@@ -97,6 +97,7 @@ sandbox, err := c.GetOrCreateSandbox(context.Background(), "agent-1", client.San
 | `ttl` | `number` | Idle seconds before the sandbox shuts itself down. Defaults to `1800` (30 min). Use `0` to disable. |
 | `fs` | `FileSystem[]` | File systems exposed to the agent. Defaults to a local `/workspace` mount with read/write access. |
 | `egress` | `EgressRule[]` | Ordered egress rules, first match wins. All outbound traffic is allowed by default. |
+| `egress_deny_wait` | `number` | Seconds to hold a would-be-denied request before erroring, giving you a window to widen the policy and let it through. The deny event fires immediately, so you have the full window to react. Defaults to `0` (deny immediately). See [Network Access](/docs/network-policy). |
 | `mitm` | `boolean` | Whether outbound TLS is intercepted so egress rules can enforce method/path/headers/body. Defaults to `true`. See [Network Access](/docs/network-policy). |
 | `events` | `EventType[]` | Restrict the event stream to these types. Defaults to every type. An empty array observes nothing. See [Events](/docs/events). |
 | `snapshot` | `Snapshot` | Automatic snapshot configuration, captured on shutdown, restored on start. |
