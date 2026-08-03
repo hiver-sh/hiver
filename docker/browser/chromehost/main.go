@@ -204,11 +204,14 @@ func main() {
 	port := envInt("HIVER_BROWSER_PORT", 9223)
 	chromePort := envInt("HIVER_CHROME_CDP_PORT", 9222)
 
-	// Single consistent profile location (see profileDir) — persists sign-in state
-	// and stored credentials across launches instead of a throwaway tmp dir.
+	// Single consistent profile location (see profileDir). The profile itself is
+	// ephemeral (VM overlay), so restore the persisted auth state (cookies, saved
+	// passwords, autofill, site storage, passkeys) into it BEFORE launching Chrome
+	// — see state.go. No-op when no state dir is mounted.
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		log.Fatalf("create user-data-dir: %v", err)
 	}
+	restoreAuthState()
 
 	userAgent := env("HIVER_BROWSER_USER_AGENT", defaultUserAgent)
 	cmd := exec.Command(env("HIVER_CHROME_BIN", chromeBin), chromeArgs(chromePort, profileDir, userAgent)...)
@@ -221,13 +224,28 @@ func main() {
 		log.Fatalf("failed to launch chromium: %v", err)
 	}
 
-	// Forward termination so a stopped container/VM cleanly closes Chrome.
+	// Forward termination so a stopped container/VM cleanly closes Chrome. The
+	// authoritative auth-state save runs after Chrome exits (below), where its
+	// SQLite databases are checkpointed and closed — forwarding the signal lets
+	// Chrome shut down cleanly first rather than being killed mid-write.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		s := <-sigs
 		if cmd.Process != nil {
 			_ = cmd.Process.Signal(s)
+		}
+	}()
+
+	// Best-effort periodic persistence: the authoritative save happens after
+	// Chrome exits, but an abrupt VM stop may never reach that path, so snapshot
+	// the auth state to the GCS-backed store periodically while Chrome runs. A
+	// live SQLite copy can catch a mid-write DB; the post-exit save supersedes it.
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			saveAuthState()
 		}
 	}()
 
@@ -244,12 +262,16 @@ func main() {
 		}
 	}
 
-	// stderr closed → Chrome exited. Reap it and exit with its code.
-	if err := cmd.Wait(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+	// stderr closed → Chrome exited. Reap it, then persist the auth state now that
+	// its SQLite databases are cleanly closed (consistent copy), and exit with its
+	// code.
+	waitErr := cmd.Wait()
+	saveAuthState()
+	if waitErr != nil {
+		if ee, ok := waitErr.(*exec.ExitError); ok {
 			os.Exit(ee.ExitCode())
 		}
-		log.Fatalf("chrome: %v", err)
+		log.Fatalf("chrome: %v", waitErr)
 	}
 	os.Exit(0)
 }

@@ -109,13 +109,20 @@ async function main() {
       eventWaiters.push(waiter);
     });
 
-  // 1. find the page target
+  // 1. find the page target — create one if it was closed (e.g. via
+  // cdp-close.js once a prior task finished with the browser), so reopening
+  // afterward just works without a separate recreate step.
   const targets = await send('Target.getTargets');
   const infos = (targets.result && targets.result.targetInfos) || [];
-  const page = infos.find((t) => t.type === 'page');
+  let page = infos.find((t) => t.type === 'page');
   if (!page) {
-    process.stderr.write('error: no page target found (is the browser up?)\n');
-    process.exit(1);
+    const created = await send('Target.createTarget', { url: 'about:blank' });
+    const targetId = created.result && created.result.targetId;
+    if (!targetId) {
+      process.stderr.write('error: failed to create a page target\n');
+      process.exit(1);
+    }
+    page = { targetId };
   }
 
   // 2. attach (flatten) -> sessionId, threaded onto every later command

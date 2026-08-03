@@ -212,6 +212,18 @@ Pass multiple paths in `files` for a multi-file input (`mode` is
 
 Never type passwords, API keys, tokens, or any PII on behalf of the user. Instead, open the relevant page and **ask the user to type the sensitive information directly in the browser** — the sandbox browser is visible to them via the Browser tab. Pause and wait for them to confirm before proceeding.
 
+## Closing the page
+
+Only close the page when the user explicitly asks you to (e.g. "close the
+browser", "you're done with that page") — don't close it on your own just
+because a task finished; leave it open on whatever it's showing. When asked,
+this closes the user's browser view; `cdp-open.js` transparently creates a
+fresh page next time you need one, so there's no extra setup on the next open:
+
+```bash
+node /home/agent/.claude/skills/browser/scripts/cdp-close.js
+```
+
 ## Stopping the bridge
 
 ```bash

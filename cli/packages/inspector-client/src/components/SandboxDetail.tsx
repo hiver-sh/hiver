@@ -515,17 +515,14 @@ export function SandboxDetail({
   // Which sandbox actually owns the attached browser — the primary, or a nested
   // one it spawned. Carried on `browser:connected` and used to route input.
   const browserTargetRef = useRef<{ id: string; key: string } | null>(null);
-  // Last browser frame + chrome state (tabs, url, nav), replayed to a BrowserView
-  // that mounts after the stream already connected. The browser panel only
-  // mounts once `browser:connected` flips availability on, so the `browser:tabs`
+  // Last browser chrome state (tabs, url, nav), replayed to a BrowserView that
+  // mounts after the stream already connected. The browser panel only mounts
+  // once `browser:connected` flips availability on, so the `browser:tabs`
   // /url/navstate frames that arrive alongside it land before the sink exists —
   // buffering them here lets the freshly-mounted panel restore full state
-  // instead of showing an empty tab strip after a refresh.
-  const lastBrowserFrameRef = useRef<{
-    data: string;
-    width: number;
-    height: number;
-  } | null>(null);
+  // instead of showing an empty tab strip after a refresh. The frame itself is
+  // NOT replayed — a (re)mounted panel always starts blank until the next live
+  // frame arrives, rather than flashing a stale screenshot from before it closed.
   const lastBrowserTabsRef = useRef<BrowserTab[] | null>(null);
   const lastBrowserUrlRef = useRef<string | null>(null);
   const lastBrowserNavRef = useRef<{
@@ -551,7 +548,6 @@ export function SandboxDetail({
     setBrowserAvailable(false);
     browserConnectedRef.current = false;
     browserTargetRef.current = null;
-    lastBrowserFrameRef.current = null;
     lastBrowserTabsRef.current = null;
     lastBrowserUrlRef.current = null;
     lastBrowserNavRef.current = null;
@@ -652,7 +648,8 @@ export function SandboxDetail({
   // A mounted BrowserView registers here to receive screencast frames from the
   // shared stream. If the upstream is already attached (the panel opened after
   // the stream connected), replay the connected signal — with the owning sandbox
-  // so input routes correctly — and the last frame so it paints immediately.
+  // so input routes correctly. The frame itself isn't replayed, so the panel
+  // always opens blank and paints fresh once the next live frame arrives.
   const subscribeBrowser = useCallback(
     (sink: BrowserSink) => {
       browserSinkRef.current = sink;
@@ -668,8 +665,6 @@ export function SandboxDetail({
           sink.onUrl(lastBrowserUrlRef.current);
         if (lastBrowserNavRef.current)
           sink.onNavState(lastBrowserNavRef.current);
-        if (lastBrowserFrameRef.current)
-          sink.onFrame(lastBrowserFrameRef.current);
       }
       return () => {
         if (browserSinkRef.current === sink) browserSinkRef.current = null;
@@ -762,7 +757,6 @@ export function SandboxDetail({
                     width: number;
                     height: number;
                   };
-                  lastBrowserFrameRef.current = frame;
                   browserSinkRef.current?.onFrame(frame);
                 } catch {
                   // ignore malformed frame
