@@ -103,6 +103,19 @@ type Server struct {
 	// mounts.
 	statCache *statCache
 
+	// serveCtx is the context passed to [Server.Serve]; background work spawned
+	// off a FUSE handler (which gets a per-request ctx cancelled the moment the
+	// syscall returns) runs under it instead, so it outlives the triggering call
+	// and is cancelled by unmount. Set once at the top of Serve, before any
+	// handler can run.
+	serveCtx context.Context
+
+	// refreshMu guards refreshing: abs paths with an async stat-cache refresh
+	// in flight. Collapses a stat storm on one cold path to a single
+	// Remote.Stat. See [Server.refreshAttrAsync].
+	refreshMu  sync.Mutex
+	refreshing map[string]struct{}
+
 	requestSeq atomic.Uint64 // source of AuditEvent.RequestID
 
 	// liveNodes tracks every node returned from Lookup/Create so that
@@ -159,7 +172,7 @@ func Mount(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fusefs: mount %s: %w", cfg.MountPoint, err)
 	}
-	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit), liveNodes: make(map[string]*node), written: make(map[string]struct{})}
+	s := &Server{cfg: cfg, conn: c, auditEnc: json.NewEncoder(cfg.Audit), liveNodes: make(map[string]*node), written: make(map[string]struct{}), refreshing: make(map[string]struct{})}
 	s.SetACLs(cfg.ACLs)
 	// Async serves reads from the local buffer only, so the oplog must not
 	// evict a buffer file once its Put lands — eviction would make the file
@@ -181,6 +194,10 @@ func Mount(cfg Config) (*Server, error) {
 // returned success the moment its buffer write landed locally; the
 // remote upload happens on the oplog goroutine).
 func (s *Server) Serve(ctx context.Context) error {
+	// Recorded before bazilfs.Serve starts dispatching, so any handler that
+	// spawns background work (e.g. refreshAttrAsync) has a live, unmount-scoped
+	// context to run under.
+	s.serveCtx = ctx
 	go func() {
 		<-ctx.Done()
 		_ = s.Unmount()
@@ -194,10 +211,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	} else {
 		close(oplogDone)
 	}
-	// No eager pull: an async mount fetches nothing at startup. Metadata is
-	// served synchronously from the remote on demand (Lookup/Attr/ReadDirAll),
-	// and a file's content is fetched — synchronously — only on the first
-	// explicit read (Open), then cached in the local buffer. See materializeLocal.
+	// No eager pull: an async mount fetches nothing at startup. Lookup/ReadDirAll
+	// consult the remote synchronously on demand, but Attr does not — it serves
+	// the local view immediately and refreshes the stat cache in the background
+	// (see node.Attr / refreshAttrAsync), so a cold stat never blocks the agent
+	// on backend latency. A file's content is fetched — synchronously — only on
+	// the first explicit read (Open), then cached in the local buffer. See
+	// materializeLocal.
 	err := bazilfs.Serve(s.conn, &fileSystem{s: s})
 	<-oplogDone
 	return err
@@ -339,6 +359,49 @@ func (s *Server) cachePutSymlink(p string, size int64) {
 		}
 	}
 	s.statCache.putSymlink(p, size)
+}
+
+// refreshAttrAsync backfills the stat cache for an async mount off the FUSE hot
+// path. The getattr that triggered it has already answered from the local view;
+// this fetches the real remote metadata (or records a symlink/absent tombstone)
+// so the next stat of the same path is a cache hit instead of another miss. At
+// most one refresh per path is in flight — a stat storm on a cold path collapses
+// to a single Remote.Stat. Runs under serveCtx, so unmount cancels it.
+//
+// virt is the store-relative path passed to Remote.Stat; abs is the
+// agent-visible absolute path used as the cache key.
+func (s *Server) refreshAttrAsync(virt, abs string) {
+	if s.statCache == nil {
+		return
+	}
+	s.refreshMu.Lock()
+	if _, busy := s.refreshing[abs]; busy {
+		s.refreshMu.Unlock()
+		return
+	}
+	s.refreshing[abs] = struct{}{}
+	s.refreshMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.refreshMu.Lock()
+			delete(s.refreshing, abs)
+			s.refreshMu.Unlock()
+		}()
+		ctx := s.serveCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		info, err := s.cfg.Remote.Stat(ctx, virt)
+		switch {
+		case err == nil && info.Symlink:
+			s.cachePutSymlink(abs, info.Size)
+		case err == nil:
+			s.cachePut(abs, info)
+		case errors.Is(err, remotefs.ErrNotExist):
+			s.cachePutNegative(abs)
+		}
+	}()
 }
 
 // warmDirCache lists dir once and populates the stat cache with every child
@@ -518,10 +581,13 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 		return syscall.ENOENT
 	}
 	ac.allow()
-	// Metadata is served from the remote synchronously (cached) for BOTH sync
-	// and async mounts — an async mount fetches no content here, only stats.
-	// A path the agent wrote this session (dirty) or that lives only in the
-	// local buffer falls through to the local Lstat below.
+	// Metadata is served from the cached remote FileInfo when present, for BOTH
+	// sync and async mounts. On a cold miss the paths diverge: a sync mount
+	// consults the remote synchronously here; an async mount serves the local
+	// view now and refreshes the cache off the hot path (below), so agent file
+	// ops never block on backend latency — the whole point of async. A path the
+	// agent wrote this session (dirty) or that lives only in the local buffer
+	// falls through to the local Lstat below.
 	if n.s.cfg.Remote != nil && !n.isDirty() {
 		if e, ok := n.s.statCache.getEntry(n.absPath()); ok {
 			switch {
@@ -538,25 +604,36 @@ func (n *node) Attr(ctx context.Context, a *fuse.Attr) error {
 			}
 			// Tombstone → fall through to local Lstat.
 		} else if !n.s.statCache.dirListed(path.Dir(n.absPath())) {
-			// No cache entry and the parent wasn't fully listed this window, so
-			// consult the remote. (When the parent was listed, a real object here
-			// would already be cached — skip the Stat and fall straight through to
-			// the local Lstat.) One Stat answers existence AND type: a symlink comes
-			// back with FileInfo.Symlink set, so there is no second key probe.
-			info, err := n.s.cfg.Remote.Stat(ctx, n.virtPath())
-			if err == nil {
-				if info.Symlink {
-					n.s.cachePutSymlink(n.absPath(), info.Size)
-					fillAttrSymlink(a, info.Size)
-				} else {
-					n.s.cachePut(n.absPath(), info)
-					fillAttrFromRemote(a, info)
+			// No cache entry and the parent wasn't fully listed this window.
+			// (When the parent was listed, a real object here would already be
+			// cached — skip the remote entirely and fall through to local Lstat.)
+			if n.s.cfg.Async {
+				// Async: don't block the getattr on the backend. Serve the local
+				// view (fall through to Lstat) and refresh the stat cache in the
+				// background so a later stat of this path is a hit. A cold stat of
+				// a gcs-backed mount root is two round-trips; blocking boot on it
+				// delays the workload's first request. Content is still fetched
+				// synchronously on first read (Open).
+				n.s.refreshAttrAsync(n.virtPath(), n.absPath())
+			} else {
+				// Sync: consult the remote now. One Stat answers existence AND
+				// type: a symlink comes back with FileInfo.Symlink set, so there
+				// is no second key probe.
+				info, err := n.s.cfg.Remote.Stat(ctx, n.virtPath())
+				if err == nil {
+					if info.Symlink {
+						n.s.cachePutSymlink(n.absPath(), info.Size)
+						fillAttrSymlink(a, info.Size)
+					} else {
+						n.s.cachePut(n.absPath(), info)
+						fillAttrFromRemote(a, info)
+					}
+					ac.response()
+					return nil
 				}
-				ac.response()
-				return nil
-			}
-			if errors.Is(err, remotefs.ErrNotExist) {
-				n.s.cachePutNegative(n.absPath())
+				if errors.Is(err, remotefs.ErrNotExist) {
+					n.s.cachePutNegative(n.absPath())
+				}
 			}
 		}
 		// Remote ErrNotExist or transient failure → fall through to

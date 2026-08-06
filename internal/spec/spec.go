@@ -139,12 +139,16 @@ type FS struct {
 	Internal bool `json:"internal,omitempty"`
 
 	// Async, when true, runs a remote-backed mount in fetch-on-read, cache-after
-	// mode: nothing is pulled up front, metadata (stat/list) is served
-	// synchronously from the backend on demand, and a file's content is fetched
-	// — synchronously, one GET — only on its first explicit read, then cached in
-	// the local buffer so later reads never re-download it. A GET happens only in
-	// response to a read, never eagerly. The trade-off is eventual consistency
-	// for content already cached. Ignored for local backends.
+	// mode: nothing is pulled up front. A directory list is served synchronously
+	// from the backend on demand, but a stat never blocks on the backend — it is
+	// answered from the local view immediately and the backend metadata is
+	// refreshed into the stat cache in the background, so a cold stat (e.g. of a
+	// mount root, two round-trips on gcs) can't stall the agent or delay boot. A
+	// file's content is fetched — synchronously, one GET — only on its first
+	// explicit read, then cached in the local buffer so later reads never
+	// re-download it. A GET happens only in response to a read, never eagerly.
+	// The trade-off is eventual consistency for metadata and for content already
+	// cached. Ignored for local backends.
 	Async bool `json:"async,omitempty"`
 
 	// Per-backend extras live inline with a backend-name prefix so it's

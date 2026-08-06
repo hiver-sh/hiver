@@ -375,6 +375,16 @@ func (c *countingRemote) reset() {
 // once (served thereafter through the permanent stat cache), and remoteDir is
 // the upstream store's backing directory the test seeds objects into.
 func startFUSERemote(t *testing.T, remote remotefs.Store) (mountPoint string, stop func()) {
+	return startFUSERemoteMode(t, remote, false)
+}
+
+// startFUSERemoteAsync mounts the workspace in async (local-authoritative)
+// mode: stats never block on the backend.
+func startFUSERemoteAsync(t *testing.T, remote remotefs.Store) (mountPoint string, stop func()) {
+	return startFUSERemoteMode(t, remote, true)
+}
+
+func startFUSERemoteMode(t *testing.T, remote remotefs.Store, async bool) (mountPoint string, stop func()) {
 	t.Helper()
 	requiresFUSE(t)
 	backend := t.TempDir()
@@ -385,6 +395,7 @@ func startFUSERemote(t *testing.T, remote remotefs.Store) (mountPoint string, st
 		ACLs:       fusefs.Compile([]fusefs.Rule{{Path: path.Clean(mountPoint), Access: fusefs.AccessRW}, {Path: path.Clean(mountPoint + "/**"), Access: fusefs.AccessRW}}),
 		Audit:      &bytes.Buffer{},
 		Remote:     remote,
+		Async:      async,
 	})
 	if err != nil {
 		t.Skipf("fusefs.Mount: %v (FUSE may not be available)", err)
@@ -616,5 +627,100 @@ func TestFUSESymlinkServedFromListing(t *testing.T) {
 	}
 	if statN, listN := remote.counts(); statN != 0 || listN != 0 {
 		t.Errorf("cached symlink cost stat=%d list=%d round-trips, want 0/0", statN, listN)
+	}
+}
+
+// blockingRemote parks every Stat on a release channel so a test can prove an
+// async mount's Attr does not wait on the backend, then release it and observe
+// the background cache populate. Per-path Stat counts let the test assert the
+// stat storm collapses to a single in-flight Remote.Stat.
+type blockingRemote struct {
+	remotefs.Store
+	release chan struct{}
+	mu      sync.Mutex
+	byPath  map[string]int
+}
+
+func (b *blockingRemote) Stat(ctx context.Context, p string) (remotefs.FileInfo, error) {
+	b.mu.Lock()
+	if b.byPath == nil {
+		b.byPath = map[string]int{}
+	}
+	b.byPath[p]++
+	b.mu.Unlock()
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return remotefs.FileInfo{}, ctx.Err()
+	}
+	return b.Store.Stat(ctx, p)
+}
+
+func (b *blockingRemote) count(p string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.byPath[p]
+}
+
+// TestFUSEAsyncAttrDoesNotBlockOnRemote pins the async stat behavior: with the
+// backend's Stat parked, a cold getattr must return promptly from the local
+// view (never blocking on the round-trip), and once the backend is released the
+// background refresh populates the cache so a later stat reports the real
+// object. A stat storm on the cold path collapses to one Remote.Stat.
+func TestFUSEAsyncAttrDoesNotBlockOnRemote(t *testing.T) {
+	remoteDir := t.TempDir()
+	inner, err := remotefs.NewFileStore(remoteDir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remoteDir, "real.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	remote := &blockingRemote{Store: inner, release: make(chan struct{})}
+
+	mp, stop := startFUSERemoteAsync(t, remote)
+	defer stop()
+
+	// Backend Stat is parked: a storm of cold stats must still return quickly
+	// from the local view (ErrNotExist — the object isn't buffered yet), not
+	// block on the round-trip.
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := os.Stat(filepath.Join(mp, "real.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("cold async Stat err = %v, want ErrNotExist", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("cold async stat blocked on parked remote: took %v", d)
+	}
+
+	// Release the backend; the background refresh populates the cache. After
+	// that a stat is a hit and reports the real 2-byte object.
+	close(remote.release)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		fi, err := os.Stat(filepath.Join(mp, "real.txt"))
+		if err == nil {
+			if fi.Size() != 2 {
+				t.Fatalf("populated stat size = %d, want 2", fi.Size())
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("async cache never populated: last err = %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The storm plus the populating poll collapsed to a single Remote.Stat for
+	// the path — the in-flight dedup held while the first refresh ran.
+	if n := remote.count("/real.txt"); n != 1 {
+		t.Errorf("Remote.Stat(/real.txt) called %d times, want 1 (dedup)", n)
 	}
 }
